@@ -82,3 +82,49 @@ def test_droplets_list_with_project_flag(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     assert doctl_cli._cmd_droplets_list(["--project", "my-proj"]) == 0
     assert listed == ["proj-1"]
+
+
+def test_cloud_config_print(capsys: pytest.CaptureFixture) -> None:
+    assert doctl_cli._cmd_cloud_config_print([]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("#cloud-config")
+    assert "timezone: Asia/Dili" in out
+
+
+def test_droplets_create_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        doctl_cli,
+        "resolve_project_id",
+        lambda project, do_config=None, context=None: "proj-1",
+    )
+    monkeypatch.setattr(
+        doctl_cli,
+        "_load_do_config_for_droplets",
+        lambda project_flag: (None, None),
+    )
+    created: list[str] = []
+
+    def fake_create(name, **kwargs):
+        created.append(name)
+        assert kwargs["dry_run"] is True
+        return 0
+
+    monkeypatch.setattr(doctl_cli, "create_droplet", fake_create)
+    assert (
+        doctl_cli._cmd_droplets_create(
+            [
+                "my-host",
+                "--project",
+                "p",
+                "--size",
+                "s-1vcpu-1gb",
+                "--region",
+                "sgp1",
+                "--ssh-key",
+                "key-1",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    assert created == ["my-host"]

@@ -50,7 +50,16 @@ def test_resolve_project_id_from_manifest(monkeypatch: pytest.MonkeyPatch) -> No
         "catalpa_tooling.doctl_projects._projects_list",
         lambda *, context: [{"id": "from-yaml", "name": "staging"}],
     )
-    do = DigitalOceanConfig(project_name="staging", project_id=None, context=None)
+    do = DigitalOceanConfig(
+        project_name="staging",
+        project_id=None,
+        context=None,
+        timezone=None,
+        region=None,
+        size=None,
+        image=None,
+        ssh_keys=None,
+    )
     assert resolve_project_id(None, do_config=do, context=None) == "from-yaml"
 
 

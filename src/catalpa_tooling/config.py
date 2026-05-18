@@ -142,6 +142,11 @@ class DigitalOceanConfig:
     project_name: str | None
     project_id: str | None
     context: str | None
+    timezone: str | None
+    region: str | None
+    size: str | None
+    image: str | None
+    ssh_keys: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -324,10 +329,21 @@ def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
         raise ProjectConfigError(
             "digitalocean: set only one of project_name or project_id"
         )
+    ssh_keys_raw = do_raw.get("ssh_keys")
+    ssh_keys: tuple[str, ...] | None = None
+    if ssh_keys_raw is not None:
+        ssh_keys = _parse_string_list(ssh_keys_raw, field="digitalocean.ssh_keys")
+        if not ssh_keys:
+            ssh_keys = None
     return DigitalOceanConfig(
         project_name=project_name,
         project_id=project_id,
         context=_optional_str(do_raw, "context"),
+        timezone=_optional_str(do_raw, "timezone"),
+        region=_optional_str(do_raw, "region"),
+        size=_optional_str(do_raw, "size"),
+        image=_optional_str(do_raw, "image"),
+        ssh_keys=ssh_keys,
     )
 
 

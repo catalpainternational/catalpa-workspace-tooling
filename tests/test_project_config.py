@@ -107,6 +107,12 @@ def test_digitalocean_block_parses(tmp_path: Path, isolated_tooling: None) -> No
 digitalocean:
   project_name: staging
   context: team-a
+  timezone: Asia/Dili
+  region: sgp1
+  size: s-2vcpu-4gb
+  image: ubuntu-24-04-x64
+  ssh_keys:
+    - "aa:bb:cc:dd"
 """,
         encoding="utf-8",
     )
@@ -114,6 +120,11 @@ digitalocean:
     assert cfg.digitalocean is not None
     assert cfg.digitalocean.project_name == "staging"
     assert cfg.digitalocean.context == "team-a"
+    assert cfg.digitalocean.timezone == "Asia/Dili"
+    assert cfg.digitalocean.region == "sgp1"
+    assert cfg.digitalocean.size == "s-2vcpu-4gb"
+    assert cfg.digitalocean.image == "ubuntu-24-04-x64"
+    assert cfg.digitalocean.ssh_keys == ("aa:bb:cc:dd",)
 
 
 def test_digitalocean_rejects_both_project_keys(tmp_path: Path, isolated_tooling: None) -> None:

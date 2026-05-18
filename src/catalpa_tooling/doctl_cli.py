@@ -6,8 +6,10 @@ import argparse
 import sys
 
 from catalpa_tooling.cli_interrupt import run_cli
-from catalpa_tooling.config import ProjectConfig, ProjectConfigError
+from catalpa_tooling.config import DigitalOceanConfig, ProjectConfig, ProjectConfigError
 from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
+from catalpa_tooling.cloud_config.render import DEFAULT_TIMEZONE, render_droplet_bootstrap
+from catalpa_tooling.doctl_droplets import create_droplet
 from catalpa_tooling.doctl_projects import list_project_droplets, resolve_project_id
 
 
@@ -81,6 +83,97 @@ def _cmd_projects_list(argv: list[str]) -> int:
     ).returncode
 
 
+def _cmd_cloud_config_print(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="doctl cloud-config print",
+        description="Print rendered droplet bootstrap cloud-config (#cloud-config).",
+    )
+    p.add_argument(
+        "--timezone",
+        default=DEFAULT_TIMEZONE,
+        help=f"IANA timezone (default: {DEFAULT_TIMEZONE})",
+    )
+    ns, rest = p.parse_known_args(argv)
+    if rest:
+        p.error(f"unrecognized arguments: {' '.join(rest)}")
+    print(render_droplet_bootstrap(timezone=ns.timezone), end="")
+    return 0
+
+
+def _load_do_config_for_droplets(
+    *,
+    project_flag: str | None,
+) -> tuple[DigitalOceanConfig | None, str | None]:
+    try:
+        cfg = ProjectConfig.from_cwd()
+        do_config = cfg.digitalocean
+        return do_config, do_config.context if do_config else None
+    except ProjectConfigError as e:
+        if project_flag:
+            return None, None
+        print(str(e), file=sys.stderr)
+        raise SystemExit(1) from e
+
+
+def _cmd_droplets_create(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="doctl droplets create",
+        description="Create a droplet with Docker CE, UFW, unattended upgrades, and SSH hardening.",
+    )
+    p.add_argument("name", help="Droplet hostname")
+    p.add_argument(
+        "--project",
+        metavar="NAME|UUID",
+        help="Project name or UUID (default: digitalocean.* in tooling.yaml)",
+    )
+    p.add_argument("--size", help="Droplet size slug (e.g. s-2vcpu-4gb)")
+    p.add_argument(
+        "--image",
+        help="Image slug (default: ubuntu-24-04-x64 or digitalocean.image)",
+    )
+    p.add_argument("--region", help="Region slug (e.g. sgp1)")
+    p.add_argument(
+        "--ssh-key",
+        action="append",
+        dest="ssh_keys",
+        default=[],
+        metavar="ID|FINGERPRINT",
+        help="SSH key ID or fingerprint (repeatable; default: all keys from doctl compute ssh-key list)",
+    )
+    p.add_argument(
+        "--timezone",
+        help=f"IANA timezone (default: {DEFAULT_TIMEZONE} or digitalocean.timezone)",
+    )
+    p.add_argument("--context", help="Authentication context")
+    p.add_argument("--wait", action="store_true", help="Wait until the droplet is active")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print cloud-config and doctl command without creating",
+    )
+    ns, rest = p.parse_known_args(argv)
+    if rest:
+        p.error(f"unrecognized arguments: {' '.join(rest)}")
+
+    do_config, manifest_context = _load_do_config_for_droplets(project_flag=ns.project)
+    context = ns.context or manifest_context
+    ensure_doctl_available()
+    project_id = resolve_project_id(ns.project, do_config=do_config, context=context)
+    return create_droplet(
+        ns.name,
+        size=ns.size,
+        image=ns.image,
+        region=ns.region,
+        project_id=project_id,
+        ssh_keys=tuple(ns.ssh_keys),
+        timezone=ns.timezone,
+        context=context,
+        wait=ns.wait,
+        dry_run=ns.dry_run,
+        do_config=do_config,
+    )
+
+
 def _cmd_droplets_list(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="doctl droplets list",
@@ -132,7 +225,7 @@ def _cmd_droplets_list(argv: list[str]) -> int:
 
 def _print_help() -> None:
     print(
-        """usage: doctl [-h] {auth,projects,droplets} ...
+        """usage: doctl [-h] {auth,cloud-config,projects,droplets} ...
 
 DigitalOcean CLI wrapper (requires the official doctl binary on PATH).
 
@@ -140,8 +233,10 @@ DigitalOcean CLI wrapper (requires the official doctl binary on PATH).
   doctl auth list                    List authentication contexts
   doctl auth remove --context NAME   Remove a stored context
   doctl auth switch --context NAME   Switch active context
+  doctl cloud-config print           Print droplet bootstrap cloud-config
   doctl projects list                List DigitalOcean projects
   doctl droplets list [--project …]  List droplets in a project
+  doctl droplets create NAME …       Create a droplet with bootstrap cloud-config
 
 Run from an application repo root to use digitalocean.* defaults in tooling.yaml."""
     )
@@ -177,12 +272,23 @@ def _main_impl() -> None:
         print(f"unknown projects command: {rest[0]!r}", file=sys.stderr)
         sys.exit(1)
 
+    if top == "cloud-config":
+        if not rest or rest[0] in ("-h", "--help"):
+            print("usage: doctl cloud-config print", file=sys.stderr)
+            sys.exit(0 if rest and rest[0] in ("-h", "--help") else 1)
+        if rest[0] == "print":
+            sys.exit(_cmd_cloud_config_print(rest[1:]))
+        print(f"unknown cloud-config command: {rest[0]!r}", file=sys.stderr)
+        sys.exit(1)
+
     if top == "droplets":
         if not rest or rest[0] in ("-h", "--help"):
-            print("usage: doctl droplets list", file=sys.stderr)
+            print("usage: doctl droplets {list,create}", file=sys.stderr)
             sys.exit(0 if rest and rest[0] in ("-h", "--help") else 1)
         if rest[0] == "list":
             sys.exit(_cmd_droplets_list(rest[1:]))
+        if rest[0] == "create":
+            sys.exit(_cmd_droplets_create(rest[1:]))
         print(f"unknown droplets command: {rest[0]!r}", file=sys.stderr)
         sys.exit(1)
 
