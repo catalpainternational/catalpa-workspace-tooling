@@ -138,6 +138,13 @@ class ProjectMetaConfig:
 
 
 @dataclass(frozen=True)
+class DigitalOceanConfig:
+    project_name: str | None
+    project_id: str | None
+    context: str | None
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     """Typed view of ``tooling.yaml`` with resolved paths under ``repo_root``."""
 
@@ -145,6 +152,7 @@ class ProjectConfig:
     paths: PathsConfig
     stack: StackConfig
     ops: OpsConfig
+    digitalocean: DigitalOceanConfig | None
     repo_root: Path
     tooling_path: Path
 
@@ -309,6 +317,20 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
     )
 
 
+def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
+    project_name = _optional_str(do_raw, "project_name")
+    project_id = _optional_str(do_raw, "project_id")
+    if project_name and project_id:
+        raise ProjectConfigError(
+            "digitalocean: set only one of project_name or project_id"
+        )
+    return DigitalOceanConfig(
+        project_name=project_name,
+        project_id=project_id,
+        context=_optional_str(do_raw, "context"),
+    )
+
+
 def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
     pg_raw = _require_mapping(ops_raw.get("pgbackrest"), "ops.pgbackrest")
     zabbix_raw = _require_mapping(ops_raw.get("zabbix"), "ops.zabbix")
@@ -366,11 +388,21 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
     marker = repo_root / meta.root_marker
     if not marker.is_file():
         raise ProjectConfigError(f"root_marker not found: {marker}")
+    digitalocean: DigitalOceanConfig | None = None
+    if "digitalocean" in data:
+        do_raw = data.get("digitalocean")
+        if do_raw is None:
+            digitalocean = None
+        elif not isinstance(do_raw, dict):
+            raise ProjectConfigError("digitalocean must be a mapping")
+        else:
+            digitalocean = _parse_digitalocean(do_raw)
     return ProjectConfig(
         meta=meta,
         paths=_parse_paths(paths_raw),
         stack=_parse_stack(stack_raw),
         ops=_parse_ops(ops_raw),
+        digitalocean=digitalocean,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),
     )

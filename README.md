@@ -24,6 +24,7 @@ After install, these console scripts are available:
 |---------|---------|
 | `dev` | Local development helpers (backend, frontend, prototype) |
 | `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, etc. |
+| `doctl` | DigitalOcean auth and project droplet listing (wraps host `doctl`) |
 | `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
 | `scripts` | Run shell scripts from `paths.scripts` in the manifest |
 
@@ -38,6 +39,15 @@ uv run dk --help
 - Python 3.12+
 - Consumer repo must include a valid `tooling.yaml` (see INDMO `data_import` for a reference manifest)
 - Host tools for deploy workflows: Docker, `uv`, `sops`, `age` (as needed by your project)
+- For DigitalOcean: [doctl](https://docs.digitalocean.com/reference/doctl/) on `PATH` (or set `DOCTL_BIN`); run `doctl auth init` once per machine (prompts for a token). If a stale token is stored, run `doctl auth remove --context default` first, or pass a new token with `doctl auth init -t TOKEN`
+
+Optional `tooling.yaml` block for default project when listing droplets:
+
+```yaml
+digitalocean:
+  project_name: my-do-project
+  context: default   # optional doctl auth context
+```
 
 ## Documentation
 

@@ -91,6 +91,50 @@ def test_tooling_config_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert cfg.repo_root == other.resolve()
 
 
+def test_digitalocean_block_optional(minimal_project) -> None:
+    assert minimal_project.digitalocean is None
+
+
+def test_digitalocean_block_parses(tmp_path: Path, isolated_tooling: None) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text
+        + """
+digitalocean:
+  project_name: staging
+  context: team-a
+""",
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.digitalocean is not None
+    assert cfg.digitalocean.project_name == "staging"
+    assert cfg.digitalocean.context == "team-a"
+
+
+def test_digitalocean_rejects_both_project_keys(tmp_path: Path, isolated_tooling: None) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text
+        + """
+digitalocean:
+  project_name: a
+  project_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectConfigError, match="only one"):
+        load_project_config(tmp_path)
+
+
 def test_indmo_reference_tooling_snapshot(tmp_path: Path, isolated_tooling: None) -> None:
     """Guard the bundled INDMO reference manifest (consumer parity check)."""
     ref = Path(__file__).parent / "fixtures" / "indmo_reference_tooling.yaml"
