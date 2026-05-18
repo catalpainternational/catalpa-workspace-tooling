@@ -1,0 +1,13 @@
+# Template: copy to /etc/systemd/system/ and adjust OnCalendar.
+# Example: daily incremental backup 02:30 UTC (after WAL archive cadence).
+#
+[Unit]
+Description=Timer for pgBackRest incremental backup
+
+[Timer]
+# Example: 02:30 UTC every day (adjust for your timezone / load window)
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

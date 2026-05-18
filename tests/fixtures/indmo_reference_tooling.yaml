@@ -1,0 +1,65 @@
+project:
+  name: indmo
+  root_marker: pyproject.toml
+
+paths:
+  backend: django_backend
+  frontend: frontend_vue
+  prototype: Prototype
+  scripts: scripts
+  env_local: .env.local
+  email_backend_dir: email_file_backend
+  fetch_db_dump: docker/postgres/dumps/indmo_db.custom
+  deploy:
+    envs_dir: docker/envs
+    images_config: docker/images.yaml
+    default_compose: compose.yml
+    dev_compose: compose.dev.yaml
+    credentials_optional_envs:
+      - local
+      - dev
+
+stack:
+  compose_project_default: pas_indmo
+  services:
+    web: django
+    proxy: caddy
+    db: db
+  images:
+    registry_key: image_registry
+    components:
+      web: indmo-django
+      proxy: indmo-caddy
+      db: indmo-postgres
+  healthcheck:
+    service: django
+    url: http://localhost:8000/healthz
+
+ops:
+  install_prefix: /opt/indmo
+  config_dir: /etc/indmo
+  systemd_unit_prefix: indmo-
+  transfer_workdir: .indmo-transfer
+  default_db_container: indmo_db_1
+  pgbackrest:
+    postgres_conf: 30-indmo-pgbackrest-archive.conf
+    pgbackrest_conf: 50-indmo-managed.conf
+    default_registry: ghcr.io/catalpainternational/pas_indmo
+    restore_temp_prefix: indmo_pgrestore_
+  zabbix:
+    unit_name: indmo-zabbix-agent2.service
+    userparams_file: 99-indmo-userparams.conf
+  systemd_units:
+    pgbackrest:
+      - indmo-pgbackrest-backup-full.service
+      - indmo-pgbackrest-backup-incr.service
+      - indmo-pgbackrest-backup-full.timer
+      - indmo-pgbackrest-backup-incr.timer
+    restic:
+      - indmo-restic-files-backup.service
+      - indmo-restic-files-backup.timer
+    timers_enable_pgbackrest:
+      - indmo-pgbackrest-backup-full.timer
+      - indmo-pgbackrest-backup-incr.timer
+    timers_enable_restic:
+      - indmo-restic-files-backup.timer

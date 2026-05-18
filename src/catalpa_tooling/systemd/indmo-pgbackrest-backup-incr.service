@@ -1,0 +1,19 @@
+# Template: copy to /etc/systemd/system/ and adjust paths.
+# Schedules via indmo-pgbackrest-backup-incr.timer (install separately).
+#
+# Prerequisites: same as indmo-pgbackrest-backup-full.service (see DEPLOY.md).
+#
+[Unit]
+Description=pgBackRest incremental backup (docker exec into db container)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/indmo/pgbackrest-backup.env
+ExecStart=/opt/indmo/pgbackrest-backup.sh incr
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

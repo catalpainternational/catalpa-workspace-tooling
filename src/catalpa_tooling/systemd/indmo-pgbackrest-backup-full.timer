@@ -1,0 +1,12 @@
+# Template: copy to /etc/systemd/system/ and adjust OnCalendar.
+# Example: weekly full backup Sunday 03:15 UTC.
+#
+[Unit]
+Description=Timer for pgBackRest full backup
+
+[Timer]
+OnCalendar=Sun *-*-* 03:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

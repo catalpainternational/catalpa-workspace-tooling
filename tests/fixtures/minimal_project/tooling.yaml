@@ -1,0 +1,59 @@
+project:
+  name: minimal
+  root_marker: pyproject.toml
+
+paths:
+  backend: backend
+  frontend: frontend
+  scripts: scripts
+  env_local: .env.local
+  email_backend_dir: email_out
+  fetch_db_dump: docker/dumps/app.custom
+  deploy:
+    envs_dir: docker/envs
+    images_config: docker/images.yaml
+    default_compose: compose.yml
+    dev_compose: compose.dev.yaml
+    credentials_optional_envs:
+      - local
+
+stack:
+  compose_project_default: app_compose
+  services:
+    web: web
+    proxy: proxy
+    db: db
+  images:
+    registry_key: image_registry
+    components:
+      web: app-web
+      proxy: app-proxy
+      db: app-db
+  healthcheck:
+    service: web
+    url: http://localhost:8000/healthz
+
+ops:
+  install_prefix: /opt/app
+  config_dir: /etc/app
+  systemd_unit_prefix: app-
+  transfer_workdir: .app-transfer
+  default_db_container: app_db_1
+  pgbackrest:
+    postgres_conf: 30-app-pgbackrest-archive.conf
+    pgbackrest_conf: 50-app-managed.conf
+    default_registry: ghcr.io/example/app
+    restore_temp_prefix: app_pgrestore_
+  zabbix:
+    unit_name: app-zabbix-agent2.service
+    userparams_file: 99-app-userparams.conf
+  systemd_units:
+    pgbackrest:
+      - app-pgbackrest-backup-full.service
+      - app-pgbackrest-backup-incr.timer
+    restic:
+      - app-restic-files-backup.service
+    timers_enable_pgbackrest:
+      - app-pgbackrest-backup-incr.timer
+    timers_enable_restic:
+      - app-restic-files-backup.timer

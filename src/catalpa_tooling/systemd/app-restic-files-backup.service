@@ -1,0 +1,23 @@
+# Template: copy to /etc/systemd/system/ and adjust paths.
+# Schedules via app-restic-files-backup.timer (install separately).
+#
+# Prerequisites (see DEPLOY.md — restic systemd backups):
+# - docker available to the systemd user
+# - WorkingDirectory contains compose.yml and env (e.g. .env with COMPOSE_PROJECT_NAME)
+# - RESTIC_REPOSITORY / RESTIC_PASSWORD (and RESTIC_S3_* for S3-compatible backends) in EnvironmentFile or stack .env
+#
+[Unit]
+Description=restic backup of django_media volume (docker)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/app
+EnvironmentFile=-/etc/app/restic-files-backup.env
+ExecStart=/opt/app/restic-files-backup.sh
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
