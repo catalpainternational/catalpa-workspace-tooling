@@ -15,6 +15,14 @@ from catalpa_tooling.doctl_droplets import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_existing_droplet_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.find_project_droplet_id_by_name",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def test_create_droplet_missing_size(capsys: pytest.CaptureFixture) -> None:
     with pytest.raises(SystemExit) as exc:
         create_droplet(
@@ -134,6 +142,31 @@ def test_create_droplet_dry_run(capsys: pytest.CaptureFixture, monkeypatch: pyte
     assert "compute droplet create my-host" in err
     assert "--user-data-file" in err
     assert "--ssh-keys aa:bb:cc" in err
+
+
+def test_create_droplet_rejects_duplicate_name(
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.find_project_droplet_id_by_name",
+        lambda _pid, name, *, context: 4242 if name == "tempu-test" else None,
+    )
+    mock_run = MagicMock()
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", mock_run)
+
+    rc = create_droplet(
+        "tempu-test",
+        size="s-1vcpu-1gb",
+        region="sgp1",
+        project_id="proj-uuid",
+        ssh_keys=("key-1",),
+    )
+    assert rc == 1
+    mock_run.assert_not_called()
+    err = capsys.readouterr().err
+    assert "already exists" in err
+    assert "4242" in err
 
 
 def test_create_droplet_invokes_doctl(

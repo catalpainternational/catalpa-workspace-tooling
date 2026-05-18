@@ -10,6 +10,7 @@ import pytest
 from catalpa_tooling.config import DigitalOceanConfig
 from catalpa_tooling.doctl_projects import (
     droplet_ids_from_resource_urns,
+    find_project_droplet_id_by_name,
     list_project_droplets,
     resolve_project_id,
 )
@@ -97,3 +98,21 @@ def test_list_project_droplets_json(monkeypatch: pytest.MonkeyPatch, capsys: pyt
     data = json.loads(out)
     assert len(data) == 1
     assert data[0]["id"] == 10
+
+
+def test_find_project_droplet_id_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.list_project_resource_urns",
+        lambda _pid, *, context: ["do:droplet:10", "do:droplet:20"],
+    )
+
+    def fake_json(args: list[str], *, context: str | None) -> object:
+        return [
+            {"id": 10, "name": "tempu-test"},
+            {"id": 20, "name": "other"},
+        ]
+
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", fake_json)
+    assert find_project_droplet_id_by_name("proj-id", "tempu-test", context=None) == 10
+    assert find_project_droplet_id_by_name("proj-id", "TEMPu-Test", context=None) == 10
+    assert find_project_droplet_id_by_name("proj-id", "missing", context=None) is None

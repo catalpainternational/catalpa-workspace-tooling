@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Sequence
 from typing import Any
 
 from catalpa_tooling.config import DigitalOceanConfig
@@ -138,6 +139,48 @@ def _droplet_row(droplet: dict[str, Any], columns: tuple[str, ...]) -> list[str]
     return [values.get(col, "") for col in columns]
 
 
+def _project_droplets(
+    project_id: str,
+    *,
+    context: str | None,
+) -> list[dict[str, Any]]:
+    """Return droplet objects assigned to a project, sorted by id."""
+    from catalpa_tooling.doctl_binary import run_doctl_json
+
+    urns = list_project_resource_urns(project_id, context=context)
+    droplet_ids = droplet_ids_from_resource_urns(urns)
+    if not droplet_ids:
+        return []
+
+    all_droplets = run_doctl_json(["compute", "droplet", "list"], context=context)
+    if not isinstance(all_droplets, list):
+        all_droplets = []
+
+    id_set = set(droplet_ids)
+    matched = [
+        d for d in all_droplets if isinstance(d, dict) and int(d.get("id", -1)) in id_set
+    ]
+    matched.sort(key=lambda d: int(d.get("id", 0)))
+    return matched
+
+
+def find_project_droplet_id_by_name(
+    project_id: str,
+    name: str,
+    *,
+    context: str | None,
+) -> int | None:
+    """Return the droplet id if ``name`` already exists in the project (case-insensitive)."""
+    target = name.strip().lower()
+    if not target:
+        return None
+    for droplet in _project_droplets(project_id, context=context):
+        existing = str(droplet.get("name", "")).strip().lower()
+        if existing == target:
+            return int(droplet.get("id", 0))
+    return None
+
+
 def _print_droplet_table(droplets: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
     widths = [len(c) for c in columns]
     rows: list[list[str]] = []
@@ -160,23 +203,10 @@ def list_project_droplets(
     columns: tuple[str, ...] | None = None,
     as_json: bool = False,
 ) -> int:
-    from catalpa_tooling.doctl_binary import run_doctl_json
-
-    urns = list_project_resource_urns(project_id, context=context)
-    droplet_ids = droplet_ids_from_resource_urns(urns)
-    if not droplet_ids:
+    matched = _project_droplets(project_id, context=context)
+    if not matched:
         print("No droplets in this project.")
         return 0
-
-    all_droplets = run_doctl_json(["compute", "droplet", "list"], context=context)
-    if not isinstance(all_droplets, list):
-        all_droplets = []
-
-    id_set = set(droplet_ids)
-    matched = [
-        d for d in all_droplets if isinstance(d, dict) and int(d.get("id", -1)) in id_set
-    ]
-    matched.sort(key=lambda d: int(d.get("id", 0)))
 
     if as_json:
         print(json.dumps(matched, indent=2))

@@ -130,6 +130,21 @@ def create_droplet(
         print("Droplet name is required.", file=sys.stderr)
         return 1
 
+    from catalpa_tooling.doctl_projects import find_project_droplet_id_by_name
+
+    existing_id = find_project_droplet_id_by_name(
+        project_id,
+        droplet_name,
+        context=context,
+    )
+    if existing_id is not None:
+        print(
+            f"Droplet {droplet_name!r} already exists in this project (id {existing_id}). "
+            "Choose another name or remove the existing droplet.",
+            file=sys.stderr,
+        )
+        return 1
+
     resolved_size = _pick(
         size,
         do_config.size if do_config else None,
