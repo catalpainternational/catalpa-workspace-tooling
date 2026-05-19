@@ -1,6 +1,6 @@
 [project]
 name = "catalpa-workspace-tooling"
-version = "0.1.0"
+version = "0.1.1"
 description = "Deploy and development CLIs driven by a repo-root tooling.yaml manifest"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -9,6 +9,7 @@ dependencies = ["PyYAML>=6", "python-dotenv>=1"]
 [project.scripts]
 dev = "catalpa_tooling.dev_cli:main"
 dk = "catalpa_tooling.dk_cli:main"
+doctl = "catalpa_tooling.doctl_cli:main"
 test = "catalpa_tooling.test_cli:main"
 scripts = "catalpa_tooling.scripts_cli:main"
 
@@ -24,4 +25,5 @@ packages = ["src/catalpa_tooling"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 python_files = ["test_*.py", "*_test.py"]

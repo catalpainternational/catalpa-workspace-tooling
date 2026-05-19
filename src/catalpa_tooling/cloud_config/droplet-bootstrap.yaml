@@ -1,0 +1,51 @@
+#cloud-config
+timezone: {timezone}
+ssh_pwauth: false
+package_update: true
+packages:
+  - ufw
+  - unattended-upgrades
+  - ca-certificates
+  - curl
+  - gnupg
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-catalpa-hardening.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      PermitRootLogin prohibit-password
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Download-Upgradeable-Packages "1";
+      APT::Periodic::AutocleanInterval "7";
+      APT::Periodic::Unattended-Upgrade "1";
+  - path: /etc/apt/apt.conf.d/52catalpa-unattended-reboot.conf
+    permissions: "0644"
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+  - path: /etc/apt/apt.conf.d/53catalpa-unattended-docker.conf
+    permissions: "0644"
+    content: |
+      // Docker CE from download.docker.com (not Ubuntu archives). Security fixes
+      // ship on the stable channel; Origins-Pattern is additive with 50unattended-upgrades.
+      Unattended-Upgrade::Origins-Pattern {
+          "origin=Docker archive=${distro_codename}";
+      };
+runcmd:
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - bash -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" > /etc/apt/sources.list.d/docker.list'
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow OpenSSH
+  - ufw --force enable
+  - systemctl restart ssh
