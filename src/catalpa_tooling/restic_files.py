@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import DEFAULT_RESTIC_DATA_VOLUME, ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
 
 # Like PGBR_S3_WRITE_* / PGBR_S3_READ_*: use one credential source per environment (mutually exclusive).
@@ -48,8 +48,27 @@ _RESTIC_READ_OK_SUBCOMMANDS: frozenset[str] = frozenset(
 # Official image; pin patch release (Docker Hub has 0.17.x, not bare 0.17).
 RESTIC_IMAGE: Final[str] = "restic/restic:0.17.3"
 
-# Mount point inside the restic container (must match backup paths in snapshots).
+# Default mount when ``ops.restic.data_volume`` is ``django_media`` (must match paths in snapshots).
 DJANGO_MEDIA_MOUNT: Final[str] = "/backup/django_media"
+
+# Env key written to restic-files-backup.env for systemd (see restic-files-backup.sh).
+RESTIC_FILES_DATA_VOLUME_KEY: Final[str] = "RESTIC_FILES_DATA_VOLUME"
+
+
+def restic_data_volume_key(config: ProjectConfig | None) -> str:
+    """Compose volume key from ``ops.restic.data_volume`` (default ``django_media``)."""
+    if config is not None:
+        return config.ops.restic.data_volume
+    return DEFAULT_RESTIC_DATA_VOLUME
+
+
+def _restic_data_volume_key(config: ProjectConfig | None) -> str:
+    return restic_data_volume_key(config)
+
+
+def restic_backup_mount_path(*, config: ProjectConfig | None = None) -> str:
+    """Path inside the restic container (``/backup/<ops.restic.data_volume>``)."""
+    return f"/backup/{_restic_data_volume_key(config)}"
 
 def _default_compose_project(config: ProjectConfig | None) -> str:
     if config is not None:
@@ -85,10 +104,11 @@ def django_media_volume_name(
     *,
     config: ProjectConfig | None = None,
 ) -> str:
-    """Docker volume name for the django_media named volume (see compose.yml)."""
+    """Docker volume name for the restic backup target (``{project}_{ops.restic.data_volume}``)."""
     default = _default_compose_project(config)
     project = (compose_project_name or default).strip() or default
-    return f"{project}_django_media"
+    vol_key = _restic_data_volume_key(config)
+    return f"{project}_{vol_key}"
 
 
 def staging_volume_name(
@@ -405,26 +425,29 @@ def run_restic_command(
     read_only_django_media: bool,
     config: ProjectConfig | None = None,
 ) -> int:
-    """Run `restic …` in the official image with django_media mounted at DJANGO_MEDIA_MOUNT."""
+    """Run `restic …` with the configured compose volume mounted at ``restic_backup_mount_path``."""
     err = validate_restic_env(env)
     if err:
         print(err, file=sys.stderr)
         return 1
     project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+    mount = restic_backup_mount_path(config=config)
     vol = django_media_volume_name(project, config=config)
     return _docker_run_restic(
         env,
-        [(vol, DJANGO_MEDIA_MOUNT, read_only_django_media)],
+        [(vol, mount, read_only_django_media)],
         restic_argv,
     )
 
 
-def run_backup(env: dict[str, str]) -> int:
-    """restic backup of DJANGO_MEDIA_MOUNT."""
+def run_backup(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
+    """restic backup of the configured compose volume."""
+    mount = restic_backup_mount_path(config=config)
     return run_restic_command(
         env,
-        ["backup", DJANGO_MEDIA_MOUNT],
+        ["backup", mount],
         read_only_django_media=True,
+        config=config,
     )
 
 
@@ -478,12 +501,14 @@ def run_restore(
         print(err, file=sys.stderr)
         return 1
     project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+    mount = restic_backup_mount_path(config=config)
+    vol_key = _restic_data_volume_key(config)
     media_vol = django_media_volume_name(project, config=config)
     stage_vol = staging_volume_name(project, config=config)
 
     if not skip_confirm:
         print(
-            "WARNING: This will replace all files in the django_media volume "
+            f"WARNING: This will replace all files in the {vol_key!r} volume "
             f"({media_vol}) with snapshot {snapshot!r}.",
             file=sys.stderr,
         )
@@ -510,12 +535,12 @@ def run_restore(
         return 1
 
     try:
-        # Extract snapshot path into staging; snapshot layout uses DJANGO_MEDIA_MOUNT prefix.
+        # Extract snapshot path into staging; snapshot layout uses the backup mount prefix.
         rc = _docker_run_restic(
             env,
             [
                 (stage_vol, "/restore", False),
-                (media_vol, DJANGO_MEDIA_MOUNT, True),
+                (media_vol, mount, True),
             ],
             [
                 "restore",
@@ -523,14 +548,14 @@ def run_restore(
                 "--target",
                 "/restore",
                 "--path",
-                DJANGO_MEDIA_MOUNT,
+                mount,
             ],
         )
         if rc != 0:
             return rc
 
-        # Promote: restored tree is /restore/backup/django_media/... (leading segment = mount path).
-        inner = "/stage" + DJANGO_MEDIA_MOUNT
+        # Promote: restored tree is /restore{mount}/... (leading segment = mount path).
+        inner = "/stage" + mount
         script = (
             f"set -e; rm -rf /live/* /live/.[!.]* /live/..?* 2>/dev/null || true; "
             f"if [ -d {inner} ]; then cp -a {inner}/. /live/; else "

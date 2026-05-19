@@ -538,7 +538,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
             if len(extra) > 1:
                 print("Too many arguments for bkp_files backup.", file=sys.stderr)
                 return 1
-            return run_backup(env_r)
+            return run_backup(env_r, config=config)
         if sub == "snapshots":
             if len(extra) > 1:
                 print("Too many arguments for bkp_files snapshots.", file=sys.stderr)
@@ -570,6 +570,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 snap,
                 env_name=env_name,
                 skip_confirm=bool(getattr(ns, "yes", False)),
+                config=config,
             )
         print(f"Unknown bkp_files subcommand: {sub}", file=sys.stderr)
         print(

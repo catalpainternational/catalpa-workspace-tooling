@@ -10,9 +10,17 @@ Back up the stack’s **`django_media`** Docker volume with [restic](https://res
 
 ## What gets backed up
 
-Restic snapshots the named volume `{COMPOSE_PROJECT_NAME}_django_media` (see compose `name:` on the `django_media` volume). The backup script mounts it at `/backup/django_media` inside the restic container ([`restic_files.py`](src/catalpa_tooling/restic_files.py)).
+Restic snapshots the named volume `{COMPOSE_PROJECT_NAME}_{data_volume}` (default `data_volume` = `django_media`). The backup script mounts it at `/backup/{data_volume}` inside the restic container ([`restic_files.py`](src/catalpa_tooling/restic_files.py)).
 
-`COMPOSE_PROJECT_NAME` must match the Compose project on the deploy host (from `info.yaml` env or `stack.compose_project_default` in `tooling.yaml`).
+Configure the compose volume key in `tooling.yaml`:
+
+```yaml
+ops:
+  restic:
+    data_volume: django_media   # optional; default django_media
+```
+
+`COMPOSE_PROJECT_NAME` must match the Compose project on the deploy host (from `info.yaml` env or `stack.compose_project_default` in `tooling.yaml`). The volume key must match the `volumes:` name in your compose file.
 
 ## Credentials per environment
 
@@ -80,7 +88,7 @@ dk prod bkp_files install-systemd --dry-run
 dk prod bkp_files install-systemd --enable
 ```
 
-`install-systemd` writes `@CONFIG_DIR@/restic-files-backup.env` (repository, password, S3 keys, `COMPOSE_PROJECT_NAME`) and copies `restic-files-backup.sh` to `ops.install_prefix`. Example env file: [`systemd/restic-files-backup.env.example`](src/catalpa_tooling/systemd/restic-files-backup.env.example).
+`install-systemd` writes `@CONFIG_DIR@/restic-files-backup.env` (repository, password, S3 keys, `COMPOSE_PROJECT_NAME`, `RESTIC_FILES_DATA_VOLUME`) and copies `restic-files-backup.sh` to `ops.install_prefix`. Example env file: [`systemd/restic-files-backup.env.example`](src/catalpa_tooling/systemd/restic-files-backup.env.example).
 
 ## S3 and AWS env
 

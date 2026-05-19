@@ -2,11 +2,14 @@
 
 import pytest
 
+from catalpa_tooling.config import load_project_config
 from catalpa_tooling.restic_files import (
     _docker_run_env_flags,
     _docker_run_restic,
+    django_media_volume_name,
     merge_restic_verbose_from_cli,
     normalize_restic_credentials,
+    restic_backup_mount_path,
     restic_credentials_conflict_message,
     split_restic_cli_verbose,
     validate_restic_env,
@@ -164,3 +167,26 @@ def test_render_restic_env_from_write_prefix() -> None:
     )
     assert "RESTIC_REPOSITORY=s3:bucket/x" in body
     assert "RESTIC_PASSWORD=secret" in body
+    assert "RESTIC_FILES_DATA_VOLUME=django_media" in body
+
+
+def test_django_media_volume_name_default(minimal_project) -> None:
+    assert django_media_volume_name("myproj", config=minimal_project) == "myproj_django_media"
+    assert restic_backup_mount_path(config=minimal_project) == "/backup/django_media"
+
+
+def test_django_media_volume_name_custom_data_volume(minimal_project, tmp_path) -> None:
+    tooling = minimal_project.tooling_path
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text.replace(
+            "  zabbix:",
+            "  restic:\n    data_volume: user_uploads\n  zabbix:",
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_project_config(minimal_project.repo_root)
+    assert django_media_volume_name("prod", config=cfg) == "prod_user_uploads"
+    assert restic_backup_mount_path(config=cfg) == "/backup/user_uploads"
+    body = render_restic_env({}, config=cfg)
+    assert "RESTIC_FILES_DATA_VOLUME=user_uploads" in body

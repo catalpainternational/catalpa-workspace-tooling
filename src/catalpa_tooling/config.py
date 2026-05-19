@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ import yaml
 from catalpa_tooling.repo_paths import TOOLING_FILENAME, repo_root_from_cwd
 
 DEFAULT_ROOT_MARKER = "pyproject.toml"
+DEFAULT_RESTIC_DATA_VOLUME = "django_media"
 
 
 class ProjectConfigError(ValueError):
@@ -47,6 +49,17 @@ def _validate_rel_path(rel: str, *, field: str) -> str:
     if not rel or ".." in Path(rel).parts:
         raise ProjectConfigError(f"Invalid relative path for {field}: {rel!r}")
     return rel
+
+
+def _validate_compose_volume_key(name: str, *, field: str) -> str:
+    """Compose named-volume key (suffix in ``{project}_{key}``)."""
+    s = name.strip()
+    if not s or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", s):
+        raise ProjectConfigError(
+            f"Invalid compose volume key for {field}: {name!r} "
+            "(use letters, digits, underscore, dot, hyphen)"
+        )
+    return s
 
 
 @dataclass(frozen=True)
@@ -107,6 +120,13 @@ class PgbackrestOpsConfig:
 
 
 @dataclass(frozen=True)
+class ResticOpsConfig:
+    """Compose volume key restic backs up (``{COMPOSE_PROJECT_NAME}_{data_volume}``)."""
+
+    data_volume: str
+
+
+@dataclass(frozen=True)
 class ZabbixOpsConfig:
     unit_name: str
     userparams_file: str
@@ -127,6 +147,7 @@ class OpsConfig:
     systemd_unit_prefix: str
     transfer_workdir: str
     pgbackrest: PgbackrestOpsConfig
+    restic: ResticOpsConfig
     zabbix: ZabbixOpsConfig
     systemd_units: SystemdUnitsOpsConfig
     default_db_container: str
@@ -378,6 +399,15 @@ def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
     unit_errors = validate_systemd_units(systemd_units, unit_prefix)
     if unit_errors:
         raise ProjectConfigError("; ".join(unit_errors))
+    restic_raw = ops_raw.get("restic")
+    if restic_raw is None:
+        restic_raw = {}
+    elif not isinstance(restic_raw, dict):
+        raise ProjectConfigError("ops.restic must be a mapping")
+    restic_data_volume = _validate_compose_volume_key(
+        _optional_str(restic_raw, "data_volume") or DEFAULT_RESTIC_DATA_VOLUME,
+        field="ops.restic.data_volume",
+    )
     return OpsConfig(
         install_prefix=_require_str(ops_raw, "install_prefix", section="ops"),
         config_dir=_require_str(ops_raw, "config_dir", section="ops"),
@@ -390,8 +420,12 @@ def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
             pgbackrest_conf=_require_str(pg_raw, "pgbackrest_conf", section="ops.pgbackrest"),
             default_registry=_require_str(pg_raw, "default_registry", section="ops.pgbackrest"),
             restore_temp_prefix=_require_str(pg_raw, "restore_temp_prefix", section="ops.pgbackrest"),
-            data_volume=_optional_str(pg_raw, "data_volume") or "postgres_data",
+            data_volume=_validate_compose_volume_key(
+                _optional_str(pg_raw, "data_volume") or "postgres_data",
+                field="ops.pgbackrest.data_volume",
+            ),
         ),
+        restic=ResticOpsConfig(data_volume=restic_data_volume),
         zabbix=ZabbixOpsConfig(
             unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
             userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),

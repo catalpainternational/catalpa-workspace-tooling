@@ -11,10 +11,12 @@ from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.restic_files import (
+    RESTIC_FILES_DATA_VOLUME_KEY,
     aws_env_vars_for_s3_restic_env_file,
     normalize_restic_credentials,
     resolve_env_with_compose_project,
     validate_restic_env_for_systemd,
+    restic_data_volume_key,
 )
 from catalpa_tooling.systemd_assets import systemd_source_dir
 from catalpa_tooling.systemd_render import render_systemd_unit
@@ -147,7 +149,12 @@ def render_pgbackrest_env(env: dict[str, str], *, project_name: str = "project")
     return "\n".join(lines) + "\n"
 
 
-def render_restic_env(env: dict[str, str], *, project_name: str = "project") -> str:
+def render_restic_env(
+    env: dict[str, str],
+    *,
+    project_name: str = "project",
+    config: ProjectConfig | None = None,
+) -> str:
     """Key=value lines for ``<config_dir>/restic-files-backup.env`` (canonical ``RESTIC_*``)."""
     n = normalize_restic_credentials(dict(env))
     lines = [
@@ -156,6 +163,7 @@ def render_restic_env(env: dict[str, str], *, project_name: str = "project") -> 
     project = (n.get("COMPOSE_PROJECT_NAME") or "").strip()
     if project:
         lines.append(f"COMPOSE_PROJECT_NAME={project}")
+    lines.append(f"{RESTIC_FILES_DATA_VOLUME_KEY}={restic_data_volume_key(config)}")
     order = [
         "RESTIC_REPOSITORY",
         "RESTIC_PASSWORD",
@@ -312,7 +320,7 @@ def cmd_install_systemd_backups(
 
     project_name = config.meta.name
     pgbr_body = render_pgbackrest_env(env_r, project_name=project_name) if do_pgbr else ""
-    restic_body = render_restic_env(env_r, project_name=project_name) if do_restic else ""
+    restic_body = render_restic_env(env_r, project_name=project_name, config=config) if do_restic else ""
 
     if enable and not yes and not sys.stdin.isatty():
         print(
