@@ -121,6 +121,7 @@ def create_droplet(
     wait: bool = False,
     dry_run: bool = False,
     do_config: DigitalOceanConfig | None = None,
+    for_env: str | None = None,
 ) -> int:
     """Create a droplet with the standard bootstrap cloud-config user-data."""
     from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
@@ -198,11 +199,18 @@ def create_droplet(
         if dry_run:
             print(user_data, end="" if user_data.endswith("\n") else "\n")
             print("---", file=sys.stderr)
-            print(f"$ doctl {' '.join(argv)}", file=sys.stderr)
+            print(f"host doctl command: doctl {' '.join(argv)}", file=sys.stderr)
             return 0
 
         ensure_doctl_available()
         result = run_doctl(argv, context=context)
+        if result.returncode == 0 and for_env:
+            from catalpa_tooling.deploy_do_link import suggest_host_write_command
+
+            print(
+                f"Next: {suggest_host_write_command(for_env)}",
+                file=sys.stderr,
+            )
         return result.returncode
     finally:
         if tmp_path is not None:

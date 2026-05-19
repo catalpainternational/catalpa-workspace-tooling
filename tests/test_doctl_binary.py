@@ -28,17 +28,37 @@ def test_resolve_skips_entrypoint_shim(tmp_path: Path, monkeypatch: pytest.Monke
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     shim = bin_dir / "doctl"
-    real = bin_dir / "real-doctl-hidden"
-    _write_executable(shim)
-    _write_executable(real, content="#!/bin/sh\necho real\n")
-    # Simulate venv: argv[0] is the shim; PATH only has shim first, then we need scan to find...
-    # Actually both are named doctl in different dirs - put real on PATH after shim
+    _write_executable(
+        shim,
+        content="#!/usr/bin/env python3\nfrom catalpa_tooling.doctl_cli import main\n",
+    )
     real_doctl = tmp_path / "other" / "doctl"
     real_doctl.parent.mkdir()
     _write_executable(real_doctl)
 
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{real_doctl.parent}")
     monkeypatch.setattr(sys, "argv", [str(shim), "droplets", "list"])
+    assert resolve_doctl_binary() == real_doctl.resolve()
+
+
+def test_resolve_skips_shim_when_invoked_via_dk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``dk <env> host`` must not call the venv ``doctl`` wrapper on PATH."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "doctl"
+    _write_executable(
+        shim,
+        content="#!/usr/bin/env python3\nfrom catalpa_tooling.doctl_cli import main\n",
+    )
+    real_doctl = tmp_path / "other" / "doctl"
+    real_doctl.parent.mkdir()
+    _write_executable(real_doctl)
+
+    dk = tmp_path / "bin" / "dk"
+    _write_executable(dk, content="#!/bin/sh\necho dk\n")
+
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{real_doctl.parent}")
+    monkeypatch.setattr(sys, "argv", [str(dk), "prod", "host", "--write"])
     assert resolve_doctl_binary() == real_doctl.resolve()
 
 

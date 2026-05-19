@@ -1,4 +1,4 @@
-"""Routing tests for doctl CLI."""
+"""Routing tests for ``dk digoc`` (doctl_cli.run_digoc)."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def test_droplets_list_with_project_flag(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     listed: list[str] = []
 
-    def fake_list(project_id: str, *, context, columns, as_json: bool) -> int:
+    def fake_list(project_id: str, *, context, columns, as_json, config=None) -> int:
         listed.append(project_id)
         return 0
 
@@ -128,3 +128,62 @@ def test_droplets_create_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
         == 0
     )
     assert created == ["my-host"]
+
+
+def test_droplets_create_for_env(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "digitalocean:\n  droplet_name: marktwain-prod\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tooling.yaml").write_text(
+        "project:\n  name: t\n  root_marker: tooling.yaml\n"
+        "paths:\n  backend: b\n  frontend: b\n  scripts: s\n  env_local: e\n"
+        "  email_backend_dir: m\n  fetch_db_dump: d\n"
+        "  deploy:\n    envs_dir: docker/envs\n    images_config: i.yaml\n"
+        "    default_compose: c.yaml\n    dev_compose: d.yaml\n"
+        "    credentials_optional_envs: []\n"
+        "stack:\n  compose_project_default: x\n  services:\n    web: w\n    proxy: p\n    db: d\n"
+        "  images:\n    registry_key: r\n    components:\n      web: w\n      proxy: p\n      db: d\n"
+        "  healthcheck:\n    service: w\n    url: http://localhost/\n"
+        "ops:\n  install_prefix: /opt\n  config_dir: /etc\n  systemd_unit_prefix: x-\n"
+        "  transfer_workdir: .t\n  default_db_container: db\n"
+        "  pgbackrest:\n    postgres_conf: a\n    pgbackrest_conf: b\n"
+        "    default_registry: ghcr.io/x\n    restore_temp_prefix: r_\n"
+        "  zabbix:\n    unit_name: z.service\n    userparams_file: z.conf\n"
+        "  systemd_units:\n    pgbackrest: []\n    restic: []\n"
+        "    timers_enable_pgbackrest: []\n    timers_enable_restic: []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctl_cli, "ensure_doctl_available", lambda: None)
+    monkeypatch.setattr(
+        doctl_cli,
+        "resolve_project_id",
+        lambda project, do_config=None, context=None: "proj-1",
+    )
+    monkeypatch.setattr(
+        doctl_cli,
+        "_load_do_config_for_droplets",
+        lambda project_flag: (None, None),
+    )
+    created: list[tuple[str, dict]] = []
+
+    def fake_create(name, **kwargs):
+        created.append((name, kwargs))
+        return 0
+
+    monkeypatch.setattr(doctl_cli, "create_droplet", fake_create)
+    assert doctl_cli._cmd_droplets_create(
+        ["--for-env", "prod", "--size", "s-1vcpu-1gb", "--region", "sgp1", "--dry-run"]
+    ) == 0
+    assert created[0][0] == "marktwain-prod"
+    assert created[0][1]["for_env"] == "prod"
+
+
+def test_run_digoc_routes_auth_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctl_cli, "_cmd_auth_init", lambda argv: 42)
+    assert doctl_cli.run_digoc(["auth", "init"]) == 42

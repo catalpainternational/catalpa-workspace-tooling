@@ -8,7 +8,12 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from catalpa_tooling.config import DigitalOceanConfig
+from catalpa_tooling.config import DigitalOceanConfig, ProjectConfig
+from catalpa_tooling.deploy_do_link import (
+    droplet_region_slug,
+    private_ipv4,
+    public_ipv4,
+)
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -95,46 +100,24 @@ def list_project_resource_urns(
     return urns
 
 
-def _public_ipv4(networks: dict[str, Any] | None) -> str:
-    if not networks:
-        return ""
-    v4 = networks.get("v4") or []
-    if not isinstance(v4, list):
-        return ""
-    for entry in v4:
-        if isinstance(entry, dict) and entry.get("type") == "public":
-            return str(entry.get("ip_address") or "")
-    return ""
-
-
-def _private_ipv4(networks: dict[str, Any] | None) -> str:
-    if not networks:
-        return ""
-    v4 = networks.get("v4") or []
-    if not isinstance(v4, list):
-        return ""
-    for entry in v4:
-        if isinstance(entry, dict) and entry.get("type") == "private":
-            return str(entry.get("ip_address") or "")
-    return ""
-
-
-def _region_slug(droplet: dict[str, Any]) -> str:
-    region = droplet.get("region")
-    if isinstance(region, dict):
-        return str(region.get("slug") or region.get("name") or "")
-    return str(region or "")
-
-
-def _droplet_row(droplet: dict[str, Any], columns: tuple[str, ...]) -> list[str]:
-    networks = droplet.get("networks") if isinstance(droplet.get("networks"), dict) else {}
+def _droplet_row(
+    droplet: dict[str, Any],
+    columns: tuple[str, ...],
+    *,
+    env_by_droplet_name: dict[str, str] | None = None,
+) -> list[str]:
+    name = str(droplet.get("name", ""))
+    env_label = ""
+    if env_by_droplet_name is not None:
+        env_label = env_by_droplet_name.get(name.strip().lower(), "") or "-"
     values: dict[str, str] = {
         "ID": str(droplet.get("id", "")),
-        "Name": str(droplet.get("name", "")),
-        "PublicIPv4": _public_ipv4(networks),
-        "PrivateIPv4": _private_ipv4(networks),
-        "Region": _region_slug(droplet),
+        "Name": name,
+        "PublicIPv4": public_ipv4(droplet),
+        "PrivateIPv4": private_ipv4(droplet),
+        "Region": droplet_region_slug(droplet),
         "Status": str(droplet.get("status", "")),
+        "Env": env_label,
     }
     return [values.get(col, "") for col in columns]
 
@@ -181,11 +164,16 @@ def find_project_droplet_id_by_name(
     return None
 
 
-def _print_droplet_table(droplets: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
+def _print_droplet_table(
+    droplets: list[dict[str, Any]],
+    columns: tuple[str, ...],
+    *,
+    env_by_droplet_name: dict[str, str] | None = None,
+) -> None:
     widths = [len(c) for c in columns]
     rows: list[list[str]] = []
     for d in droplets:
-        row = _droplet_row(d, columns)
+        row = _droplet_row(d, columns, env_by_droplet_name=env_by_droplet_name)
         rows.append(row)
         for i, cell in enumerate(row):
             widths[i] = max(widths[i], len(cell))
@@ -202,6 +190,7 @@ def list_project_droplets(
     context: str | None,
     columns: tuple[str, ...] | None = None,
     as_json: bool = False,
+    config: ProjectConfig | None = None,
 ) -> int:
     matched = _project_droplets(project_id, context=context)
     if not matched:
@@ -212,6 +201,31 @@ def list_project_droplets(
         print(json.dumps(matched, indent=2))
         return 0
 
+    env_map: dict[str, str] | None = None
+    if config is not None:
+        from catalpa_tooling.deploy_do_link import droplet_name_to_env_map
+
+        env_map = droplet_name_to_env_map(config)
+
     cols = columns or _DEFAULT_COLUMNS
-    _print_droplet_table(matched, cols)
+    if env_map and "Env" not in cols:
+        cols = cols + ("Env",)
+    _print_droplet_table(matched, cols, env_by_droplet_name=env_map)
     return 0
+
+
+def find_project_droplet_by_name(
+    project_id: str,
+    name: str,
+    *,
+    context: str | None,
+) -> dict[str, Any] | None:
+    """Return droplet dict in ``project_id`` whose name matches ``name`` (case-insensitive)."""
+    target = name.strip().lower()
+    if not target:
+        return None
+    for droplet in _project_droplets(project_id, context=context):
+        existing = str(droplet.get("name", "")).strip().lower()
+        if existing == target:
+            return droplet
+    return None

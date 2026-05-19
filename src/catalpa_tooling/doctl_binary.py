@@ -31,6 +31,46 @@ def _entrypoint_path() -> Path | None:
         return None
 
 
+def _is_catalpa_doctl_wrapper(path: Path) -> bool:
+    """True if ``path`` is this package's ``doctl`` console script, not the official CLI."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    if not resolved.is_file():
+        return False
+    try:
+        if resolved.stat().st_size > 50_000:
+            return False
+        content = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "catalpa_tooling.doctl_cli" in content
+
+
+def _consider_doctl_candidate(
+    candidate: Path,
+    *,
+    entry: Path | None,
+    seen: set[Path],
+    out: list[Path],
+) -> None:
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        return
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return
+    if resolved in seen:
+        return
+    seen.add(resolved)
+    if _is_catalpa_doctl_wrapper(resolved):
+        return
+    if entry is not None and resolved == entry:
+        return
+    out.append(resolved)
+
+
 def resolve_doctl_binary() -> Path:
     """Return path to the real ``doctl`` executable (skip this package's venv shim)."""
     override = os.environ.get("DOCTL_BIN", "").strip()
@@ -41,22 +81,20 @@ def resolve_doctl_binary() -> Path:
         raise DoctlNotFoundError(f"DOCTL_BIN is not executable: {p}")
 
     entry = _entrypoint_path()
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+
     found = shutil.which("doctl")
     if found:
-        candidate = Path(found).resolve()
-        if entry is None or candidate != entry:
-            return candidate
+        _consider_doctl_candidate(Path(found), entry=entry, seen=seen, out=candidates)
 
-    path_env = os.environ.get("PATH", "")
-    for part in path_env.split(os.pathsep):
+    for part in os.environ.get("PATH", "").split(os.pathsep):
         if not part:
             continue
-        candidate = Path(part) / "doctl"
-        if not candidate.is_file() or not os.access(candidate, os.X_OK):
-            continue
-        resolved = candidate.resolve()
-        if entry is None or resolved != entry:
-            return resolved
+        _consider_doctl_candidate(Path(part) / "doctl", entry=entry, seen=seen, out=candidates)
+
+    if candidates:
+        return candidates[0]
 
     raise DoctlNotFoundError(INSTALL_HINT)
 
