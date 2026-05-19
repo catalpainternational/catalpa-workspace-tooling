@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from catalpa_tooling import dk_cli
@@ -181,19 +182,13 @@ def test_cmd_deploy_routes_zabbix_with_local_fallback(
     assert called["site_origin"] == "http://localhost:5173"
 
 
-def test_top_level_dk_zabbix_dispatches(monkeypatch, minimal_config) -> None:
-    called: list[list[str]] = []
-
-    def fake_zabbix(argv: list[str], config) -> int:
-        called.append(argv)
-        return 0
-
+def test_top_level_dk_zabbix_rejected(monkeypatch, minimal_config, capsys) -> None:
     monkeypatch.setattr(dk_cli.ProjectConfig, "from_cwd", lambda: minimal_config)
-    monkeypatch.setattr(dk_cli, "_cmd_zabbix", fake_zabbix)
+    monkeypatch.setattr(dk_cli, "list_deploy_env_names", lambda _d: ["local"])
     monkeypatch.setattr(dk_cli.sys, "argv", ["dk", "zabbix", "logs", "-n", "5"])
 
-    try:
+    with pytest.raises(SystemExit) as exc:
         dk_cli._main_impl()
-    except SystemExit as exc:
-        assert exc.code == 0
-    assert called == [["logs", "-n", "5"]]
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "unknown command or environment 'zabbix'" in err

@@ -9,7 +9,6 @@ from catalpa_tooling.local_compose import _cmd_build
 from catalpa_tooling.build_push import _cmd_push
 from catalpa_tooling.dk_transfer import build_transfer_arg_parser, cmd_transfer
 from catalpa_tooling.remote_deploy import _cmd_deploy, _normalize_dk_env_argv, list_deploy_env_names
-from catalpa_tooling import zabbix_systemd
 
 
 def _print_dk_help(config: ProjectConfig) -> None:
@@ -24,25 +23,13 @@ Run Docker Compose using {config.paths.deploy.envs_dir}/<env>/info.yaml, or buil
   dk build [SERVICE ...]     Build {db}, {web}, {proxy} images ({config.compose_prod}; see {config.paths.deploy.images_config}).
   dk push [--registry ...]   Build for linux/amd64 and push images to the registry.
   dk transfer [OPTS] SRC DST Copy Postgres + django_media from SRC env to DST (see docs/DK.md).
-  dk zabbix SUBCMD ...       Zabbix Agent 2 in Docker under systemd (Linux host): install | enable | disable | restart | logs.
   dk digoc SUBCMD ...        DigitalOcean: auth, projects, droplets, cloud-config (wraps host doctl).
   dk <env> [ARGS ...]        Environment with {config.paths.deploy.envs_dir}/<env>/info.yaml (default ARGS: up -d).
                              Examples: dk local up -d, dk local --tag v1 up -d, dk local info, dk local info -e,
                              dk local secrets, dk prod host --write, dk local manage migrate, dk local trust-caddy-cert,
                              dk demo wipe
 
-The only commands without an environment name are build, push, transfer, zabbix, and digoc."""
-    )
-
-
-def _cmd_zabbix(argv: list[str], config: ProjectConfig) -> int:
-    """``dk zabbix …`` — same as ``dk <env> zabbix`` but always on this machine (no ``docker_host``)."""
-    return zabbix_systemd.run_zabbix_deploy(
-        argv,
-        config=config,
-        prog="dk zabbix",
-        ssh_target=None,
-        dry_run=False,
+The only commands without an environment name are build, push, transfer, and digoc."""
     )
 
 
@@ -106,9 +93,6 @@ def _main_impl() -> None:
         ns = p.parse_args(argv[1:])
         sys.exit(cmd_transfer(ns, config))
 
-    if first == "zabbix":
-        sys.exit(_cmd_zabbix(argv[1:], config))
-
     if first == "digoc":
         from catalpa_tooling.doctl_cli import run_digoc
 
@@ -118,7 +102,7 @@ def _main_impl() -> None:
     if first not in envs:
         print(
             f"dk: unknown command or environment {first!r}. "
-            f"Use `dk build`, `dk push`, `dk transfer`, `dk zabbix`, `dk digoc`, or a name with "
+            f"Use `dk build`, `dk push`, `dk transfer`, `dk digoc`, or a name with "
             f"{config.paths.deploy.envs_dir}/<name>/info.yaml.",
             file=sys.stderr,
         )
