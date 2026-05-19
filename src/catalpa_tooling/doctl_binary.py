@@ -21,6 +21,21 @@ class DoctlNotFoundError(RuntimeError):
     """System ``doctl`` binary is missing or not executable."""
 
 
+class DoctlCommandError(RuntimeError):
+    """Host ``doctl`` exited with a non-zero status."""
+
+    def __init__(self, message: str, *, returncode: int) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
+def print_doctl_required(err: DoctlNotFoundError | None = None) -> None:
+    """Print a short hint when host ``doctl`` is required but not installed."""
+    if err is not None and str(err).strip():
+        print(str(err), file=sys.stderr)
+    print(INSTALL_HINT, file=sys.stderr)
+
+
 def _entrypoint_path() -> Path | None:
     raw = sys.argv[0] if sys.argv else ""
     if not raw:
@@ -32,7 +47,7 @@ def _entrypoint_path() -> Path | None:
 
 
 def _is_catalpa_doctl_wrapper(path: Path) -> bool:
-    """True if ``path`` is this package's ``doctl`` console script, not the official CLI."""
+    """True if ``path`` is this package's old ``doctl`` console script, not the official CLI."""
     try:
         resolved = path.resolve()
     except OSError:
@@ -72,7 +87,7 @@ def _consider_doctl_candidate(
 
 
 def resolve_doctl_binary() -> Path:
-    """Return path to the real ``doctl`` executable (skip this package's venv shim)."""
+    """Return path to the real ``doctl`` executable (skip catalpa venv shims)."""
     override = os.environ.get("DOCTL_BIN", "").strip()
     if override:
         p = Path(override).expanduser()
@@ -100,11 +115,8 @@ def resolve_doctl_binary() -> Path:
 
 
 def ensure_doctl_available() -> Path:
-    try:
-        return resolve_doctl_binary()
-    except DoctlNotFoundError as e:
-        print(str(e), file=sys.stderr)
-        raise SystemExit(1) from e
+    """Return host ``doctl`` path, or raise ``DoctlNotFoundError``."""
+    return resolve_doctl_binary()
 
 
 def build_doctl_argv(
@@ -174,19 +186,19 @@ def run_doctl_json(
     *,
     context: str | None = None,
 ) -> object:
-    result = run_doctl([*args, "-o", "json"], context=context, capture_output=True)
+    try:
+        result = run_doctl([*args, "-o", "json"], context=context, capture_output=True)
+    except DoctlNotFoundError:
+        raise
     if result.returncode != 0:
-        print(format_doctl_failure(result), file=sys.stderr)
-        raise SystemExit(result.returncode)
+        raise DoctlCommandError(format_doctl_failure(result), returncode=result.returncode)
     raw = (result.stdout or "").strip()
     if not raw:
         return []
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
-        print(f"Invalid JSON from doctl: {e}", file=sys.stderr)
-        raise SystemExit(1) from e
+        raise DoctlCommandError(f"Invalid JSON from doctl: {e}", returncode=1) from e
     if isinstance(data, dict) and "errors" in data:
-        print(format_doctl_failure(result), file=sys.stderr)
-        raise SystemExit(1)
+        raise DoctlCommandError(format_doctl_failure(result), returncode=1)
     return data

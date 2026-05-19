@@ -203,10 +203,23 @@ def cmd_env_host(
     do_config = config.digitalocean
     context = do_config.context if do_config else None
 
-    from catalpa_tooling.doctl_binary import ensure_doctl_available
+    from catalpa_tooling.doctl_binary import (
+        DoctlCommandError,
+        DoctlNotFoundError,
+        ensure_doctl_available,
+        print_doctl_required,
+    )
 
     if not dry_run:
-        ensure_doctl_available()
+        try:
+            ensure_doctl_available()
+        except DoctlNotFoundError as e:
+            print(
+                f"dk {env_name} host requires the official doctl binary on PATH (or DOCTL_BIN).",
+                file=sys.stderr,
+            )
+            print_doctl_required(e)
+            return 1
 
     if dry_run and write:
         print(
@@ -225,7 +238,18 @@ def cmd_env_host(
             "networks": {"v4": [{"type": "public", "ip_address": "203.0.113.1"}]},
         }
     else:
-        droplet = find_droplet_by_name(link.droplet_name, context=context)
+        try:
+            droplet = find_droplet_by_name(link.droplet_name, context=context)
+        except DoctlNotFoundError as e:
+            print(
+                f"dk {env_name} host requires the official doctl binary on PATH (or DOCTL_BIN).",
+                file=sys.stderr,
+            )
+            print_doctl_required(e)
+            return 1
+        except DoctlCommandError as e:
+            print(str(e), file=sys.stderr)
+            return e.returncode
 
     if droplet is None:
         print(

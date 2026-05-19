@@ -37,6 +37,24 @@ def _projects_list(*, context: str | None) -> list[dict[str, Any]]:
     return []
 
 
+def resolve_project_id_dry_run(
+    project: str | None,
+    *,
+    do_config: DigitalOceanConfig | None,
+) -> str:
+    """Placeholder project UUID for ``droplets create --dry-run`` (no host ``doctl``)."""
+    if project:
+        candidate = project.strip()
+        if _is_uuid(candidate):
+            return candidate
+        return f"<project:{candidate}>"
+    if do_config and do_config.project_id:
+        return do_config.project_id
+    if do_config and do_config.project_name:
+        return f"<project:{do_config.project_name}>"
+    return "<project-id>"
+
+
 def resolve_project_id(
     project: str | None,
     *,

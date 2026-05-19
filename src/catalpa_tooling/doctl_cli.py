@@ -6,11 +6,21 @@ import argparse
 import sys
 
 from catalpa_tooling.config import DigitalOceanConfig, ProjectConfig, ProjectConfigError
-from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
+from catalpa_tooling.doctl_binary import (
+    DoctlCommandError,
+    DoctlNotFoundError,
+    ensure_doctl_available,
+    print_doctl_required,
+    run_doctl,
+)
 from catalpa_tooling.cloud_config.render import DEFAULT_TIMEZONE, render_droplet_bootstrap
 from catalpa_tooling.deploy_do_link import cmd_env_host, droplet_name_for_env
 from catalpa_tooling.doctl_droplets import create_droplet
-from catalpa_tooling.doctl_projects import list_project_droplets, resolve_project_id
+from catalpa_tooling.doctl_projects import (
+    list_project_droplets,
+    resolve_project_id,
+    resolve_project_id_dry_run,
+)
 
 PROG = "dk digoc"
 
@@ -207,8 +217,11 @@ def _cmd_droplets_create(argv: list[str]) -> int:
     if cfg is not None and do_config is None:
         do_config = cfg.digitalocean
     context = ns.context or manifest_context
-    ensure_doctl_available()
-    project_id = resolve_project_id(ns.project, do_config=do_config, context=context)
+    if ns.dry_run:
+        project_id = resolve_project_id_dry_run(ns.project, do_config=do_config)
+    else:
+        ensure_doctl_available()
+        project_id = resolve_project_id(ns.project, do_config=do_config, context=context)
     return create_droplet(
         droplet_name,
         size=ns.size,
@@ -318,8 +331,7 @@ Run from an application repo root to use digitalocean.* defaults in tooling.yaml
     )
 
 
-def run_digoc(argv: list[str]) -> int:
-    """Dispatch ``dk digoc …`` subcommands. Returns an exit code (does not call ``sys.exit``)."""
+def _run_digoc_impl(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         _print_help()
         return 0 if argv and argv[0] in ("-h", "--help") else 1
@@ -373,3 +385,15 @@ def run_digoc(argv: list[str]) -> int:
     print(f"unknown command: {top!r}", file=sys.stderr)
     _print_help()
     return 1
+
+
+def run_digoc(argv: list[str]) -> int:
+    """Dispatch ``dk digoc …`` subcommands. Returns an exit code (does not call ``sys.exit``)."""
+    try:
+        return _run_digoc_impl(argv)
+    except DoctlNotFoundError as e:
+        print_doctl_required(e)
+        return 1
+    except DoctlCommandError as e:
+        print(str(e), file=sys.stderr)
+        return e.returncode
