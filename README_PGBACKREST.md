@@ -134,6 +134,12 @@ Not part of `pgbr_s3_write_*`; set in credentials or `info.yaml` env (uppercase)
 
 See [`pgbackrest_volume_config.py`](src/catalpa_tooling/pgbackrest_volume_config.py).
 
+## Systemd timers
+
+`install-systemd` can install full, incremental, and optional **differential** timer units ([README_SYSTEMD.md](README_SYSTEMD.md)). The backup script and `bkp_db backup diff` already support `--type=diff`; differential timers are opt-in via `ops.systemd_units.pgbackrest` and `timers_enable_pgbackrest`.
+
+For most small deployments, **weekly full + daily incr** is enough. Use the diff timer instead of (not alongside) daily incr when you want pgBackRest’s documented **full weekly + diff Mon–Sat** pattern or a custom hybrid schedule — see [README_SYSTEMD.md](README_SYSTEMD.md#pgbackrest-backup-schedules).
+
 ## Systemd env file
 
 After `install-systemd`, the host has `@CONFIG_DIR@/pgbackrest-backup.env` with `PGBR_DB_CONTAINER` and `PGBR_STANZA`. Example: [`systemd/pgbackrest-backup.env.example`](src/catalpa_tooling/systemd/pgbackrest-backup.env.example).

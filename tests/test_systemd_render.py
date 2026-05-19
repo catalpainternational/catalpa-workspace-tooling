@@ -47,6 +47,31 @@ def test_render_marktwain_pgbackrest_service() -> None:
     assert "@CONFIG_DIR@" not in body
 
 
+def test_render_marktwain_pgbackrest_diff_service() -> None:
+    body = render_systemd_unit(
+        "marktwain-pgbackrest-backup-diff.service",
+        install_prefix="/opt/marktwain",
+        config_dir="/etc/marktwain",
+    )
+    assert "ExecStart=/opt/marktwain/pgbackrest-backup.sh diff" in body
+
+
+def test_template_suffix_for_unit_diff() -> None:
+    assert (
+        template_suffix_for_unit("marktwain-pgbackrest-backup-diff.timer")
+        == "pgbackrest-backup-diff.timer"
+    )
+
+
+def test_render_pgbackrest_diff_timer_calendar() -> None:
+    body = render_systemd_unit(
+        "app-pgbackrest-backup-diff.timer",
+        install_prefix="/opt/app",
+        config_dir="/etc/app",
+    )
+    assert "OnCalendar=Mon..Sat *-*-* 03:15:00" in body
+
+
 def test_render_marktwain_restic_service() -> None:
     body = render_systemd_unit(
         "marktwain-restic-files-backup.service",

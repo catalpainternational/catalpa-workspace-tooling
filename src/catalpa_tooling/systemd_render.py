@@ -11,8 +11,10 @@ from catalpa_tooling.config import SystemdUnitsOpsConfig
 KNOWN_UNIT_SUFFIXES: tuple[str, ...] = (
     "pgbackrest-backup-full.service",
     "pgbackrest-backup-incr.service",
+    "pgbackrest-backup-diff.service",
     "pgbackrest-backup-full.timer",
     "pgbackrest-backup-incr.timer",
+    "pgbackrest-backup-diff.timer",
     "restic-files-backup.service",
     "restic-files-backup.timer",
 )

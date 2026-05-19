@@ -22,8 +22,10 @@ ops:
     pgbackrest:
       - myapp-pgbackrest-backup-full.service
       - myapp-pgbackrest-backup-incr.service
+      - myapp-pgbackrest-backup-diff.service   # optional; install only if used
       - myapp-pgbackrest-backup-full.timer
       - myapp-pgbackrest-backup-incr.timer
+      - myapp-pgbackrest-backup-diff.timer     # optional; see pgBackRest schedules below
     restic:
       - myapp-restic-files-backup.service
       - myapp-restic-files-backup.timer
@@ -44,11 +46,32 @@ Bundled templates live under `src/catalpa_tooling/systemd/templates/` with fixed
 |-----------------|------|
 | `pgbackrest-backup-full.service` | Oneshot full backup |
 | `pgbackrest-backup-incr.service` | Oneshot incremental backup |
-| `pgbackrest-backup-full.timer` / `pgbackrest-backup-incr.timer` | Schedules |
+| `pgbackrest-backup-diff.service` | Oneshot differential backup |
+| `pgbackrest-backup-full.timer` / `pgbackrest-backup-incr.timer` / `pgbackrest-backup-diff.timer` | Schedules |
 | `restic-files-backup.service` | Oneshot media backup |
 | `restic-files-backup.timer` | Schedule |
 
 [`systemd_render.py`](src/catalpa_tooling/systemd_render.py) matches each name in `ops.systemd_units` to a template (longest suffix wins), checks that the name starts with `ops.systemd_unit_prefix`, and substitutes `@INSTALL_PREFIX@` and `@CONFIG_DIR@`.
+
+### pgBackRest backup schedules
+
+Default template calendars (UTC; adjust on the host or by forking templates):
+
+| Timer | Default `OnCalendar` |
+|-------|----------------------|
+| full | `Sun *-*-* 03:15:00` |
+| incr | `*-*-* 02:30:00` (daily) |
+| diff | `Mon..Sat *-*-* 03:15:00` |
+
+Common strategies:
+
+- **Weekly full + daily incr** — enable `full` and `incr` timers only (default for small/medium DBs).
+- **Weekly full + diff Mon–Sat** — enable `full` and `diff` timers; remove `incr` from `timers_enable_pgbackrest` ([pgBackRest user guide](https://pgbackrest.org/user-guide.html#schedule-a-backup)).
+- **Hybrid** — e.g. full Sunday, diff Wednesday, incr other weekdays; customize `OnCalendar` in rendered timers or on the host.
+
+Do **not** enable a daily **incr** timer and a daily **diff** timer on overlapping schedules unless you design a hybrid calendar explicitly — both would compete for the same backup chain.
+
+When using differential backups in production, consider setting `repo1-retention-diff` (not yet rendered by `bkp_db configure`; see [README_PGBACKREST.md](README_PGBACKREST.md)).
 
 ## Install commands
 

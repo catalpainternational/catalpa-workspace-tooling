@@ -1,0 +1,19 @@
+# Rendered by dk bkp_db install-systemd (see README_SYSTEMD.md).
+# Schedules via matching *-pgbackrest-backup-diff.timer (install separately).
+#
+# Prerequisites: same as pgbackrest-backup-full.service (see README_PGBACKREST.md).
+#
+[Unit]
+Description=pgBackRest differential backup (docker exec into db container)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-@CONFIG_DIR@/pgbackrest-backup.env
+ExecStart=@INSTALL_PREFIX@/pgbackrest-backup.sh diff
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
