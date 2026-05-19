@@ -56,6 +56,7 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.deploy_do_link import cmd_env_host
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
 
@@ -266,6 +267,31 @@ def _cmd_env_info(info_path: Path, tail: list[str], *, dry_run: bool) -> int:
     return 0
 
 
+def _cmd_env_host(
+    env_name: str,
+    config: ProjectConfig,
+    tail: list[str],
+    *,
+    dry_run: bool,
+) -> int:
+    """Resolve DigitalOcean droplet IP and print or patch ``docker_host`` in info.yaml."""
+    p = argparse.ArgumentParser(prog=f"dk {env_name} host")
+    p.add_argument(
+        "--write",
+        action="store_true",
+        help="Write docker_host to info.yaml from the droplet public IPv4",
+    )
+    ns, rest = p.parse_known_args(tail)
+    if rest:
+        p.error(f"unrecognized arguments: {' '.join(rest)}")
+    return cmd_env_host(
+        config,
+        env_name,
+        write=ns.write,
+        dry_run=dry_run,
+    )
+
+
 def _cmd_env_secrets(
     creds_path: Path,
     repo_root: Path,
@@ -321,6 +347,14 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         return _cmd_env_secrets(
             creds_path,
             repo_root,
+            compose_args[1:],
+            dry_run=bool(getattr(ns, "dry_run", False)),
+        )
+
+    if compose_args and compose_args[0] == "host":
+        return _cmd_env_host(
+            env_name,
+            config,
             compose_args[1:],
             dry_run=bool(getattr(ns, "dry_run", False)),
         )

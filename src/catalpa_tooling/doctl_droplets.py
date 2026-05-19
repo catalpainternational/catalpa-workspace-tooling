@@ -8,6 +8,7 @@ from pathlib import Path
 
 from catalpa_tooling.cloud_config.render import DEFAULT_TIMEZONE, render_droplet_bootstrap
 from catalpa_tooling.config import DigitalOceanConfig
+from catalpa_tooling.doctl_binary import DoctlNotFoundError
 
 DEFAULT_IMAGE = "ubuntu-24-04-x64"
 
@@ -54,11 +55,33 @@ def _resolve_ssh_keys(
     do_config: DigitalOceanConfig | None,
     *,
     context: str | None,
+    dry_run: bool = False,
 ) -> tuple[str, ...]:
     if cli_keys:
         return cli_keys
     if do_config and do_config.ssh_keys:
         return do_config.ssh_keys
+    if dry_run:
+        try:
+            keys = list_account_ssh_key_ids(context=context)
+        except DoctlNotFoundError:
+            print(
+                "dry-run: no --ssh-key or digitalocean.ssh_keys; "
+                "host doctl would embed all account SSH keys (install doctl to list them).",
+                file=sys.stderr,
+            )
+            return ()
+        if keys:
+            print(
+                f"Using {len(keys)} SSH key(s) from account (doctl compute ssh-key list).",
+                file=sys.stderr,
+            )
+            return keys
+        print(
+            "dry-run: no SSH keys on account; pass --ssh-key or set digitalocean.ssh_keys.",
+            file=sys.stderr,
+        )
+        return ()
     keys = list_account_ssh_key_ids(context=context)
     if not keys:
         print(
@@ -121,6 +144,7 @@ def create_droplet(
     wait: bool = False,
     dry_run: bool = False,
     do_config: DigitalOceanConfig | None = None,
+    for_env: str | None = None,
 ) -> int:
     """Create a droplet with the standard bootstrap cloud-config user-data."""
     from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
@@ -128,21 +152,6 @@ def create_droplet(
     droplet_name = name.strip()
     if not droplet_name:
         print("Droplet name is required.", file=sys.stderr)
-        return 1
-
-    from catalpa_tooling.doctl_projects import find_project_droplet_id_by_name
-
-    existing_id = find_project_droplet_id_by_name(
-        project_id,
-        droplet_name,
-        context=context,
-    )
-    if existing_id is not None:
-        print(
-            f"Droplet {droplet_name!r} already exists in this project (id {existing_id}). "
-            "Choose another name or remove the existing droplet.",
-            file=sys.stderr,
-        )
         return 1
 
     resolved_size = _pick(
@@ -169,7 +178,9 @@ def create_droplet(
         field="timezone",
         default=DEFAULT_TIMEZONE,
     )
-    resolved_keys = _resolve_ssh_keys(ssh_keys, do_config, context=context)
+    resolved_keys = _resolve_ssh_keys(
+        ssh_keys, do_config, context=context, dry_run=dry_run
+    )
     user_data = render_droplet_bootstrap(timezone=resolved_timezone)
 
     tmp_path: Path | None = None
@@ -198,11 +209,33 @@ def create_droplet(
         if dry_run:
             print(user_data, end="" if user_data.endswith("\n") else "\n")
             print("---", file=sys.stderr)
-            print(f"$ doctl {' '.join(argv)}", file=sys.stderr)
+            print(f"host doctl command: doctl {' '.join(argv)}", file=sys.stderr)
             return 0
+
+        from catalpa_tooling.doctl_projects import find_project_droplet_id_by_name
+
+        existing_id = find_project_droplet_id_by_name(
+            project_id,
+            droplet_name,
+            context=context,
+        )
+        if existing_id is not None:
+            print(
+                f"Droplet {droplet_name!r} already exists in this project (id {existing_id}). "
+                "Choose another name or remove the existing droplet.",
+                file=sys.stderr,
+            )
+            return 1
 
         ensure_doctl_available()
         result = run_doctl(argv, context=context)
+        if result.returncode == 0 and for_env:
+            from catalpa_tooling.deploy_do_link import suggest_host_write_command
+
+            print(
+                f"Next: {suggest_host_write_command(for_env)}",
+                file=sys.stderr,
+            )
         return result.returncode
     finally:
         if tmp_path is not None:

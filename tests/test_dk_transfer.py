@@ -175,6 +175,7 @@ def test_preflight_errors_when_volume_missing(
         return m
 
     monkeypatch.setattr("catalpa_tooling.dk_transfer.run_cmd", fake_run)
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
     monkeypatch.setattr("catalpa_tooling.dk_transfer.db_service_responds", lambda c, e: True)
     errs = _collect_transfer_preflight_errors(
         src="local",

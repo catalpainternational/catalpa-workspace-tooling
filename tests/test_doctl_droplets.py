@@ -97,7 +97,7 @@ def test_create_droplet_missing_ssh_keys(capsys: pytest.CaptureFixture, monkeypa
     assert "no ssh keys" in capsys.readouterr().err.lower()
 
 
-def test_create_droplet_uses_all_account_keys_by_default(
+def test_create_droplet_dry_run_lists_account_keys_when_doctl_available(
     capsys: pytest.CaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -121,6 +121,29 @@ def test_create_droplet_uses_all_account_keys_by_default(
     assert "2 SSH key" in err
     assert "--ssh-keys 111" in err
     assert "--ssh-keys 222" in err
+
+
+def test_create_droplet_dry_run_without_doctl(
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from catalpa_tooling.doctl_binary import DoctlNotFoundError
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_droplets.list_account_ssh_key_ids",
+        lambda *, context: (_ for _ in ()).throw(DoctlNotFoundError("missing")),
+    )
+    rc = create_droplet(
+        "my-host",
+        size="s-1vcpu-1gb",
+        region="sgp1",
+        project_id="proj-uuid",
+        ssh_keys=("aa:bb:cc",),
+        dry_run=True,
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "--ssh-keys aa:bb:cc" in err
 
 
 def test_create_droplet_dry_run(capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
