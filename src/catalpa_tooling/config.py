@@ -365,10 +365,22 @@ def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
         timers_pg = tuple(u for u in pg_units if u.endswith(".timer"))
     if not timers_restic and restic_units:
         timers_restic = tuple(u for u in restic_units if u.endswith(".timer"))
+    unit_prefix = _require_str(ops_raw, "systemd_unit_prefix", section="ops")
+    systemd_units = SystemdUnitsOpsConfig(
+        pgbackrest=pg_units,
+        restic=restic_units,
+        timers_enable_pgbackrest=timers_pg,
+        timers_enable_restic=timers_restic,
+    )
+    from catalpa_tooling.systemd_render import validate_systemd_units
+
+    unit_errors = validate_systemd_units(systemd_units, unit_prefix)
+    if unit_errors:
+        raise ProjectConfigError("; ".join(unit_errors))
     return OpsConfig(
         install_prefix=_require_str(ops_raw, "install_prefix", section="ops"),
         config_dir=_require_str(ops_raw, "config_dir", section="ops"),
-        systemd_unit_prefix=_require_str(ops_raw, "systemd_unit_prefix", section="ops"),
+        systemd_unit_prefix=unit_prefix,
         transfer_workdir=_validate_rel_path(
             _require_str(ops_raw, "transfer_workdir", section="ops"), field="ops.transfer_workdir"
         ),
@@ -382,12 +394,7 @@ def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
             unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
             userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),
         ),
-        systemd_units=SystemdUnitsOpsConfig(
-            pgbackrest=pg_units,
-            restic=restic_units,
-            timers_enable_pgbackrest=timers_pg,
-            timers_enable_restic=timers_restic,
-        ),
+        systemd_units=systemd_units,
         default_db_container=_require_str(ops_raw, "default_db_container", section="ops"),
     )
 

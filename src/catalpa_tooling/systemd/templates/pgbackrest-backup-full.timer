@@ -1,4 +1,4 @@
-# Template: copy to /etc/systemd/system/ and adjust OnCalendar.
+# Rendered by dk bkp_db install-systemd (see catalpa-workspace-tooling README).
 # Example: weekly full backup Sunday 03:15 UTC.
 #
 [Unit]

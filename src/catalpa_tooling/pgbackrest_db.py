@@ -21,6 +21,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
 )
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.run_cmd import run as run_cmd
+from catalpa_tooling.run_cmd import run_interruptible
 
 BackupType = Literal["full", "incr", "diff"]
 
@@ -528,6 +529,43 @@ def _compose_up_db(compose_file: str, env: dict[str, str]) -> int:
     ).returncode
 
 
+def _remove_interrupted_compose_run_db(compose_file: str, env: dict[str, str]) -> None:
+    """Remove one-off ``db`` containers left when ``compose run`` is interrupted."""
+    merged = _merged_process_env(env)
+    filters = [
+        "label=com.docker.compose.oneoff=True",
+        "label=com.docker.compose.service=db",
+    ]
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+    if project:
+        filters.append(f"label=com.docker.compose.project={project}")
+    ps_argv = ["docker", "ps", "-q"]
+    for f in filters:
+        ps_argv.extend(["--filter", f])
+    listed = run_cmd(
+        ps_argv,
+        env=merged,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    ids = [line for line in (listed.stdout or "").splitlines() if line.strip()]
+    if not ids:
+        return
+    print(
+        "pgBackRest restore: removing interrupted one-off `db` container(s)…",
+        file=sys.stderr,
+    )
+    run_cmd(
+        ["docker", "rm", "-f", *ids],
+        env=merged,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        print_cmd=False,
+    )
+
+
 def _restore_recovery_timeout_sec(env: dict[str, str]) -> int:
     raw = (env.get("PGBR_RESTORE_RECOVERY_TIMEOUT_SEC") or "").strip()
     if not raw:
@@ -690,26 +728,35 @@ def run_restore_offline(
     if extra_shell:
         inner = f"{inner} {extra_shell}"
 
-    r = run_cmd(
-        [
-            "docker",
-            "compose",
-            "-f",
-            compose_file,
-            "run",
-            "-T",
-            "--rm",
-            "--no-deps",
-            "--entrypoint",
-            "/bin/sh",
-            "db",
-            "-c",
-            inner,
-        ],
+    restore_argv = [
+        "docker",
+        "compose",
+        "-f",
+        compose_file,
+        "run",
+        "-T",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "/bin/sh",
+        "db",
+        "-c",
+        inner,
+    ]
+    r = run_interruptible(
+        restore_argv,
         env=_merged_process_env(env),
         stdin=subprocess.DEVNULL,
-        check=False,
+        on_interrupt=lambda: _remove_interrupted_compose_run_db(compose_file, env),
     )
+    if r.returncode == 130:
+        print("pgBackRest restore: cancelled.", file=sys.stderr)
+        print(
+            "The `db` service was stopped for restore and was not restarted. "
+            "Start it with `docker compose up -d db` when ready.",
+            file=sys.stderr,
+        )
+        return r.returncode
     if r.returncode != 0:
         print("pgBackRest: restore failed.", file=sys.stderr)
         return r.returncode

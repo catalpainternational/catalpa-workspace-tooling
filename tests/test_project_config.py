@@ -146,6 +146,23 @@ digitalocean:
         load_project_config(tmp_path)
 
 
+def test_systemd_units_invalid_suffix(tmp_path: Path, isolated_tooling: None) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text.replace(
+            "app-pgbackrest-backup-full.service",
+            "app-unknown-backup.service",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectConfigError, match="Unknown systemd unit"):
+        load_project_config(tmp_path)
+
+
 def test_indmo_reference_tooling_snapshot(tmp_path: Path, isolated_tooling: None) -> None:
     """Guard the bundled INDMO reference manifest (consumer parity check)."""
     ref = Path(__file__).parent / "fixtures" / "indmo_reference_tooling.yaml"

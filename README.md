@@ -7,7 +7,7 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 From a consumer repository with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "catalpa-workspace-tooling @ git+https://github.com/catalpainternational/catalpa-workspace-tooling@v0.1.2"
+uv add "catalpa-workspace-tooling @ git+https://github.com/catalpainternational/catalpa-workspace-tooling@v0.1.3"
 ```
 
 For local development of this library:
@@ -102,6 +102,44 @@ dk prod host --write      # patch info.yaml
 dk digoc droplets list    # includes Env column when tooling.yaml is present
 dk digoc droplets suggest-env prod   # same as dk prod host
 ```
+
+### Systemd backups on deploy hosts
+
+Install pgBackRest and restic timer units on the machine referenced by `docker_host` in `docker/envs/<env>/info.yaml`. Unit **filenames** are project-specific (`ops.systemd_unit_prefix` + standard suffixes); paths come from `ops.install_prefix` and `ops.config_dir`.
+
+Required `tooling.yaml` keys (under `ops`):
+
+```yaml
+ops:
+  install_prefix: /opt/myapp
+  config_dir: /etc/myapp
+  systemd_unit_prefix: myapp-
+  systemd_units:
+    pgbackrest:
+      - myapp-pgbackrest-backup-full.service
+      - myapp-pgbackrest-backup-incr.service
+      - myapp-pgbackrest-backup-full.timer
+      - myapp-pgbackrest-backup-incr.timer
+    restic:
+      - myapp-restic-files-backup.service
+      - myapp-restic-files-backup.timer
+    timers_enable_pgbackrest:
+      - myapp-pgbackrest-backup-full.timer
+      - myapp-pgbackrest-backup-incr.timer
+    timers_enable_restic:
+      - myapp-restic-files-backup.timer
+```
+
+Commands (from the app repo root, with credentials and `docker_host` configured):
+
+```bash
+dk prod bkp_db install-systemd --dry-run
+dk prod bkp_db install-systemd --enable
+dk prod bkp_files install-systemd --dry-run
+dk prod bkp_files install-systemd --enable
+```
+
+Scripts land in `install_prefix`; env files in `config_dir`; rendered units in `/etc/systemd/system/`. Zabbix agent install is separate (`dk prod zabbix …`).
 
 ## Documentation
 

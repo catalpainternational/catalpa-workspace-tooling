@@ -6,6 +6,7 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
     parse_install_systemd_flags,
     redact_env_file_content,
+    render_pgbackrest_env,
     render_restic_env,
 )
 
@@ -42,6 +43,14 @@ def test_parse_install_flags_fixed_only() -> None:
 def test_parse_install_flags_rejects_only_with_fixed() -> None:
     with pytest.raises(ValueError, match="not valid"):
         parse_install_systemd_flags(["--only", "restic"], fixed_only="pgbackrest")
+
+
+def test_render_pgbackrest_env_uses_project_name() -> None:
+    body = render_pgbackrest_env(
+        {"PGBR_DB_CONTAINER": "db1", "PGBR_STANZA": "main"},
+        project_name="marktwain",
+    )
+    assert "# Managed by marktwain deploy" in body
 
 
 def test_render_restic_env_includes_aws_from_s3_keys() -> None:
