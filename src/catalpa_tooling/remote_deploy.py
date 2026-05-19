@@ -419,6 +419,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         return ensure_external_stack_volumes(
             env_add,
             dry_run=bool(getattr(ns, "dry_run", False)),
+            config=config,
         )
 
     if compose_args and compose_args[0] == "trust-caddy-cert":
@@ -616,7 +617,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                     return rc
                 return run_configure_verify_online_check(compose_file, env_add)
             if tail == ["stanza-create"]:
-                return run_pgbackrest_stanza_create(env_add, image=img)
+                return run_pgbackrest_stanza_create(env_add, image=img, config=config)
             print(
                 f"Unknown bkp_db configure arguments: {' '.join(tail)}",
                 file=sys.stderr,
@@ -651,6 +652,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 env_name=env_name,
                 skip_confirm=bool(getattr(ns, "yes", False)),
                 extra_pgbackrest_args=restore_extra,
+                config=config,
             )
         if sub == "backup":
             if len(extra) < 2:
@@ -716,7 +718,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         compose_args = ["up", "-d"]
 
     if should_materialize_for_compose(compose_args):
-        rc = ensure_external_stack_volumes(env_add, dry_run=False)
+        rc = ensure_external_stack_volumes(env_add, dry_run=False, config=config)
         if rc != 0:
             return rc
         rc = _ensure_local_stack_images_built(
@@ -766,5 +768,5 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if proc.returncode != 0:
         return proc.returncode
     if _is_compose_down_with_volumes(compose_args):
-        return remove_wipe_data_volumes(env_add)
+        return remove_wipe_data_volumes(env_add, config=config)
     return 0

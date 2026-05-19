@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run restic backup of django_media via docker (see DEPLOY.md — restic systemd backups).
+# Run restic backup of django_media via docker (see README_RESTIC.md).
 # For deploy hosts / systemd — not intended for local development use.
 set -euo pipefail
 

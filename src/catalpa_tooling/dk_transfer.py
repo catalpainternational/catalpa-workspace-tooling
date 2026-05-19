@@ -102,6 +102,7 @@ def _collect_transfer_preflight_errors(
     dst_vol: str,
     do_db: bool,
     do_media: bool,
+    config: ProjectConfig,
 ) -> list[str]:
     """Return human-readable errors; empty means preflight passed."""
     errs: list[str] = []
@@ -125,7 +126,7 @@ def _collect_transfer_preflight_errors(
                 f"transfer: {label} (`{env_name}`): ensuring external volumes …",
                 file=sys.stderr,
             )
-            rc = ensure_external_stack_volumes(env_r)
+            rc = ensure_external_stack_volumes(env_r, config=config)
             if rc != 0:
                 errs.append(
                     f"{label} (`{env_name}`): `ensure_external_stack_volumes` failed (exit {rc})."
@@ -305,6 +306,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         dst_vol=dst_vol,
         do_db=do_db,
         do_media=do_media,
+        config=config,
     )
     if preflight_errs:
         print("transfer: preflight failed:", file=sys.stderr)

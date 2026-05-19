@@ -80,6 +80,22 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             "pas_indmo_local_deploy_postgres_data",
         )
 
+    def test_postgres_data_volume_name_custom_key(self) -> None:
+        from catalpa_tooling.config import PgbackrestOpsConfig
+
+        cfg = MagicMock()
+        cfg.ops.pgbackrest = PgbackrestOpsConfig(
+            postgres_conf="x.conf",
+            pgbackrest_conf="y.conf",
+            default_registry="ghcr.io/example",
+            restore_temp_prefix="pfx_",
+            data_volume="db_data",
+        )
+        self.assertEqual(
+            postgres_data_volume_name({"COMPOSE_PROJECT_NAME": "myproj"}, config=cfg),
+            "myproj_db_data",
+        )
+
     def test_django_media_and_caddy_volume_names(self) -> None:
         self.assertEqual(django_media_volume_name({}), "pas_indmo_django_media")
         self.assertEqual(

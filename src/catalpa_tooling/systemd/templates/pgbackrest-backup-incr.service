@@ -1,7 +1,7 @@
-# Rendered by dk bkp_db install-systemd (see catalpa-workspace-tooling README).
+# Rendered by dk bkp_db install-systemd (see README_SYSTEMD.md).
 # Schedules via matching *-pgbackrest-backup-incr.timer (install separately).
 #
-# Prerequisites: same as pgbackrest-backup-full.service (see README).
+# Prerequisites: same as pgbackrest-backup-full.service (see README_PGBACKREST.md).
 #
 [Unit]
 Description=pgBackRest incremental backup (docker exec into db container)

@@ -1,4 +1,4 @@
-"""Install pgBackRest + restic systemd units on a deploy host via SSH (see DEPLOY.md)."""
+"""Install pgBackRest + restic systemd units on a deploy host via SSH (see README_SYSTEMD.md)."""
 
 from __future__ import annotations
 

@@ -103,6 +103,7 @@ class PgbackrestOpsConfig:
     pgbackrest_conf: str
     default_registry: str
     restore_temp_prefix: str
+    data_volume: str
 
 
 @dataclass(frozen=True)
@@ -389,6 +390,7 @@ def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
             pgbackrest_conf=_require_str(pg_raw, "pgbackrest_conf", section="ops.pgbackrest"),
             default_registry=_require_str(pg_raw, "default_registry", section="ops.pgbackrest"),
             restore_temp_prefix=_require_str(pg_raw, "restore_temp_prefix", section="ops.pgbackrest"),
+            data_volume=_optional_str(pg_raw, "data_volume") or "postgres_data",
         ),
         zabbix=ZabbixOpsConfig(
             unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),

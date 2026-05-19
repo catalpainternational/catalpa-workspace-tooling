@@ -1,4 +1,4 @@
-# Rendered by dk bkp_db install-systemd (see catalpa-workspace-tooling README).
+# Rendered by dk bkp_db install-systemd (see README_SYSTEMD.md).
 # Example: weekly full backup Sunday 03:15 UTC.
 #
 [Unit]

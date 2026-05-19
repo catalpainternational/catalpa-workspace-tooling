@@ -23,7 +23,7 @@ After install, these console scripts are available:
 | Command | Purpose |
 |---------|---------|
 | `dev` | Local development helpers (backend, frontend, prototype) |
-| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. |
+| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). |
 | `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
 | `scripts` | Run shell scripts from `paths.scripts` in the manifest |
 
@@ -103,47 +103,27 @@ dk digoc droplets list    # includes Env column when tooling.yaml is present
 dk digoc droplets suggest-env prod   # same as dk prod host
 ```
 
-### Systemd backups on deploy hosts
+### Backup and monitoring
 
-Install pgBackRest and restic timer units on the machine referenced by `docker_host` in `docker/envs/<env>/info.yaml`. Unit **filenames** are project-specific (`ops.systemd_unit_prefix` + standard suffixes); paths come from `ops.install_prefix` and `ops.config_dir`.
+Topic guides (run `dk <env> …` from the application repo root):
 
-Required `tooling.yaml` keys (under `ops`):
-
-```yaml
-ops:
-  install_prefix: /opt/myapp
-  config_dir: /etc/myapp
-  systemd_unit_prefix: myapp-
-  systemd_units:
-    pgbackrest:
-      - myapp-pgbackrest-backup-full.service
-      - myapp-pgbackrest-backup-incr.service
-      - myapp-pgbackrest-backup-full.timer
-      - myapp-pgbackrest-backup-incr.timer
-    restic:
-      - myapp-restic-files-backup.service
-      - myapp-restic-files-backup.timer
-    timers_enable_pgbackrest:
-      - myapp-pgbackrest-backup-full.timer
-      - myapp-pgbackrest-backup-incr.timer
-    timers_enable_restic:
-      - myapp-restic-files-backup.timer
-```
-
-Commands (from the app repo root, with credentials and `docker_host` configured):
-
-```bash
-dk prod bkp_db install-systemd --dry-run
-dk prod bkp_db install-systemd --enable
-dk prod bkp_files install-systemd --dry-run
-dk prod bkp_files install-systemd --enable
-```
-
-Scripts land in `install_prefix`; env files in `config_dir`; rendered units in `/etc/systemd/system/`. Zabbix agent install is separate (`dk prod zabbix …`).
+| Topic | Guide |
+|-------|--------|
+| pgBackRest (S3, `bkp_db`, WAL archive) | [README_PGBACKREST.md](README_PGBACKREST.md) |
+| Restic (media files, `bkp_files`) | [README_RESTIC.md](README_RESTIC.md) |
+| Systemd timers on deploy hosts | [README_SYSTEMD.md](README_SYSTEMD.md) |
+| Zabbix Agent 2 | [ZABBIX_README.md](ZABBIX_README.md) |
 
 ## Documentation
 
-Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` and deploy docs as a template.
+| Document | Contents |
+|----------|----------|
+| [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
+| [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |
+| [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
+| [ZABBIX_README.md](ZABBIX_README.md) | `dk <env> zabbix`, UserParameters |
+
+Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (e.g. INDMO `data_import`) and that project’s `docker/envs/` layout as a template.
 
 ## Development
 

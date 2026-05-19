@@ -1,4 +1,4 @@
-"""pgBackRest helpers for ``dk <env> bkp_db`` (see DEPLOY.md)."""
+"""pgBackRest helpers for ``dk <env> bkp_db`` (see README_PGBACKREST.md)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
+from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.pgbackrest_volume_config import (
     conflict_error_message,
     ensure_postgres_data_volume,
@@ -661,6 +662,7 @@ def run_restore_offline(
     env_name: str,
     skip_confirm: bool,
     extra_pgbackrest_args: Sequence[str] | None = None,
+    config: ProjectConfig | None = None,
 ) -> int:
     """Run ``pgbackrest --stanza=… restore --delta`` in a one-off ``db`` container (Compose ``run``).
 
@@ -682,7 +684,7 @@ def run_restore_offline(
     stanza = resolve_stanza(env)
     assert stanza
 
-    if ensure_postgres_data_volume(env) != 0:
+    if ensure_postgres_data_volume(env, config=config) != 0:
         return 1
 
     if not skip_confirm:
@@ -690,7 +692,7 @@ def run_restore_offline(
             "WARNING: This runs pgBackRest restore into the stack's postgres_data volume. "
             "If `db` is running, it will be stopped first. After pgBackRest finishes, `db` is "
             "started again so PostgreSQL can complete recovery.\n"
-            "See DEPLOY.md for recovery procedures.",
+            "See README_PGBACKREST.md for recovery procedures.",
             file=sys.stderr,
         )
         print(f"  Environment: {env_name}", file=sys.stderr)
