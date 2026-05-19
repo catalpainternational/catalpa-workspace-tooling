@@ -10,10 +10,45 @@ from catalpa_tooling.pgbackrest_db import (
     _remove_interrupted_compose_run_db,
     _restore_db_logs_silenced,
     _restore_recovery_timeout_sec,
+    run_backup,
     run_drop_create_app_database,
     run_restore_offline,
     wait_db_logs_for_recovery_ready,
 )
+
+
+class TestComposeExecPgbackrest(unittest.TestCase):
+    def test_backup_runs_as_postgres_user(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+            calls.append(list(cmd))
+            m = MagicMock()
+            m.returncode = 0
+            return m
+
+        with patch("catalpa_tooling.pgbackrest_db.run_cmd", side_effect=fake_run):
+            rc = run_backup("compose.yml", {"PGBR_STANZA": "main"}, "full")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0][:10],
+            [
+                "docker",
+                "compose",
+                "-f",
+                "compose.yml",
+                "exec",
+                "-T",
+                "-u",
+                "postgres",
+                "db",
+                "pgbackrest",
+            ],
+        )
+        self.assertIn("--stanza=main", calls[0])
+        self.assertIn("backup", calls[0])
+        self.assertIn("--type=full", calls[0])
 
 
 class TestDropCreateAppDatabase(unittest.TestCase):

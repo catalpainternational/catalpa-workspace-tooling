@@ -74,7 +74,11 @@ def _compose_exec_pgbackrest(
     env: dict[str, str],
     *pgbackrest_rest: str,
 ) -> int:
-    """``docker compose exec -T db pgbackrest …`` (db must be running)."""
+    """``docker compose exec -T -u postgres db pgbackrest …`` (db must be running).
+
+    The ``db`` service often runs as root (entrypoint fixes volume permissions); pgBackRest
+    must run as ``postgres`` to connect via the local socket (see systemd/pgbackrest-backup.sh).
+    """
     err = validate_pgbackrest_env(env)
     if err:
         print(err, file=sys.stderr)
@@ -88,6 +92,8 @@ def _compose_exec_pgbackrest(
         compose_file,
         "exec",
         "-T",
+        "-u",
+        "postgres",
         "db",
         "pgbackrest",
         *_log_level_argv(env),
@@ -739,6 +745,8 @@ def run_restore_offline(
         "-T",
         "--rm",
         "--no-deps",
+        "-u",
+        "postgres",
         "--entrypoint",
         "/bin/sh",
         "db",
