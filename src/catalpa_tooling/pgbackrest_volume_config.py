@@ -1,4 +1,4 @@
-"""Deploy-time Postgres / pgBackRest named-volume config from PGBR_S3_* env (see DEPLOY.md)."""
+"""Deploy-time Postgres / pgBackRest named-volume config from PGBR_S3_* env (see README_PGBACKREST.md)."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ SUFFIX_TO_GLOBAL: dict[str, str] = {
 }
 REQUIRED_SUFFIXES = frozenset({"BUCKET", "REGION", "KEY", "SECRET", "REPO_PATH", "STANZA"})
 
-# Optional tuning (env), not part of PGBR_S3_WRITE_/READ_ — see render_pgbackrest_ini / DEPLOY.md.
+# Optional tuning (env), not part of PGBR_S3_WRITE_/READ_ — see render_pgbackrest_ini / README_PGBACKREST.md.
 def _env_str(env: dict[str, str], key: str, default: str) -> str:
     v = env.get(key)
     if v is None or str(v).strip() == "":
@@ -74,10 +74,16 @@ def volume_names(env: dict[str, str], *, config: ProjectConfig | None = None) ->
     return (f"{project}_postgres_conf", f"{project}_pgbackrest_conf")
 
 
+def _postgres_data_volume_key(config: ProjectConfig | None) -> str:
+    if config is not None:
+        return config.ops.pgbackrest.data_volume
+    return "postgres_data"
+
+
 def postgres_data_volume_name(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
-    """Docker volume name for ``postgres_data`` (Compose default: ``{project}_postgres_data``)."""
+    """Docker volume name for the compose PGDATA volume (``{project}_{data_volume}``)."""
     project = _compose_project_name(env, config)
-    return f"{project}_postgres_data"
+    return f"{project}_{_postgres_data_volume_key(config)}"
 
 
 def django_media_volume_name(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
@@ -267,24 +273,28 @@ def _ensure_volume(name: str, docker_env: dict[str, str]) -> None:
     run_cmd(["docker", "volume", "create", name], env=docker_env, check=True)
 
 
-def external_stack_volume_names(env: dict[str, str]) -> tuple[str, ...]:
+def external_stack_volume_names(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> tuple[str, ...]:
     """Named volumes declared ``external: true`` in compose.yml (must exist before ``compose up``)."""
-    pg, pgb = volume_names(env)
+    pg, pgb = volume_names(env, config=config)
     return (
-        postgres_data_volume_name(env),
-        django_media_volume_name(env),
-        caddy_data_volume_name(env),
+        postgres_data_volume_name(env, config=config),
+        django_media_volume_name(env, config=config),
+        caddy_data_volume_name(env, config=config),
         pg,
         pgb,
     )
 
 
-def ensure_external_stack_volumes(env: dict[str, str], *, dry_run: bool = False) -> int:
+def ensure_external_stack_volumes(
+    env: dict[str, str], *, dry_run: bool = False, config: ProjectConfig | None = None
+) -> int:
     """Create stack external volumes if missing (``docker volume create``). Idempotent.
 
     Uses the same ``DOCKER_HOST`` (if any) as ``docker compose`` for this deploy.
     """
-    names = external_stack_volume_names(env)
+    names = external_stack_volume_names(env, config=config)
     if dry_run:
         print(
             "ensure_volumes (dry-run): would create missing volumes: " + ", ".join(names),
@@ -302,14 +312,14 @@ def ensure_external_stack_volumes(env: dict[str, str], *, dry_run: bool = False)
     return 0
 
 
-def ensure_postgres_data_volume(env: dict[str, str]) -> int:
-    """Create the stack ``postgres_data`` named volume if missing (``docker volume create``). Idempotent.
+def ensure_postgres_data_volume(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
+    """Create the stack PGDATA named volume if missing (``docker volume create``). Idempotent.
 
     Used by ``bkp_db restore`` so ``docker compose run db`` has a mount target for PGDATA.
     Uses the same ``DOCKER_HOST`` as ``ensure_volumes`` and other deploy volume ops.
     """
     docker_env = _docker_env_for_remote(env)
-    name = postgres_data_volume_name(env)
+    name = postgres_data_volume_name(env, config=config)
     try:
         _ensure_volume(name, docker_env)
     except subprocess.CalledProcessError as e:
@@ -321,8 +331,8 @@ def ensure_postgres_data_volume(env: dict[str, str]) -> int:
     return 0
 
 
-def remove_wipe_data_volumes(env: dict[str, str]) -> int:
-    """Remove external ``postgres_data`` and ``django_media`` volumes after ``compose down -v``.
+def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
+    """Remove external PGDATA and ``django_media`` volumes after ``compose down -v``.
 
     Compose does not delete ``external:`` volumes; this finishes a destructive wipe of database
     PGDATA and Django/Wagtail uploads. Uses the same ``DOCKER_HOST`` as other deploy volume ops.
@@ -330,7 +340,10 @@ def remove_wipe_data_volumes(env: dict[str, str]) -> int:
     Missing volumes (e.g. already removed) are treated as success.
     """
     docker_env = _docker_env_for_remote(env)
-    targets = (postgres_data_volume_name(env), django_media_volume_name(env))
+    targets = (
+        postgres_data_volume_name(env, config=config),
+        django_media_volume_name(env, config=config),
+    )
     for name in targets:
         r = run_cmd(
             ["docker", "volume", "rm", name],
@@ -480,7 +493,9 @@ def run_pgbackrest_verify(env: dict[str, str], *, image: str) -> int:
     return 0
 
 
-def run_pgbackrest_stanza_create(env: dict[str, str], *, image: str) -> int:
+def run_pgbackrest_stanza_create(
+    env: dict[str, str], *, image: str, config: ProjectConfig | None = None
+) -> int:
     """Run ``pgbackrest stanza-create`` against the repository (WRITE mode only)."""
     def log(msg: str) -> None:
         print(msg, file=sys.stderr)
@@ -506,7 +521,7 @@ def run_pgbackrest_stanza_create(env: dict[str, str], *, image: str) -> int:
 
     docker_env = _docker_env_for_remote(env)
     vol_pgb = volume_names(env)[1]
-    vol_data = postgres_data_volume_name(env)
+    vol_data = postgres_data_volume_name(env, config=config)
     if not _pgdata_has_control_file(docker_env, image, vol_data):
         log(
             "pgBackRest stanza-create: PostgreSQL PGDATA is missing or not initialized "

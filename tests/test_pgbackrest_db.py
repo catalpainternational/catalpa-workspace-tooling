@@ -7,11 +7,48 @@ from unittest.mock import MagicMock, patch
 
 from catalpa_tooling.pgbackrest_db import (
     _log_level_argv_shell,
+    _remove_interrupted_compose_run_db,
     _restore_db_logs_silenced,
     _restore_recovery_timeout_sec,
+    run_backup,
     run_drop_create_app_database,
+    run_restore_offline,
     wait_db_logs_for_recovery_ready,
 )
+
+
+class TestComposeExecPgbackrest(unittest.TestCase):
+    def test_backup_runs_as_postgres_user(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+            calls.append(list(cmd))
+            m = MagicMock()
+            m.returncode = 0
+            return m
+
+        with patch("catalpa_tooling.pgbackrest_db.run_cmd", side_effect=fake_run):
+            rc = run_backup("compose.yml", {"PGBR_STANZA": "main"}, "full")
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0][:10],
+            [
+                "docker",
+                "compose",
+                "-f",
+                "compose.yml",
+                "exec",
+                "-T",
+                "-u",
+                "postgres",
+                "db",
+                "pgbackrest",
+            ],
+        )
+        self.assertIn("--stanza=main", calls[0])
+        self.assertIn("backup", calls[0])
+        self.assertIn("--type=full", calls[0])
 
 
 class TestDropCreateAppDatabase(unittest.TestCase):
@@ -131,6 +168,62 @@ class TestWaitDbLogsForRecoveryReady(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(msg, "")
         mock_print.assert_not_called()
+
+
+class TestRemoveInterruptedComposeRunDb(unittest.TestCase):
+    def test_removes_listed_oneoff_containers(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+            calls.append(list(cmd))
+            m = MagicMock()
+            if cmd[:2] == ["docker", "ps"]:
+                m.stdout = "abc123\ndef456\n"
+            m.returncode = 0
+            return m
+
+        with patch("catalpa_tooling.pgbackrest_db.run_cmd", side_effect=fake_run):
+            _remove_interrupted_compose_run_db(
+                "compose.yml",
+                {"COMPOSE_PROJECT_NAME": "ligainan_dev"},
+            )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][:2], ["docker", "ps"])
+        self.assertIn("label=com.docker.compose.oneoff=True", calls[0])
+        self.assertIn("label=com.docker.compose.project=ligainan_dev", calls[0])
+        self.assertEqual(calls[1], ["docker", "rm", "-f", "abc123", "def456"])
+
+
+class TestRunRestoreOfflineInterrupt(unittest.TestCase):
+    def test_cancelled_restore_does_not_start_db(self) -> None:
+        interrupted = MagicMock()
+        interrupted.returncode = 130
+        with (
+            patch(
+                "catalpa_tooling.pgbackrest_db.validate_pgbackrest_env",
+                return_value=None,
+            ),
+            patch(
+                "catalpa_tooling.pgbackrest_db.resolve_stanza",
+                return_value="main",
+            ),
+            patch("catalpa_tooling.pgbackrest_db.ensure_postgres_data_volume", return_value=0),
+            patch("catalpa_tooling.pgbackrest_db.db_service_responds", return_value=False),
+            patch(
+                "catalpa_tooling.pgbackrest_db.run_interruptible",
+                return_value=interrupted,
+            ) as run_int,
+            patch("catalpa_tooling.pgbackrest_db._compose_up_db") as up_db,
+        ):
+            rc = run_restore_offline(
+                {"PGBR_STANZA": "main"},
+                compose_file="compose.yml",
+                env_name="dev",
+                skip_confirm=True,
+            )
+        self.assertEqual(rc, 130)
+        run_int.assert_called_once()
+        up_db.assert_not_called()
 
 
 if __name__ == "__main__":

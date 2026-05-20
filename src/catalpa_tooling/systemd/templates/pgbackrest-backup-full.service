@@ -1,0 +1,22 @@
+# Rendered by dk bkp_db install-systemd (see README_SYSTEMD.md).
+# Schedules via matching *-pgbackrest-backup-full.timer (install separately).
+#
+# Prerequisites (see README_PGBACKREST.md and README_SYSTEMD.md):
+# - WRITE mode (PGBR_S3_WRITE_*) and db container running
+# - PGBR_DB_CONTAINER and PGBR_STANZA in EnvironmentFile (no compose file required on host)
+# - PGBR_STANZA matches deploy credentials / ops.pgbackrest.pgbackrest_conf
+#
+[Unit]
+Description=pgBackRest full backup (docker exec into db container)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-@CONFIG_DIR@/pgbackrest-backup.env
+ExecStart=@INSTALL_PREFIX@/pgbackrest-backup.sh full
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

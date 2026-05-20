@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run restic backup of django_media via docker (see DEPLOY.md — restic systemd backups).
+# Run restic backup of django_media via docker (see README_RESTIC.md).
 # For deploy hosts / systemd — not intended for local development use.
 set -euo pipefail
 
@@ -7,9 +7,10 @@ set -euo pipefail
 : "${RESTIC_REPOSITORY:?set RESTIC_REPOSITORY (restic repo URL)}"
 : "${RESTIC_PASSWORD:?set RESTIC_PASSWORD}"
 
-VOL="${COMPOSE_PROJECT_NAME}_django_media"
+DATA_VOLUME="${RESTIC_FILES_DATA_VOLUME:-django_media}"
+VOL="${COMPOSE_PROJECT_NAME}_${DATA_VOLUME}"
 IMAGE="${RESTIC_IMAGE:-restic/restic:0.17.3}"
-MOUNT="/backup/django_media"
+MOUNT="/backup/${DATA_VOLUME}"
 
 # restic reads AWS_* inside the container; host can set RESTIC_S3_* (or legacy AWS_*).
 EXTRA_ENV=()

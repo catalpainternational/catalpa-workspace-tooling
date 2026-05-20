@@ -1,4 +1,4 @@
-# Template: copy to /etc/systemd/system/ and adjust OnCalendar.
+# Rendered by dk bkp_db install-systemd (see README_SYSTEMD.md).
 # Example: daily incremental backup 02:30 UTC (after WAL archive cadence).
 #
 [Unit]

@@ -95,6 +95,7 @@ def test_preflight_empty_when_compose_db_and_volumes_ok(
         dst_vol="app_compose_dev_django_media",
         do_db=True,
         do_media=True,
+        config=minimal_project,
     )
     assert errs == []
 
@@ -126,6 +127,7 @@ def test_preflight_errors_when_compose_config_fails(
         dst_vol="v2",
         do_db=False,
         do_media=False,
+        config=minimal_project,
     )
     assert len(errs) == 2
     assert all("cannot list compose services" in e for e in errs)
@@ -153,6 +155,7 @@ def test_preflight_errors_when_no_db_service(
         dst_vol="v2",
         do_db=True,
         do_media=False,
+        config=minimal_project,
     )
     assert len(errs) == 2
     assert all("no `db` service" in e for e in errs)
@@ -188,6 +191,7 @@ def test_preflight_errors_when_volume_missing(
         dst_vol="missing_b",
         do_db=False,
         do_media=True,
+        config=minimal_project,
     )
     assert len(errs) == 2
     assert all("not found" in e for e in errs)

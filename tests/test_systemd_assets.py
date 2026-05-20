@@ -1,7 +1,7 @@
 """Tests for bundled systemd package data."""
 
-from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.systemd_assets import systemd_source_dir
+from catalpa_tooling.systemd_render import KNOWN_UNIT_SUFFIXES, systemd_templates_dir
 
 
 def test_systemd_source_dir_contains_scripts() -> None:
@@ -11,10 +11,8 @@ def test_systemd_source_dir_contains_scripts() -> None:
     assert (src / "restic-files-backup.sh").is_file()
 
 
-def test_systemd_source_dir_contains_minimal_fixture_units(minimal_project: ProjectConfig) -> None:
-    config = minimal_project
-    src = systemd_source_dir()
-    for name in config.ops.systemd_units.pgbackrest:
-        assert (src / name).is_file(), f"missing {name}"
-    for name in config.ops.systemd_units.restic:
-        assert (src / name).is_file(), f"missing {name}"
+def test_systemd_templates_dir_contains_canonical_units() -> None:
+    templates = systemd_templates_dir()
+    assert templates.is_dir()
+    for suffix in KNOWN_UNIT_SUFFIXES:
+        assert (templates / suffix).is_file(), f"missing template {suffix}"

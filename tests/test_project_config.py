@@ -13,6 +13,7 @@ def test_load_minimal_project(minimal_project) -> None:
     assert minimal_project.backend_dir == minimal_project.repo_root / "backend"
     assert minimal_project.image_component("web") == "app-web"
     assert minimal_project.stack.compose_project_default == "app_compose"
+    assert minimal_project.ops.restic.data_volume == "django_media"
     assert minimal_project.credentials_optional_for_env("local")
     assert minimal_project.credentials_optional_for_env("local_foo")
     assert not minimal_project.credentials_optional_for_env("staging")
@@ -143,6 +144,40 @@ digitalocean:
         encoding="utf-8",
     )
     with pytest.raises(ProjectConfigError, match="only one"):
+        load_project_config(tmp_path)
+
+
+def test_systemd_units_invalid_suffix(tmp_path: Path, isolated_tooling: None) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text.replace(
+            "app-pgbackrest-backup-full.service",
+            "app-unknown-backup.service",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectConfigError, match="Unknown systemd unit"):
+        load_project_config(tmp_path)
+
+
+def test_restic_invalid_data_volume(tmp_path: Path, isolated_tooling: None) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text.replace(
+            "  zabbix:",
+            "  restic:\n    data_volume: bad/volume\n  zabbix:",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectConfigError, match="ops.restic.data_volume"):
         load_project_config(tmp_path)
 
 

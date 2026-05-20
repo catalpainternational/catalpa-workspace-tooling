@@ -1,4 +1,4 @@
-"""Install pgBackRest + restic systemd units on a deploy host via SSH (see DEPLOY.md)."""
+"""Install pgBackRest + restic systemd units on a deploy host via SSH (see README_SYSTEMD.md)."""
 
 from __future__ import annotations
 
@@ -11,12 +11,15 @@ from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.restic_files import (
+    RESTIC_FILES_DATA_VOLUME_KEY,
     aws_env_vars_for_s3_restic_env_file,
     normalize_restic_credentials,
     resolve_env_with_compose_project,
     validate_restic_env_for_systemd,
+    restic_data_volume_key,
 )
 from catalpa_tooling.systemd_assets import systemd_source_dir
+from catalpa_tooling.systemd_render import render_systemd_unit
 
 REMOTE_SYSTEMD = "/etc/systemd/system"
 
@@ -130,12 +133,12 @@ def parse_install_systemd_flags(
     return dry_run, enable, only
 
 
-def render_pgbackrest_env(env: dict[str, str]) -> str:
-    """Key=value lines for /etc/indmo/pgbackrest-backup.env."""
+def render_pgbackrest_env(env: dict[str, str], *, project_name: str = "project") -> str:
+    """Key=value lines for ``<config_dir>/pgbackrest-backup.env``."""
     stanza = (env.get("PGBR_STANZA") or env.get("PGBR_S3_WRITE_STANZA") or "").strip()
     container = (env.get("PGBR_DB_CONTAINER") or "").strip()
     lines = [
-        "# Managed by indmo deploy (bkp_db install-systemd).",
+        f"# Managed by {project_name} deploy (bkp_db install-systemd).",
         f"PGBR_DB_CONTAINER={container}",
         f"PGBR_STANZA={stanza}",
     ]
@@ -146,15 +149,21 @@ def render_pgbackrest_env(env: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_restic_env(env: dict[str, str]) -> str:
-    """Key=value lines for /etc/indmo/restic-files-backup.env (canonical ``RESTIC_*`` after WRITE/legacy resolution)."""
+def render_restic_env(
+    env: dict[str, str],
+    *,
+    project_name: str = "project",
+    config: ProjectConfig | None = None,
+) -> str:
+    """Key=value lines for ``<config_dir>/restic-files-backup.env`` (canonical ``RESTIC_*``)."""
     n = normalize_restic_credentials(dict(env))
     lines = [
-        "# Managed by indmo deploy (bkp_files install-systemd).",
+        f"# Managed by {project_name} deploy (bkp_files install-systemd).",
     ]
     project = (n.get("COMPOSE_PROJECT_NAME") or "").strip()
     if project:
         lines.append(f"COMPOSE_PROJECT_NAME={project}")
+    lines.append(f"{RESTIC_FILES_DATA_VOLUME_KEY}={restic_data_volume_key(config)}")
     order = [
         "RESTIC_REPOSITORY",
         "RESTIC_PASSWORD",
@@ -309,8 +318,9 @@ def cmd_install_systemd_backups(
         )
         env_r["PGBR_DB_CONTAINER"] = env_r.get("PGBR_DB_CONTAINER") or config.ops.default_db_container
 
-    pgbr_body = render_pgbackrest_env(env_r) if do_pgbr else ""
-    restic_body = render_restic_env(env_r) if do_restic else ""
+    project_name = config.meta.name
+    pgbr_body = render_pgbackrest_env(env_r, project_name=project_name) if do_pgbr else ""
+    restic_body = render_restic_env(env_r, project_name=project_name, config=config) if do_restic else ""
 
     if enable and not yes and not sys.stdin.isatty():
         print(
@@ -333,7 +343,15 @@ def cmd_install_systemd_backups(
     print(f"SSH target: {ssh_target}", file=sys.stderr)
     print(f"Would install: pgBackRest={do_pgbr} restic={do_restic} dry_run={dry_run} enable={enable}", file=sys.stderr)
 
+    unit_names: list[str] = []
+    if do_pgbr:
+        unit_names.extend(units_pgbr)
+    if do_restic:
+        unit_names.extend(units_restic)
+
     if dry_run:
+        if unit_names:
+            print(f"(dry-run) Would install units: {' '.join(unit_names)}", file=sys.stderr)
         if do_pgbr:
             print(f"--- {config_dir}/pgbackrest-backup.env (redacted) ---", file=sys.stderr)
             print(redact_env_file_content(pgbr_body), end="", file=sys.stderr)
@@ -384,22 +402,28 @@ def cmd_install_systemd_backups(
         if rc != 0:
             return rc
 
-    to_scp_units: list[Path] = []
-    if do_pgbr:
-        to_scp_units.extend(systemd_src / n for n in units_pgbr)
-    if do_restic:
-        to_scp_units.extend(systemd_src / n for n in units_restic)
-    for p in to_scp_units:
-        if not p.is_file():
-            print(f"Missing {p}", file=sys.stderr)
-            return 1
-
-    rc = _scp_push(ssh_target, to_scp_units, REMOTE_SYSTEMD)
-    if rc != 0:
-        return rc
-
     with tempfile.TemporaryDirectory() as tmp:
         tdir = Path(tmp)
+        to_scp_units: list[Path] = []
+        for name in unit_names:
+            try:
+                body = render_systemd_unit(
+                    name,
+                    install_prefix=install_prefix,
+                    config_dir=config_dir,
+                )
+            except (ValueError, FileNotFoundError) as e:
+                print(str(e), file=sys.stderr)
+                return 1
+            local_unit = tdir / name
+            local_unit.write_text(body, encoding="utf-8")
+            to_scp_units.append(local_unit)
+
+        if to_scp_units:
+            rc = _scp_push(ssh_target, to_scp_units, REMOTE_SYSTEMD)
+            if rc != 0:
+                return rc
+
         env_files: list[tuple[Path, str]] = []
         if do_pgbr:
             ep = tdir / "pgbackrest-backup.env"

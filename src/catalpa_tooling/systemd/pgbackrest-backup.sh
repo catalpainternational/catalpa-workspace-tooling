@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run pgBackRest online backup inside the Postgres container (see DEPLOY.md).
+# Run pgBackRest online backup inside the Postgres container (see README_PGBACKREST.md).
 # Uses `docker exec` — no compose file on the host; set PGBR_DB_CONTAINER to the running db name/ID.
 # For deploy hosts / systemd — not intended for local development use.
 set -euo pipefail

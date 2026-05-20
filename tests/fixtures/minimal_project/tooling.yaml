@@ -50,10 +50,16 @@ ops:
   systemd_units:
     pgbackrest:
       - app-pgbackrest-backup-full.service
+      - app-pgbackrest-backup-incr.service
+      - app-pgbackrest-backup-diff.service
+      - app-pgbackrest-backup-full.timer
       - app-pgbackrest-backup-incr.timer
+      - app-pgbackrest-backup-diff.timer
     restic:
       - app-restic-files-backup.service
+      - app-restic-files-backup.timer
     timers_enable_pgbackrest:
+      - app-pgbackrest-backup-full.timer
       - app-pgbackrest-backup-incr.timer
     timers_enable_restic:
       - app-restic-files-backup.timer

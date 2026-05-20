@@ -1,0 +1,14 @@
+# Rendered by dk bkp_db install-systemd (see README_SYSTEMD.md).
+# Example: differential backup Mon–Sat 03:15 UTC (pgBackRest user-guide pattern).
+# Do not enable alongside a daily incr timer unless using a hybrid schedule (README_SYSTEMD.md).
+#
+[Unit]
+Description=Timer for pgBackRest differential backup
+
+[Timer]
+# Example: 03:15 UTC Mon–Sat (adjust for your timezone / load window)
+OnCalendar=Mon..Sat *-*-* 03:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

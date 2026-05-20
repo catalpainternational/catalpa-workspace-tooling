@@ -7,7 +7,7 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 From a consumer repository with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv add "catalpa-workspace-tooling @ git+https://github.com/catalpainternational/catalpa-workspace-tooling@v0.1.2"
+uv add "catalpa-workspace-tooling @ git+https://github.com/catalpainternational/catalpa-workspace-tooling@v0.1.3"
 ```
 
 For local development of this library:
@@ -23,7 +23,7 @@ After install, these console scripts are available:
 | Command | Purpose |
 |---------|---------|
 | `dev` | Local development helpers (backend, frontend, prototype) |
-| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. |
+| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). |
 | `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
 | `scripts` | Run shell scripts from `paths.scripts` in the manifest |
 
@@ -103,9 +103,27 @@ dk digoc droplets list    # includes Env column when tooling.yaml is present
 dk digoc droplets suggest-env prod   # same as dk prod host
 ```
 
+### Backup and monitoring
+
+Topic guides (run `dk <env> …` from the application repo root):
+
+| Topic | Guide |
+|-------|--------|
+| pgBackRest (S3, `bkp_db`, WAL archive) | [README_PGBACKREST.md](README_PGBACKREST.md) |
+| Restic (media files, `bkp_files`) | [README_RESTIC.md](README_RESTIC.md) |
+| Systemd timers on deploy hosts | [README_SYSTEMD.md](README_SYSTEMD.md) |
+| Zabbix Agent 2 | [ZABBIX_README.md](ZABBIX_README.md) |
+
 ## Documentation
 
-Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` and deploy docs as a template.
+| Document | Contents |
+|----------|----------|
+| [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
+| [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |
+| [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
+| [ZABBIX_README.md](ZABBIX_README.md) | `dk <env> zabbix`, UserParameters |
+
+Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (e.g. INDMO `data_import`) and that project’s `docker/envs/` layout as a template.
 
 ## Development
 

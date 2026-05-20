@@ -53,8 +53,10 @@ ops:
     pgbackrest:
       - indmo-pgbackrest-backup-full.service
       - indmo-pgbackrest-backup-incr.service
+      - indmo-pgbackrest-backup-diff.service
       - indmo-pgbackrest-backup-full.timer
       - indmo-pgbackrest-backup-incr.timer
+      - indmo-pgbackrest-backup-diff.timer
     restic:
       - indmo-restic-files-backup.service
       - indmo-restic-files-backup.timer

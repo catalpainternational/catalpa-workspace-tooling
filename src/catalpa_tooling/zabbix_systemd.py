@@ -653,7 +653,7 @@ def _restic_snapshots_userparameter_command(env: dict[str, str]) -> str:
 def render_userparams_conf(env: dict[str, str]) -> str:
     """Fragment for ``zabbix_agent2.d`` with ``UserParameter`` lines."""
     lines: list[str] = [
-        "# Managed by `uv run dk zabbix install` / `dk <env> zabbix install`.",
+        "# Managed by `uv run dk <env> zabbix install`.",
         "# Regenerate after changing docker/envs/<env>/info.yaml (compose_project_name, zabbix_*).",
         "#",
         "# Test on host (no chroot):",
