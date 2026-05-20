@@ -160,6 +160,18 @@ class ProjectMetaConfig:
 
 
 @dataclass(frozen=True)
+class SpacesConfig:
+    """DigitalOcean Spaces defaults for backup auto-provisioning (``digitalocean.spaces``)."""
+
+    endpoint: str | None
+    region: str | None
+    bucket: str | None
+    pgbackrest_repo_path: str | None
+    restic_path: str | None
+    stanza: str | None
+
+
+@dataclass(frozen=True)
 class DigitalOceanConfig:
     project_name: str | None
     project_id: str | None
@@ -169,6 +181,7 @@ class DigitalOceanConfig:
     size: str | None
     image: str | None
     ssh_keys: tuple[str, ...] | None
+    spaces: SpacesConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -344,6 +357,17 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
     )
 
 
+def _parse_spaces(spaces_raw: dict[str, Any]) -> SpacesConfig:
+    return SpacesConfig(
+        endpoint=_optional_str(spaces_raw, "endpoint"),
+        region=_optional_str(spaces_raw, "region"),
+        bucket=_optional_str(spaces_raw, "bucket"),
+        pgbackrest_repo_path=_optional_str(spaces_raw, "pgbackrest_repo_path"),
+        restic_path=_optional_str(spaces_raw, "restic_path"),
+        stanza=_optional_str(spaces_raw, "stanza"),
+    )
+
+
 def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
     project_name = _optional_str(do_raw, "project_name")
     project_id = _optional_str(do_raw, "project_id")
@@ -357,6 +381,12 @@ def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
         ssh_keys = _parse_string_list(ssh_keys_raw, field="digitalocean.ssh_keys")
         if not ssh_keys:
             ssh_keys = None
+    spaces: SpacesConfig | None = None
+    spaces_raw = do_raw.get("spaces")
+    if spaces_raw is not None:
+        if not isinstance(spaces_raw, dict):
+            raise ProjectConfigError("digitalocean.spaces must be a mapping")
+        spaces = _parse_spaces(spaces_raw)
     return DigitalOceanConfig(
         project_name=project_name,
         project_id=project_id,
@@ -366,6 +396,7 @@ def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
         size=_optional_str(do_raw, "size"),
         image=_optional_str(do_raw, "image"),
         ssh_keys=ssh_keys,
+        spaces=spaces,
     )
 
 
