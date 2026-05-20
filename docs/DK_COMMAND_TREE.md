@@ -26,7 +26,8 @@ dk
 └── <env>  [--dry-run] [-y] [--tag TAG]  …
     ├── info [-e]
     ├── secrets
-    ├── host [--write]
+    ├── host [--write]               # verify droplet + site_origin DNS (DO API + public); print docker_host
+    │   └── create [--size …] …      # create droplet, wait, patch docker_host, sync DO DNS; public DNS verify
     ├── zabbix
     │   ├── install
     │   ├── enable
@@ -75,7 +76,7 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `host`, `zabbix`, `ensure_volumes`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `bkp_files`, `bkp_db`.
+Special verbs (not plain compose): `info`, `secrets`, `host` / `host create` (doctl: droplet + `site_origin` DNS on DigitalOcean + public resolution; `digitalocean.disabled` for manual hosts; default droplet `{project}-{env}`), `zabbix`, `ensure_volumes`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `bkp_files`, `bkp_db`.
 
 `bkp_db` / `bkp_files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 

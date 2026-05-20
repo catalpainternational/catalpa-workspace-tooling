@@ -57,7 +57,7 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.deploy_do_link import cmd_env_host
+from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 from catalpa_tooling.doctl_spaces_provision import (
     ensure_spaces_backup_credentials,
@@ -282,7 +282,15 @@ def _cmd_env_host(
     *,
     dry_run: bool,
 ) -> int:
-    """Resolve DigitalOcean droplet IP and print or patch ``docker_host`` in info.yaml."""
+    """Verify droplet / print or patch ``docker_host``; ``host create`` provisions a new droplet."""
+    if tail and tail[0] == "create":
+        return cmd_env_host_create(
+            config,
+            env_name,
+            tail[1:],
+            global_dry_run=dry_run,
+        )
+
     p = argparse.ArgumentParser(prog=f"dk {env_name} host")
     p.add_argument(
         "--write",

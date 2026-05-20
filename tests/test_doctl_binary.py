@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from catalpa_tooling.doctl_binary import DoctlNotFoundError, resolve_doctl_binary
+from catalpa_tooling.doctl_binary import (
+    DoctlNotFoundError,
+    resolve_doctl_binary,
+    try_resolve_doctl_binary,
+)
 
 
 def _write_executable(path: Path, content: str = "#!/bin/sh\necho doctl\n") -> None:
@@ -60,6 +64,12 @@ def test_resolve_skips_shim_when_invoked_via_dk(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{real_doctl.parent}")
     monkeypatch.setattr(sys, "argv", [str(dk), "prod", "host", "--write"])
     assert resolve_doctl_binary() == real_doctl.resolve()
+
+
+def test_try_resolve_returns_none_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOCTL_BIN", raising=False)
+    monkeypatch.setenv("PATH", "")
+    assert try_resolve_doctl_binary() is None
 
 
 def test_resolve_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -43,19 +43,27 @@ uv run dk digoc --help
 
 ### DigitalOcean PAT scopes
 
-Create a [personal access token](https://docs.digitalocean.com/reference/api/create-personal-access-token/) for the team that owns your projects. `dk digoc` calls the DigitalOcean API via the host `doctl` binary; insufficient scopes show up as `403` errors.
+Create a [personal access token](https://docs.digitalocean.com/reference/api/create-personal-access-token/) for the team that owns your projects. `dk` and `dk digoc` call the DigitalOcean API via the host `doctl` binary; insufficient scopes show up as `403` errors.
 
 | What you use | Scopes |
 |--------------|--------|
-| `dk digoc projects list`, `dk digoc droplets list` | `project:read`, `droplet:read` |
-| `dk digoc droplets create` (and default SSH keys from the account) | above, plus `droplet:create`, `ssh_key:read` |
+| `dk digoc projects list`, project resolution | `project:read` |
+| `dk digoc droplets list`, `dk <env> host` (droplet verify) | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list` |
+| `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
+| `dk <env> host` (DNS verify for `site_origin`) | above, plus `domain:read` |
+| `dk <env> host create` (DNS sync after droplet create) | above, plus `domain:write` (or granular domain record create/update) |
+| `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds) | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete` |
 
-`droplet:read` and `droplet:create` require companion read scopes (`regions:read`, `sizes:read`, `actions:read`, `image:read`); the [custom scopes picker](https://cloud.digitalocean.com/account/api/tokens) adds these when you select droplet scopes. See [Scopes for API tokens](https://docs.digitalocean.com/reference/api/scopes/) for the full list.
+`droplet:read`, `droplet:create`, and domain/spaces scopes require companion read scopes (`regions:read`, `sizes:read`, `actions:read`, `image:read`, etc.); the [custom scopes picker](https://cloud.digitalocean.com/account/api/tokens) adds these when you select those scopes. See [Scopes for API tokens](https://docs.digitalocean.com/reference/api/scopes/) for the full list.
+
+**403 on `doctl compute ssh-key list`:** the token is missing **`ssh_key:read`**. That call uses the account keys API (`/v2/account/keys`); [`account:read`](https://docs.digitalocean.com/reference/api/scopes/account/read) is only for profile/billing-style account metadata, not SSH keys. Fix: add `ssh_key:read` to the token, use **Full Access** (`api:write`), or avoid listing by passing explicit keys: `dk <env> host create --ssh-key ID` (repeatable) or `digitalocean.ssh_keys` in `tooling.yaml` (IDs/fingerprints from the control panel or a token that can list keys once).
 
 Convenience aliases (token UI: **Read** / **Full Access**):
 
-- **Read only** — `api:read` — enough for listing projects and droplets.
-- **Full access** — `api:write` — covers droplet create and SSH key listing without picking granular scopes.
+- **Read only** — `api:read` — listing projects, droplets, domains, and Spaces keys.
+- **Full access** — `api:write` — droplet create, DNS sync, Spaces key create, and SSH key listing without picking granular scopes.
+
+**Host tools (not PAT):** Spaces bucket create/check uses host `s3cmd` (`mb`, `info`); credential updates use `sops` — see [README_PGBACKREST.md](README_PGBACKREST.md#auto-provision-digitalocean-spaces).
 
 `dk digoc cloud-config print` does not call the API (no token needed).
 
@@ -71,9 +79,10 @@ digitalocean:
   image: ubuntu-24-04-x64
   ssh_keys:
     - "aa:bb:cc:..."   # fingerprint or ID from host `doctl compute ssh-key list`
+  monitoring: true      # optional; default true — passes --enable-monitoring to doctl
 ```
 
-Bootstrap a new droplet (Docker CE, UFW, unattended upgrades, SSH key-only):
+Bootstrap a new droplet (Docker CE, UFW, unattended upgrades, SSH key-only). By default the DigitalOcean metrics agent (`do-agent`) is enabled via `--enable-monitoring` ([DO docs](https://docs.digitalocean.com/products/monitoring/how-to/install-metrics-agent/)); pass `--no-monitoring` or set `digitalocean.monitoring: false` to skip.
 
 ```bash
 dk digoc cloud-config print --timezone Asia/Dili
@@ -81,27 +90,40 @@ dk digoc droplets create my-host --project my-do-project --dry-run
 dk digoc droplets create my-host --wait   # uses digitalocean.* from tooling.yaml
 ```
 
-By default, **all SSH keys** on your DigitalOcean account are embedded (via host `doctl compute ssh-key list`). Override with `--ssh-key` (repeatable) or `digitalocean.ssh_keys` in `tooling.yaml`.
+By default, **all SSH keys** on your DigitalOcean account are embedded (via host `doctl compute ssh-key list`). Override with `--ssh-key` (repeatable) or `digitalocean.ssh_keys` in `tooling.yaml`. DO Insights metrics use `--enable-monitoring` by default (complements Zabbix; see [ZABBIX_README.md](ZABBIX_README.md)).
 
 ### Linking droplets to `dk` environments
 
-In each remote env’s `docker/envs/<env>/info.yaml`, set:
+By default the DigitalOcean droplet name is **`{project.name}-{env}`** from `tooling.yaml` and the deploy env folder (e.g. `catalpa-site-prod`). Override in `docker/envs/<env>/info.yaml`:
 
 ```yaml
 digitalocean:
-  droplet_name: my-hostname
-  ssh_user: root   # optional
+  droplet_name: my-hostname   # optional
+  ssh_user: root              # optional
+  disabled: false             # true: manual docker_host only (no droplet / DO DNS API)
+  size: s-2vcpu-4gb           # optional; used by `dk <env> host create`
+  region: sgp1                # optional; used by `dk <env> host create`
+  dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300; e.g. 3600 for prod)
 ```
 
-After creating the droplet:
+For `host create`, resolution order is **CLI flag → env `info.yaml` → `tooling.yaml`** for `size` and `region`.
+
+Provision and link a new droplet:
 
 ```bash
-dk digoc droplets create --for-env prod --wait
-dk prod host              # print suggested docker_host
-dk prod host --write      # patch info.yaml
+dk prod host create       # create droplet, wait, patch docker_host, sync DNS A records on DO zones
+dk prod host              # verify droplet + site_origin DNS (DO API + public resolution)
+dk prod host --write      # refresh docker_host from droplet public IPv4
 dk digoc droplets list    # includes Env column when tooling.yaml is present
-dk digoc droplets suggest-env prod   # same as dk prod host
 ```
+
+After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted.
+
+**Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` is set, it verifies (1) DigitalOcean DNS API — A records on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each `site_origin` hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
+
+**Non-DO or manual host:** Set `digitalocean.disabled: true` in `docker/envs/<env>/info.yaml` and maintain `docker_host` + `site_origin`. `dk <env> host` skips droplet lookup and DO API DNS; it checks public DNS only. `host create` and `host --write` are not available in this mode. Without doctl but with `docker_host` set, behavior matches the disabled path (public DNS when `site_origin` is set).
+
+**Caveats:** Public DNS uses the machine’s resolver (VPN, `/etc/hosts`, caching). A CDN or proxy in front of the origin can make the public check fail while DO API records are correct.
 
 ### Backup and monitoring
 

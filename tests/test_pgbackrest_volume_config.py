@@ -8,9 +8,11 @@ from catalpa_tooling.pgbackrest_volume_config import (
     caddy_data_volume_name,
     conflict_error_message,
     django_media_volume_name,
+    ensure_pgbackrest_conf_before_restore,
     ensure_postgres_data_volume,
     external_stack_volume_names,
     minimal_pgbackrest_baseline,
+    pgbackrest_managed_conf_materialized,
     pgdata_volume_mount,
     postgres_data_volume_name,
     postgres_image_from_env,
@@ -239,6 +241,96 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             subprocess.CalledProcessError(1, ["docker", "volume", "create"]),
         ]
         self.assertEqual(ensure_postgres_data_volume({}), 1)
+
+
+class TestPgbackrestManagedConfMaterialized(unittest.TestCase):
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_true_when_probe_succeeds(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        env = {"PGBR_S3_READ_STANZA": "main", "PGBR_S3_READ_BUCKET": "b"}
+        self.assertTrue(pgbackrest_managed_conf_materialized(env))
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_false_when_probe_fails(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1)
+        env = {"PGBR_S3_READ_STANZA": "main", "PGBR_S3_READ_BUCKET": "b"}
+        self.assertFalse(pgbackrest_managed_conf_materialized(env))
+
+    def test_false_in_none_mode(self) -> None:
+        self.assertFalse(pgbackrest_managed_conf_materialized({}))
+
+
+class TestEnsurePgbackrestConfBeforeRestore(unittest.TestCase):
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=True,
+    )
+    def test_skips_when_already_materialized(self, _mock_mat: MagicMock) -> None:
+        self.assertEqual(ensure_pgbackrest_conf_before_restore({}), 0)
+
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=False,
+    )
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.materialize_configs",
+        return_value=0,
+    )
+    @patch(
+        "catalpa_tooling.cli_confirm.confirm_yes_default_no",
+        return_value=True,
+    )
+    @patch("catalpa_tooling.pgbackrest_volume_config.resolve_mode", return_value="read")
+    def test_runs_configure_after_yes(
+        self,
+        _mode: MagicMock,
+        _confirm: MagicMock,
+        mock_mat_cfg: MagicMock,
+        _mock_ready: MagicMock,
+    ) -> None:
+        env = {"PGBR_S3_READ_STANZA": "main"}
+        self.assertEqual(ensure_pgbackrest_conf_before_restore(env), 0)
+        mock_mat_cfg.assert_called_once()
+
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=False,
+    )
+    @patch(
+        "catalpa_tooling.cli_confirm.confirm_yes_default_no",
+        return_value=False,
+    )
+    @patch("catalpa_tooling.pgbackrest_volume_config.resolve_mode", return_value="read")
+    def test_cancelled_when_user_declines(
+        self,
+        _mode: MagicMock,
+        _confirm: MagicMock,
+        _mock_ready: MagicMock,
+    ) -> None:
+        env = {"PGBR_S3_READ_STANZA": "main"}
+        self.assertEqual(ensure_pgbackrest_conf_before_restore(env), 1)
+
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=False,
+    )
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.materialize_configs",
+        return_value=0,
+    )
+    @patch("catalpa_tooling.pgbackrest_volume_config.resolve_mode", return_value="read")
+    def test_auto_configure_with_skip_confirm(
+        self,
+        _mode: MagicMock,
+        mock_mat_cfg: MagicMock,
+        _mock_ready: MagicMock,
+    ) -> None:
+        env = {"PGBR_S3_READ_STANZA": "main"}
+        self.assertEqual(
+            ensure_pgbackrest_conf_before_restore(env, skip_configure_confirm=True),
+            0,
+        )
+        mock_mat_cfg.assert_called_once()
 
 
 class TestPgdataVolumeMount(unittest.TestCase):

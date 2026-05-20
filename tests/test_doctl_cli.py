@@ -130,6 +130,89 @@ def test_droplets_create_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created == ["my-host"]
 
 
+def test_droplets_create_for_env_default_name_delegates(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: prod\n", encoding="utf-8")
+    (tmp_path / "tooling.yaml").write_text(
+        "project:\n  name: catalpa-site\n  root_marker: tooling.yaml\n"
+        "paths:\n  backend: b\n  frontend: b\n  scripts: s\n  env_local: e\n"
+        "  email_backend_dir: m\n  fetch_db_dump: d\n"
+        "  deploy:\n    envs_dir: docker/envs\n    images_config: i.yaml\n"
+        "    default_compose: c.yaml\n    dev_compose: d.yaml\n"
+        "    credentials_optional_envs: []\n"
+        "stack:\n  compose_project_default: x\n  services:\n    web: w\n    proxy: p\n    db: d\n"
+        "  images:\n    registry_key: r\n    components:\n      web: w\n      proxy: p\n      db: d\n"
+        "  healthcheck:\n    service: w\n    url: http://localhost/\n"
+        "ops:\n  install_prefix: /opt\n  config_dir: /etc\n  systemd_unit_prefix: x-\n"
+        "  transfer_workdir: .t\n  default_db_container: db\n"
+        "  pgbackrest:\n    postgres_conf: a\n    pgbackrest_conf: b\n"
+        "    default_registry: ghcr.io/x\n    restore_temp_prefix: r_\n"
+        "  zabbix:\n    unit_name: z.service\n    userparams_file: z.conf\n"
+        "  systemd_units:\n    pgbackrest: []\n    restic: []\n"
+        "    timers_enable_pgbackrest: []\n    timers_enable_restic: []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    delegated: list[str] = []
+
+    def fake_host_create(cfg, env, argv, **kwargs):
+        delegated.append(env)
+        return 0
+
+    monkeypatch.setattr(doctl_cli, "cmd_env_host_create", fake_host_create)
+    assert doctl_cli._cmd_droplets_create(
+        ["--for-env", "prod", "--size", "s-1vcpu-1gb", "--region", "sgp1", "--dry-run"]
+    ) == 0
+    assert delegated == ["prod"]
+
+
+def test_droplets_create_for_env_delegates_to_host_create(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "digitalocean:\n  droplet_name: marktwain-prod\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tooling.yaml").write_text(
+        "project:\n  name: t\n  root_marker: tooling.yaml\n"
+        "paths:\n  backend: b\n  frontend: b\n  scripts: s\n  env_local: e\n"
+        "  email_backend_dir: m\n  fetch_db_dump: d\n"
+        "  deploy:\n    envs_dir: docker/envs\n    images_config: i.yaml\n"
+        "    default_compose: c.yaml\n    dev_compose: d.yaml\n"
+        "    credentials_optional_envs: []\n"
+        "stack:\n  compose_project_default: x\n  services:\n    web: w\n    proxy: p\n    db: d\n"
+        "  images:\n    registry_key: r\n    components:\n      web: w\n      proxy: p\n      db: d\n"
+        "  healthcheck:\n    service: w\n    url: http://localhost/\n"
+        "ops:\n  install_prefix: /opt\n  config_dir: /etc\n  systemd_unit_prefix: x-\n"
+        "  transfer_workdir: .t\n  default_db_container: db\n"
+        "  pgbackrest:\n    postgres_conf: a\n    pgbackrest_conf: b\n"
+        "    default_registry: ghcr.io/x\n    restore_temp_prefix: r_\n"
+        "  zabbix:\n    unit_name: z.service\n    userparams_file: z.conf\n"
+        "  systemd_units:\n    pgbackrest: []\n    restic: []\n"
+        "    timers_enable_pgbackrest: []\n    timers_enable_restic: []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    delegated: list[tuple] = []
+
+    def fake_host_create(cfg, env, argv, **kwargs):
+        delegated.append((env, argv, kwargs.get("deprecation_message")))
+        return 0
+
+    monkeypatch.setattr(doctl_cli, "cmd_env_host_create", fake_host_create)
+    assert doctl_cli._cmd_droplets_create(
+        ["--for-env", "prod", "--size", "s-1vcpu-1gb", "--region", "sgp1", "--dry-run"]
+    ) == 0
+    assert delegated[0][0] == "prod"
+    assert "--size" in delegated[0][1]
+    assert "Deprecated" in (delegated[0][2] or "")
+
+
 def test_droplets_create_for_env(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from pathlib import Path
 
@@ -178,10 +261,17 @@ def test_droplets_create_for_env(tmp_path, monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(doctl_cli, "create_droplet", fake_create)
     assert doctl_cli._cmd_droplets_create(
-        ["--for-env", "prod", "--size", "s-1vcpu-1gb", "--region", "sgp1", "--dry-run"]
+        [
+            "marktwain-prod",
+            "--size",
+            "s-1vcpu-1gb",
+            "--region",
+            "sgp1",
+            "--dry-run",
+        ]
     ) == 0
     assert created[0][0] == "marktwain-prod"
-    assert created[0][1]["for_env"] == "prod"
+    assert created[0][1]["for_env"] is None
 
 
 def test_run_digoc_routes_auth_init(monkeypatch: pytest.MonkeyPatch) -> None:

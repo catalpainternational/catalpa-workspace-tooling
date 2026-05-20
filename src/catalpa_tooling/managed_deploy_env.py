@@ -183,6 +183,12 @@ def load_managed_deploy_context(
     site_origin = site_origins[0] if site_origins else ""
     docker_host = info.get("docker_host", "")
 
+    from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
+
+    kh_rc = ensure_ssh_known_host_for_docker_host(str(docker_host or ""))
+    if kh_rc != 0:
+        return None
+
     images_config = _load_images_config(config)
     image_registry = _resolve_image_registry(info, images_config, config)
     effective_tag = _effective_deploy_image_tag(info, tag_override)

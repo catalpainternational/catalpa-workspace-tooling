@@ -588,6 +588,105 @@ def run_pgbackrest_stanza_create(
     return r.returncode
 
 
+def pgbackrest_managed_conf_materialized(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> bool:
+    """True when the pgbackrest_conf volume has the managed drop-in with ``pg1-path``."""
+    mode = resolve_mode(env)
+    if mode == "none":
+        return False
+
+    conf_name = (
+        config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
+    )
+    vol_pgb = volume_names(env, config=config)[1]
+    image = postgres_image_from_env(env, config=config)
+    docker_env = _docker_env_for_remote(env)
+    conf_path = f"/etc/pgbackrest/conf.d/{conf_name}"
+    inner = (
+        f"test -f {shlex.quote(conf_path)}"
+        f' && grep -q "^pg1-path=" {shlex.quote(conf_path)}'
+    )
+    r = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_compose_db_platform_args(),
+            "--entrypoint",
+            "/bin/sh",
+            "-v",
+            f"{vol_pgb}:/etc/pgbackrest/conf.d",
+            image,
+            "-c",
+            inner,
+        ],
+        env=docker_env,
+        capture_output=True,
+        check=False,
+        print_cmd=False,
+    )
+    return r.returncode == 0
+
+
+def ensure_pgbackrest_conf_before_restore(
+    env: dict[str, str],
+    *,
+    config: ProjectConfig | None = None,
+    skip_configure_confirm: bool = False,
+) -> int:
+    """Ensure managed pgBackRest config exists on the deploy host before offline restore.
+
+    When the ``pgbackrest_conf`` volume is empty or only has a baseline ``[global]`` stub,
+    offers to run ``materialize_configs`` (same as ``bkp_db configure``). With
+    ``skip_configure_confirm`` (global ``dk --yes``), configures without a y/n prompt.
+    """
+    if pgbackrest_managed_conf_materialized(env, config=config):
+        return 0
+
+    vol_pgb = volume_names(env, config=config)[1]
+    mode = resolve_mode(env)
+    if mode == "none":
+        print(
+            "pgBackRest restore: pgBackRest config is not on the deploy host "
+            f"({vol_pgb!r} missing managed stanza config). "
+            "Set PGBR_S3_READ_* or PGBR_S3_WRITE_* in credentials, then run "
+            "`dk <env> bkp_db configure`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        "pgBackRest restore: managed config is missing on the deploy host "
+        f"({vol_pgb!r} has no {config.ops.pgbackrest.pgbackrest_conf if config else '50-indmo-managed.conf'} "
+        "with pg1-path).",
+        file=sys.stderr,
+    )
+    if not skip_configure_confirm:
+        from catalpa_tooling.cli_confirm import confirm_yes_default_no
+
+        if not confirm_yes_default_no(
+            "Run `bkp_db configure` now to write pgBackRest config into that volume? (y/N): "
+        ):
+            print(
+                "Cancelled. Run `dk <env> bkp_db configure`, then retry restore.",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        print(
+            "pgBackRest restore: running `bkp_db configure` (--yes)…",
+            file=sys.stderr,
+        )
+
+    return materialize_configs(
+        env,
+        dry_run=False,
+        postgres_image=postgres_image_from_env(env, config=config),
+        config=config,
+    )
+
+
 def materialize_configs(
     env: dict[str, str],
     *,

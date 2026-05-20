@@ -17,6 +17,7 @@ from typing import Literal
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.pgbackrest_volume_config import (
     conflict_error_message,
+    ensure_pgbackrest_conf_before_restore,
     ensure_postgres_data_volume,
     resolve_mode,
     stanza_from_env_for_pgbackrest,
@@ -713,6 +714,16 @@ def run_restore_offline(
     assert stanza
 
     if ensure_postgres_data_volume(env, config=config) != 0:
+        return 1
+
+    if (
+        ensure_pgbackrest_conf_before_restore(
+            env,
+            config=config,
+            skip_configure_confirm=skip_confirm,
+        )
+        != 0
+    ):
         return 1
 
     if not skip_confirm:

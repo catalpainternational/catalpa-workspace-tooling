@@ -212,6 +212,10 @@ class TestRunRestoreOfflineInterrupt(unittest.TestCase):
                 return_value="main",
             ),
             patch("catalpa_tooling.pgbackrest_db.ensure_postgres_data_volume", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.ensure_pgbackrest_conf_before_restore",
+                return_value=0,
+            ),
             patch("catalpa_tooling.pgbackrest_db.db_service_responds", return_value=False),
             patch(
                 "catalpa_tooling.pgbackrest_db.run_interruptible",
@@ -239,6 +243,10 @@ class TestRunRestoreOfflinePostHooks(unittest.TestCase):
             ),
             patch("catalpa_tooling.pgbackrest_db.resolve_stanza", return_value="main"),
             patch("catalpa_tooling.pgbackrest_db.ensure_postgres_data_volume", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.ensure_pgbackrest_conf_before_restore",
+                return_value=0,
+            ),
             patch("catalpa_tooling.pgbackrest_db.db_service_responds", return_value=False),
             patch("catalpa_tooling.pgbackrest_db.run_interruptible") as run_int,
             patch("catalpa_tooling.pgbackrest_db._compose_up_db", return_value=0),

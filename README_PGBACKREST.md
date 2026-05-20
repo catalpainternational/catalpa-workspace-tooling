@@ -59,7 +59,7 @@ Use `pgbr_s3_read_*` → `PGBR_S3_READ_*` with the same suffixes. **Do not set W
 
 When WRITE-mode `pgbr_s3_write_*` keys are missing, `dk <env> bkp_db` commands that require write access (backup, `configure stanza-create`, `install-systemd`, etc.) can create a Spaces bucket and access key interactively. **`restore` and `configure verify` use READ or WRITE credentials and never auto-provision** — set `pgbr_s3_read_*` on restore-only hosts (e.g. local/dev).
 
-- Host **`doctl`** — Spaces access keys (`doctl spaces keys create`)
+- Host **`doctl`** — Spaces access keys (`doctl spaces keys create`); PAT scopes in [README.md](README.md#digitalocean-pat-scopes)
 - Host **`s3cmd`** — bucket create / existence check (`s3cmd mb`, `s3cmd info`)
 - Host **`sops`** — updates `docker/envs/<env>/credentials.yaml` via `sops set`
 
@@ -159,6 +159,8 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump |
 | `restore [pgBackRest args…]` | Offline pgBackRest restore |
 
+On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `bkp_db configure`** (same as materialize) before the destructive restore confirmation. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
+
 Offline restore may require global `dk --yes` when not attached to a TTY.
 
 After a successful **`restore`** or **`pgrestore`**, the tooling may run project-configured Django management commands (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …`.
@@ -208,5 +210,6 @@ After `install-systemd`, the host has `@CONFIG_DIR@/pgbackrest-backup.env` with 
 | `Could not discover a unique db container` | Stack not up, multiple Postgres containers, or set `pgbr_db_container`. |
 | Archive still off after deploy | Run `bkp_db configure` or `up --provision`; entrypoint may not overwrite provisioned drop-ins. |
 | `stanza-create` fails on empty PGDATA | Start `db` once so initdb creates `global/pg_control`, then retry. |
+| `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
 
 App-specific Postgres image and compose notes belong in the consumer repo (e.g. `docker/postgres/README.md`).

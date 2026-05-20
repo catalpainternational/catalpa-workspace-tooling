@@ -44,6 +44,22 @@ def _require_str(data: dict[str, Any], key: str, *, section: str = "") -> str:
     return s
 
 
+def _optional_bool(data: dict[str, Any], key: str, *, default: bool) -> bool:
+    if key not in data or data[key] is None:
+        return default
+    raw = data[key]
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and raw in (0, 1):
+        return bool(raw)
+    s = str(raw).strip().lower()
+    if s in ("true", "yes", "1", "on"):
+        return True
+    if s in ("false", "no", "0", "off"):
+        return False
+    raise ProjectConfigError(f"digitalocean.{key} must be a boolean (got {raw!r})")
+
+
 def _optional_str(data: dict[str, Any], key: str) -> str | None:
     if key not in data or data[key] is None or data[key] is False:
         return None
@@ -212,6 +228,7 @@ class DigitalOceanConfig:
     image: str | None
     ssh_keys: tuple[str, ...] | None
     spaces: SpacesConfig | None = None
+    monitoring: bool = True
 
 
 @dataclass(frozen=True)
@@ -464,6 +481,7 @@ def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
         image=_optional_str(do_raw, "image"),
         ssh_keys=ssh_keys,
         spaces=spaces,
+        monitoring=_optional_bool(do_raw, "monitoring", default=True),
     )
 
 
