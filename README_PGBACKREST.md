@@ -55,6 +55,26 @@ Use `pgbr_s3_read_*` → `PGBR_S3_READ_*` with the same suffixes. **Do not set W
 
 `stanza-create` and scheduled systemd backups require WRITE mode only.
 
+## Auto-provision (DigitalOcean Spaces)
+
+When WRITE-mode `pgbr_s3_write_*` keys are missing, `dk <env> bkp_db` commands that need S3 (backup, `configure verify`, `install-systemd`, etc.) can create a Spaces bucket and access key interactively:
+
+- Host **`doctl`** — Spaces access keys (`doctl spaces keys create`)
+- Host **`s3cmd`** — bucket create / existence check (`s3cmd mb`, `s3cmd info`)
+- Host **`sops`** — updates `docker/envs/<env>/credentials.yaml` via `sops set`
+
+Defaults come from `tooling.yaml` (`digitalocean.region`, optional `digitalocean.spaces.*`). Example:
+
+```yaml
+digitalocean:
+  region: sgp1
+  spaces:
+    bucket: marktwain
+    pgbackrest_repo_path: /marktwain/prod/pgbackrest
+```
+
+Override binaries with `DOCTL_BIN` / `S3CMD_BIN`. Use global `--yes` to accept provisioning without typing `y`. `bkp_db pgdump` / bare `configure` do not trigger provisioning.
+
 ## `tooling.yaml` (`ops.pgbackrest`)
 
 ```yaml

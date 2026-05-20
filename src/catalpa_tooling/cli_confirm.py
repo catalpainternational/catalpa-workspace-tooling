@@ -22,3 +22,13 @@ def confirm_by_typing_env_name(env_name: str) -> bool:
     except EOFError:
         return False
     return line.strip() == env_name
+
+
+def confirm_yes_default_no(prompt: str) -> bool:
+    """Print ``prompt`` on stderr; return True only if user answers y/yes (case-insensitive)."""
+    print(prompt, file=sys.stderr, end="")
+    try:
+        line = input()
+    except EOFError:
+        return False
+    return line.strip().lower() in ("y", "yes")

@@ -58,6 +58,12 @@ from catalpa_tooling.systemd_remote_install import (
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
+from catalpa_tooling.doctl_spaces_provision import (
+    ensure_spaces_backup_credentials,
+    needs_pgbr_write,
+    pgbr_write_configured,
+    restic_write_configured,
+)
 
 
 def _top_level_zbx_env_from_info(info: dict | None) -> dict[str, str]:
@@ -498,6 +504,19 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         )
 
     if compose_args and compose_args[0] == "bkp_files":
+        if not restic_write_configured(env_add):
+            rc = ensure_spaces_backup_credentials(
+                config,
+                env_name,
+                env_add,
+                creds_path,
+                target="restic",
+                command_label=f"dk {env_name} bkp_files",
+                dry_run=bool(getattr(ns, "dry_run", False)),
+                yes=bool(getattr(ns, "yes", False)),
+            )
+            if rc != 0:
+                return rc
         raw_extra = compose_args[1:]
         if raw_extra and raw_extra[0] == "install-systemd":
             return cmd_install_systemd_backups(
@@ -582,6 +601,21 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if compose_args and compose_args[0] == "bkp_db":
         extra = compose_args[1:]
+        bkp_sub = extra[0] if extra else ""
+        bkp_tail = extra[1:] if extra else []
+        if bkp_sub and needs_pgbr_write(bkp_sub, bkp_tail) and not pgbr_write_configured(env_add):
+            rc = ensure_spaces_backup_credentials(
+                config,
+                env_name,
+                env_add,
+                creds_path,
+                target="pgbackrest",
+                command_label=f"dk {env_name} bkp_db {bkp_sub}",
+                dry_run=bool(getattr(ns, "dry_run", False)),
+                yes=bool(getattr(ns, "yes", False)),
+            )
+            if rc != 0:
+                return rc
         if not extra:
             print(
                 "usage: bkp_db configure [verify|stanza-create] | "

@@ -61,6 +61,14 @@ Use a restic backend URL (`s3:…`), not a bare `https://…` URL. Use a **diffe
 
 Optional: `restic_verbose` → `RESTIC_VERBOSE` (or pass `-v` on CLI for one-off commands).
 
+## Auto-provision (DigitalOcean Spaces)
+
+When WRITE-mode `restic_write_*` keys are missing, `dk <env> bkp_files …` can prompt to create repository credentials:
+
+- Uses the same Spaces bucket defaults as pgBackRest (`digitalocean.spaces` in `tooling.yaml`)
+- If `pgbr_s3_write_*` is already configured, reuses that bucket and access key; only restic keys are written
+- Otherwise requires **`doctl`**, **`s3cmd`**, and **`sops`** (see [README_PGBACKREST.md](README_PGBACKREST.md))
+
 ## `bkp_files` subcommands
 
 | Subcommand | Description |
