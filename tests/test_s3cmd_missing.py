@@ -81,10 +81,6 @@ def test_provision_exits_when_s3cmd_missing(
         lambda: Path("/usr/bin/doctl"),
     )
     monkeypatch.setattr(
-        "catalpa_tooling.doctl_spaces_provision.ensure_sops_available",
-        lambda: None,
-    )
-    monkeypatch.setattr(
         "catalpa_tooling.doctl_spaces_provision.ensure_s3cmd_available",
         lambda: (_ for _ in ()).throw(S3cmdNotFoundError("missing")),
     )

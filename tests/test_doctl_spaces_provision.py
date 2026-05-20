@@ -118,7 +118,6 @@ def test_provision_pgbackrest_calls_s3cmd_and_doctl(
 
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.ensure_doctl_available", lambda: Path("/doctl"))
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.ensure_s3cmd_available", lambda: Path("/s3cmd"))
-    monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.ensure_sops_available", lambda: None)
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.run_s3cmd", fake_s3cmd)
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.run_doctl_json", fake_doctl_json)
     def fake_run_doctl(args, **kwargs):
@@ -128,10 +127,6 @@ def test_provision_pgbackrest_calls_s3cmd_and_doctl(
 
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.run_doctl", fake_run_doctl)
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.apply_credential_sets", fake_apply)
-    monkeypatch.setattr(
-        "catalpa_tooling.sops_credentials.refresh_env_credentials",
-        lambda env, path: env.update({"PGBR_S3_WRITE_BUCKET": "myapp", "PGBR_S3_WRITE_KEY": "AK123"}),
-    )
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
         "catalpa_tooling.doctl_spaces_provision.confirm_yes_default_no",
@@ -184,13 +179,8 @@ def test_provision_restic_reuses_pgbr_keys(
         sops_sets.update(values)
 
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.ensure_doctl_available", lambda: Path("/doctl"))
-    monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.ensure_sops_available", lambda: None)
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.run_doctl_json", fake_doctl_json)
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.apply_credential_sets", fake_apply)
-    monkeypatch.setattr(
-        "catalpa_tooling.sops_credentials.refresh_env_credentials",
-        lambda env, path: None,
-    )
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
         "catalpa_tooling.doctl_spaces_provision.confirm_yes_default_no",
