@@ -34,7 +34,7 @@ write_files:
       // Docker CE from download.docker.com (not Ubuntu archives). Security fixes
       // ship on the stable channel; Origins-Pattern is additive with 50unattended-upgrades.
       Unattended-Upgrade::Origins-Pattern {
-          "origin=Docker archive=${distro_codename}";
+          "origin=Docker,archive=${distro_codename}";
       };
 runcmd:
   - install -m 0755 -d /etc/apt/keyrings

@@ -56,4 +56,4 @@ def test_render_droplet_bootstrap_unattended_reboot() -> None:
 def test_render_droplet_bootstrap_unattended_docker_origin() -> None:
     text = render_droplet_bootstrap()
     assert "53catalpa-unattended-docker.conf" in text
-    assert "origin=Docker archive=${distro_codename}" in text
+    assert "origin=Docker,archive=${distro_codename}" in text
