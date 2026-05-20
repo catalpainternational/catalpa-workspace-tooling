@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from datetime import datetime, timezone
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
@@ -21,6 +22,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
     stanza_from_env_for_pgbackrest,
 )
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
+from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.run_cmd import run_interruptible
 
@@ -60,9 +62,18 @@ def validate_pgbackrest_env(env: dict[str, str]) -> str | None:
     return None
 
 
-def _log_level_argv(env: dict[str, str]) -> list[str]:
+def _resolve_pgbr_console_level(env: dict[str, str], *, for_restore: bool = False) -> str:
+    v = (env.get("PGBR_LOG_LEVEL_CONSOLE") or "").strip()
+    if v:
+        return v
+    if for_restore:
+        return (env.get("PGBR_RESTORE_LOG_LEVEL_CONSOLE") or "").strip()
+    return ""
+
+
+def _log_level_argv(env: dict[str, str], *, for_restore: bool = False) -> list[str]:
     out: list[str] = []
-    if (v := (env.get("PGBR_LOG_LEVEL_CONSOLE") or "").strip()):
+    if (v := _resolve_pgbr_console_level(env, for_restore=for_restore)):
         out.append(f"--log-level-console={v}")
     if (v := (env.get("PGBR_LOG_LEVEL_STDERR") or "").strip()):
         out.append(f"--log-level-stderr={v}")
@@ -518,18 +529,23 @@ def _compose_stop_db(compose_file: str, env: dict[str, str]) -> int:
     ).returncode
 
 
-def _compose_up_db(compose_file: str, env: dict[str, str]) -> int:
-    """``docker compose up -d db``."""
+def _compose_up_db(
+    compose_file: str, env: dict[str, str], *, force_recreate: bool = False
+) -> int:
+    """``docker compose up -d db`` (optionally ``--force-recreate`` after offline restore)."""
+    argv = [
+        "docker",
+        "compose",
+        "-f",
+        compose_file,
+        "up",
+        "-d",
+    ]
+    if force_recreate:
+        argv.append("--force-recreate")
+    argv.append("db")
     return run_cmd(
-        [
-            "docker",
-            "compose",
-            "-f",
-            compose_file,
-            "up",
-            "-d",
-            "db",
-        ],
+        argv,
         env=_merged_process_env(env),
         stdin=subprocess.DEVNULL,
         check=False,
@@ -595,11 +611,15 @@ def wait_db_logs_for_recovery_ready(
     env: dict[str, str],
     *,
     timeout_sec: int,
+    since: str | None = None,
 ) -> tuple[bool, str]:
     """Follow ``docker compose logs -f db`` until ``_PG_RECOVERY_READY_LOG`` appears or timeout.
 
     Each log line is copied to stderr unless ``PGBR_RESTORE_SILENCE_DB_LOGS`` is truthy in the
     merged process environment (see ``_restore_db_logs_silenced``).
+
+    When ``since`` is set (RFC3339 or relative, e.g. ``2026-05-20T03:14:00Z``), only log lines
+    after that timestamp are considered — avoids matching a previous container start.
 
     Returns ``(True, "")`` on success, or ``(False, reason)`` on failure/timeout.
     """
@@ -612,8 +632,10 @@ def wait_db_logs_for_recovery_ready(
         compose_file,
         "logs",
         "-f",
-        "db",
     ]
+    if since:
+        argv.extend(["--since", since])
+    argv.append("db")
     proc = subprocess.Popen(
         argv,
         env=merged,
@@ -681,7 +703,7 @@ def run_restore_offline(
     to ``1`` / ``true`` / ``yes`` / ``on`` to disable that stream.
     ``--delta`` allows a non-empty PGDATA and is typically faster when data already overlaps the backup.
     ``extra_pgbackrest_args`` are appended (e.g. PITR: ``--type=time``, ``--target=…``); each token is shell-quoted.
-    Console logging defaults to ``--log-level-console=info`` unless ``PGBR_LOG_LEVEL_CONSOLE`` is set.
+    Console level: ``PGBR_LOG_LEVEL_CONSOLE``, else ``PGBR_RESTORE_LOG_LEVEL_CONSOLE`` (from ``tooling.yaml`` / ``info.yaml``).
     """
     err = validate_pgbackrest_env(env)
     if err:
@@ -730,7 +752,7 @@ def run_restore_offline(
     extras = tuple(extra_pgbackrest_args or ())
     extra_shell = " ".join(shlex.quote(a) for a in extras)
     inner = (
-        f"pgbackrest {_log_level_argv_shell(env, default_console_level='info')}"
+        f"pgbackrest {_log_level_argv_shell(env, for_restore=True)}"
         f"--stanza={shlex.quote(stanza)} restore --delta"
     )
     if extra_shell:
@@ -772,21 +794,24 @@ def run_restore_offline(
         return r.returncode
 
     print(
-        "pgBackRest restore: pgBackRest finished; starting `db` and waiting for PostgreSQL "
+        "pgBackRest restore: pgBackRest finished; recreating `db` and waiting for PostgreSQL "
         "recovery (log line: database system is ready to accept connections)…",
         file=sys.stderr,
     )
-    rc_up = _compose_up_db(compose_file, env)
+    logs_since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rc_up = _compose_up_db(compose_file, env, force_recreate=True)
     if rc_up != 0:
         print(
-            f"pgBackRest restore: `docker compose up -d db` failed (exit {rc_up}). "
+            f"pgBackRest restore: `docker compose up -d --force-recreate db` failed (exit {rc_up}). "
             "The data directory was restored; start `db` manually when ready.",
             file=sys.stderr,
         )
         return rc_up
 
     timeout_sec = _restore_recovery_timeout_sec(env)
-    ok, reason = wait_db_logs_for_recovery_ready(compose_file, env, timeout_sec=timeout_sec)
+    ok, reason = wait_db_logs_for_recovery_ready(
+        compose_file, env, timeout_sec=timeout_sec, since=logs_since
+    )
     if not ok:
         print(f"pgBackRest restore: {reason}", file=sys.stderr)
         print(
@@ -799,23 +824,26 @@ def run_restore_offline(
         "pgBackRest restore: PostgreSQL finished recovery and is ready to accept connections.",
         file=sys.stderr,
     )
+    if config is not None:
+        rc_hooks = run_post_db_restore_manage_commands(
+            config,
+            compose_file=compose_file,
+            env_add=env,
+            env_name=env_name,
+        )
+        if rc_hooks != 0:
+            return rc_hooks
     return 0
 
 
 def _log_level_argv_shell(
     env: dict[str, str],
     *,
-    default_console_level: str | None = None,
+    for_restore: bool = False,
 ) -> str:
-    """Shell fragment for optional log-level flags inside ``sh -c`` (trailing space if non-empty).
-
-    ``default_console_level`` is used for ``--log-level-console`` only when ``PGBR_LOG_LEVEL_CONSOLE``
-    is unset (e.g. ``bkp_db restore`` defaults to ``info`` so progress is visible).
-    """
+    """Shell fragment for optional log-level flags inside ``sh -c`` (trailing space if non-empty)."""
     parts: list[str] = []
-    v = (env.get("PGBR_LOG_LEVEL_CONSOLE") or "").strip()
-    if not v and default_console_level:
-        v = default_console_level.strip()
+    v = _resolve_pgbr_console_level(env, for_restore=for_restore)
     if v:
         parts.append(shlex.quote(f"--log-level-console={v}"))
     if (v := (env.get("PGBR_LOG_LEVEL_STDERR") or "").strip()):

@@ -17,6 +17,7 @@ from catalpa_tooling.managed_deploy_env import (
     print_managed_deploy_header,
     resolve_compose_file_from_info,
 )
+from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.pgbackrest_db import (
     db_service_responds,
@@ -61,6 +62,7 @@ from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 from catalpa_tooling.doctl_spaces_provision import (
     ensure_spaces_backup_credentials,
     needs_pgbr_write,
+    needs_restic_write,
     pgbr_write_configured,
     restic_write_configured,
 )
@@ -238,7 +240,7 @@ def _dry_run_exits_before_compose_env(peek: list[str]) -> bool:
 
 
 def _confirm_deploy_wipe(env_name: str, site_origin: str, docker_host: str) -> bool:
-    """Interactive guard: user must type the environment name exactly."""
+    """Interactive guard: user must type the environment name."""
     print(
         "WARNING: This will run `docker compose down -v` on the deployment host, then remove "
         "external volumes for PostgreSQL data and Django media (database + uploads). "
@@ -504,7 +506,13 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         )
 
     if compose_args and compose_args[0] == "bkp_files":
-        if not restic_write_configured(env_add):
+        bkp_files_extra = compose_args[1:]
+        bkp_files_sub = bkp_files_extra[0] if bkp_files_extra else ""
+        if (
+            bkp_files_sub
+            and needs_restic_write(bkp_files_sub)
+            and not restic_write_configured(env_add)
+        ):
             rc = ensure_spaces_backup_credentials(
                 config,
                 env_name,
@@ -538,7 +546,8 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
             )
             print(
                 "  Optional: repeat -v or --verbose for restic verbosity. "
-                "Or set restic_verbose in credentials (maps to RESTIC_VERBOSE).",
+                "Defaults: tooling.yaml ops.restic and docker/envs/<env>/info.yaml "
+                "(pgbackrest: / restic: blocks or env:).",
                 file=sys.stderr,
             )
             print(
@@ -626,6 +635,11 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
             )
             print(
                 "  Offline restore: use global --yes to skip confirmation in non-interactive use.",
+                file=sys.stderr,
+            )
+            print(
+                "  Log levels: tooling.yaml ops.pgbackrest and info.yaml pgbackrest: / env: "
+                "(pgbr_log_level_console, …).",
                 file=sys.stderr,
             )
             return 1
@@ -738,7 +752,15 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            return run_pg_restore(compose_file, env_add, extra[1:])
+            rc = run_pg_restore(compose_file, env_add, extra[1:])
+            if rc != 0:
+                return rc
+            return run_post_db_restore_manage_commands(
+                config,
+                compose_file=compose_file,
+                env_add=env_add,
+                env_name=env_name,
+            )
         print(f"Unknown bkp_db subcommand: {sub}", file=sys.stderr)
         print(
             "Use: bkp_db configure [verify|stanza-create] | "

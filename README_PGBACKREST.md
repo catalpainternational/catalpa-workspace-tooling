@@ -57,7 +57,7 @@ Use `pgbr_s3_read_*` → `PGBR_S3_READ_*` with the same suffixes. **Do not set W
 
 ## Auto-provision (DigitalOcean Spaces)
 
-When WRITE-mode `pgbr_s3_write_*` keys are missing, `dk <env> bkp_db` commands that need S3 (backup, `configure verify`, `install-systemd`, etc.) can create a Spaces bucket and access key interactively:
+When WRITE-mode `pgbr_s3_write_*` keys are missing, `dk <env> bkp_db` commands that require write access (backup, `configure stanza-create`, `install-systemd`, etc.) can create a Spaces bucket and access key interactively. **`restore` and `configure verify` use READ or WRITE credentials and never auto-provision** — set `pgbr_s3_read_*` on restore-only hosts (e.g. local/dev).
 
 - Host **`doctl`** — Spaces access keys (`doctl spaces keys create`)
 - Host **`s3cmd`** — bucket create / existence check (`s3cmd mb`, `s3cmd info`)
@@ -84,9 +84,14 @@ ops:
     pgbackrest_conf: 50-myapp-managed.conf            # drop-in on pgbackrest_conf volume
     default_registry: ghcr.io/org/myapp-postgres
     restore_temp_prefix: myapp_pgrestore_
+    data_volume: pgdata                               # compose volumes: key (default postgres_data)
+    pg1_path: /var/lib/postgresql/18/docker           # PG 18+ image PGDATA (see entrypoint)
+    # log_level_console: info
+    # log_level_stderr: warn
+    # restore_log_level_console: info
 ```
 
-Filenames must match what your Postgres image and compose volumes expect.
+Filenames must match what your Postgres image and compose volumes expect. When the `db` service mounts `pgdata:/var/lib/postgresql`, set `pg1_path` to the real cluster directory (official Postgres 18+ images use `/var/lib/postgresql/<major>/docker`, not `…/data`). Override per deploy with env `PGBR_PG1_PATH` if needed. After changing `pg1_path`, run `bkp_db configure` again so the `pgbackrest_conf` volume picks up the new `pg1-path`.
 
 ## Apply configuration to a new host
 
@@ -126,6 +131,18 @@ dk prod bkp_db install-systemd --enable
 
 Without any `PGBR_S3_WRITE_*`, materialize leaves **WAL archiving off** and a local-repo baseline (suitable for dev).
 
+### Console / stderr log levels
+
+pgBackRest levels: `off`, `error`, `warn`, `info`, `detail`, `debug`, `trace`. Set in **`tooling.yaml`** (`ops.pgbackrest`) and override per host in **`docker/envs/<env>/info.yaml`** (not `credentials.yaml`):
+
+| Location | Keys |
+|----------|------|
+| `tooling.yaml` → `ops.pgbackrest` | `log_level_console`, `log_level_stderr`, `restore_log_level_console` |
+| `info.yaml` → `pgbackrest:` | same |
+| `info.yaml` → `env:` | `pgbr_log_level_console`, `pgbr_log_level_stderr`, `pgbr_restore_log_level_console` |
+
+All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr` when set. Offline **`restore`** uses `restore_log_level_console`, then `log_level_console`, then defaults to **`info`** for console progress. Systemd backup units pick up the same vars when installed via `bkp_db install-systemd` (from the merged deploy env).
+
 ## `bkp_db` subcommands
 
 | Subcommand | Description |
@@ -143,6 +160,23 @@ Without any `PGBR_S3_WRITE_*`, materialize leaves **WAL archiving off** and a lo
 | `restore [pgBackRest args…]` | Offline pgBackRest restore |
 
 Offline restore may require global `dk --yes` when not attached to a TTY.
+
+After a successful **`restore`** or **`pgrestore`**, the tooling may run project-configured Django management commands (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …`.
+
+## Post-restore Django commands (`ops.post_db_restore`)
+
+Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`bkp_db restore`, `bkp_db pgrestore`, `dk transfer` DB leg, and project scripts such as `tools/load_dump.sh`).
+
+```yaml
+ops:
+  post_db_restore:
+    envs: [local, dev, staging]   # optional; omit to run on every env
+    manage_commands:
+      - [sync_wagtail_sites, --profile, "{env_name}"]
+      - migrate --noinput          # string form is split with shlex
+```
+
+Each entry is arguments after `manage.py` (same as `dk <env> manage …`). `{env_name}` is replaced with the deploy env name. The web service is started and health-checked before commands run.
 
 ## Optional tuning (process env)
 

@@ -114,6 +114,17 @@ Topic guides (run `dk <env> …` from the application repo root):
 | Systemd timers on deploy hosts | [README_SYSTEMD.md](README_SYSTEMD.md) |
 | Zabbix Agent 2 | [ZABBIX_README.md](ZABBIX_README.md) |
 
+### `site_origin` in `info.yaml`
+
+Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin`** as a hostname, full URL, or YAML list of either. The `dk` CLI derives:
+
+| Compose env | Value |
+|-------------|--------|
+| `SITE_ORIGIN` | First normalized origin (e.g. `https://catalpa.io`) |
+| `DOMAIN` | Comma+space joined hostnames for Caddy and Django (e.g. `catalpa.io, www.catalpa.io`) |
+
+Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
+
 ## Documentation
 
 | Document | Contents |

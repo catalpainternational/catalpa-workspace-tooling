@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from catalpa_tooling.backup_logging_levels import (
+    BackupLoggingConfigError,
+    parse_optional_pgbr_log_level,
+    parse_optional_restic_verbose,
+)
 from catalpa_tooling.repo_paths import TOOLING_FILENAME, repo_root_from_cwd
 
 DEFAULT_ROOT_MARKER = "pyproject.toml"
@@ -110,6 +116,10 @@ class StackConfig:
     healthcheck: StackHealthcheckConfig
 
 
+# PG 18+ official image layout (see catalpa-postgres-entrypoint.sh); override via tooling.yaml pg1_path.
+DEFAULT_PGBR_PG1_PATH = "/var/lib/postgresql/18/docker"
+
+
 @dataclass(frozen=True)
 class PgbackrestOpsConfig:
     postgres_conf: str
@@ -117,6 +127,10 @@ class PgbackrestOpsConfig:
     default_registry: str
     restore_temp_prefix: str
     data_volume: str
+    pg1_path: str
+    log_level_console: str | None = None
+    log_level_stderr: str | None = None
+    restore_log_level_console: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +138,8 @@ class ResticOpsConfig:
     """Compose volume key restic backs up (``{COMPOSE_PROJECT_NAME}_{data_volume}``)."""
 
     data_volume: str
+    verbose: int | None = None
+    restore_verbose: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +157,19 @@ class SystemdUnitsOpsConfig:
 
 
 @dataclass(frozen=True)
+class PostDbRestoreOpsConfig:
+    """Django ``manage.py`` commands to run after a successful Compose DB restore."""
+
+    envs: tuple[str, ...] | None
+    manage_commands: tuple[tuple[str, ...], ...]
+
+    def applies_to_env(self, env_name: str) -> bool:
+        if self.envs is None:
+            return True
+        return env_name in self.envs
+
+
+@dataclass(frozen=True)
 class OpsConfig:
     install_prefix: str
     config_dir: str
@@ -150,6 +179,7 @@ class OpsConfig:
     restic: ResticOpsConfig
     zabbix: ZabbixOpsConfig
     systemd_units: SystemdUnitsOpsConfig
+    post_db_restore: PostDbRestoreOpsConfig
     default_db_container: str
 
 
@@ -279,6 +309,43 @@ def _parse_string_list(raw: Any, *, field: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _parse_post_db_restore(raw: Any) -> PostDbRestoreOpsConfig:
+    if raw is None:
+        return PostDbRestoreOpsConfig(envs=None, manage_commands=())
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("ops.post_db_restore must be a mapping")
+    envs_raw = raw.get("envs")
+    envs: tuple[str, ...] | None = None
+    if envs_raw is not None:
+        envs = _parse_string_list(envs_raw, field="ops.post_db_restore.envs")
+    cmds_raw = raw.get("manage_commands")
+    if cmds_raw is None:
+        return PostDbRestoreOpsConfig(envs=envs, manage_commands=())
+    if not isinstance(cmds_raw, list):
+        raise ProjectConfigError("ops.post_db_restore.manage_commands must be a list")
+    commands: list[tuple[str, ...]] = []
+    for i, item in enumerate(cmds_raw):
+        field = f"ops.post_db_restore.manage_commands[{i}]"
+        if isinstance(item, str):
+            argv = tuple(shlex.split(item))
+        elif isinstance(item, list):
+            argv_list: list[str] = []
+            for tok in item:
+                if tok is None or isinstance(tok, bool):
+                    raise ProjectConfigError(f"{field}: argv token must be a string")
+                s = str(tok).strip()
+                if not s:
+                    raise ProjectConfigError(f"Empty argv token in {field}")
+                argv_list.append(s)
+            argv = tuple(argv_list)
+        else:
+            raise ProjectConfigError(f"{field} must be a string or list of strings")
+        if not argv:
+            raise ProjectConfigError(f"Empty command in {field}")
+        commands.append(argv)
+    return PostDbRestoreOpsConfig(envs=envs, manage_commands=tuple(commands))
+
+
 def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
     deploy_raw = _require_mapping(paths_raw.get("deploy"), "paths.deploy")
     deploy = DeployPathsConfig(
@@ -400,6 +467,22 @@ def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
     )
 
 
+def _parse_pgbr_log_level_field(raw: dict[str, Any], key: str, *, section: str) -> str | None:
+    field = f"{section}.{key}"
+    try:
+        return parse_optional_pgbr_log_level(raw.get(key), field=field)
+    except BackupLoggingConfigError as e:
+        raise ProjectConfigError(str(e)) from e
+
+
+def _parse_restic_verbose_field(raw: dict[str, Any], key: str, *, section: str) -> int | None:
+    field = f"{section}.{key}"
+    try:
+        return parse_optional_restic_verbose(raw.get(key), field=field)
+    except BackupLoggingConfigError as e:
+        raise ProjectConfigError(str(e)) from e
+
+
 def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
     pg_raw = _require_mapping(ops_raw.get("pgbackrest"), "ops.pgbackrest")
     zabbix_raw = _require_mapping(ops_raw.get("zabbix"), "ops.zabbix")
@@ -455,13 +538,30 @@ def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
                 _optional_str(pg_raw, "data_volume") or "postgres_data",
                 field="ops.pgbackrest.data_volume",
             ),
+            pg1_path=_optional_str(pg_raw, "pg1_path") or DEFAULT_PGBR_PG1_PATH,
+            log_level_console=_parse_pgbr_log_level_field(
+                pg_raw, "log_level_console", section="ops.pgbackrest"
+            ),
+            log_level_stderr=_parse_pgbr_log_level_field(
+                pg_raw, "log_level_stderr", section="ops.pgbackrest"
+            ),
+            restore_log_level_console=_parse_pgbr_log_level_field(
+                pg_raw, "restore_log_level_console", section="ops.pgbackrest"
+            ),
         ),
-        restic=ResticOpsConfig(data_volume=restic_data_volume),
+        restic=ResticOpsConfig(
+            data_volume=restic_data_volume,
+            verbose=_parse_restic_verbose_field(restic_raw, "verbose", section="ops.restic"),
+            restore_verbose=_parse_restic_verbose_field(
+                restic_raw, "restore_verbose", section="ops.restic"
+            ),
+        ),
         zabbix=ZabbixOpsConfig(
             unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
             userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),
         ),
         systemd_units=systemd_units,
+        post_db_restore=_parse_post_db_restore(ops_raw.get("post_db_restore")),
         default_db_container=_require_str(ops_raw, "default_db_container", section="ops"),
     )
 

@@ -9,6 +9,7 @@ import pytest
 from catalpa_tooling.doctl_spaces_provision import (
     ensure_spaces_backup_credentials,
     needs_pgbr_write,
+    needs_restic_write,
     pgbr_write_configured,
     restic_write_configured,
     spaces_backup_defaults,
@@ -21,13 +22,29 @@ from catalpa_tooling.config import load_project_config
     [
         ("backup", ["full"], True),
         ("configure", [], False),
-        ("configure", ["verify"], True),
+        ("configure", ["verify"], False),
+        ("configure", ["stanza-create"], True),
         ("pgdump", [], False),
+        ("restore", [], False),
         ("install-systemd", [], True),
     ],
 )
 def test_needs_pgbr_write(sub: str, tail: list[str], expected: bool) -> None:
     assert needs_pgbr_write(sub, tail) is expected
+
+
+@pytest.mark.parametrize(
+    ("sub", "expected"),
+    [
+        ("backup", True),
+        ("init", True),
+        ("restore", False),
+        ("snapshots", False),
+        ("install-systemd", True),
+    ],
+)
+def test_needs_restic_write(sub: str, expected: bool) -> None:
+    assert needs_restic_write(sub) is expected
 
 
 def test_pgbr_write_configured_complete() -> None:

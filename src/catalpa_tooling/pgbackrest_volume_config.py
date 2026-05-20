@@ -3,14 +3,34 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
 from typing import Literal
 
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import DEFAULT_PGBR_PG1_PATH, ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
-PG_DATA_PATH = "/var/lib/postgresql/data"
+
+# PG 18+ data directory when compose mounts ``pgdata:/var/lib/postgresql`` (not …/data).
+_PG18_PGDATA_RE = re.compile(r"^/var/lib/postgresql/\d+/")
+
+
+def postgres_pg1_path(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
+    """Cluster data directory path inside the ``db`` container (pgBackRest ``pg1-path``)."""
+    explicit = (env.get("PGBR_PG1_PATH") or "").strip()
+    if explicit:
+        return explicit
+    if config is not None:
+        return config.ops.pgbackrest.pg1_path
+    return DEFAULT_PGBR_PG1_PATH
+
+
+def pgdata_volume_mount(pg1_path: str) -> str:
+    """Docker ``-v`` mount target for the PGDATA named volume (must match ``compose.yml``)."""
+    if _PG18_PGDATA_RE.match(pg1_path):
+        return "/var/lib/postgresql"
+    return pg1_path
 
 PREFIX_WRITE = "PGBR_S3_WRITE_"
 PREFIX_READ = "PGBR_S3_READ_"
@@ -107,8 +127,12 @@ def _pgdata_has_control_file(
     docker_env: dict[str, str],
     image: str,
     data_volume: str,
+    *,
+    pg1_path: str,
 ) -> bool:
     """True if the named volume contains an initialized cluster (``global/pg_control``)."""
+    mount = pgdata_volume_mount(pg1_path)
+    control = f"{pg1_path}/global/pg_control"
     r = run_cmd(
         [
             "docker",
@@ -118,10 +142,10 @@ def _pgdata_has_control_file(
             "--entrypoint",
             "/bin/sh",
             "-v",
-            f"{data_volume}:/var/lib/postgresql/data",
+            f"{data_volume}:{mount}",
             image,
             "-c",
-            "test -f /var/lib/postgresql/data/global/pg_control",
+            f"test -f {shlex.quote(control)}",
         ],
         env=docker_env,
         capture_output=True,
@@ -182,6 +206,8 @@ def render_pgbackrest_ini(
     mode: Literal["write", "read"],
     vars_map: dict[str, str],
     env: dict[str, str] | None = None,
+    *,
+    pg1_path: str | None = None,
 ) -> str:
     """INI content for ``50-indmo-managed.conf`` (stanza + repo1 S3).
 
@@ -220,11 +246,12 @@ def render_pgbackrest_ini(
     lines.append(f"compress-level={_env_str(env, 'PGBR_COMPRESS_LEVEL', '3')}")
 
     stanza = vars_map["STANZA"]
+    data_path = (pg1_path or DEFAULT_PGBR_PG1_PATH).strip()
     lines.extend(
         [
             "",
             f"[{stanza}]",
-            f"pg1-path={PG_DATA_PATH}",
+            f"pg1-path={data_path}",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -522,7 +549,9 @@ def run_pgbackrest_stanza_create(
     docker_env = _docker_env_for_remote(env)
     vol_pgb = volume_names(env)[1]
     vol_data = postgres_data_volume_name(env, config=config)
-    if not _pgdata_has_control_file(docker_env, image, vol_data):
+    pg1 = postgres_pg1_path(env, config=config)
+    mount = pgdata_volume_mount(pg1)
+    if not _pgdata_has_control_file(docker_env, image, vol_data, pg1_path=pg1):
         log(
             "pgBackRest stanza-create: PostgreSQL PGDATA is missing or not initialized "
             f"(no global/pg_control in Docker volume {vol_data!r}). "
@@ -546,7 +575,7 @@ def run_pgbackrest_stanza_create(
             "-v",
             f"{vol_pgb}:/etc/pgbackrest/conf.d",
             "-v",
-            f"{vol_data}:/var/lib/postgresql/data",
+            f"{vol_data}:{mount}",
             image,
             "-c",
             f"pgbackrest --stanza={sq} --no-online stanza-create",
@@ -620,7 +649,8 @@ def materialize_configs(
             log(missing_err)
             return 1
 
-        pgbr_content = render_pgbackrest_ini(mode, vars_map, env)
+        pg1 = postgres_pg1_path(env, config=config)
+        pgbr_content = render_pgbackrest_ini(mode, vars_map, env, pg1_path=pg1)
         _docker_run_cp(vol_pgb, pgbackrest_conf, pgbr_content, docker_env, image=image)
 
         if mode == "write":

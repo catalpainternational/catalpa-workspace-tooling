@@ -22,7 +22,22 @@ def test_provision_exits_when_s3cmd_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> None:
-    from catalpa_tooling.config import ProjectConfig, ProjectMetaConfig, PathsConfig, DeployPathsConfig, StackConfig, StackServicesConfig, StackImagesConfig, StackHealthcheckConfig, OpsConfig, PgbackrestOpsConfig, ResticOpsConfig, ZabbixOpsConfig, SystemdUnitsOpsConfig
+    from catalpa_tooling.config import (
+        DeployPathsConfig,
+        OpsConfig,
+        PathsConfig,
+        PgbackrestOpsConfig,
+        PostDbRestoreOpsConfig,
+        ProjectConfig,
+        ProjectMetaConfig,
+        ResticOpsConfig,
+        StackConfig,
+        StackHealthcheckConfig,
+        StackImagesConfig,
+        StackServicesConfig,
+        SystemdUnitsOpsConfig,
+        ZabbixOpsConfig,
+    )
 
     creds = tmp_path / "credentials.yaml"
     creds.write_text("sops: {}\n", encoding="utf-8")
@@ -61,6 +76,7 @@ def test_provision_exits_when_s3cmd_missing(
                 default_registry="ghcr.io/x",
                 restore_temp_prefix="p_",
                 data_volume="db_data",
+                pg1_path="/var/lib/postgresql/18/docker",
             ),
             restic=ResticOpsConfig(data_volume="media"),
             zabbix=ZabbixOpsConfig(unit_name="z.service", userparams_file="z.conf"),
@@ -70,6 +86,7 @@ def test_provision_exits_when_s3cmd_missing(
                 timers_enable_pgbackrest=(),
                 timers_enable_restic=(),
             ),
+            post_db_restore=PostDbRestoreOpsConfig(envs=None, manage_commands=()),
             default_db_container="db1",
         ),
         digitalocean=None,

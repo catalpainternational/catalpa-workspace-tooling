@@ -79,4 +79,6 @@ Special verbs (not plain compose): `info`, `secrets`, `host`, `zabbix`, `ensure_
 
 `bkp_db` / `bkp_files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 
+After a successful DB restore (`bkp_db restore`, `bkp_db pgrestore`, or `transfer` with `--db`), optional `ops.post_db_restore.manage_commands` in `tooling.yaml` run via `docker compose exec` on the web service (default: none). See [README_PGBACKREST.md](../README_PGBACKREST.md#post-restore-django-commands-opspost_db_restore).
+
 Any other first argument is passed to `docker compose` (e.g. `up`, `down`, `ps`, `logs`, `exec`).

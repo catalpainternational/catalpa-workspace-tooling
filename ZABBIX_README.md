@@ -51,7 +51,7 @@ Precedence for install (CLI wins, then env file defaults):
 1. **CLI:** `--server`, `--hostname`, `--active-allow` / `--no-active-allow`
 2. **`info.yaml`:** keys under `env:` or top-level `zbx_*` (mapped to `ZBX_*`)
 3. **`credentials.yaml`:** any `ZBX_*` keys merged into the agent env file
-4. **Hostname fallback:** host part of `site_origin` in `info.yaml` when `--hostname` is omitted
+4. **Hostname fallback:** host part of the **primary** `site_origin` in `info.yaml` (first entry when `site_origin` is a list) when `--hostname` is omitted
 
 `install` refuses to run without at least one `ZBX_*` source unless you pass `--force`.
 
@@ -73,7 +73,10 @@ TLS PSK secrets (`zbx_tlspsk`, `zbx_tlspskidentity`) must live in **`credentials
 ### Example `info.yaml` fragment
 
 ```yaml
-site_origin: https://myapp.example.org
+# site_origin may be a string or YAML list (hostnames or full URLs); Zabbix uses the first entry.
+site_origin:
+  - https://myapp.example.org
+  - www.myapp.example.org
 env:
   zbx_server_host: zabbix.catalpa.build
   zbx_hostname: myapp.example.org

@@ -38,10 +38,21 @@ def _compose(
 
 
 def _healthcheck_python_snippet(url: str) -> str:
-    return f"import urllib.request; urllib.request.urlopen({url!r}, timeout=2)"
+    return (
+        "import sys, urllib.request\n"
+        "try:\n"
+        f"    urllib.request.urlopen({url!r}, timeout=2)\n"
+        "except Exception:\n"
+        "    sys.exit(1)\n"
+    )
 
 
-def _is_web_service_healthy(compose_file: str, config: ProjectConfig) -> bool:
+def _is_web_service_healthy(
+    compose_file: str,
+    config: ProjectConfig,
+    *,
+    env_add: dict[str, str] | None = None,
+) -> bool:
     """Return True if the configured web service healthcheck URL responds."""
     hc = config.stack.healthcheck
     r = _compose(
@@ -52,6 +63,7 @@ def _is_web_service_healthy(compose_file: str, config: ProjectConfig) -> bool:
         "python",
         "-c",
         _healthcheck_python_snippet(hc.url),
+        env_add=env_add,
         check=False,
         print_cmd=False,
     )
@@ -61,13 +73,15 @@ def _is_web_service_healthy(compose_file: str, config: ProjectConfig) -> bool:
 def _wait_for_web_service(
     compose_file: str,
     config: ProjectConfig,
+    *,
+    env_add: dict[str, str] | None = None,
     timeout_seconds: int = 120,
     poll_interval: int = 3,
 ) -> bool:
     """Wait until the web service is healthy or timeout. Returns True if healthy."""
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if _is_web_service_healthy(compose_file, config):
+        if _is_web_service_healthy(compose_file, config, env_add=env_add):
             return True
         time.sleep(poll_interval)
     return False

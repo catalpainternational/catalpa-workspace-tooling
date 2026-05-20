@@ -11,6 +11,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
     ensure_postgres_data_volume,
     external_stack_volume_names,
     minimal_pgbackrest_baseline,
+    pgdata_volume_mount,
     postgres_data_volume_name,
     postgres_image_from_env,
     render_pgbackrest_ini,
@@ -90,6 +91,7 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             default_registry="ghcr.io/example",
             restore_temp_prefix="pfx_",
             data_volume="db_data",
+            pg1_path="/var/lib/postgresql/18/docker",
         )
         self.assertEqual(
             postgres_data_volume_name({"COMPOSE_PROJECT_NAME": "myproj"}, config=cfg),
@@ -159,7 +161,7 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
         self.assertIn("[global:archive-push]", text)
         self.assertIn("compress-level=3", text)
         self.assertIn("[main]", text)
-        self.assertIn("pg1-path=/var/lib/postgresql/data", text)
+        self.assertIn("pg1-path=/var/lib/postgresql/18/docker", text)
 
     def test_render_pgbackrest_write_retention_override(self) -> None:
         vm = {
@@ -237,6 +239,20 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             subprocess.CalledProcessError(1, ["docker", "volume", "create"]),
         ]
         self.assertEqual(ensure_postgres_data_volume({}), 1)
+
+
+class TestPgdataVolumeMount(unittest.TestCase):
+    def test_pg18_mounts_parent_tree(self) -> None:
+        self.assertEqual(
+            pgdata_volume_mount("/var/lib/postgresql/18/docker"),
+            "/var/lib/postgresql",
+        )
+
+    def test_legacy_data_mounts_directly(self) -> None:
+        self.assertEqual(
+            pgdata_volume_mount("/var/lib/postgresql/data"),
+            "/var/lib/postgresql/data",
+        )
 
 
 if __name__ == "__main__":

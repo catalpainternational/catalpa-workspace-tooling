@@ -59,7 +59,17 @@ restic_write_s3_default_region: sgp1
 
 Use a restic backend URL (`s3:…`), not a bare `https://…` URL. Use a **different** bucket prefix than pgBackRest `repo1-path` ([README_PGBACKREST.md](README_PGBACKREST.md)).
 
-Optional: `restic_verbose` → `RESTIC_VERBOSE` (or pass `-v` on CLI for one-off commands).
+### Logging / verbosity
+
+Restic uses repeated `-v` (0–4), not pgBackRest log-level names. Configure in **repo-root `tooling.yaml`** (`ops.restic`) and override per environment in **`docker/envs/<env>/info.yaml`** (not `credentials.yaml`):
+
+| Location | Keys | Effect |
+|----------|------|--------|
+| `tooling.yaml` → `ops.restic` | `verbose`, `restore_verbose` | Project defaults |
+| `info.yaml` → `restic:` | same | Per-environment override |
+| `info.yaml` → `env:` | `restic_verbose`, `restic_restore_verbose` | Same (wins over `restic:`) |
+
+`bkp_files restore` defaults to one `-v` when unset (like pgBackRest restore’s default `info` console level). Set `restore_verbose: 0` under `ops.restic` or in `info.yaml` for a quiet restore. Extra `-v` on the CLI (`dk prod bkp_files -v restore`) adds to the configured level for that run.
 
 ## Auto-provision (DigitalOcean Spaces)
 
@@ -81,7 +91,7 @@ When WRITE-mode `restic_write_*` keys are missing, `dk <env> bkp_files …` can 
 | `restore [SNAPSHOT]` | Restore into staging volume / media (destructive; confirms by env name) |
 | `install-systemd [--dry-run] [--enable]` | Install timer on deploy host ([README_SYSTEMD.md](README_SYSTEMD.md)) |
 
-`restore` refuses to run without a TTY unless you pass global `dk --yes`.
+`restore` refuses to run without a TTY unless you pass global `dk --yes`. Scheduled `backup` via systemd stays quiet unless `ops.restic.verbose` is set in `tooling.yaml`.
 
 ## New host checklist
 
