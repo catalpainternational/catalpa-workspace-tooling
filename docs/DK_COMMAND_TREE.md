@@ -37,10 +37,11 @@ dk
     ├── ensure_volumes               # utility command 
     ├── trust-caddy-cert             # trust locally signed caddy certs
     ├── manage <django …>            # access ./manage.py
-    ├── pull_media                   # ????
+    ├── pull_media                   # volume → host dir (tar)
     ├── wipe                         # alias: compose down -v
     │
-    ├── bkp_files                    # control restic backups
+    ├── bkp_files                    # restic backups + host media → volume
+    │   ├── push [--source DIR] [--method rsync|tar]
     │   ├── install-systemd
     │   ├── init
     │   ├── backup

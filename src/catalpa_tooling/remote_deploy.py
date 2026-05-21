@@ -44,6 +44,10 @@ from catalpa_tooling.pgbackrest_volume_config import (
     should_materialize_for_compose,
 )
 from catalpa_tooling.media_pull import run_pull_media
+from catalpa_tooling.media_rsync import (
+    resolve_push_media_source,
+    run_push_media_rsync,
+)
 from catalpa_tooling.restic_files import (
     merge_restic_verbose_from_cli,
     resolve_env_with_compose_project,
@@ -239,6 +243,8 @@ def _dry_run_exits_before_compose_env(peek: list[str]) -> bool:
         "pull_media",
         "zabbix",
     ):
+        return False
+    if len(peek) >= 2 and peek[0] == "bkp_files" and peek[1] == "push":
         return False
     return True
 
@@ -520,6 +526,64 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if compose_args and compose_args[0] == "bkp_files":
         bkp_files_extra = compose_args[1:]
         bkp_files_sub = bkp_files_extra[0] if bkp_files_extra else ""
+        if bkp_files_sub == "push":
+            pm = argparse.ArgumentParser(
+                prog=f"dk {env_name} bkp_files push",
+                description=(
+                    "Rsync a host media directory into the django_media Compose volume "
+                    "(default: dev.fetch_media.dest). Pair with `uv run dev fetch media`."
+                ),
+            )
+            pm.add_argument(
+                "--source",
+                "-s",
+                default=None,
+                help="Host directory (default: paths.fetch_media.dest from tooling.yaml).",
+            )
+            pm.add_argument(
+                "--method",
+                choices=("rsync", "tar"),
+                default="rsync",
+                help="rsync (incremental) or tar via docker run (full stream).",
+            )
+            pm.add_argument(
+                "--image",
+                default="alpine:3.21",
+                help="Alpine image for container rsync / tar fallback.",
+            )
+            pm_args, _unknown = pm.parse_known_args(bkp_files_extra[1:])
+            source = resolve_push_media_source(config, repo_root, pm_args.source)
+            if source is None:
+                return 1
+            rc = ensure_external_stack_volumes(
+                env_add,
+                dry_run=bool(getattr(ns, "dry_run", False)),
+                config=config,
+            )
+            if rc != 0:
+                return rc
+            if not getattr(ns, "yes", False) and not getattr(ns, "dry_run", False):
+                if not sys.stdin.isatty():
+                    print(
+                        "Refusing bkp_files push without a TTY. Pass --yes for non-interactive use.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(
+                    "WARNING: This mirrors host media into the deployment volume "
+                    "(rsync --delete removes files on the volume that are not on the host).",
+                    file=sys.stderr,
+                )
+                if not confirm_by_typing_env_name(env_name):
+                    print("bkp_files push cancelled.", file=sys.stderr)
+                    return 1
+            return run_push_media_rsync(
+                env_add,
+                source=source,
+                dry_run=bool(getattr(ns, "dry_run", False)),
+                method=pm_args.method,
+                alpine_image=str(pm_args.image),
+            )
         if (
             bkp_files_sub
             and needs_restic_write(bkp_files_sub)
@@ -553,6 +617,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         if not extra:
             print(
                 "usage: bkp_files install-systemd [--dry-run] [--enable] | "
+                "push [--source DIR] [--method rsync|tar] | "
                 "init | backup | snapshots | check | stats | restore [SNAPSHOT]",
                 file=sys.stderr,
             )
@@ -615,6 +680,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         print(f"Unknown bkp_files subcommand: {sub}", file=sys.stderr)
         print(
             "Use: bkp_files install-systemd [--dry-run] [--enable] | "
+            "push [--source DIR] [--method rsync|tar] | "
             "init | backup | snapshots | check | stats | restore [SNAPSHOT]",
             file=sys.stderr,
         )

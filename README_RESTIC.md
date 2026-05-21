@@ -83,6 +83,7 @@ When WRITE-mode `restic_write_*` keys are missing, `dk <env> bkp_files …` can 
 
 | Subcommand | Description |
 |------------|-------------|
+| `push [--source DIR] [--method rsync\|tar]` | Rsync host media into `django_media` (default source: `dev.fetch_media.dest`; pair with `uv run dev fetch media`). Not Restic. |
 | `init` | `restic init` (new repository) |
 | `backup` | Snapshot `django_media` |
 | `snapshots` | List snapshots |

@@ -11,12 +11,8 @@ from catalpa_tooling.config import (
     ProjectConfigError,
     load_project_config,
 )
-from catalpa_tooling.fetch_media import (
-    _docker_volume_mountpoint,
-    dk_info_fetch_media_defaults,
-    run_fetch_media,
-    ssh_target_from_host,
-)
+from catalpa_tooling.fetch_media import dk_info_fetch_media_defaults, run_fetch_media
+from catalpa_tooling.media_rsync import docker_volume_mountpoint_ssh, ssh_target_from_host
 
 
 def _write_minimal_tooling(tmp_path: Path, *, compose_default: str = "app_compose") -> None:
@@ -129,8 +125,8 @@ def test_docker_volume_mountpoint_parses_json(monkeypatch) -> None:
 
         return Result()
 
-    monkeypatch.setattr("catalpa_tooling.fetch_media.subprocess.run", fake_run)
-    assert _docker_volume_mountpoint("root@h", "vol") == "/var/lib/docker/volumes/vol/_data"
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert docker_volume_mountpoint_ssh("root@h", "vol") == "/var/lib/docker/volumes/vol/_data"
 
 
 def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, monkeypatch) -> None:
@@ -144,11 +140,15 @@ def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, m
     cfg = load_project_config(tmp_path)
     calls: list[tuple[str, str, Path]] = []
 
-    def fake_rsync(ssh_target: str, remote_path: str, local_path: Path) -> None:
+    def fake_rsync(ssh_target: str, remote_path: str, local_path: Path) -> int:
         calls.append((ssh_target, remote_path, local_path))
+        return 0
 
-    monkeypatch.setattr("catalpa_tooling.fetch_media._docker_volume_mountpoint", lambda _s, _v: "/vol/mount")
-    monkeypatch.setattr("catalpa_tooling.fetch_media._run_rsync", fake_rsync)
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.docker_volume_mountpoint_ssh",
+        lambda _s, _v, **_: "/vol/mount",
+    )
+    monkeypatch.setattr("catalpa_tooling.fetch_media.rsync_pull_remote_to_local", fake_rsync)
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
 
     run_fetch_media(cfg, dk_env="prod", host=None, dest=tmp_path / "media", partial=False, legacy_path=False, legacy_remote=None, compose_project=None)

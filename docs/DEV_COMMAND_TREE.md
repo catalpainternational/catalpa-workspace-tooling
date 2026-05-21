@@ -95,6 +95,14 @@ Requires `rsync` and `ssh` on PATH.
 
 **Legacy path mode:** rsync from a fixed directory on the SSH host (`--legacy-path`). Needs `legacy.remote` in `tooling.yaml` or `--remote`, and `legacy.ssh_host` or `--host`.
 
+**Load into a local Compose stack** (named `django_media` volume, not host bind-mount):
+
+```bash
+uv run dk local bkp_files push
+```
+
+Default source is the same directory as `fetch media` (`dev.fetch_media.dest`, typically `./media/`). Uses rsync (incremental; `--delete` mirrors the host tree). On macOS Docker Desktop, rsync runs inside a one-off container. Fallback: `--method tar`. Confirm by typing the env name, or `dk --yes`.
+
 ## `reset-db`
 
 Uses libpq client tools. Connection comes from `paths.env_local` and `dev.reset_db.*_env` keys (see table above).
@@ -142,6 +150,6 @@ Arguments after the subcommand are passed to the script. Unknown flags on `pg-re
 | CLI | Overlap |
 |-----|---------|
 | `scripts` | Non-`dev-` shell helpers under `paths.scripts` (e.g. `fetch-db` → `fetch_db.sh`) |
-| `dk` | Remote deploy, `bkp_db pgdump`, `pull_media` (tar via Docker; different from `dev fetch media` rsync) |
+| `dk` | Remote deploy, `bkp_db pgdump`, `bkp_files push`, `pull_media` (tar volume export; `dev fetch media` is rsync pull) |
 
 Honcho / Procfile workflows in app repos are outside this CLI (e.g. `bash tools/dev_honcho.sh`).
