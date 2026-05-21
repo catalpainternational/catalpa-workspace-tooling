@@ -14,7 +14,11 @@ from catalpa_tooling.doctl_binary import (
     run_doctl,
 )
 from catalpa_tooling.cloud_config.render import DEFAULT_TIMEZONE, render_droplet_bootstrap
-from catalpa_tooling.deploy_do_link import cmd_env_host, droplet_name_for_env
+from catalpa_tooling.deploy_do_link import (
+    cmd_env_host,
+    cmd_env_host_create,
+    droplet_name_for_env,
+)
 from catalpa_tooling.doctl_droplets import create_droplet
 from catalpa_tooling.doctl_projects import (
     list_project_droplets,
@@ -111,6 +115,30 @@ def _cmd_cloud_config_print(argv: list[str]) -> int:
     return 0
 
 
+def _forward_host_create_argv(ns: argparse.Namespace) -> list[str]:
+    """Build argv for ``cmd_env_host_create`` from parsed digoc create flags."""
+    out: list[str] = []
+    if ns.project:
+        out.extend(["--project", ns.project])
+    if ns.size:
+        out.extend(["--size", ns.size])
+    if ns.image:
+        out.extend(["--image", ns.image])
+    if ns.region:
+        out.extend(["--region", ns.region])
+    for key in ns.ssh_keys or []:
+        out.extend(["--ssh-key", key])
+    if ns.timezone:
+        out.extend(["--timezone", ns.timezone])
+    if ns.context:
+        out.extend(["--context", ns.context])
+    if ns.dry_run:
+        out.append("--dry-run")
+    if ns.no_monitoring:
+        out.append("--no-monitoring")
+    return out
+
+
 def _load_do_config_for_droplets(
     *,
     project_flag: str | None,
@@ -135,12 +163,12 @@ def _cmd_droplets_create(argv: list[str]) -> int:
         "name",
         nargs="?",
         default=None,
-        help="Droplet hostname (default: digitalocean.droplet_name from docker/envs/<env>/info.yaml with --for-env)",
+        help="Droplet hostname (default with --for-env: digitalocean.droplet_name or {project}-{env})",
     )
     p.add_argument(
         "--for-env",
         metavar="ENV",
-        help="Use docker/envs/ENV/info.yaml digitalocean.droplet_name as hostname when NAME is omitted",
+        help="Use resolved droplet name for ENV (info.yaml override or {project}-{env}) when NAME is omitted",
     )
     p.add_argument(
         "--project",
@@ -172,6 +200,11 @@ def _cmd_droplets_create(argv: list[str]) -> int:
         action="store_true",
         help="Print cloud-config and host doctl command without creating",
     )
+    p.add_argument(
+        "--no-monitoring",
+        action="store_true",
+        help="Omit --enable-monitoring (default: install DO metrics agent)",
+    )
     ns, rest = p.parse_known_args(argv)
     if rest:
         p.error(f"unrecognized arguments: {' '.join(rest)}")
@@ -196,22 +229,34 @@ def _cmd_droplets_create(argv: list[str]) -> int:
             return 1
         from_name = droplet_name_for_env(cfg, for_env)
         if not from_name:
-            print(
-                f"Set digitalocean.droplet_name in {env_dir / 'info.yaml'} "
-                f"or pass a droplet NAME.",
-                file=sys.stderr,
-            )
+            print(f"Missing deploy environment info: {env_dir / 'info.yaml'}", file=sys.stderr)
             return 1
         if droplet_name and droplet_name != from_name:
             print(
                 f"NAME {droplet_name!r} does not match --for-env {for_env!r} "
-                f"droplet_name {from_name!r}; omit NAME or use the same name.",
+                f"droplet_name {from_name!r}; omit NAME or use `dk {for_env} host create`.",
                 file=sys.stderr,
             )
             return 1
-        droplet_name = from_name
-    elif not droplet_name:
-        p.error("NAME is required unless --for-env ENV is set")
+        if ns.wait:
+            print(
+                f"Note: --wait is always enabled for env droplet create; "
+                f"use `dk {for_env} host create` instead.",
+                file=sys.stderr,
+            )
+        return cmd_env_host_create(
+            cfg,
+            for_env,
+            _forward_host_create_argv(ns),
+            global_dry_run=False,
+            deprecation_message=(
+                f"Deprecated: use `dk {for_env} host create` instead of "
+                f"`dk digoc droplets create --for-env {for_env}`."
+            ),
+        )
+
+    if not droplet_name:
+        p.error("NAME is required (env droplets: dk <env> host create)")
 
     do_config, manifest_context = _load_do_config_for_droplets(project_flag=ns.project)
     if cfg is not None and do_config is None:
@@ -234,7 +279,8 @@ def _cmd_droplets_create(argv: list[str]) -> int:
         wait=ns.wait,
         dry_run=ns.dry_run,
         do_config=do_config,
-        for_env=for_env or None,
+        for_env=None,
+        enable_monitoring=False if ns.no_monitoring else None,
     )
 
 
@@ -308,7 +354,12 @@ def _cmd_droplets_suggest_env(argv: list[str]) -> int:
     except ProjectConfigError as e:
         print(str(e), file=sys.stderr)
         return 1
-    return cmd_env_host(cfg, ns.env.strip(), write=ns.write, dry_run=False)
+    env = ns.env.strip()
+    print(
+        f"Deprecated: use `dk {env} host` instead of `dk digoc droplets suggest-env {env}`.",
+        file=sys.stderr,
+    )
+    return cmd_env_host(cfg, env, write=ns.write, dry_run=False)
 
 
 def _print_help() -> None:
@@ -324,8 +375,8 @@ DigitalOcean helpers for dk deploy (requires the official doctl binary on PATH o
   {PROG} cloud-config print           Print droplet bootstrap cloud-config
   {PROG} projects list                List DigitalOcean projects
   {PROG} droplets list [--project …]  List droplets in a project (Env column when tooling.yaml present)
-  {PROG} droplets create [NAME] …     Create a droplet (--for-env ENV uses info.yaml droplet_name)
-  {PROG} droplets suggest-env ENV     Print docker_host for a dk environment
+  {PROG} droplets create [NAME] …     Create a droplet (env: use dk <env> host create)
+  {PROG} droplets suggest-env ENV     Deprecated; use dk <env> host
 
 Run from an application repo root to use digitalocean.* defaults in tooling.yaml."""
     )

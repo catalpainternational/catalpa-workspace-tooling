@@ -44,6 +44,14 @@ ops:
     pgbackrest_conf: 50-app-managed.conf
     default_registry: ghcr.io/example/app
     restore_temp_prefix: app_pgrestore_
+    # Optional: off|error|warn|info|detail|debug|trace — override per env in info.yaml
+    # log_level_console: info
+    # log_level_stderr: warn
+    # restore_log_level_console: info
+  restic:
+    data_volume: django_media
+    # verbose: 0
+    # restore_verbose: 1
   zabbix:
     unit_name: app-zabbix-agent2.service
     userparams_file: 99-app-userparams.conf

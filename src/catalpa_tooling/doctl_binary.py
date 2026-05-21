@@ -119,6 +119,14 @@ def ensure_doctl_available() -> Path:
     return resolve_doctl_binary()
 
 
+def try_resolve_doctl_binary() -> Path | None:
+    """Return host ``doctl`` path when installed, else ``None``."""
+    try:
+        return resolve_doctl_binary()
+    except DoctlNotFoundError:
+        return None
+
+
 def build_doctl_argv(
     binary: Path | str,
     args: Sequence[str],

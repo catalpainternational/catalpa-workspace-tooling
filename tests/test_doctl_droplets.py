@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from catalpa_tooling.config import DigitalOceanConfig
+from catalpa_tooling.doctl_binary import DoctlCommandError
 from catalpa_tooling.doctl_droplets import (
     _resolve_ssh_keys,
     create_droplet,
@@ -44,6 +45,23 @@ def test_list_account_ssh_key_ids(monkeypatch: pytest.MonkeyPatch) -> None:
         ],
     )
     assert list_account_ssh_key_ids() == ("111", "222")
+
+
+def test_list_account_ssh_key_ids_403_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    def fake_json(*_args, context=None):
+        raise DoctlCommandError(
+            "GET https://api.digitalocean.com/v2/account/keys: 403 not authorized",
+            returncode=403,
+        )
+
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", fake_json)
+    with pytest.raises(DoctlCommandError):
+        list_account_ssh_key_ids()
+    err = capsys.readouterr().err
+    assert "ssh_key:read" in err
+    assert "account:read" in err
 
 
 def test_resolve_ssh_keys_defaults_to_all(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,6 +164,36 @@ def test_create_droplet_dry_run_without_doctl(
     assert "--ssh-keys aa:bb:cc" in err
 
 
+def test_create_droplet_env_overrides_manifest_in_dry_run(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    from catalpa_tooling.config import DigitalOceanConfig
+
+    do_config = DigitalOceanConfig(
+        project_name=None,
+        project_id=None,
+        context=None,
+        timezone=None,
+        region="nyc1",
+        size="s-4vcpu-8gb",
+        image=None,
+        ssh_keys=("aa:bb:cc",),
+    )
+    rc = create_droplet(
+        "my-host",
+        project_id="proj-uuid",
+        env_size="s-1vcpu-2gb",
+        env_region="sgp1",
+        ssh_keys=("aa:bb:cc",),
+        dry_run=True,
+        do_config=do_config,
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "--size s-1vcpu-2gb" in err
+    assert "--region sgp1" in err
+
+
 def test_create_droplet_dry_run(capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
     mock_run = MagicMock()
     monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", mock_run)
@@ -165,6 +213,47 @@ def test_create_droplet_dry_run(capsys: pytest.CaptureFixture, monkeypatch: pyte
     assert "compute droplet create my-host" in err
     assert "--user-data-file" in err
     assert "--ssh-keys aa:bb:cc" in err
+    assert "--enable-monitoring" in err
+
+
+def test_create_droplet_dry_run_no_monitoring(capsys: pytest.CaptureFixture) -> None:
+    rc = create_droplet(
+        "my-host",
+        size="s-1vcpu-1gb",
+        region="sgp1",
+        project_id="proj-uuid",
+        ssh_keys=("aa:bb:cc",),
+        dry_run=True,
+        enable_monitoring=False,
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "--enable-monitoring" not in err
+
+
+def test_create_droplet_dry_run_manifest_monitoring_off(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    do_config = DigitalOceanConfig(
+        project_name=None,
+        project_id=None,
+        context=None,
+        timezone=None,
+        region="sgp1",
+        size="s-1vcpu-1gb",
+        image=None,
+        ssh_keys=("aa:bb:cc",),
+        monitoring=False,
+    )
+    rc = create_droplet(
+        "my-host",
+        project_id="proj-uuid",
+        dry_run=True,
+        do_config=do_config,
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "--enable-monitoring" not in err
 
 
 def test_create_droplet_rejects_duplicate_name(
@@ -235,6 +324,7 @@ def test_create_droplet_invokes_doctl(
     assert "--region" in argv and "sgp1" in argv
     assert "--project-id" in argv and "proj-uuid" in argv
     assert "--ssh-keys" in argv and "manifest-key" in argv
+    assert "--enable-monitoring" in argv
     assert "--wait" in argv
     assert len(captured_user_data) == 1
     assert captured_user_data[0].startswith("#cloud-config")

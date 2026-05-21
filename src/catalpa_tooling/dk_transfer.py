@@ -13,6 +13,7 @@ from pathlib import Path
 from catalpa_tooling.compose import _compose
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context
+from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.media_pull import run_pull_media, run_push_media
 from catalpa_tooling.pgbackrest_db import (
     db_service_responds,
@@ -400,6 +401,18 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if do_db or do_media:
         _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+
+    if do_db:
+        rc_hooks = run_post_db_restore_manage_commands(
+            config,
+            compose_file=dst_ctx.compose_file,
+            env_add=dst_r,
+            env_name=dst,
+        )
+        if rc_hooks != 0:
+            if not ns.keep_workdir:
+                shutil.rmtree(session, ignore_errors=True)
+            return rc_hooks
 
     if not ns.keep_workdir:
         shutil.rmtree(session, ignore_errors=True)

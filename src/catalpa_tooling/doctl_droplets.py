@@ -8,16 +8,31 @@ from pathlib import Path
 
 from catalpa_tooling.cloud_config.render import DEFAULT_TIMEZONE, render_droplet_bootstrap
 from catalpa_tooling.config import DigitalOceanConfig
-from catalpa_tooling.doctl_binary import DoctlNotFoundError
+from catalpa_tooling.doctl_binary import DoctlCommandError, DoctlNotFoundError
 
 DEFAULT_IMAGE = "ubuntu-24-04-x64"
+
+
+def _hint_ssh_key_list_forbidden() -> None:
+    print(
+        "Cannot list account SSH keys (403). Add ssh_key:read to your DigitalOcean "
+        "API token (GET /v2/account/keys — not account:read), or pass keys explicitly:\n"
+        "  dk <env> host create --ssh-key ID   # repeatable\n"
+        "  digitalocean.ssh_keys in tooling.yaml",
+        file=sys.stderr,
+    )
 
 
 def list_account_ssh_key_ids(*, context: str | None = None) -> tuple[str, ...]:
     """Return all SSH key IDs from ``doctl compute ssh-key list``."""
     from catalpa_tooling.doctl_binary import run_doctl_json
 
-    data = run_doctl_json(["compute", "ssh-key", "list"], context=context)
+    try:
+        data = run_doctl_json(["compute", "ssh-key", "list"], context=context)
+    except DoctlCommandError as e:
+        if e.returncode == 403 or "403" in str(e) or "not authorized" in str(e).lower():
+            _hint_ssh_key_list_forbidden()
+        raise
     if not isinstance(data, list):
         return ()
     ids: list[str] = []
@@ -34,15 +49,22 @@ def _pick(
     cli_value: str | None,
     manifest_value: str | None,
     *,
+    env_value: str | None = None,
     field: str,
     required: bool = False,
     default: str | None = None,
 ) -> str:
-    value = (cli_value or "").strip() or (manifest_value or "").strip() or (default or "").strip()
+    value = (
+        (cli_value or "").strip()
+        or (env_value or "").strip()
+        or (manifest_value or "").strip()
+        or (default or "").strip()
+    )
     if not value:
         if required:
             print(
-                f"Missing {field}: pass a CLI flag or set digitalocean.{field} in tooling.yaml",
+                f"Missing {field}: pass --{field}, set digitalocean.{field} in "
+                f"docker/envs/<env>/info.yaml, or digitalocean.{field} in tooling.yaml",
                 file=sys.stderr,
             )
             raise SystemExit(1)
@@ -107,6 +129,7 @@ def _build_create_argv(
     ssh_keys: tuple[str, ...],
     user_data_path: Path,
     wait: bool,
+    enable_monitoring: bool,
 ) -> list[str]:
     args = [
         "compute",
@@ -126,6 +149,8 @@ def _build_create_argv(
     ]
     for key in ssh_keys:
         args.extend(["--ssh-keys", key])
+    if enable_monitoring:
+        args.append("--enable-monitoring")
     if wait:
         args.append("--wait")
     return args
@@ -137,6 +162,8 @@ def create_droplet(
     size: str | None = None,
     image: str | None = None,
     region: str | None = None,
+    env_size: str | None = None,
+    env_region: str | None = None,
     project_id: str,
     ssh_keys: tuple[str, ...] = (),
     timezone: str | None = None,
@@ -145,6 +172,7 @@ def create_droplet(
     dry_run: bool = False,
     do_config: DigitalOceanConfig | None = None,
     for_env: str | None = None,
+    enable_monitoring: bool | None = None,
 ) -> int:
     """Create a droplet with the standard bootstrap cloud-config user-data."""
     from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
@@ -157,6 +185,7 @@ def create_droplet(
     resolved_size = _pick(
         size,
         do_config.size if do_config else None,
+        env_value=env_size,
         field="size",
         required=True,
     )
@@ -169,6 +198,7 @@ def create_droplet(
     resolved_region = _pick(
         region,
         do_config.region if do_config else None,
+        env_value=env_region,
         field="region",
         required=True,
     )
@@ -180,6 +210,11 @@ def create_droplet(
     )
     resolved_keys = _resolve_ssh_keys(
         ssh_keys, do_config, context=context, dry_run=dry_run
+    )
+    resolved_monitoring = (
+        enable_monitoring
+        if enable_monitoring is not None
+        else (do_config.monitoring if do_config else True)
     )
     user_data = render_droplet_bootstrap(timezone=resolved_timezone)
 
@@ -204,6 +239,7 @@ def create_droplet(
             ssh_keys=resolved_keys,
             user_data_path=tmp_path,
             wait=wait,
+            enable_monitoring=resolved_monitoring,
         )
 
         if dry_run:

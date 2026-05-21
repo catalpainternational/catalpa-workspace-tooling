@@ -3,14 +3,34 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
 from typing import Literal
 
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import DEFAULT_PGBR_PG1_PATH, ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
-PG_DATA_PATH = "/var/lib/postgresql/data"
+
+# PG 18+ data directory when compose mounts ``pgdata:/var/lib/postgresql`` (not …/data).
+_PG18_PGDATA_RE = re.compile(r"^/var/lib/postgresql/\d+/")
+
+
+def postgres_pg1_path(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
+    """Cluster data directory path inside the ``db`` container (pgBackRest ``pg1-path``)."""
+    explicit = (env.get("PGBR_PG1_PATH") or "").strip()
+    if explicit:
+        return explicit
+    if config is not None:
+        return config.ops.pgbackrest.pg1_path
+    return DEFAULT_PGBR_PG1_PATH
+
+
+def pgdata_volume_mount(pg1_path: str) -> str:
+    """Docker ``-v`` mount target for the PGDATA named volume (must match ``compose.yml``)."""
+    if _PG18_PGDATA_RE.match(pg1_path):
+        return "/var/lib/postgresql"
+    return pg1_path
 
 PREFIX_WRITE = "PGBR_S3_WRITE_"
 PREFIX_READ = "PGBR_S3_READ_"
@@ -107,8 +127,12 @@ def _pgdata_has_control_file(
     docker_env: dict[str, str],
     image: str,
     data_volume: str,
+    *,
+    pg1_path: str,
 ) -> bool:
     """True if the named volume contains an initialized cluster (``global/pg_control``)."""
+    mount = pgdata_volume_mount(pg1_path)
+    control = f"{pg1_path}/global/pg_control"
     r = run_cmd(
         [
             "docker",
@@ -118,10 +142,10 @@ def _pgdata_has_control_file(
             "--entrypoint",
             "/bin/sh",
             "-v",
-            f"{data_volume}:/var/lib/postgresql/data",
+            f"{data_volume}:{mount}",
             image,
             "-c",
-            "test -f /var/lib/postgresql/data/global/pg_control",
+            f"test -f {shlex.quote(control)}",
         ],
         env=docker_env,
         capture_output=True,
@@ -182,6 +206,8 @@ def render_pgbackrest_ini(
     mode: Literal["write", "read"],
     vars_map: dict[str, str],
     env: dict[str, str] | None = None,
+    *,
+    pg1_path: str | None = None,
 ) -> str:
     """INI content for ``50-indmo-managed.conf`` (stanza + repo1 S3).
 
@@ -220,11 +246,12 @@ def render_pgbackrest_ini(
     lines.append(f"compress-level={_env_str(env, 'PGBR_COMPRESS_LEVEL', '3')}")
 
     stanza = vars_map["STANZA"]
+    data_path = (pg1_path or DEFAULT_PGBR_PG1_PATH).strip()
     lines.extend(
         [
             "",
             f"[{stanza}]",
-            f"pg1-path={PG_DATA_PATH}",
+            f"pg1-path={data_path}",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -522,7 +549,9 @@ def run_pgbackrest_stanza_create(
     docker_env = _docker_env_for_remote(env)
     vol_pgb = volume_names(env)[1]
     vol_data = postgres_data_volume_name(env, config=config)
-    if not _pgdata_has_control_file(docker_env, image, vol_data):
+    pg1 = postgres_pg1_path(env, config=config)
+    mount = pgdata_volume_mount(pg1)
+    if not _pgdata_has_control_file(docker_env, image, vol_data, pg1_path=pg1):
         log(
             "pgBackRest stanza-create: PostgreSQL PGDATA is missing or not initialized "
             f"(no global/pg_control in Docker volume {vol_data!r}). "
@@ -546,7 +575,7 @@ def run_pgbackrest_stanza_create(
             "-v",
             f"{vol_pgb}:/etc/pgbackrest/conf.d",
             "-v",
-            f"{vol_data}:/var/lib/postgresql/data",
+            f"{vol_data}:{mount}",
             image,
             "-c",
             f"pgbackrest --stanza={sq} --no-online stanza-create",
@@ -557,6 +586,105 @@ def run_pgbackrest_stanza_create(
     if r.returncode != 0:
         log("pgBackRest: stanza-create failed.")
     return r.returncode
+
+
+def pgbackrest_managed_conf_materialized(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> bool:
+    """True when the pgbackrest_conf volume has the managed drop-in with ``pg1-path``."""
+    mode = resolve_mode(env)
+    if mode == "none":
+        return False
+
+    conf_name = (
+        config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
+    )
+    vol_pgb = volume_names(env, config=config)[1]
+    image = postgres_image_from_env(env, config=config)
+    docker_env = _docker_env_for_remote(env)
+    conf_path = f"/etc/pgbackrest/conf.d/{conf_name}"
+    inner = (
+        f"test -f {shlex.quote(conf_path)}"
+        f' && grep -q "^pg1-path=" {shlex.quote(conf_path)}'
+    )
+    r = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_compose_db_platform_args(),
+            "--entrypoint",
+            "/bin/sh",
+            "-v",
+            f"{vol_pgb}:/etc/pgbackrest/conf.d",
+            image,
+            "-c",
+            inner,
+        ],
+        env=docker_env,
+        capture_output=True,
+        check=False,
+        print_cmd=False,
+    )
+    return r.returncode == 0
+
+
+def ensure_pgbackrest_conf_before_restore(
+    env: dict[str, str],
+    *,
+    config: ProjectConfig | None = None,
+    skip_configure_confirm: bool = False,
+) -> int:
+    """Ensure managed pgBackRest config exists on the deploy host before offline restore.
+
+    When the ``pgbackrest_conf`` volume is empty or only has a baseline ``[global]`` stub,
+    offers to run ``materialize_configs`` (same as ``bkp_db configure``). With
+    ``skip_configure_confirm`` (global ``dk --yes``), configures without a y/n prompt.
+    """
+    if pgbackrest_managed_conf_materialized(env, config=config):
+        return 0
+
+    vol_pgb = volume_names(env, config=config)[1]
+    mode = resolve_mode(env)
+    if mode == "none":
+        print(
+            "pgBackRest restore: pgBackRest config is not on the deploy host "
+            f"({vol_pgb!r} missing managed stanza config). "
+            "Set PGBR_S3_READ_* or PGBR_S3_WRITE_* in credentials, then run "
+            "`dk <env> bkp_db configure`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        "pgBackRest restore: managed config is missing on the deploy host "
+        f"({vol_pgb!r} has no {config.ops.pgbackrest.pgbackrest_conf if config else '50-indmo-managed.conf'} "
+        "with pg1-path).",
+        file=sys.stderr,
+    )
+    if not skip_configure_confirm:
+        from catalpa_tooling.cli_confirm import confirm_yes_default_no
+
+        if not confirm_yes_default_no(
+            "Run `bkp_db configure` now to write pgBackRest config into that volume? (y/N): "
+        ):
+            print(
+                "Cancelled. Run `dk <env> bkp_db configure`, then retry restore.",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        print(
+            "pgBackRest restore: running `bkp_db configure` (--yes)…",
+            file=sys.stderr,
+        )
+
+    return materialize_configs(
+        env,
+        dry_run=False,
+        postgres_image=postgres_image_from_env(env, config=config),
+        config=config,
+    )
 
 
 def materialize_configs(
@@ -620,7 +748,8 @@ def materialize_configs(
             log(missing_err)
             return 1
 
-        pgbr_content = render_pgbackrest_ini(mode, vars_map, env)
+        pg1 = postgres_pg1_path(env, config=config)
+        pgbr_content = render_pgbackrest_ini(mode, vars_map, env, pg1_path=pg1)
         _docker_run_cp(vol_pgb, pgbackrest_conf, pgbr_content, docker_env, image=image)
 
         if mode == "write":

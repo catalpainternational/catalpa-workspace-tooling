@@ -21,3 +21,11 @@ def test_confirm_rejects_empty(monkeypatch) -> None:
 def test_confirm_accepts_stripped_match(monkeypatch) -> None:
     monkeypatch.setattr("builtins.input", lambda: "  demo  ")
     assert confirm_by_typing_env_name("demo") is True
+
+
+def test_confirm_prompt_quotes_env_name_only(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("builtins.input", lambda: "")
+    confirm_by_typing_env_name("local")
+    err = capsys.readouterr().err
+    assert "Type 'local' (environment name) to confirm" in err
+    assert "the environment name 'local'" not in err

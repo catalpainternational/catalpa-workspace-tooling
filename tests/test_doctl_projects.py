@@ -9,11 +9,27 @@ import pytest
 
 from catalpa_tooling.config import DigitalOceanConfig
 from catalpa_tooling.doctl_projects import (
+    domain_names_from_resource_urns,
     droplet_ids_from_resource_urns,
     find_project_droplet_id_by_name,
+    list_project_domain_urns,
     list_project_droplets,
     resolve_project_id,
 )
+
+
+def test_domain_names_from_resource_urns() -> None:
+    assert domain_names_from_resource_urns(
+        ["do:domain:example.com", "do:droplet:1"]
+    ) == ["example.com"]
+
+
+def test_list_project_domain_urns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.list_project_resource_urns",
+        lambda _pid, *, context: ["do:domain:Example.COM"],
+    )
+    assert list_project_domain_urns("p", context=None) == {"example.com"}
 
 
 def test_droplet_ids_from_resource_urns() -> None:

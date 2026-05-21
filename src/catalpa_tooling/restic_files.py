@@ -353,6 +353,22 @@ def merge_restic_verbose_from_cli(env: dict[str, str], cli_vcount: int) -> dict[
     return out
 
 
+def restic_env_for_restore(env: dict[str, str]) -> dict[str, str]:
+    """Verbosity for ``bkp_files restore`` (progress during long extracts).
+
+    ``RESTIC_RESTORE_VERBOSE`` / ``restic_restore_verbose`` overrides ``RESTIC_VERBOSE`` for restore only.
+    When neither is set, defaults to ``1`` (one ``-v``), similar to pgBackRest restore's default
+    ``--log-level-console=info``. Set ``restic_restore_verbose: 0`` for a quiet restore.
+    """
+    out = dict(env)
+    restore_v = (out.get("RESTIC_RESTORE_VERBOSE") or "").strip()
+    if restore_v:
+        out["RESTIC_VERBOSE"] = restore_v
+    elif not (out.get("RESTIC_VERBOSE") or "").strip():
+        out["RESTIC_VERBOSE"] = "1"
+    return out
+
+
 def _docker_run_restic(
     env: dict[str, str],
     volume_mounts: list[tuple[str, str, bool]],
@@ -500,6 +516,7 @@ def run_restore(
     if err:
         print(err, file=sys.stderr)
         return 1
+    env = restic_env_for_restore(env)
     project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
     mount = restic_backup_mount_path(config=config)
     vol_key = _restic_data_volume_key(config)

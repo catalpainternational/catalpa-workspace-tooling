@@ -20,6 +20,7 @@ def _minimal_ctx(env_name: str, compose_file: str, minimal_project) -> ManagedDe
         env_add={},
         docker_host="",
         site_origin="",
+        site_origins=(),
         use_prepulled_registry=False,
         image_registry="",
         info_tag=None,
@@ -195,3 +196,60 @@ def test_preflight_errors_when_volume_missing(
     )
     assert len(errs) == 2
     assert all("not found" in e for e in errs)
+
+
+def test_transfer_invokes_post_db_restore_hooks_after_db_leg(
+    monkeypatch: pytest.MonkeyPatch,
+    minimal_project,
+) -> None:
+    hooks_envs: list[str] = []
+
+    def fake_hooks(config, *, compose_file, env_add, env_name, dry_run=False):
+        hooks_envs.append(env_name)
+        return 0
+
+    src_ctx = _minimal_ctx("local", "compose.yml", minimal_project)
+    dst_ctx = _minimal_ctx("dev", "compose.dev.yaml", minimal_project)
+
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer.list_deploy_env_names",
+        lambda _d: ["local", "dev"],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer.load_managed_deploy_context",
+        lambda _cfg, name: src_ctx if name == "local" else dst_ctx,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer.resolve_env_with_compose_project",
+        lambda compose_file, env_add, **kwargs: dict(env_add),
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer._collect_transfer_preflight_errors",
+        lambda **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer._confirm_transfer_overwrite",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr("catalpa_tooling.dk_transfer._stop_dest_writers", lambda *a, **k: None)
+    monkeypatch.setattr("catalpa_tooling.dk_transfer._start_dest_writers", lambda *a, **k: None)
+    monkeypatch.setattr("catalpa_tooling.dk_transfer.run_pg_dump_to_file", lambda *a, **k: 0)
+    monkeypatch.setattr("catalpa_tooling.dk_transfer.run_drop_create_app_database", lambda *a, **k: 0)
+    monkeypatch.setattr("catalpa_tooling.dk_transfer.run_pg_restore", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer.run_post_db_restore_manage_commands",
+        fake_hooks,
+    )
+
+    ns = argparse.Namespace(
+        source_env="local",
+        dest_env="dev",
+        dry_run=False,
+        yes=True,
+        db=True,
+        media=False,
+        workdir=None,
+        keep_workdir=False,
+    )
+    assert cmd_transfer(ns, minimal_project) == 0
+    assert hooks_envs == ["dev"]

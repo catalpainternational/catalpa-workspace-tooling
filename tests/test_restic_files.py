@@ -6,11 +6,13 @@ from catalpa_tooling.config import load_project_config
 from catalpa_tooling.restic_files import (
     _docker_run_env_flags,
     _docker_run_restic,
+    _restic_verbose_flags,
     django_media_volume_name,
     merge_restic_verbose_from_cli,
     normalize_restic_credentials,
     restic_backup_mount_path,
     restic_credentials_conflict_message,
+    restic_env_for_restore,
     split_restic_cli_verbose,
     validate_restic_env,
     validate_restic_env_for_systemd,
@@ -41,6 +43,28 @@ def test_merge_restic_verbose_from_cli() -> None:
     base = {"RESTIC_VERBOSE": "1"}
     m = merge_restic_verbose_from_cli(base, 2)
     assert m["RESTIC_VERBOSE"] == "3"
+
+
+def test_restic_env_for_restore_defaults() -> None:
+    out = restic_env_for_restore({})
+    assert out["RESTIC_VERBOSE"] == "1"
+    assert _restic_verbose_flags(out) == ["-v"]
+
+
+def test_restic_env_for_restore_restore_override() -> None:
+    out = restic_env_for_restore({"RESTIC_VERBOSE": "2", "RESTIC_RESTORE_VERBOSE": "3"})
+    assert out["RESTIC_VERBOSE"] == "3"
+
+
+def test_restic_env_for_restore_inherits_verbose() -> None:
+    out = restic_env_for_restore({"RESTIC_VERBOSE": "2"})
+    assert out["RESTIC_VERBOSE"] == "2"
+
+
+def test_restic_env_for_restore_quiet() -> None:
+    out = restic_env_for_restore({"RESTIC_RESTORE_VERBOSE": "0"})
+    assert out["RESTIC_VERBOSE"] == "0"
+    assert _restic_verbose_flags(out) == []
 
 
 def test_docker_run_env_flags_includes_aws_when_set() -> None:

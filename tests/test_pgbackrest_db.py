@@ -78,19 +78,23 @@ class TestDropCreateAppDatabase(unittest.TestCase):
 
 
 class TestLogLevelArgvShell(unittest.TestCase):
-    def test_restore_default_console_info(self) -> None:
-        s = _log_level_argv_shell({}, default_console_level="info")
+    def test_restore_default_from_restore_key(self) -> None:
+        s = _log_level_argv_shell({"PGBR_RESTORE_LOG_LEVEL_CONSOLE": "info"}, for_restore=True)
         self.assertIn("--log-level-console=info", s)
 
-    def test_env_overrides_default_console(self) -> None:
+    def test_console_overrides_restore_key(self) -> None:
         s = _log_level_argv_shell(
-            {"PGBR_LOG_LEVEL_CONSOLE": "warn"},
-            default_console_level="info",
+            {
+                "PGBR_LOG_LEVEL_CONSOLE": "warn",
+                "PGBR_RESTORE_LOG_LEVEL_CONSOLE": "info",
+            },
+            for_restore=True,
         )
         self.assertIn("--log-level-console=warn", s)
 
-    def test_no_default_when_unset(self) -> None:
+    def test_empty_without_restore_keys(self) -> None:
         self.assertEqual(_log_level_argv_shell({}), "")
+        self.assertEqual(_log_level_argv_shell({}, for_restore=True), "")
 
 
 class TestRestoreRecoveryTimeout(unittest.TestCase):
@@ -208,6 +212,10 @@ class TestRunRestoreOfflineInterrupt(unittest.TestCase):
                 return_value="main",
             ),
             patch("catalpa_tooling.pgbackrest_db.ensure_postgres_data_volume", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.ensure_pgbackrest_conf_before_restore",
+                return_value=0,
+            ),
             patch("catalpa_tooling.pgbackrest_db.db_service_responds", return_value=False),
             patch(
                 "catalpa_tooling.pgbackrest_db.run_interruptible",
@@ -224,6 +232,51 @@ class TestRunRestoreOfflineInterrupt(unittest.TestCase):
         self.assertEqual(rc, 130)
         run_int.assert_called_once()
         up_db.assert_not_called()
+
+
+class TestRunRestoreOfflinePostHooks(unittest.TestCase):
+    def test_successful_restore_runs_post_db_restore_hooks(self) -> None:
+        with (
+            patch(
+                "catalpa_tooling.pgbackrest_db.validate_pgbackrest_env",
+                return_value=None,
+            ),
+            patch("catalpa_tooling.pgbackrest_db.resolve_stanza", return_value="main"),
+            patch("catalpa_tooling.pgbackrest_db.ensure_postgres_data_volume", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.ensure_pgbackrest_conf_before_restore",
+                return_value=0,
+            ),
+            patch("catalpa_tooling.pgbackrest_db.db_service_responds", return_value=False),
+            patch("catalpa_tooling.pgbackrest_db.run_interruptible") as run_int,
+            patch("catalpa_tooling.pgbackrest_db._compose_up_db", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.wait_db_logs_for_recovery_ready",
+                return_value=(True, ""),
+            ),
+            patch(
+                "catalpa_tooling.pgbackrest_db.run_post_db_restore_manage_commands",
+                return_value=0,
+            ) as hooks,
+        ):
+            ok = MagicMock()
+            ok.returncode = 0
+            run_int.return_value = ok
+            cfg = MagicMock()
+            rc = run_restore_offline(
+                {"PGBR_STANZA": "main"},
+                compose_file="compose.yml",
+                env_name="staging",
+                skip_confirm=True,
+                config=cfg,
+            )
+        self.assertEqual(rc, 0)
+        hooks.assert_called_once_with(
+            cfg,
+            compose_file="compose.yml",
+            env_add={"PGBR_STANZA": "main"},
+            env_name="staging",
+        )
 
 
 if __name__ == "__main__":

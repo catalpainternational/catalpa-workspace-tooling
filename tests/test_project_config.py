@@ -126,6 +126,26 @@ digitalocean:
     assert cfg.digitalocean.size == "s-2vcpu-4gb"
     assert cfg.digitalocean.image == "ubuntu-24-04-x64"
     assert cfg.digitalocean.ssh_keys == ("aa:bb:cc:dd",)
+    assert cfg.digitalocean.monitoring is True
+
+
+def test_digitalocean_monitoring_false(tmp_path: Path, isolated_tooling: None) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    tooling.write_text(
+        tooling.read_text(encoding="utf-8")
+        + """
+digitalocean:
+  project_name: staging
+  monitoring: false
+""",
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.digitalocean is not None
+    assert cfg.digitalocean.monitoring is False
 
 
 def test_digitalocean_rejects_both_project_keys(tmp_path: Path, isolated_tooling: None) -> None:

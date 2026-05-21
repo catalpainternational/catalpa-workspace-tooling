@@ -103,12 +103,21 @@ def spaces_backup_defaults(config: ProjectConfig, env_name: str) -> SpacesBackup
 
 
 def needs_pgbr_write(sub: str, tail: list[str]) -> bool:
-    """True when a ``bkp_db`` subcommand requires WRITE-mode S3 credentials."""
-    if sub in ("install-systemd", "backup", "restore"):
+    """True when a ``bkp_db`` subcommand should auto-provision WRITE-mode S3 credentials.
+
+    Restore and ``configure verify`` accept READ-mode credentials (``pgbr_s3_read_*``);
+  they must not trigger Spaces bucket creation.
+    """
+    if sub in ("install-systemd", "backup"):
         return True
-    if sub == "configure" and tail in (["verify"], ["stanza-create"]):
+    if sub == "configure" and tail == ["stanza-create"]:
         return True
     return False
+
+
+def needs_restic_write(sub: str) -> bool:
+    """True when a ``bkp_files`` subcommand should auto-provision WRITE-mode restic credentials."""
+    return sub in ("install-systemd", "backup", "init")
 
 
 def pgbr_write_configured(env: dict[str, str]) -> bool:

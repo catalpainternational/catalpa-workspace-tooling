@@ -20,6 +20,7 @@ _UUID_RE = re.compile(
     re.IGNORECASE,
 )
 _DROPLET_URN_RE = re.compile(r"^do:droplet:(\d+)$", re.IGNORECASE)
+_DOMAIN_URN_RE = re.compile(r"^do:domain:(.+)$", re.IGNORECASE)
 
 _DEFAULT_COLUMNS = ("ID", "Name", "PublicIPv4", "PrivateIPv4", "Region", "Status")
 
@@ -87,6 +88,26 @@ def resolve_project_id(
         file=sys.stderr,
     )
     raise SystemExit(1)
+
+
+def domain_names_from_resource_urns(urns: Sequence[str]) -> list[str]:
+    """Extract domain names from project resource URNs ``do:domain:<name>``."""
+    names: list[str] = []
+    for urn in urns:
+        m = _DOMAIN_URN_RE.match(urn.strip())
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def list_project_domain_urns(
+    project_id: str,
+    *,
+    context: str | None,
+) -> set[str]:
+    """Return domain names (lowercase) assigned to a DigitalOcean project."""
+    urns = list_project_resource_urns(project_id, context=context)
+    return {name.strip().lower() for name in domain_names_from_resource_urns(urns)}
 
 
 def droplet_ids_from_resource_urns(urns: Sequence[str]) -> list[int]:

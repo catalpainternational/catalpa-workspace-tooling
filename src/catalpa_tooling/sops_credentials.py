@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from catalpa_tooling.backup_logging_env import BACKUP_LOGGING_ENV_KEYS
 from catalpa_tooling.env_yaml import _credentials_to_env
 from catalpa_tooling.run_cmd import run as run_cmd
 
@@ -89,8 +90,10 @@ def apply_credential_sets(creds_path: Path, values: dict[str, str]) -> None:
 
 def refresh_env_credentials(env_add: dict[str, str], creds_path: Path) -> None:
     """Re-decrypt credentials and merge into ``env_add`` (replacing prior credential keys)."""
+    preserved = {k: env_add[k] for k in BACKUP_LOGGING_ENV_KEYS if k in env_add}
     creds = decrypt_credentials_yaml(creds_path)
     for k in list(env_add):
         if k.startswith(_CREDENTIAL_ENV_PREFIXES):
             del env_add[k]
     env_add.update(_credentials_to_env(creds))
+    env_add.update(preserved)

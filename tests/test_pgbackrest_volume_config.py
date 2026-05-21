@@ -8,9 +8,12 @@ from catalpa_tooling.pgbackrest_volume_config import (
     caddy_data_volume_name,
     conflict_error_message,
     django_media_volume_name,
+    ensure_pgbackrest_conf_before_restore,
     ensure_postgres_data_volume,
     external_stack_volume_names,
     minimal_pgbackrest_baseline,
+    pgbackrest_managed_conf_materialized,
+    pgdata_volume_mount,
     postgres_data_volume_name,
     postgres_image_from_env,
     render_pgbackrest_ini,
@@ -90,6 +93,7 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             default_registry="ghcr.io/example",
             restore_temp_prefix="pfx_",
             data_volume="db_data",
+            pg1_path="/var/lib/postgresql/18/docker",
         )
         self.assertEqual(
             postgres_data_volume_name({"COMPOSE_PROJECT_NAME": "myproj"}, config=cfg),
@@ -159,7 +163,7 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
         self.assertIn("[global:archive-push]", text)
         self.assertIn("compress-level=3", text)
         self.assertIn("[main]", text)
-        self.assertIn("pg1-path=/var/lib/postgresql/data", text)
+        self.assertIn("pg1-path=/var/lib/postgresql/18/docker", text)
 
     def test_render_pgbackrest_write_retention_override(self) -> None:
         vm = {
@@ -237,6 +241,110 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             subprocess.CalledProcessError(1, ["docker", "volume", "create"]),
         ]
         self.assertEqual(ensure_postgres_data_volume({}), 1)
+
+
+class TestPgbackrestManagedConfMaterialized(unittest.TestCase):
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_true_when_probe_succeeds(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        env = {"PGBR_S3_READ_STANZA": "main", "PGBR_S3_READ_BUCKET": "b"}
+        self.assertTrue(pgbackrest_managed_conf_materialized(env))
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_false_when_probe_fails(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=1)
+        env = {"PGBR_S3_READ_STANZA": "main", "PGBR_S3_READ_BUCKET": "b"}
+        self.assertFalse(pgbackrest_managed_conf_materialized(env))
+
+    def test_false_in_none_mode(self) -> None:
+        self.assertFalse(pgbackrest_managed_conf_materialized({}))
+
+
+class TestEnsurePgbackrestConfBeforeRestore(unittest.TestCase):
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=True,
+    )
+    def test_skips_when_already_materialized(self, _mock_mat: MagicMock) -> None:
+        self.assertEqual(ensure_pgbackrest_conf_before_restore({}), 0)
+
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=False,
+    )
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.materialize_configs",
+        return_value=0,
+    )
+    @patch(
+        "catalpa_tooling.cli_confirm.confirm_yes_default_no",
+        return_value=True,
+    )
+    @patch("catalpa_tooling.pgbackrest_volume_config.resolve_mode", return_value="read")
+    def test_runs_configure_after_yes(
+        self,
+        _mode: MagicMock,
+        _confirm: MagicMock,
+        mock_mat_cfg: MagicMock,
+        _mock_ready: MagicMock,
+    ) -> None:
+        env = {"PGBR_S3_READ_STANZA": "main"}
+        self.assertEqual(ensure_pgbackrest_conf_before_restore(env), 0)
+        mock_mat_cfg.assert_called_once()
+
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=False,
+    )
+    @patch(
+        "catalpa_tooling.cli_confirm.confirm_yes_default_no",
+        return_value=False,
+    )
+    @patch("catalpa_tooling.pgbackrest_volume_config.resolve_mode", return_value="read")
+    def test_cancelled_when_user_declines(
+        self,
+        _mode: MagicMock,
+        _confirm: MagicMock,
+        _mock_ready: MagicMock,
+    ) -> None:
+        env = {"PGBR_S3_READ_STANZA": "main"}
+        self.assertEqual(ensure_pgbackrest_conf_before_restore(env), 1)
+
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.pgbackrest_managed_conf_materialized",
+        return_value=False,
+    )
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.materialize_configs",
+        return_value=0,
+    )
+    @patch("catalpa_tooling.pgbackrest_volume_config.resolve_mode", return_value="read")
+    def test_auto_configure_with_skip_confirm(
+        self,
+        _mode: MagicMock,
+        mock_mat_cfg: MagicMock,
+        _mock_ready: MagicMock,
+    ) -> None:
+        env = {"PGBR_S3_READ_STANZA": "main"}
+        self.assertEqual(
+            ensure_pgbackrest_conf_before_restore(env, skip_configure_confirm=True),
+            0,
+        )
+        mock_mat_cfg.assert_called_once()
+
+
+class TestPgdataVolumeMount(unittest.TestCase):
+    def test_pg18_mounts_parent_tree(self) -> None:
+        self.assertEqual(
+            pgdata_volume_mount("/var/lib/postgresql/18/docker"),
+            "/var/lib/postgresql",
+        )
+
+    def test_legacy_data_mounts_directly(self) -> None:
+        self.assertEqual(
+            pgdata_volume_mount("/var/lib/postgresql/data"),
+            "/var/lib/postgresql/data",
+        )
 
 
 if __name__ == "__main__":

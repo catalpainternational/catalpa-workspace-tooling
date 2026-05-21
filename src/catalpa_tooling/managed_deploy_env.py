@@ -9,22 +9,20 @@ from pathlib import Path
 
 import yaml
 
+from catalpa_tooling.backup_logging_env import apply_backup_logging_env
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.dk_stack import vite_build_metadata_env
 from catalpa_tooling.env_yaml import _credentials_to_env, _yaml_mapping_to_env
 from catalpa_tooling.images import _default_image_tag, _image_registry_from_config, _load_images_config
 from catalpa_tooling.run_cmd import run as run_cmd
+from catalpa_tooling.site_origin import (
+    domain_env_from_origins,
+    parse_site_origins_from_info,
+    primary_site_origin_from_info,
+    site_origin_from_info,
+)
 
-
-def site_origin_from_info(info: dict) -> str:
-    """Resolve public site origin from ``info.yaml`` (``site_origin`` or legacy ``domain``)."""
-    raw = info.get("site_origin") or info.get("domain") or ""
-    s = str(raw).strip()
-    if not s:
-        return ""
-    if "://" in s:
-        return s.rstrip("/")
-    return f"https://{s}"
+__all__ = ["site_origin_from_info"]
 
 
 def _info_image_tag(info: dict) -> str | None:
@@ -94,6 +92,7 @@ class ManagedDeployContext:
     env_add: dict[str, str]
     docker_host: str
     site_origin: str
+    site_origins: tuple[str, ...]
     use_prepulled_registry: bool
     image_registry: str
     info_tag: str | None
@@ -139,7 +138,8 @@ def print_managed_deploy_header(
             compose_file=compose_file,
             env_add={},
             docker_host=str(info.get("docker_host", "")),
-            site_origin=site_origin_from_info(info),
+            site_origin=primary_site_origin_from_info(info),
+            site_origins=tuple(parse_site_origins_from_info(info)),
             use_prepulled_registry=use_prepulled,
             image_registry=image_registry,
             info_tag=effective_tag,
@@ -179,8 +179,15 @@ def load_managed_deploy_context(
         if compose_file is None:
             return None
 
-    site_origin = site_origin_from_info(info)
+    site_origins = tuple(parse_site_origins_from_info(info))
+    site_origin = site_origins[0] if site_origins else ""
     docker_host = info.get("docker_host", "")
+
+    from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
+
+    kh_rc = ensure_ssh_known_host_for_docker_host(str(docker_host or ""))
+    if kh_rc != 0:
+        return None
 
     images_config = _load_images_config(config)
     image_registry = _resolve_image_registry(info, images_config, config)
@@ -243,6 +250,9 @@ def load_managed_deploy_context(
 
     if site_origin:
         env_add["SITE_ORIGIN"] = site_origin
+    domain_s = domain_env_from_origins(list(site_origins))
+    if domain_s:
+        env_add["DOMAIN"] = domain_s
 
     if effective_tag:
         env_add["STACK_IMAGE_TAG"] = effective_tag
@@ -268,6 +278,7 @@ def load_managed_deploy_context(
     yaml_tag_s = str(yaml_tag).strip() if yaml_tag not in (None, False) else ""
     release_for_bundle = env_add.get("STACK_IMAGE_TAG") or yaml_tag_s or _default_image_tag(repo_root)
     env_add.update(vite_build_metadata_env(config, str(release_for_bundle)))
+    apply_backup_logging_env(env_add, config, info)
 
     return ManagedDeployContext(
         env_name=env_name,
@@ -275,6 +286,7 @@ def load_managed_deploy_context(
         env_add=dict(env_add),
         docker_host=str(docker_host),
         site_origin=site_origin,
+        site_origins=site_origins,
         use_prepulled_registry=use_prepulled_registry,
         image_registry=image_registry,
         info_tag=effective_tag,
