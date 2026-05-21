@@ -24,6 +24,8 @@ def test_provision_exits_when_s3cmd_missing(
 ) -> None:
     from catalpa_tooling.config import (
         DeployPathsConfig,
+        DevConfig,
+        FetchMediaConfig,
         OpsConfig,
         PathsConfig,
         PgbackrestOpsConfig,
@@ -88,6 +90,9 @@ def test_provision_exits_when_s3cmd_missing(
             ),
             post_db_restore=PostDbRestoreOpsConfig(envs=None, manage_commands=()),
             default_db_container="db1",
+        ),
+        dev=DevConfig(
+            fetch_media=FetchMediaConfig(dk_env="prod", dest="media", legacy=None),
         ),
         digitalocean=None,
         repo_root=tmp_path,

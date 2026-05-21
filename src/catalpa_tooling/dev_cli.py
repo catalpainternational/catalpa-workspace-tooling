@@ -12,11 +12,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from catalpa_tooling.cli_interrupt import run_cli
-from catalpa_tooling.fetch_media_config import (
-    DEFAULT_MEDIA_DK_ENV,
-    LEGACY_REMOTE_MEDIA_PATH,
-    build_fetch_media_env,
-)
+from catalpa_tooling.fetch_media import run_fetch_media
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
 from catalpa_tooling.script_discovery import (
@@ -24,9 +20,6 @@ from catalpa_tooling.script_discovery import (
     reset_db_post_script,
 )
 from catalpa_tooling.script_runner import run_bash_script
-
-DEFAULT_FETCH_DK_ENV = DEFAULT_MEDIA_DK_ENV
-
 
 def _config() -> ProjectConfig:
     return ProjectConfig.from_cwd()
@@ -331,29 +324,24 @@ def _cmd_fetch_db(*, output: Path | None, dk_env: str) -> None:
 def _cmd_fetch_media(
     *,
     host: str | None,
-    remote_path: str,
     dest: Path | None,
     partial: bool,
     legacy_path: bool,
-    dk_env: str,
+    legacy_remote: str | None,
+    dk_env: str | None,
     compose_project: str | None,
 ) -> None:
-    if not shutil.which("rsync"):
-        print("rsync is not installed or not on PATH.", file=sys.stderr)
-        raise SystemExit(1)
-
     cfg = _config()
-    root = cfg.repo_root
-    local_base = (dest if dest is not None else root / "media").resolve()
+    env_name = dk_env if dk_env is not None else cfg.default_fetch_dk_env
     try:
-        env = build_fetch_media_env(
+        run_fetch_media(
             cfg,
-            legacy_path=legacy_path,
-            dk_env=dk_env,
+            dk_env=env_name,
             host=host,
-            remote_path=remote_path,
             dest=dest,
             partial=partial,
+            legacy_path=legacy_path,
+            legacy_remote=legacy_remote,
             compose_project=compose_project,
         )
     except FileNotFoundError as exc:
@@ -362,11 +350,6 @@ def _cmd_fetch_media(
     except ValueError as exc:
         print(f"dev fetch media: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-
-    script = cfg.scripts_dir / "fetch_media.sh"
-    print(f"Running {script}", file=sys.stderr)
-    run_cmd(["bash", str(script)], cwd=root, env=env, check=True)
-    print(f"Done: {local_base}", file=sys.stderr)
 
 
 def _run_npm(script: str, cwd: Path) -> int:
@@ -393,6 +376,12 @@ def _dev_main() -> None:
     )
     fetch_sub = fetch.add_subparsers(dest="resource", required=True)
 
+    cfg = _config()
+    default_dk_env = cfg.default_fetch_dk_env
+    legacy_remote_default = (
+        cfg.dev.fetch_media.legacy.remote if cfg.dev.fetch_media.legacy else None
+    )
+
     p_db = fetch_sub.add_parser(
         "db",
         help="Download PostgreSQL custom-format dump via `dk … bkp_db pgdump` (requires `uv`; remote `db` up).",
@@ -406,9 +395,9 @@ def _dev_main() -> None:
     )
     p_db.add_argument(
         "--env",
-        default=DEFAULT_FETCH_DK_ENV,
+        default=None,
         metavar="NAME",
-        help=f"dk environment under docker/envs/ (default: {DEFAULT_FETCH_DK_ENV!r})",
+        help=f"dk environment under docker/envs/ (default: dev.fetch_media.dk_env → {default_dk_env!r})",
     )
 
     p_media = fetch_sub.add_parser(
@@ -417,26 +406,35 @@ def _dev_main() -> None:
     )
     p_media.add_argument(
         "--env",
-        default=DEFAULT_FETCH_DK_ENV,
+        default=None,
         metavar="NAME",
         help=(
-            f"dk env for docker_host / compose_project_name when using volume mode (default: {DEFAULT_FETCH_DK_ENV!r}). "
-            "Ignored with --legacy-path."
+            f"dk env for docker_host / compose_project_name from info.yaml "
+            f"(default: dev.fetch_media.dk_env → {default_dk_env!r})."
         ),
     )
     p_media.add_argument(
         "--host",
         default=None,
         metavar="USER@HOST",
-        help="SSH target. Volume mode: override docker_host from info.yaml. Legacy path mode: required if unset.",
+        help="SSH target (override docker_host from info.yaml, or required for --legacy-path without tooling.yaml ssh_host).",
     )
     p_media.add_argument(
         "--remote",
-        default=LEGACY_REMOTE_MEDIA_PATH,
+        default=None,
         metavar="PATH",
-        help=f"Remote media directory with --legacy-path only (default: {LEGACY_REMOTE_MEDIA_PATH})",
+        help=(
+            "Remote media directory with --legacy-path "
+            f"(default: dev.fetch_media.legacy.remote"
+            f"{f' → {legacy_remote_default!r}' if legacy_remote_default else ''})."
+        ),
     )
-    p_media.add_argument("--dest", type=Path, metavar="DIR", help="Local directory (default: <repo>/media)")
+    p_media.add_argument(
+        "--dest",
+        type=Path,
+        metavar="DIR",
+        help=f"Local directory (default: <repo>/{cfg.dev.fetch_media.dest})",
+    )
     p_media.add_argument(
         "--partial",
         action="store_true",
@@ -445,10 +443,7 @@ def _dev_main() -> None:
     p_media.add_argument(
         "--legacy-path",
         action="store_true",
-        help=(
-            f"Rsync from a fixed directory on the SSH host ({LEGACY_REMOTE_MEDIA_PATH} by default) "
-            "instead of the django_media Docker volume (docker_host from info.yaml)."
-        ),
+        help="Rsync from dev.fetch_media.legacy in tooling.yaml instead of the django_media Docker volume.",
     )
     p_media.add_argument(
         "--compose-project",
@@ -512,7 +507,6 @@ def _dev_main() -> None:
         help="npm install then Vue dev server (paths.frontend from tooling.yaml).",
     ).set_defaults(handler="vite")
 
-    cfg = _config()
     dev_extensions = discover_dev_commands(cfg.scripts_dir)
     dev_extension_names: set[str] = set()
     for cmd_name, script_path in dev_extensions.items():
@@ -543,15 +537,18 @@ def _dev_main() -> None:
         )
     if args.command == "fetch":
         if args.resource == "db":
-            _cmd_fetch_db(output=args.output, dk_env=args.env)
+            _cmd_fetch_db(
+                output=args.output,
+                dk_env=args.env if args.env is not None else cfg.default_fetch_dk_env,
+            )
             return
         if args.resource == "media":
             _cmd_fetch_media(
                 host=args.host,
-                remote_path=args.remote,
                 dest=args.dest,
                 partial=args.partial,
                 legacy_path=bool(args.legacy_path),
+                legacy_remote=args.remote,
                 dk_env=args.env,
                 compose_project=args.compose_project,
             )

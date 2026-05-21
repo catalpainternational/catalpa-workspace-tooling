@@ -200,6 +200,28 @@ class OpsConfig:
 
 
 @dataclass(frozen=True)
+class FetchMediaLegacyConfig:
+    """Fixed host directory for ``dev fetch media --legacy-path`` (non-Docker deploys)."""
+
+    remote: str
+    ssh_host: str | None
+
+
+@dataclass(frozen=True)
+class FetchMediaConfig:
+    """``dev.fetch_media`` in tooling.yaml (defaults when the section is omitted)."""
+
+    dk_env: str
+    dest: str
+    legacy: FetchMediaLegacyConfig | None
+
+
+@dataclass(frozen=True)
+class DevConfig:
+    fetch_media: FetchMediaConfig
+
+
+@dataclass(frozen=True)
 class ProjectMetaConfig:
     name: str
     root_marker: str
@@ -231,6 +253,10 @@ class DigitalOceanConfig:
     monitoring: bool = True
 
 
+DEFAULT_FETCH_MEDIA_DK_ENV = "prod"
+DEFAULT_FETCH_MEDIA_DEST = "media"
+
+
 @dataclass(frozen=True)
 class ProjectConfig:
     """Typed view of ``tooling.yaml`` with resolved paths under ``repo_root``."""
@@ -239,6 +265,7 @@ class ProjectConfig:
     paths: PathsConfig
     stack: StackConfig
     ops: OpsConfig
+    dev: DevConfig
     digitalocean: DigitalOceanConfig | None
     repo_root: Path
     tooling_path: Path
@@ -272,6 +299,15 @@ class ProjectConfig:
     @property
     def fetch_db_dump_path(self) -> Path:
         return self.repo_root / self.paths.fetch_db_dump
+
+    @property
+    def fetch_media_dest_path(self) -> Path:
+        return self.repo_root / self.dev.fetch_media.dest
+
+    @property
+    def default_fetch_dk_env(self) -> str:
+        """Default ``docker/envs/<name>`` for ``dev fetch db`` / ``dev fetch media``."""
+        return self.dev.fetch_media.dk_env
 
     @property
     def deploy_envs_dir(self) -> Path:
@@ -452,6 +488,42 @@ def _parse_spaces(spaces_raw: dict[str, Any]) -> SpacesConfig:
     )
 
 
+def _parse_fetch_media_legacy(raw: Any) -> FetchMediaLegacyConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev.fetch_media.legacy must be a mapping")
+    remote = _require_str(raw, "remote", section="dev.fetch_media.legacy")
+    ssh_host = _optional_str(raw, "ssh_host")
+    return FetchMediaLegacyConfig(remote=remote.rstrip("/"), ssh_host=ssh_host)
+
+
+def _parse_fetch_media(raw: Any) -> FetchMediaConfig:
+    if raw is None:
+        return FetchMediaConfig(
+            dk_env=DEFAULT_FETCH_MEDIA_DK_ENV,
+            dest=DEFAULT_FETCH_MEDIA_DEST,
+            legacy=None,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev.fetch_media must be a mapping")
+    dest = _optional_str(raw, "dest") or DEFAULT_FETCH_MEDIA_DEST
+    dk_env = _optional_str(raw, "dk_env") or DEFAULT_FETCH_MEDIA_DK_ENV
+    return FetchMediaConfig(
+        dk_env=dk_env,
+        dest=_validate_rel_path(dest, field="dev.fetch_media.dest"),
+        legacy=_parse_fetch_media_legacy(raw.get("legacy")),
+    )
+
+
+def _parse_dev(raw: Any) -> DevConfig:
+    if raw is None:
+        return DevConfig(fetch_media=_parse_fetch_media(None))
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev must be a mapping")
+    return DevConfig(fetch_media=_parse_fetch_media(raw.get("fetch_media")))
+
+
 def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
     project_name = _optional_str(do_raw, "project_name")
     project_id = _optional_str(do_raw, "project_id")
@@ -610,6 +682,7 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         paths=_parse_paths(paths_raw),
         stack=_parse_stack(stack_raw),
         ops=_parse_ops(ops_raw),
+        dev=_parse_dev(data.get("dev")),
         digitalocean=digitalocean,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),
