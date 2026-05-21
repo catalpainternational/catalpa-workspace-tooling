@@ -19,6 +19,11 @@ from catalpa_tooling.fetch_media_config import (
 )
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
+from catalpa_tooling.script_discovery import (
+    discover_dev_commands,
+    reset_db_post_script,
+)
+from catalpa_tooling.script_runner import run_bash_script
 
 DEFAULT_FETCH_DK_ENV = DEFAULT_MEDIA_DK_ENV
 
@@ -104,10 +109,12 @@ def _run_reset_db_drop_create_migrate_seed(
     from_dump: Path | None = None,
     pg_restore_extras: Sequence[str] | None = None,
 ) -> int:
-    """dropdb → createdb → PostGIS → migrate → load_seed_content (local Postgres).
+    """dropdb → createdb → PostGIS → migrate (or ``scripts/dev-reset-db-post.sh``).
 
-    With ``from_dump``, runs ``dropdb`` / ``createdb`` then ``pg_restore`` instead of migrate and
-    seed (dump should match how this project dumps, e.g. ``pg_dump -Fc``).
+    With ``from_dump``, runs ``dropdb`` / ``createdb`` then ``pg_restore`` instead of migrate/seed
+    (dump should match how this project dumps, e.g. ``pg_dump -Fc``).
+
+    When ``scripts/dev-reset-db-post.sh`` exists, it runs instead of the built-in ``migrate`` step.
     """
     tools = ["dropdb", "createdb"]
     if from_dump is not None:
@@ -124,6 +131,7 @@ def _run_reset_db_drop_create_migrate_seed(
             return 127
 
     cfg = _config()
+    post_script = reset_db_post_script(cfg.scripts_dir)
     _load_env_local(cfg)
     env_file = cfg.env_local_path
     if env_file.is_file():
@@ -142,7 +150,7 @@ def _run_reset_db_drop_create_migrate_seed(
     print("dev reset-db: starting (PostgreSQL client tools)", flush=True)
     print(f"  target: {_pg_target_line(dbname, env)}", flush=True)
 
-    total = 3 if from_dump else 5
+    total = 3 if from_dump else 4
     print(
         f"  1/{total} dropdb --if-exists: remove existing database if present "
         f"(this deletes all data in {dbname!r})",
@@ -193,19 +201,20 @@ def _run_reset_db_drop_create_migrate_seed(
         return rc
     print("  done: PostGIS extension ready.", flush=True)
 
-    print(f"  4/{total} uv run ./manage.py migrate", flush=True)
-    rc = _run_uv_manage(["migrate"])
-    if rc != 0:
-        print(f"  failed: migrate exited with {rc}", file=sys.stderr, flush=True)
-        return rc
-    print("  done: migrate finished.", flush=True)
-
-    print(f"  5/{total} uv run ./manage.py load_seed_content", flush=True)
-    rc = _run_uv_manage(["load_seed_content"])
-    if rc != 0:
-        print(f"  failed: load_seed_content exited with {rc}", file=sys.stderr, flush=True)
-        return rc
-    print("  done: load_seed_content finished.", flush=True)
+    if post_script is not None:
+        print(f"  4/{total} bash {post_script.name} (project hook)", flush=True)
+        rc = run_bash_script(cfg, post_script, [], label="dev reset-db")
+        if rc != 0:
+            print(f"  failed: {post_script.name} exited with {rc}", file=sys.stderr, flush=True)
+            return rc
+        print(f"  done: {post_script.name} finished.", flush=True)
+    else:
+        print(f"  4/{total} uv run ./manage.py migrate", flush=True)
+        rc = _run_uv_manage(["migrate"])
+        if rc != 0:
+            print(f"  failed: migrate exited with {rc}", file=sys.stderr, flush=True)
+            return rc
+        print("  done: migrate finished.", flush=True)
     print("dev reset-db: finished successfully.", flush=True)
     return 0
 
@@ -466,14 +475,16 @@ def _dev_main() -> None:
 
     p_reset = subparsers.add_parser(
         "reset-db",
-        help="dropdb + createdb + PostGIS + migrate + load_seed_content (local Postgres; see README).",
+        help=(
+            "dropdb + createdb + PostGIS + migrate (or scripts/dev-reset-db-post.sh when present; local Postgres)."
+        ),
     )
     p_reset.add_argument(
         "--from-dump",
         metavar="PATH",
         dest="from_dump",
         help=(
-            "After recreate, pg_restore this custom-format archive instead of migrate + load_seed_content. "
+            "After recreate, pg_restore this custom-format archive instead of migrate/post-hook. "
             "Extra arguments are forwarded to pg_restore (e.g. --no-owner --no-acl)."
         ),
     )
@@ -500,20 +511,31 @@ def _dev_main() -> None:
         "vite",
         help="npm install then Vue dev server (paths.frontend from tooling.yaml).",
     ).set_defaults(handler="vite")
-    subparsers.add_parser(
-        "storybook",
-        help="npm install then Storybook (paths.frontend from tooling.yaml).",
-    ).set_defaults(handler="storybook")
-    subparsers.add_parser(
-        "prototype",
-        help="npm install then prototype dev server (paths.prototype from tooling.yaml).",
-    ).set_defaults(handler="prototype")
+
+    cfg = _config()
+    dev_extensions = discover_dev_commands(cfg.scripts_dir)
+    dev_extension_names: set[str] = set()
+    for cmd_name, script_path in dev_extensions.items():
+        dev_extension_names.add(cmd_name)
+        rel = script_path.relative_to(cfg.repo_root)
+        p_ext = subparsers.add_parser(
+            cmd_name,
+            help=f"Run project script {rel} (scripts/dev-*.sh).",
+        )
+        p_ext.add_argument(
+            "script_args",
+            nargs=argparse.REMAINDER,
+            help=f"Arguments forwarded to {script_path.name}.",
+        )
+        p_ext.set_defaults(handler="dev-script", dev_script_path=script_path)
 
     args, unknown = parser.parse_known_args()
     # argparse.REMAINDER does not swallow ``--opts`` on ``pg-restore`` once ``--file`` exists;
     # ``parse_known_args`` keeps them so we can forward them to ``pg_restore``.
-    allow_unknown = args.command == "pg-restore" or (
-        args.command == "reset-db" and getattr(args, "from_dump", None)
+    allow_unknown = (
+        args.command == "pg-restore"
+        or (args.command == "reset-db" and getattr(args, "from_dump", None))
+        or args.command in dev_extension_names
     )
     if unknown and not allow_unknown:
         parser.error(
@@ -569,22 +591,15 @@ def _dev_main() -> None:
         if rc != 0:
             sys.exit(rc)
         sys.exit(_run_npm("dev", cfg.frontend_dir))
-    if handler == "storybook":
+    if handler == "dev-script":
         cfg = _config()
-        rc = _run_npm_install(cfg.frontend_dir)
-        if rc != 0:
-            sys.exit(rc)
-        sys.exit(_run_npm("storybook", cfg.frontend_dir))
-    if handler == "prototype":
-        cfg = _config()
-        proto = cfg.prototype_dir
-        if proto is None:
-            print("dev prototype: paths.prototype not set in tooling.yaml", file=sys.stderr)
+        script_path = getattr(args, "dev_script_path", None)
+        if script_path is None:
+            print("dev: internal error (missing dev_script_path)", file=sys.stderr)
             sys.exit(2)
-        rc = _run_npm_install(proto)
-        if rc != 0:
-            sys.exit(rc)
-        sys.exit(_run_npm("dev", proto))
+        extra = [a for a in getattr(args, "script_args", []) if a]
+        extra.extend(unknown)
+        sys.exit(run_bash_script(cfg, script_path, extra, label=f"dev {args.command}"))
 
     sys.exit(1)
 

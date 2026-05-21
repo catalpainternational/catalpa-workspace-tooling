@@ -22,10 +22,26 @@ After install, these console scripts are available:
 
 | Command | Purpose |
 |---------|---------|
-| `dev` | Local development helpers (backend, frontend, prototype) |
+| `dev` | Local development helpers (Django, Vite, fetch, plus `scripts/dev-*.sh` extensions) |
 | `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). |
 | `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
-| `scripts` | Run shell scripts from `paths.scripts` in the manifest |
+| `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
+
+### Project script extensions
+
+Place bash scripts under `paths.scripts` in `tooling.yaml`:
+
+- **`scripts/dev-<name>.sh`** → `uv run dev <name>` (e.g. `dev-storybook.sh` → `dev storybook`). Built-in `dev` commands (`runserver`, `vite`, `reset-db`, …) take precedence over discovered names.
+- **`scripts/<name>.sh`** (not `dev-*`) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
+- **`scripts/dev-reset-db-post.sh`** — optional hook after `dev reset-db` recreates the DB and enables PostGIS; replaces the default `migrate`-only tail step.
+
+For npm-based dev servers, source the bundled helper:
+
+```bash
+# shellcheck source=/dev/null
+source "$(uv run python -c 'from catalpa_tooling.script_assets import npm_run_helper_path; print(npm_run_helper_path())')"
+npm_run_in_dir "${REPO_ROOT}/frontend_vue" storybook
+```
 
 Run from the **application repo root** (where `tooling.yaml` lives):
 
