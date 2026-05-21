@@ -35,7 +35,7 @@ dk
     │   ├── restart
     │   └── logs
     ├── ensure_volumes               # utility command 
-    ├── trust-caddy-cert             # trust locally signed caddy certs
+    ├── trust-caddy-cert [--dry-run] # macOS: trust Caddy local CA (stack.services.proxy)
     ├── manage <django …>            # access ./manage.py
     ├── pull_media                   # volume → host dir (tar)
     ├── wipe                         # alias: compose down -v
@@ -77,7 +77,7 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `host` / `host create` (doctl: droplet + `site_origin` DNS on DigitalOcean + public resolution; `digitalocean.disabled` for manual hosts; default droplet `{project}-{env}`), `zabbix`, `ensure_volumes`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `bkp_files`, `bkp_db`.
+Special verbs (not plain compose): `info`, `secrets`, `host` / `host create` (doctl: droplet + `site_origin` DNS on DigitalOcean + public resolution; `digitalocean.disabled` for manual hosts; default droplet `{project}-{env}`), `zabbix`, `ensure_volumes`, `trust-caddy-cert` (macOS only; uses env compose file + `stack.services.proxy`), `manage`, `pull_media`, `wipe`, `bkp_files`, `bkp_db`.
 
 `bkp_db` / `bkp_files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 

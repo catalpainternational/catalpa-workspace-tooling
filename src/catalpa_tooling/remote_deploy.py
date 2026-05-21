@@ -44,6 +44,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
     should_materialize_for_compose,
 )
 from catalpa_tooling.media_pull import run_pull_media
+from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
 from catalpa_tooling.media_rsync import (
     resolve_push_media_source,
     run_push_media_rsync,
@@ -457,28 +458,12 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
             )
             return 1
         dry = bool(getattr(ns, "dry_run", False)) or tail == ["--dry-run"]
-        if dry:
-            print(
-                "dry-run: would run scripts/trust-caddy-cert.sh (macOS: trust Caddy local CA in "
-                f"System keychain). compose_file={compose_file!r} "
-                f"COMPOSE_PROJECT_NAME={env_add.get('COMPOSE_PROJECT_NAME', '')!r}",
-                file=sys.stderr,
-            )
-            return 0
-        script = config.scripts_dir / "trust-caddy-cert.sh"
-        if not script.is_file():
-            print(f"Missing {script}", file=sys.stderr)
-            return 1
-        run_env = os.environ.copy()
-        for k, v in env_add.items():
-            run_env[k] = str(v)
-        run_env["INDMO_COMPOSE_FILE"] = compose_file
-        return run_cmd(
-            ["/bin/bash", str(script)],
-            cwd=str(repo_root),
-            env=run_env,
-            check=False,
-        ).returncode
+        return trust_caddy_local_ca(
+            compose_file,
+            env_add,
+            config,
+            dry_run=dry,
+        )
 
     if compose_args and compose_args[0] == "manage":
         manage_args = [a for a in compose_args[1:] if a]

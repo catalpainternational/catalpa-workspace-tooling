@@ -21,6 +21,7 @@ def _compose(
     env_add: dict[str, str] | None = None,
     extra_compose_files: list[str] | None = None,
     print_cmd: bool = True,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run docker compose with the given file and args. env_add is merged into the process env."""
     cmd = ["docker", "compose", "-f", compose_file]
@@ -31,8 +32,18 @@ def _compose(
     run_env = os.environ.copy()
     if env_add:
         run_env.update(env_add)
+    run_kwargs: dict[str, object] = {}
+    if capture_output:
+        run_kwargs["capture_output"] = True
+        run_kwargs["text"] = True
     try:
-        return run_cmd(cmd, check=check, env=run_env, print_cmd=print_cmd)
+        return run_cmd(
+            cmd,
+            check=check,
+            env=run_env,
+            print_cmd=print_cmd,
+            **run_kwargs,
+        )
     finally:
         restore_controlling_tty()
 

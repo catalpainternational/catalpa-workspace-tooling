@@ -23,7 +23,7 @@ After install, these console scripts are available:
 | Command | Purpose |
 |---------|---------|
 | `dev` | Local development helpers (Django, Vite, fetch, plus `scripts/dev-*.sh` extensions) |
-| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). |
+| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). On macOS, `dk <env> trust-caddy-cert` trusts Caddy's local HTTPS CA for that env's compose stack. |
 | `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
 
