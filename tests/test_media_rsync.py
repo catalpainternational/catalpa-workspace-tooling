@@ -27,7 +27,20 @@ def test_try_ssh_target_from_ssh_url() -> None:
     assert try_ssh_target_from_docker_host("ssh://root@host.example") == "root@host.example"
 
 
-def test_mountpoint_not_writable_on_darwin() -> None:
+def test_mountpoint_not_writable_on_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert mountpoint_host_rsync_writable("/var/lib/docker/volumes/x/_data") is False
+
+
+def test_mountpoint_not_writable_when_inaccessible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def raise_perm(self: Path) -> bool:
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "is_dir", raise_perm)
     assert mountpoint_host_rsync_writable("/var/lib/docker/volumes/x/_data") is False
 
 

@@ -113,7 +113,10 @@ def mountpoint_host_rsync_writable(mount: str) -> bool:
     if sys.platform == "darwin":
         return False
     p = Path(mount)
-    return p.is_dir() and os.access(p, os.W_OK)
+    try:
+        return p.is_dir() and os.access(p, os.W_OK)
+    except OSError:
+        return False
 
 
 def rsync_pull_remote_to_local(ssh_target: str, remote_path: str, local_path: Path) -> int:
