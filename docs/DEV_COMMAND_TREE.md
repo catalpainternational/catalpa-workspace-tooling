@@ -32,8 +32,15 @@ dev
 | `dev.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
 | `dev.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
 | `dev.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`) |
+| `dev.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate (default: `false`) |
+| `dev.reset_db.pg_restore_args` | Extra `pg_restore` flags when restoring a dump (e.g. `--clean`, `--if-exists`) |
+| `dev.reset_db.post_manage_commands` | `manage.py` argv lists after reset (local host, not compose exec) |
+| `dev.reset_db.db_name_env` / `host_env` / … | Env var names in `paths.env_local` for libpq tools (first set wins) |
+| `dev.reset_db.db_name_fallback` | Optional DB name override; else stem of `paths.fetch_db_dump` (`.custom`/`.dump`), else `{project.name}_db` |
 
-Example (catalpa-site):
+**Host Postgres defaults** (when `.env.local` omits connection vars): `localhost:5432`, database from dump stem or `{project.name}_db`, **no** `PGUSER` / `DJANGO_DB_USER` (libpq and Django use the current OS user — typical for Postgres.app). Set `DJANGO_DB_USER` in `.env.local` when you need a dedicated role. The same defaults are applied to `uv run dev manage` / `runserver` so `reset-db` and Django use one database.
+
+Example (catalpa-site — PostGIS + Wagtail hook only; DB name comes from `paths.fetch_db_dump`):
 
 ```yaml
 dev:
@@ -43,6 +50,10 @@ dev:
     legacy:
       remote: /backup/django_media
       ssh_host: site-production.catalpa.build
+  reset_db:
+    postgis: true
+    post_manage_commands:
+      - [sync_wagtail_sites, --profile, host]
 ```
 
 ## Top-level commands
@@ -53,8 +64,8 @@ dev:
 | `fetch media` | Rsync from deploy host (see below); implemented in catalpa-workspace-tooling (not a shell script) |
 | `runserver` | `uv run ./manage.py runserver` with dev env defaults (`DJANGO_DEBUG=1`, `EMAIL_BACKEND_FOLDER`, `RQ_SYNCHRONOUS=1`) |
 | `manage` | Any `manage.py` subcommand via `uv run` in `paths.backend` |
-| `reset-db` | Local Postgres: `dropdb` → `createdb` → PostGIS → `migrate`, or `scripts/dev-reset-db-post.sh` if present |
-| `pg-restore` | `pg_restore` into app DB using `POSTGRES_*` from `.env.local` (stdin or `--file`) |
+| `reset-db` | Local Postgres: see [reset-db](#reset-db) |
+| `pg-restore` | `pg_restore` into app DB using the same env resolution as `reset-db` (stdin or `--file`) |
 | `vite` | `npm install` then `npm run dev` in `paths.frontend` |
 
 ## `fetch db`
@@ -84,18 +95,37 @@ Requires `rsync` and `ssh` on PATH.
 
 **Legacy path mode:** rsync from a fixed directory on the SSH host (`--legacy-path`). Needs `legacy.remote` in `tooling.yaml` or `--remote`, and `legacy.ssh_host` or `--host`.
 
-## `reset-db` / `pg-restore`
+## `reset-db`
 
-Uses libpq client tools and `POSTGRES_DB` / `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_USER` / `POSTGRES_PASSWORD` from `paths.env_local` (default database name `django`).
+Uses libpq client tools. Connection comes from `paths.env_local` and `dev.reset_db.*_env` keys (see table above).
+
+**Source selection (default):**
+
+1. If `paths.fetch_db_dump` exists and is non-empty → `pg_restore` that file (after `dropdb` / `createdb`).
+2. Else → optional PostGIS (`dev.reset_db.postgis`) → `migrate`, or `scripts/dev-reset-db-post.sh` if present.
+
+`--from-dump PATH` overrides the dump file; fails if the path is missing when explicitly set.
+
+After a successful reset, runs `dev.reset_db.post_manage_commands` via local `uv run manage.py` (separate from `ops.post_db_restore`, which runs in Docker after compose restores).
+
+| Option | Notes |
+|--------|--------|
+| `--from-dump PATH` | Force dump path (must exist) |
+| trailing args | With `--from-dump`, forwarded to `pg_restore` |
+
+Requires `dropdb`, `createdb`, and `pg_restore` (dump path) or `psql` (migrate path) on PATH.
+
+## `pg-restore`
+
+Uses the same DB env resolution as `reset-db`.
 
 | Command | Notes |
 |---------|--------|
-| `reset-db` | Without `--from-dump`: PostGIS + migrate (or project hook). With `--from-dump`: `pg_restore` after recreate; extra args forwarded |
 | `pg-restore` | Adds `--no-owner` / `--no-acl` when missing. `--file PATH` or stdin |
 
 ## `runserver` / `manage`
 
-Forwarded to `uv run ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
+Forwarded to `uv run ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. When DB env vars from `dev.reset_db` are unset, sets the same host/port/name keys as `reset-db` (e.g. `DATABASE_HOST=localhost` for catalpa-site) so Django and libpq use one server. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
 
 ## `vite`
 

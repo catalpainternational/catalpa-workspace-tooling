@@ -156,7 +156,7 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `version` | `pgbackrest version` in db container |
 | `backup full\|incr\|diff` | Online backup (db running) |
 | `pgdump [args…]` | `pg_dump` via compose |
-| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump |
+| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; PostGIS only when `dev.reset_db.postgis` is true in `tooling.yaml`) |
 | `restore [pgBackRest args…]` | Offline pgBackRest restore |
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `bkp_db configure`** (same as materialize) before the destructive restore confirmation. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
@@ -167,7 +167,7 @@ After a successful **`restore`** or **`pgrestore`**, the tooling may run project
 
 ## Post-restore Django commands (`ops.post_db_restore`)
 
-Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`bkp_db restore`, `bkp_db pgrestore`, `dk transfer` DB leg, and project scripts such as `tools/load_dump.sh`).
+Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`bkp_db restore`, `bkp_db pgrestore`, `dk transfer` DB leg).
 
 ```yaml
 ops:

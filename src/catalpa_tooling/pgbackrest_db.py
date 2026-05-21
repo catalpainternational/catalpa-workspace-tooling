@@ -32,6 +32,13 @@ BackupType = Literal["full", "incr", "diff"]
 # First bytes of ``pg_dump -Fc`` custom format (must not be preceded by other stdout).
 _PG_DUMP_CUSTOM_MAGIC = b"PGDMP"
 
+# Compose stacks (e.g. catalpa-site) set DJANGO_DB / DJANGO_DB_USER on the db service.
+# Older tooling/docs used DJANGO_APP_DB*; resolve both inside the container shell.
+_DJANGO_APP_SHELL_VARS = (
+    'APP_DB="${DJANGO_APP_DB:-${DJANGO_DB:-catalpa_db}}"; '
+    'APP_USER="${DJANGO_APP_DB_USER:-${DJANGO_DB_USER:-catalpa}}"; '
+)
+
 # PostgreSQL startup log once crash/archive recovery has finished (English messages).
 _PG_RECOVERY_READY_LOG = "database system is ready to accept connections"
 
@@ -143,6 +150,75 @@ def db_service_responds(compose_file: str, env: dict[str, str]) -> bool:
     return r.returncode == 0
 
 
+def ensure_db_service_running(compose_file: str, env: dict[str, str]) -> int:
+    """Start ``db`` with ``docker compose up -d db --wait`` when it does not respond to exec."""
+    if db_service_responds(compose_file, env):
+        return 0
+    print(
+        "bkp_db: `db` service is not running; starting it with "
+        "`docker compose up -d db --wait` …",
+        file=sys.stderr,
+    )
+    r = run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            compose_file,
+            "up",
+            "-d",
+            "db",
+            "--wait",
+        ],
+        env=_merged_process_env(env),
+        stdin=subprocess.DEVNULL,
+        check=False,
+        print_cmd=True,
+    )
+    if r.returncode != 0:
+        print("bkp_db: could not start `db` service.", file=sys.stderr)
+        return r.returncode
+    if not db_service_responds(compose_file, env):
+        print("bkp_db: `db` service did not become ready.", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _pg_restore_owner_acl_extras(extras: Sequence[str]) -> list[str]:
+    """Prepend ``--no-owner`` / ``--no-acl`` when missing (dumps from other hosts)."""
+    xs = list(extras)
+    if "--no-owner" not in xs:
+        xs.insert(0, "--no-owner")
+    if "--no-acl" not in xs and "--no-privileges" not in xs:
+        xs.insert(0, "--no-acl")
+    return xs
+
+
+def pg_restore_extras_with_default_archive(
+    extras: Sequence[str] | None,
+    default_archive: Path | None,
+) -> list[str]:
+    """Return ``pg_restore`` CLI extras, using ``default_archive`` when stdin is a TTY and no ``--file``."""
+    xs = list(extras or ())
+    if "--file" in xs:
+        return xs
+    if not sys.stdin.isatty():
+        return xs
+    if default_archive is None:
+        return xs
+    path = default_archive.expanduser()
+    if not path.is_file() or path.stat().st_size == 0:
+        print(
+            f"bkp_db pgrestore: no dump at {path} — fetch one first "
+            "(e.g. `uv run dev fetch db`) or pass `--file PATH`.",
+            file=sys.stderr,
+        )
+        return xs
+    resolved = path.resolve()
+    print(f"bkp_db pgrestore: using default archive {resolved}", file=sys.stderr)
+    return ["--file", str(resolved), *xs]
+
+
 def run_info(compose_file: str, env: dict[str, str]) -> int:
     return _compose_exec_pgbackrest(compose_file, env, "info")
 
@@ -176,8 +252,9 @@ def run_version(compose_file: str, env: dict[str, str]) -> int:
 def _pg_dump_inner_script(extra_pg_dump_args: Sequence[str] | None) -> str:
     extras = tuple(extra_pg_dump_args or ())
     inner = (
-        'export PGPASSWORD="$POSTGRES_PASSWORD"; '
-        'exec pg_dump -h 127.0.0.1 -p 5432 -U postgres -d "$DJANGO_APP_DB" -Fc'
+        _DJANGO_APP_SHELL_VARS
+        + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
+        + 'exec pg_dump -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -Fc'
     )
     if extras:
         inner = inner + " " + " ".join(shlex.quote(a) for a in extras)
@@ -189,7 +266,7 @@ def run_pg_dump(
     env: dict[str, str],
     extra_pg_dump_args: Sequence[str] | None = None,
 ) -> int:
-    """Run ``pg_dump`` in the ``db`` container against the app DB (``DJANGO_APP_DB``); stream to stdout.
+    """Run ``pg_dump`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``); stream to stdout.
 
     Uses the superuser inside the container (``postgres`` / ``POSTGRES_PASSWORD``). Optional
     ``extra_pg_dump_args`` are appended (shell-quoted). Command echo is suppressed so stdout is
@@ -274,28 +351,44 @@ def run_pg_dump_to_file(
         return 1
 
 
+def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
+    """``psql`` heredoc run after ``createdb`` (grants; optional PostGIS per ``dev.reset_db.postgis``)."""
+    lines = [
+        "GRANT ALL PRIVILEGES ON DATABASE ${APP_DB} TO ${APP_USER};",
+    ]
+    if postgis:
+        lines.append("CREATE EXTENSION IF NOT EXISTS postgis;")
+    lines.extend(
+        [
+            "GRANT ALL ON SCHEMA public TO ${APP_USER};",
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${APP_USER};",
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${APP_USER};",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def run_drop_create_app_database(
     compose_file: str,
     env: dict[str, str],
+    *,
+    postgis: bool = False,
 ) -> int:
-    """Replace the Django app database with an empty one (same layout as ``docker/postgres/init/01-init.sh`` grants).
+    """Replace the Django app database with an empty one (grants match project init scripts).
 
     Runs ``dropdb --force`` (PostgreSQL 13+) so existing connections are terminated, then
-    ``createdb -O "$DJANGO_APP_DB_USER"``. Used by ``dk transfer`` instead of ``pg_restore --clean``,
-    which issues ``DROP`` statements in an order that can fail when FKs reference constraints being
-    dropped.
+    ``createdb -O "$APP_USER"``. PostGIS is created only when ``postgis`` is true (from
+    ``tooling.yaml`` ``dev.reset_db.postgis``). Used by ``dk transfer`` and ``bkp_db pgrestore``.
     """
     merged = _merged_process_env(env)
-    script = """set -eu
+    psql_body = _drop_create_app_database_psql_block(postgis=postgis)
+    script = f"""set -eu
+{_DJANGO_APP_SHELL_VARS}
 export PGPASSWORD="$POSTGRES_PASSWORD"
-dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$DJANGO_APP_DB"
-createdb -h 127.0.0.1 -p 5432 -U postgres -O "$DJANGO_APP_DB_USER" "$DJANGO_APP_DB"
-psql -h 127.0.0.1 -p 5432 -U postgres -d "$DJANGO_APP_DB" -v ON_ERROR_STOP=1 <<EOF
-GRANT ALL PRIVILEGES ON DATABASE ${DJANGO_APP_DB} TO ${DJANGO_APP_DB_USER};
-CREATE EXTENSION IF NOT EXISTS postgis;
-GRANT ALL ON SCHEMA public TO ${DJANGO_APP_DB_USER};
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${DJANGO_APP_DB_USER};
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${DJANGO_APP_DB_USER};
+dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
+createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
+psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
+{psql_body}
 EOF
 """
     r = run_cmd(
@@ -324,7 +417,7 @@ def run_pg_restore(
     env: dict[str, str],
     extra_pg_restore_args: Sequence[str] | None = None,
 ) -> int:
-    """Run ``pg_restore`` in the ``db`` container against ``DJANGO_APP_DB``.
+    """Run ``pg_restore`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``).
 
     Resolves a host path to a ``pg_dump -Fc`` archive (``--file`` or spooled stdin), copies it
     into the container with ``docker compose cp``, then runs ``pg_restore`` on that path.
@@ -454,8 +547,9 @@ def run_pg_restore(
             return 1
 
         inner = (
-            'export PGPASSWORD="$POSTGRES_PASSWORD"; '
-            'exec pg_restore -h 127.0.0.1 -p 5432 -U postgres -d "$DJANGO_APP_DB"'
+            _DJANGO_APP_SHELL_VARS
+            + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
+            + 'exec pg_restore -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB"'
         )
         if extras:
             inner = inner + " " + " ".join(shlex.quote(a) for a in extras)

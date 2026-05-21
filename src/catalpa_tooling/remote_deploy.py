@@ -21,14 +21,18 @@ from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.pgbackrest_db import (
     db_service_responds,
+    ensure_db_service_running,
+    pg_restore_extras_with_default_archive,
     run_backup as run_pgbackrest_backup_online,
     run_check_online,
     run_configure_verify_online_check,
+    run_drop_create_app_database,
     run_info,
     run_pg_dump,
     run_pg_restore,
     run_restore_offline,
     run_version,
+    _pg_restore_owner_acl_extras,
 )
 from catalpa_tooling.pgbackrest_volume_config import (
     ensure_external_stack_volumes,
@@ -754,13 +758,29 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 return 1
             return run_pg_dump(compose_file, env_add, extra[1:])
         if sub == "pgrestore":
-            if not db_service_responds(compose_file, env_add):
-                print(
-                    "The `db` service is not running on the deployment host.",
-                    file=sys.stderr,
+            restore_extras = _pg_restore_owner_acl_extras(
+                pg_restore_extras_with_default_archive(
+                    extra[1:],
+                    config.fetch_db_dump_path,
                 )
+            )
+            if "--file" not in restore_extras and sys.stdin.isatty():
                 return 1
-            rc = run_pg_restore(compose_file, env_add, extra[1:])
+            rc = ensure_db_service_running(compose_file, env_add)
+            if rc != 0:
+                return rc
+            print(
+                "bkp_db pgrestore: replacing app database with an empty database before restore …",
+                file=sys.stderr,
+            )
+            rc = run_drop_create_app_database(
+                compose_file,
+                env_add,
+                postgis=config.dev.reset_db.postgis,
+            )
+            if rc != 0:
+                return rc
+            rc = run_pg_restore(compose_file, env_add, restore_extras)
             if rc != 0:
                 return rc
             return run_post_db_restore_manage_commands(
