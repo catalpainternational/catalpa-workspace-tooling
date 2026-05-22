@@ -68,6 +68,21 @@ def test_verify_public_dns_match(monkeypatch: pytest.MonkeyPatch) -> None:
     assert verify_public_dns(["staging.example.com"], "203.0.113.5") == 0
 
 
+def test_verify_public_dns_unresolved_prints_hints(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    def fake_getaddrinfo(host, port, family, type, proto=0, flags=0):
+        raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    assert verify_public_dns(["prod.example.com"], "203.0.113.5", recovery_env_name="prod") == 1
+    err = capsys.readouterr().err
+    assert "cannot resolve 'prod.example.com'" in err
+    assert "nslookup/dig" in err
+    assert "dscacheutil -flushcache" in err
+    assert "dk prod host --sync-dns" in err
+
+
 def test_verify_public_dns_mismatch(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

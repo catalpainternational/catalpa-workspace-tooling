@@ -10,8 +10,10 @@ import pytest
 from catalpa_tooling.doctl_domains import (
     DEFAULT_DNS_TTL,
     DnsTtlConfigError,
+    do_dns_resolve_ipv4,
     env_dns_ttl,
     find_a_record,
+    find_cname_record,
     hostname_to_zone_and_record_name,
     sync_host_dns,
     targets_from_site_origins,
@@ -149,6 +151,44 @@ def test_list_project_domain_urns(monkeypatch: pytest.MonkeyPatch) -> None:
     assert list_project_domain_urns("proj-1", context=None) == {"catalpa.io"}
 
 
+def test_do_dns_resolve_ipv4_via_cname(monkeypatch: pytest.MonkeyPatch) -> None:
+    records_by_zone: dict[str, list[dict[str, Any]]] = {
+        "catalpa.io": [
+            {"type": "A", "name": "@", "data": "203.0.113.5"},
+            {"type": "CNAME", "name": "www", "data": "catalpa.io."},
+        ],
+    }
+
+    def fake_list(zone: str, *, context: str | None) -> list[dict[str, Any]]:
+        return records_by_zone.get(zone, [])
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_domain_records",
+        fake_list,
+    )
+    assert (
+        do_dns_resolve_ipv4("www.catalpa.io", ["catalpa.io"], context=None)
+        == "203.0.113.5"
+    )
+    assert find_cname_record("catalpa.io", "www", context=None) is not None
+
+
+def test_do_dns_resolve_ipv4_cname_to_at_apex(monkeypatch: pytest.MonkeyPatch) -> None:
+    records = [
+        {"type": "A", "name": "@", "data": "203.0.113.5"},
+        {"type": "CNAME", "name": "www", "data": "@"},
+    ]
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_domain_records",
+        lambda _zone, *, context: records,
+    )
+    assert (
+        do_dns_resolve_ipv4("www.catalpa.io", ["catalpa.io"], context=None)
+        == "203.0.113.5"
+    )
+
+
 def test_find_a_record_matches_apex_at(monkeypatch: pytest.MonkeyPatch) -> None:
     records = [
         {"id": 1, "type": "A", "name": "@", "data": "1.2.3.4"},
@@ -202,6 +242,70 @@ def test_verify_host_dns_wrong_ip(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert verify_host_dns(config, info, droplet_ip="203.0.113.5", context=None) == 1
 
 
+def test_verify_host_dns_www_cname_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    config = _load_config(tmp_path)
+    records_by_zone: dict[str, list[dict[str, Any]]] = {
+        "catalpa.io": [
+            {"type": "A", "name": "@", "data": "203.0.113.5"},
+            {"type": "CNAME", "name": "www", "data": "catalpa.io."},
+        ],
+    }
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_registered_domains",
+        lambda *, context: ["catalpa.io"],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id",
+        lambda *_a, **_k: "proj-uuid",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.list_project_domain_urns",
+        lambda *_a, **_k: {"catalpa.io"},
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_domain_records",
+        lambda zone, *, context: records_by_zone.get(zone, []),
+    )
+    info = {"site_origin": ["www.catalpa.io"]}
+    assert verify_host_dns(config, info, droplet_ip="203.0.113.5", context=None) == 0
+    assert "203.0.113.5" in capsys.readouterr().err
+
+
+def test_verify_host_dns_www_cname_to_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DO often uses ``@`` as CNAME rdata for the zone apex."""
+    config = _load_config(tmp_path)
+    records_by_zone: dict[str, list[dict[str, Any]]] = {
+        "catalpa.io": [
+            {"type": "A", "name": "@", "data": "203.0.113.5"},
+            {"type": "CNAME", "name": "www", "data": "@"},
+        ],
+    }
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_registered_domains",
+        lambda *, context: ["catalpa.io"],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id",
+        lambda *_a, **_k: "proj-uuid",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.list_project_domain_urns",
+        lambda *_a, **_k: {"catalpa.io"},
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_domain_records",
+        lambda zone, *, context: records_by_zone.get(zone, []),
+    )
+    info = {"site_origin": ["www.catalpa.io"]}
+    assert verify_host_dns(config, info, droplet_ip="203.0.113.5", context=None) == 0
+
+
 def test_verify_host_dns_skips_external(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -229,6 +333,41 @@ def test_env_dns_ttl_rejects_invalid() -> None:
         env_dns_ttl({"digitalocean": {"dns_ttl": "300"}})
     with pytest.raises(DnsTtlConfigError, match="between"):
         env_dns_ttl({"digitalocean": {"dns_ttl": 10}})
+
+
+def test_sync_host_dns_skips_cname(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    config = _load_config(tmp_path)
+    records = [
+        {"type": "A", "name": "@", "data": "203.0.113.5"},
+        {"type": "CNAME", "name": "www", "data": "catalpa.io."},
+    ]
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_registered_domains",
+        lambda *, context: ["catalpa.io"],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_domain_records",
+        lambda _zone, *, context: records,
+    )
+    run_calls: list[list[str]] = []
+
+    def fake_run(args: list[str], *, context: str | None, **kwargs: Any) -> Any:
+        run_calls.append(list(args))
+        from types import SimpleNamespace
+
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", fake_run)
+    info = {"site_origin": ["www.catalpa.io"]}
+    assert sync_host_dns(
+        config, info, droplet_ip="203.0.113.5", context=None, dry_run=False
+    ) == 0
+    err = capsys.readouterr().err
+    assert "uses CNAME" in err
+    assert run_calls == []
 
 
 def test_sync_host_dns_dry_run(

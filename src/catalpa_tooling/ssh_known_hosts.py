@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+import socket
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 from catalpa_tooling.dns_resolve import _docker_host_hostname
 from catalpa_tooling.run_cmd import run as run_cmd
+
+DEFAULT_SSH_READY_TIMEOUT_SECONDS = 120
+DEFAULT_SSH_READY_POLL_INTERVAL = 3
 
 
 def known_hosts_path() -> Path:
@@ -70,12 +75,64 @@ def host_in_known_hosts(host: str, path: Path | None = None) -> bool:
     return r.returncode == 0
 
 
+def _ssh_port_open(host: str, port: int, *, timeout: float = 2.0) -> bool:
+    """True if TCP connect to ``(host, port)`` succeeds."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _run_ssh_keyscan(host: str, port: int):
+    """Run a single ``ssh-keyscan`` attempt."""
+    return run_cmd(
+        ["ssh-keyscan", "-p", str(port), "-H", host],
+        check=False,
+        capture_output=True,
+        text=True,
+        print_cmd=False,
+    )
+
+
+def _print_ssh_keyscan_failure(
+    host: str,
+    port: int,
+    err: str,
+    *,
+    recovery_env_name: str | None = None,
+    timed_out: bool = False,
+) -> None:
+    print(
+        f"ssh-keyscan failed for {host!r} (port {port}): {err}",
+        file=sys.stderr,
+    )
+    if timed_out:
+        print(
+            f"SSH on {host!r} was not ready within the wait window "
+            "(new droplets often need a minute after DigitalOcean reports active).",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "Ensure the host is reachable and openssh-client (ssh-keyscan) is installed.",
+            file=sys.stderr,
+        )
+    print("SSH may still be starting on the new droplet. Retry:", file=sys.stderr)
+    if recovery_env_name:
+        print(f"  dk {recovery_env_name} host --write", file=sys.stderr)
+    print(f"  ssh-keyscan -H -p {port} {host}", file=sys.stderr)
+
+
 def ensure_known_host(
     host: str,
     *,
     port: int = 22,
     dry_run: bool = False,
     known_hosts: Path | None = None,
+    timeout_seconds: int = DEFAULT_SSH_READY_TIMEOUT_SECONDS,
+    poll_interval: int = DEFAULT_SSH_READY_POLL_INTERVAL,
+    recovery_env_name: str | None = None,
 ) -> int:
     """Append ``host`` keys via ``ssh-keyscan`` if not already in known_hosts. Returns 0 on success."""
     h = (host or "").strip()
@@ -92,49 +149,56 @@ def ensure_known_host(
         )
         return 0
 
-    ssh_dir = kh.parent
-    ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-    scan = run_cmd(
-        ["ssh-keyscan", "-p", str(port), "-H", h],
-        check=False,
-        capture_output=True,
-        text=True,
-        print_cmd=False,
-    )
-    if scan.returncode != 0:
-        err = (scan.stderr or scan.stdout or "").strip()
-        print(
-            f"ssh-keyscan failed for {h!r} (port {port}): {err or f'exit {scan.returncode}'}",
-            file=sys.stderr,
-        )
-        print(
-            "Ensure the host is reachable and openssh-client (ssh-keyscan) is installed.",
-            file=sys.stderr,
-        )
-        return scan.returncode or 1
-
-    lines = [ln for ln in (scan.stdout or "").splitlines() if ln.strip() and not ln.startswith("#")]
-    if not lines:
-        print(
-            f"ssh-keyscan returned no keys for {h!r} (port {port}).",
-            file=sys.stderr,
-        )
-        return 1
-
     kh.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with open(kh, "a", encoding="utf-8") as f:
-        if kh.exists() and kh.stat().st_size > 0:
-            f.write("\n")
-        f.write("\n".join(lines))
-        f.write("\n")
-    try:
-        kh.chmod(0o644)
-    except OSError:
-        pass
 
-    print(f"Registered SSH host key for {h!r} in {kh}", file=sys.stderr)
-    return 0
+    deadline = time.monotonic() + timeout_seconds
+    last_err = ""
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        if not _ssh_port_open(h, port):
+            last_err = f"port {port} not accepting connections yet"
+            time.sleep(poll_interval)
+            continue
+
+        scan = _run_ssh_keyscan(h, port)
+        if scan.returncode == 0:
+            lines = [
+                ln
+                for ln in (scan.stdout or "").splitlines()
+                if ln.strip() and not ln.startswith("#")
+            ]
+            if lines:
+                with open(kh, "a", encoding="utf-8") as f:
+                    if kh.exists() and kh.stat().st_size > 0:
+                        f.write("\n")
+                    f.write("\n".join(lines))
+                    f.write("\n")
+                try:
+                    kh.chmod(0o644)
+                except OSError:
+                    pass
+                print(f"Registered SSH host key for {h!r} in {kh}", file=sys.stderr)
+                return 0
+            last_err = "ssh-keyscan returned no keys"
+        else:
+            last_err = (scan.stderr or scan.stdout or "").strip() or f"exit {scan.returncode}"
+
+        if attempt == 1:
+            print(
+                f"Waiting for SSH on {h!r} (port {port}, up to {timeout_seconds}s)…",
+                file=sys.stderr,
+            )
+        time.sleep(poll_interval)
+
+    _print_ssh_keyscan_failure(
+        h,
+        port,
+        last_err or "timed out",
+        recovery_env_name=recovery_env_name,
+        timed_out=True,
+    )
+    return 1
 
 
 def ensure_ssh_known_host_for_docker_host(
@@ -142,10 +206,21 @@ def ensure_ssh_known_host_for_docker_host(
     *,
     dry_run: bool = False,
     known_hosts: Path | None = None,
+    timeout_seconds: int = DEFAULT_SSH_READY_TIMEOUT_SECONDS,
+    poll_interval: int = DEFAULT_SSH_READY_POLL_INTERVAL,
+    recovery_env_name: str | None = None,
 ) -> int:
     """Ensure OpenSSH knows the host in ``docker_host`` (``ssh://…`` only)."""
     host = ssh_host_from_docker_host(docker_host)
     if not host:
         return 0
     port = _ssh_port_from_docker_host(docker_host)
-    return ensure_known_host(host, port=port, dry_run=dry_run, known_hosts=known_hosts)
+    return ensure_known_host(
+        host,
+        port=port,
+        dry_run=dry_run,
+        known_hosts=known_hosts,
+        timeout_seconds=timeout_seconds,
+        poll_interval=poll_interval,
+        recovery_env_name=recovery_env_name,
+    )

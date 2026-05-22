@@ -38,7 +38,7 @@ def resolve_ipv4(host: str) -> list[str]:
             type=socket.SOCK_STREAM,
         )
     except socket.gaierror as e:
-        raise ValueError(f"cannot resolve {name!r}: {e}") from e
+        raise ValueError(_cannot_resolve_message(name, e)) from e
     seen: set[str] = set()
     out: list[str] = []
     for info in infos:
@@ -47,6 +47,53 @@ def resolve_ipv4(host: str) -> list[str]:
             seen.add(addr)
             out.append(addr)
     return out
+
+
+def _cannot_resolve_message(host: str, err: socket.gaierror) -> str:
+    return f"cannot resolve {host!r}: {err}"
+
+
+def _print_public_dns_resolution_hints(
+    unresolved: list[str],
+    *,
+    recovery_env_name: str | None = None,
+) -> None:
+    """Print hints when the system resolver failed (distinct from nslookup/dig)."""
+    if not unresolved:
+        return
+    hosts = ", ".join(unresolved)
+    print(
+        f"Public DNS check uses this machine's resolver (Python getaddrinfo), "
+        f"not nslookup/dig — {hosts} may still be propagating or cached as NXDOMAIN.",
+        file=sys.stderr,
+    )
+    if recovery_env_name:
+        print(
+            f"If the droplet is new or DNS was just changed: "
+            f"wait a few minutes, then `dk {recovery_env_name} host --sync-dns` "
+            f"and `dk {recovery_env_name} host`.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "If the droplet is new or DNS was just changed: wait a few minutes, "
+            "sync A records on your DNS provider, then re-run `dk <env> host`.",
+            file=sys.stderr,
+        )
+    print(
+        "On macOS, if nslookup works but this check still fails, flush the local cache:",
+        file=sys.stderr,
+    )
+    print(
+        "  sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder",
+        file=sys.stderr,
+    )
+    sample = unresolved[0]
+    print(
+        f"Compare: python3 -c \"import socket; "
+        f"print(socket.getaddrinfo({sample!r}, None, family=socket.AF_INET))\"",
+        file=sys.stderr,
+    )
 
 
 def _docker_host_hostname(docker_host: str) -> str:
@@ -92,7 +139,12 @@ def docker_host_expected_ipv4(docker_host: str) -> str:
     return addrs[0]
 
 
-def verify_public_dns(hostnames: list[str], expected_ip: str) -> int:
+def verify_public_dns(
+    hostnames: list[str],
+    expected_ip: str,
+    *,
+    recovery_env_name: str | None = None,
+) -> int:
     """Verify each hostname resolves to ``expected_ip``. Returns exit code."""
     ip = expected_ip.strip()
     if not ip:
@@ -100,6 +152,7 @@ def verify_public_dns(hostnames: list[str], expected_ip: str) -> int:
         return 1
 
     failures: list[str] = []
+    unresolved_hosts: list[str] = []
     ok_count = 0
 
     for raw in hostnames:
@@ -110,6 +163,8 @@ def verify_public_dns(hostnames: list[str], expected_ip: str) -> int:
             resolved = resolve_ipv4(host)
         except ValueError as e:
             failures.append(str(e))
+            if str(e).startswith("cannot resolve "):
+                unresolved_hosts.append(host)
             continue
         if ip in resolved:
             ok_count += 1
@@ -122,6 +177,11 @@ def verify_public_dns(hostnames: list[str], expected_ip: str) -> int:
     if failures:
         for msg in failures:
             print(msg, file=sys.stderr)
+        if unresolved_hosts:
+            _print_public_dns_resolution_hints(
+                unresolved_hosts,
+                recovery_env_name=recovery_env_name,
+            )
         return 1
 
     if ok_count:
@@ -132,7 +192,12 @@ def verify_public_dns(hostnames: list[str], expected_ip: str) -> int:
     return 0
 
 
-def verify_public_dns_from_info(info: dict[str, Any], expected_ip: str) -> int:
+def verify_public_dns_from_info(
+    info: dict[str, Any],
+    expected_ip: str,
+    *,
+    recovery_env_name: str | None = None,
+) -> int:
     """Verify ``site_origin`` hostnames resolve to ``expected_ip`` via public DNS."""
     origins = parse_site_origins_from_info(info)
     if not origins:
@@ -140,4 +205,8 @@ def verify_public_dns_from_info(info: dict[str, Any], expected_ip: str) -> int:
     hostnames = hostnames_from_origins(origins)
     if not hostnames:
         return 0
-    return verify_public_dns(hostnames, expected_ip)
+    return verify_public_dns(
+        hostnames,
+        expected_ip,
+        recovery_env_name=recovery_env_name,
+    )

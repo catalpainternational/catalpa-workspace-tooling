@@ -129,13 +129,25 @@ Provision and link a new droplet:
 ```bash
 dk prod host create       # create droplet, wait, patch docker_host, sync DNS A records on DO zones
 dk prod host              # verify droplet + site_origin DNS (DO API + public resolution)
-dk prod host --write      # refresh docker_host from droplet public IPv4
+dk prod host --write      # refresh docker_host from droplet public IPv4 + register SSH host key
+dk prod host --sync-dns   # create/update DO A records for site_origin (no known_hosts / verify)
 dk digoc droplets list    # includes Env column when tooling.yaml is present
 ```
 
-After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted.
+After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`, with retries until sshd is reachable) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted.
 
-**Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` is set, it verifies (1) DigitalOcean DNS API — A records on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each `site_origin` hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
+**New droplets:** DigitalOcean may report a droplet `active` before SSH accepts connections on port 22. The tooling waits up to ~2 minutes; if registration still fails, `docker_host` is usually already patched — finish with `dk <env> host --write` (or re-run `host create`, which resumes when the droplet already exists).
+
+**Recovery after a partial `host create`:**
+
+| Step | Command |
+|------|---------|
+| SSH host key | `dk <env> host --write` |
+| DO A records only | `dk <env> host --sync-dns` |
+| Verify DNS | `dk <env> host` |
+| Resume all post-create steps | `dk <env> host create` (reuses existing droplet by default) |
+
+**Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` is set, it verifies (1) DigitalOcean DNS API — A records (or CNAMEs that chain to an apex A) on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each `site_origin` hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
 
 **Non-DO or manual host:** Set `digitalocean.disabled: true` in `docker/envs/<env>/info.yaml` and maintain `docker_host` + `site_origin`. `dk <env> host` skips droplet lookup and DO API DNS; it checks public DNS only. `host create` and `host --write` are not available in this mode. Without doctl but with `docker_host` set, behavior matches the disabled path (public DNS when `site_origin` is set).
 

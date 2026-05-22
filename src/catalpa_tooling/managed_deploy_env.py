@@ -185,7 +185,10 @@ def load_managed_deploy_context(
 
     from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
 
-    kh_rc = ensure_ssh_known_host_for_docker_host(str(docker_host or ""))
+    kh_rc = ensure_ssh_known_host_for_docker_host(
+        str(docker_host or ""),
+        recovery_env_name=env_name,
+    )
     if kh_rc != 0:
         return None
 

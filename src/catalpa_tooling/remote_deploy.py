@@ -308,13 +308,21 @@ def _cmd_env_host(
         action="store_true",
         help="Write docker_host to info.yaml from the droplet public IPv4",
     )
+    p.add_argument(
+        "--sync-dns",
+        action="store_true",
+        help="Create or update DigitalOcean A records for site_origin hostnames",
+    )
     ns, rest = p.parse_known_args(tail)
     if rest:
         p.error(f"unrecognized arguments: {' '.join(rest)}")
+    if ns.write and ns.sync_dns:
+        p.error("cannot use --write and --sync-dns together")
     return cmd_env_host(
         config,
         env_name,
         write=ns.write,
+        sync_dns=ns.sync_dns,
         dry_run=dry_run,
     )
 

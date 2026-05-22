@@ -104,6 +104,7 @@ def test_ensure_known_host_appends_scan_output(
             )
         raise AssertionError(f"unexpected cmd: {cmd}")
 
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts._ssh_port_open", lambda *_a, **_k: True)
     monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.run_cmd", fake_run)
     assert ensure_known_host("203.0.113.5", known_hosts=kh) == 0
     assert kh.is_file()
@@ -123,9 +124,50 @@ def test_ensure_known_host_scan_failure(
             return MagicMock(returncode=1, stdout="", stderr="connection refused")
         raise AssertionError(f"unexpected cmd: {cmd}")
 
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts._ssh_port_open", lambda *_a, **_k: True)
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.time.sleep", lambda *_a: None)
     monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.run_cmd", fake_run)
-    assert ensure_known_host("203.0.113.5", known_hosts=kh) == 1
-    assert "ssh-keyscan failed" in capsys.readouterr().err
+    assert (
+        ensure_known_host(
+            "203.0.113.5",
+            known_hosts=kh,
+            timeout_seconds=3,
+            poll_interval=1,
+            recovery_env_name="prod",
+        )
+        == 1
+    )
+    err = capsys.readouterr().err
+    assert "ssh-keyscan failed" in err
+    assert "dk prod host --write" in err
+
+
+def test_ensure_known_host_retries_until_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kh = tmp_path / "known_hosts"
+    scan_attempts = 0
+
+    def fake_run(cmd, **_k):
+        nonlocal scan_attempts
+        if cmd[0] == "ssh-keygen":
+            return MagicMock(returncode=1)
+        if cmd[0] == "ssh-keyscan":
+            scan_attempts += 1
+            if scan_attempts < 2:
+                return MagicMock(returncode=1, stdout="", stderr="Broken pipe")
+            return MagicMock(
+                returncode=0,
+                stdout="|1|abc| ssh-ed25519 AAAAB3NzaC1lZDI1NTE5\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected cmd: {cmd}")
+
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts._ssh_port_open", lambda *_a, **_k: True)
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.time.sleep", lambda *_a: None)
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.run_cmd", fake_run)
+    assert ensure_known_host("203.0.113.5", known_hosts=kh, timeout_seconds=30) == 0
+    assert scan_attempts == 2
 
 
 def test_known_hosts_path_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
