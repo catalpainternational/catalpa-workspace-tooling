@@ -144,7 +144,7 @@ def _main_impl() -> None:
         "compose_args",
         nargs=argparse.REMAINDER,
         metavar="COMMAND [ARG ...]",
-        help="Docker Compose args (default: up -d). `wipe` => down -v. Also: info, secrets, ensure_volumes, trust-caddy-cert, manage, pull_media, bkp_files, bkp_db, zabbix.",
+        help="Docker Compose args (default: up -d). `wipe` => down -v. Also: info, secrets, ensure_volumes, trust-caddy-cert, manage, pull_media, bkp_files (push, restic, …), bkp_db, zabbix.",
     )
     args = parser.parse_args(_normalize_dk_env_argv(argv))
     sys.exit(_cmd_deploy(args, config))

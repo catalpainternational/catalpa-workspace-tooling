@@ -200,6 +200,96 @@ class OpsConfig:
 
 
 @dataclass(frozen=True)
+class FetchMediaLegacyConfig:
+    """Fixed host directory for ``dev fetch media --legacy-path`` (non-Docker deploys)."""
+
+    remote: str
+    ssh_host: str | None
+
+
+@dataclass(frozen=True)
+class FetchMediaConfig:
+    """``dev.fetch_media`` in tooling.yaml (defaults when the section is omitted)."""
+
+    dk_env: str
+    dest: str
+    legacy: FetchMediaLegacyConfig | None
+
+
+DEFAULT_DB_NAME_ENV_KEYS: tuple[str, ...] = (
+    "DJANGO_DB_NAME",
+    "DJANGO_DB",
+    "POSTGRES_DB",
+)
+DEFAULT_DB_HOST_ENV_KEYS: tuple[str, ...] = (
+    "DJANGO_DB_HOST",
+    "POSTGRES_HOST",
+    "DATABASE_HOST",
+)
+DEFAULT_DB_PORT_ENV_KEYS: tuple[str, ...] = (
+    "DJANGO_DB_PORT",
+    "POSTGRES_PORT",
+    "DATABASE_PORT",
+)
+DEFAULT_DB_USER_ENV_KEYS: tuple[str, ...] = (
+    "DJANGO_DB_USER",
+    "POSTGRES_USER",
+    "DATABASE_USER",
+)
+DEFAULT_DB_PASSWORD_ENV_KEYS: tuple[str, ...] = (
+    "DJANGO_DB_PASSWORD",
+    "POSTGRES_PASSWORD",
+    "DATABASE_PASSWORD",
+)
+DEFAULT_LOCAL_PG_HOST = "localhost"
+DEFAULT_LOCAL_PG_PORT = "5432"
+DEFAULT_PG_RESTORE_ARGS: tuple[str, ...] = ("--clean", "--if-exists")
+
+
+def local_postgres_db_name(project_name: str) -> str:
+    """Default database name for host ``dev reset-db`` / Django on localhost."""
+    return f"{project_name}_db"
+
+
+def resolve_dev_db_name(config: "ProjectConfig") -> str:
+    """Database name when env vars from ``dev.reset_db.db_name_env`` are unset.
+
+    Uses ``db_name_fallback``, else the stem of ``paths.fetch_db_dump`` (e.g.
+    ``catalpa_db.custom`` → ``catalpa_db``), else ``local_postgres_db_name``.
+    """
+    reset = config.dev.reset_db
+    if reset.db_name_fallback:
+        return reset.db_name_fallback
+    dump = config.fetch_db_dump_path
+    if dump.suffix in (".custom", ".dump", ".backup"):
+        stem = dump.stem
+        if stem:
+            return stem
+    return local_postgres_db_name(config.meta.name)
+
+
+@dataclass(frozen=True)
+class ResetDbConfig:
+    """``dev.reset_db`` in tooling.yaml (host ``dev reset-db`` / ``dev pg-restore``)."""
+
+    postgis: bool
+    pg_restore_args: tuple[str, ...]
+    post_manage_commands: tuple[tuple[str, ...], ...]
+    db_name_env: tuple[str, ...]
+    db_name_fallback: str | None
+    host_env: tuple[str, ...]
+    port_env: tuple[str, ...]
+    user_env: tuple[str, ...]
+    password_env: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DevConfig:
+    fetch_media: FetchMediaConfig
+    reset_db: ResetDbConfig
+
+
+@dataclass(frozen=True)
 class ProjectMetaConfig:
     name: str
     root_marker: str
@@ -231,6 +321,10 @@ class DigitalOceanConfig:
     monitoring: bool = True
 
 
+DEFAULT_FETCH_MEDIA_DK_ENV = "prod"
+DEFAULT_FETCH_MEDIA_DEST = "media"
+
+
 @dataclass(frozen=True)
 class ProjectConfig:
     """Typed view of ``tooling.yaml`` with resolved paths under ``repo_root``."""
@@ -239,6 +333,7 @@ class ProjectConfig:
     paths: PathsConfig
     stack: StackConfig
     ops: OpsConfig
+    dev: DevConfig
     digitalocean: DigitalOceanConfig | None
     repo_root: Path
     tooling_path: Path
@@ -272,6 +367,15 @@ class ProjectConfig:
     @property
     def fetch_db_dump_path(self) -> Path:
         return self.repo_root / self.paths.fetch_db_dump
+
+    @property
+    def fetch_media_dest_path(self) -> Path:
+        return self.repo_root / self.dev.fetch_media.dest
+
+    @property
+    def default_fetch_dk_env(self) -> str:
+        """Default ``docker/envs/<name>`` for ``dev fetch db`` / ``dev fetch media``."""
+        return self.dev.fetch_media.dk_env
 
     @property
     def deploy_envs_dir(self) -> Path:
@@ -326,23 +430,14 @@ def _parse_string_list(raw: Any, *, field: str) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _parse_post_db_restore(raw: Any) -> PostDbRestoreOpsConfig:
+def _parse_manage_commands_list(raw: Any, *, field_prefix: str) -> tuple[tuple[str, ...], ...]:
     if raw is None:
-        return PostDbRestoreOpsConfig(envs=None, manage_commands=())
-    if not isinstance(raw, dict):
-        raise ProjectConfigError("ops.post_db_restore must be a mapping")
-    envs_raw = raw.get("envs")
-    envs: tuple[str, ...] | None = None
-    if envs_raw is not None:
-        envs = _parse_string_list(envs_raw, field="ops.post_db_restore.envs")
-    cmds_raw = raw.get("manage_commands")
-    if cmds_raw is None:
-        return PostDbRestoreOpsConfig(envs=envs, manage_commands=())
-    if not isinstance(cmds_raw, list):
-        raise ProjectConfigError("ops.post_db_restore.manage_commands must be a list")
+        return ()
+    if not isinstance(raw, list):
+        raise ProjectConfigError(f"{field_prefix} must be a list")
     commands: list[tuple[str, ...]] = []
-    for i, item in enumerate(cmds_raw):
-        field = f"ops.post_db_restore.manage_commands[{i}]"
+    for i, item in enumerate(raw):
+        field = f"{field_prefix}[{i}]"
         if isinstance(item, str):
             argv = tuple(shlex.split(item))
         elif isinstance(item, list):
@@ -360,7 +455,88 @@ def _parse_post_db_restore(raw: Any) -> PostDbRestoreOpsConfig:
         if not argv:
             raise ProjectConfigError(f"Empty command in {field}")
         commands.append(argv)
-    return PostDbRestoreOpsConfig(envs=envs, manage_commands=tuple(commands))
+    return tuple(commands)
+
+
+def _parse_env_key_list(raw: Any, *, field: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    if raw is None:
+        return default
+    return _parse_string_list(raw, field=field)
+
+
+def _parse_post_db_restore(raw: Any) -> PostDbRestoreOpsConfig:
+    if raw is None:
+        return PostDbRestoreOpsConfig(envs=None, manage_commands=())
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("ops.post_db_restore must be a mapping")
+    envs_raw = raw.get("envs")
+    envs: tuple[str, ...] | None = None
+    if envs_raw is not None:
+        envs = _parse_string_list(envs_raw, field="ops.post_db_restore.envs")
+    commands = _parse_manage_commands_list(
+        raw.get("manage_commands"),
+        field_prefix="ops.post_db_restore.manage_commands",
+    )
+    return PostDbRestoreOpsConfig(envs=envs, manage_commands=commands)
+
+
+def _parse_reset_db(raw: Any) -> ResetDbConfig:
+    if raw is None:
+        return ResetDbConfig(
+            postgis=False,
+            pg_restore_args=DEFAULT_PG_RESTORE_ARGS,
+            post_manage_commands=(),
+            db_name_env=DEFAULT_DB_NAME_ENV_KEYS,
+            db_name_fallback=None,
+            host_env=DEFAULT_DB_HOST_ENV_KEYS,
+            port_env=DEFAULT_DB_PORT_ENV_KEYS,
+            user_env=DEFAULT_DB_USER_ENV_KEYS,
+            password_env=DEFAULT_DB_PASSWORD_ENV_KEYS,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev.reset_db must be a mapping")
+    fallback = _optional_str(raw, "db_name_fallback")
+    return ResetDbConfig(
+        postgis=_optional_bool(raw, "postgis", default=False),
+        pg_restore_args=(
+            _parse_string_list(
+                raw.get("pg_restore_args"),
+                field="dev.reset_db.pg_restore_args",
+            )
+            if raw.get("pg_restore_args") is not None
+            else DEFAULT_PG_RESTORE_ARGS
+        ),
+        post_manage_commands=_parse_manage_commands_list(
+            raw.get("post_manage_commands"),
+            field_prefix="dev.reset_db.post_manage_commands",
+        ),
+        db_name_env=_parse_env_key_list(
+            raw.get("db_name_env"),
+            field="dev.reset_db.db_name_env",
+            default=DEFAULT_DB_NAME_ENV_KEYS,
+        ),
+        db_name_fallback=fallback,
+        host_env=_parse_env_key_list(
+            raw.get("host_env"),
+            field="dev.reset_db.host_env",
+            default=DEFAULT_DB_HOST_ENV_KEYS,
+        ),
+        port_env=_parse_env_key_list(
+            raw.get("port_env"),
+            field="dev.reset_db.port_env",
+            default=DEFAULT_DB_PORT_ENV_KEYS,
+        ),
+        user_env=_parse_env_key_list(
+            raw.get("user_env"),
+            field="dev.reset_db.user_env",
+            default=DEFAULT_DB_USER_ENV_KEYS,
+        ),
+        password_env=_parse_env_key_list(
+            raw.get("password_env"),
+            field="dev.reset_db.password_env",
+            default=DEFAULT_DB_PASSWORD_ENV_KEYS,
+        ),
+    )
 
 
 def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
@@ -449,6 +625,48 @@ def _parse_spaces(spaces_raw: dict[str, Any]) -> SpacesConfig:
         pgbackrest_repo_path=_optional_str(spaces_raw, "pgbackrest_repo_path"),
         restic_path=_optional_str(spaces_raw, "restic_path"),
         stanza=_optional_str(spaces_raw, "stanza"),
+    )
+
+
+def _parse_fetch_media_legacy(raw: Any) -> FetchMediaLegacyConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev.fetch_media.legacy must be a mapping")
+    remote = _require_str(raw, "remote", section="dev.fetch_media.legacy")
+    ssh_host = _optional_str(raw, "ssh_host")
+    return FetchMediaLegacyConfig(remote=remote.rstrip("/"), ssh_host=ssh_host)
+
+
+def _parse_fetch_media(raw: Any) -> FetchMediaConfig:
+    if raw is None:
+        return FetchMediaConfig(
+            dk_env=DEFAULT_FETCH_MEDIA_DK_ENV,
+            dest=DEFAULT_FETCH_MEDIA_DEST,
+            legacy=None,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev.fetch_media must be a mapping")
+    dest = _optional_str(raw, "dest") or DEFAULT_FETCH_MEDIA_DEST
+    dk_env = _optional_str(raw, "dk_env") or DEFAULT_FETCH_MEDIA_DK_ENV
+    return FetchMediaConfig(
+        dk_env=dk_env,
+        dest=_validate_rel_path(dest, field="dev.fetch_media.dest"),
+        legacy=_parse_fetch_media_legacy(raw.get("legacy")),
+    )
+
+
+def _parse_dev(raw: Any) -> DevConfig:
+    if raw is None:
+        return DevConfig(
+            fetch_media=_parse_fetch_media(None),
+            reset_db=_parse_reset_db(None),
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev must be a mapping")
+    return DevConfig(
+        fetch_media=_parse_fetch_media(raw.get("fetch_media")),
+        reset_db=_parse_reset_db(raw.get("reset_db")),
     )
 
 
@@ -610,6 +828,7 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         paths=_parse_paths(paths_raw),
         stack=_parse_stack(stack_raw),
         ops=_parse_ops(ops_raw),
+        dev=_parse_dev(data.get("dev")),
         digitalocean=digitalocean,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),

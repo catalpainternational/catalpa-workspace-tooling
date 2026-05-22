@@ -6,7 +6,9 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 from catalpa_tooling.pgbackrest_db import (
+    _drop_create_app_database_psql_block,
     _log_level_argv_shell,
+    _pg_dump_inner_script,
     _remove_interrupted_compose_run_db,
     _restore_db_logs_silenced,
     _restore_recovery_timeout_sec,
@@ -15,6 +17,14 @@ from catalpa_tooling.pgbackrest_db import (
     run_restore_offline,
     wait_db_logs_for_recovery_ready,
 )
+
+
+class TestPgDumpInnerScript(unittest.TestCase):
+    def test_uses_django_db_when_app_db_unset(self) -> None:
+        script = _pg_dump_inner_script(None)
+        self.assertIn('APP_DB="${DJANGO_APP_DB:-${DJANGO_DB', script)
+        self.assertIn('-d "$APP_DB"', script)
+        self.assertNotIn('"$DJANGO_APP_DB"', script)
 
 
 class TestComposeExecPgbackrest(unittest.TestCase):
@@ -52,6 +62,14 @@ class TestComposeExecPgbackrest(unittest.TestCase):
 
 
 class TestDropCreateAppDatabase(unittest.TestCase):
+    def test_psql_block_omits_postgis_by_default(self) -> None:
+        block = _drop_create_app_database_psql_block(postgis=False)
+        self.assertNotIn("postgis", block)
+
+    def test_psql_block_includes_postgis_when_enabled(self) -> None:
+        block = _drop_create_app_database_psql_block(postgis=True)
+        self.assertIn("CREATE EXTENSION IF NOT EXISTS postgis;", block)
+
     def test_invokes_dropdb_createdb_in_container(self) -> None:
         calls: list[list[str]] = []
 
@@ -74,7 +92,9 @@ class TestDropCreateAppDatabase(unittest.TestCase):
         self.assertIn("--force", script)
         self.assertIn("createdb", script)
         self.assertIn("-O", script)
-        self.assertIn('"$DJANGO_APP_DB_USER"', script)
+        self.assertIn('APP_USER="${DJANGO_APP_DB_USER:-${DJANGO_DB_USER', script)
+        self.assertIn('"$APP_DB"', script)
+        self.assertNotIn("postgis", script)
 
 
 class TestLogLevelArgvShell(unittest.TestCase):

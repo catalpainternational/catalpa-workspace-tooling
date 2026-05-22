@@ -27,7 +27,7 @@ write_files:
     permissions: "0644"
     content: |
       Unattended-Upgrade::Automatic-Reboot "true";
-      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+      Unattended-Upgrade::Automatic-Reboot-Time "07:00";
   - path: /etc/apt/apt.conf.d/53catalpa-unattended-docker.conf
     permissions: "0644"
     content: |

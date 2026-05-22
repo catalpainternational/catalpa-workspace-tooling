@@ -1,14 +1,18 @@
-"""Tests for catalpa_tooling.fetch_media_config."""
+"""Tests for fetch media config and rsync helpers."""
 
 from pathlib import Path
-
+import pytest
 import yaml
 
-from catalpa_tooling.config import load_project_config
-from catalpa_tooling.fetch_media_config import (
-    build_fetch_media_env,
-    dk_info_fetch_media_defaults,
+from catalpa_tooling.config import (
+    DEFAULT_FETCH_MEDIA_DK_ENV,
+    FetchMediaConfig,
+    FetchMediaLegacyConfig,
+    ProjectConfigError,
+    load_project_config,
 )
+from catalpa_tooling.fetch_media import dk_info_fetch_media_defaults, run_fetch_media
+from catalpa_tooling.media_rsync import docker_volume_mountpoint_ssh, ssh_target_from_host
 
 
 def _write_minimal_tooling(tmp_path: Path, *, compose_default: str = "app_compose") -> None:
@@ -58,60 +62,118 @@ ops:
     )
 
 
+def test_default_fetch_media_dk_env_without_dev_section(tmp_path: Path, isolated_tooling: None) -> None:
+    _write_minimal_tooling(tmp_path)
+    cfg = load_project_config(tmp_path)
+    assert cfg.dev.fetch_media.dk_env == DEFAULT_FETCH_MEDIA_DK_ENV
+    assert cfg.dev.fetch_media.dest == "media"
+    assert cfg.dev.fetch_media.legacy is None
+
+
+def test_parse_dev_fetch_media(tmp_path: Path, isolated_tooling: None) -> None:
+    _write_minimal_tooling(tmp_path)
+    (tmp_path / "tooling.yaml").write_text(
+        (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+        + """
+dev:
+  fetch_media:
+    dk_env: prod
+    dest: var/media
+    legacy:
+      remote: /backup/django_media
+      ssh_host: legacy.example
+""",
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.default_fetch_dk_env == "prod"
+    assert cfg.fetch_media_dest_path == tmp_path / "var/media"
+    assert cfg.dev.fetch_media.legacy == FetchMediaLegacyConfig(
+        remote="/backup/django_media",
+        ssh_host="legacy.example",
+    )
+
+
 def test_dk_info_fetch_media_defaults(tmp_path: Path, isolated_tooling: None) -> None:
     _write_minimal_tooling(tmp_path)
-    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir = tmp_path / "docker" / "envs" / "prod"
     env_dir.mkdir(parents=True)
     info = {
         "docker_host": "ssh://deploy@host.example",
-        "env": {"compose_project_name": "pas_indmo_staging"},
+        "env": {"compose_project_name": "pas_indmo_prod"},
     }
     (env_dir / "info.yaml").write_text(yaml.dump(info), encoding="utf-8")
     cfg = load_project_config(tmp_path)
-    ssh, project = dk_info_fetch_media_defaults(cfg, "staging")
+    ssh, project = dk_info_fetch_media_defaults(cfg, "prod")
     assert ssh == "deploy@host.example"
-    assert project == "pas_indmo_staging"
+    assert project == "pas_indmo_prod"
 
 
-def test_build_fetch_media_env_docker_volume(tmp_path: Path, isolated_tooling: None) -> None:
+def test_ssh_target_from_host() -> None:
+    assert ssh_target_from_host("host.example") == "root@host.example"
+    assert ssh_target_from_host("user@host.example") == "user@host.example"
+
+
+def test_docker_volume_mountpoint_parses_json(monkeypatch) -> None:
+    payload = '[{"Mountpoint": "/var/lib/docker/volumes/vol/_data"}]'
+
+    def fake_run(cmd, **kwargs):
+        class Result:
+            returncode = 0
+            stdout = payload
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert docker_volume_mountpoint_ssh("root@h", "vol") == "/var/lib/docker/volumes/vol/_data"
+
+
+def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, monkeypatch) -> None:
     _write_minimal_tooling(tmp_path)
-    cfg = load_project_config(tmp_path)
-    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir = tmp_path / "docker" / "envs" / "prod"
     env_dir.mkdir(parents=True)
     (env_dir / "info.yaml").write_text(
         yaml.dump({"docker_host": "ssh://u@h", "env": {}}),
         encoding="utf-8",
     )
-    env = build_fetch_media_env(
-        cfg,
-        legacy_path=False,
-        dk_env="staging",
-        host=None,
-        remote_path="",
-        dest=tmp_path / "media",
-        partial=False,
-        compose_project=None,
+    cfg = load_project_config(tmp_path)
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_rsync(ssh_target: str, remote_path: str, local_path: Path) -> int:
+        calls.append((ssh_target, remote_path, local_path))
+        return 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.docker_volume_mountpoint_ssh",
+        lambda _s, _v, **_: "/vol/mount",
     )
-    assert env["FETCH_MEDIA_SOURCE"] == "docker_volume"
-    assert env["FETCH_MEDIA_SSH_HOST"] == "u@h"
-    assert env["FETCH_COMPOSE_PROJECT_NAME"] == "app_compose"
+    monkeypatch.setattr("catalpa_tooling.fetch_media.rsync_pull_remote_to_local", fake_rsync)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
+
+    run_fetch_media(cfg, dk_env="prod", host=None, dest=tmp_path / "media", partial=False, legacy_path=False, legacy_remote=None, compose_project=None)
+    assert calls == [("u@h", "/vol/mount/", tmp_path / "media")]
 
 
-def test_build_fetch_media_env_legacy_requires_host(tmp_path: Path) -> None:
+def test_run_fetch_media_legacy_requires_host(tmp_path: Path, isolated_tooling: None) -> None:
     _write_minimal_tooling(tmp_path)
     cfg = load_project_config(tmp_path)
-    try:
-        build_fetch_media_env(
+    with pytest.raises(ValueError, match="legacy"):
+        run_fetch_media(
             cfg,
-            legacy_path=True,
-            dk_env="staging",
+            dk_env="prod",
             host=None,
-            remote_path="/backup/media",
             dest=None,
             partial=False,
+            legacy_path=True,
+            legacy_remote="/backup/media",
             compose_project=None,
         )
-    except ValueError as exc:
-        assert "host" in str(exc).lower()
-    else:
-        raise AssertionError("expected ValueError")
+
+
+def test_legacy_remote_must_be_mapping(tmp_path: Path, isolated_tooling: None) -> None:
+    _write_minimal_tooling(tmp_path)
+    text = (tmp_path / "tooling.yaml").read_text(encoding="utf-8") + "\ndev:\n  fetch_media:\n    legacy: bad\n"
+    (tmp_path / "tooling.yaml").write_text(text, encoding="utf-8")
+    with pytest.raises(ProjectConfigError, match="legacy"):
+        load_project_config(tmp_path)

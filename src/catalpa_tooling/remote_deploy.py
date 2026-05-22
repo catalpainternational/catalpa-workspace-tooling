@@ -21,14 +21,18 @@ from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.pgbackrest_db import (
     db_service_responds,
+    ensure_db_service_running,
+    pg_restore_extras_with_default_archive,
     run_backup as run_pgbackrest_backup_online,
     run_check_online,
     run_configure_verify_online_check,
+    run_drop_create_app_database,
     run_info,
     run_pg_dump,
     run_pg_restore,
     run_restore_offline,
     run_version,
+    _pg_restore_owner_acl_extras,
 )
 from catalpa_tooling.pgbackrest_volume_config import (
     ensure_external_stack_volumes,
@@ -40,6 +44,11 @@ from catalpa_tooling.pgbackrest_volume_config import (
     should_materialize_for_compose,
 )
 from catalpa_tooling.media_pull import run_pull_media
+from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
+from catalpa_tooling.media_rsync import (
+    resolve_push_media_source,
+    run_push_media_rsync,
+)
 from catalpa_tooling.restic_files import (
     merge_restic_verbose_from_cli,
     resolve_env_with_compose_project,
@@ -235,6 +244,8 @@ def _dry_run_exits_before_compose_env(peek: list[str]) -> bool:
         "pull_media",
         "zabbix",
     ):
+        return False
+    if len(peek) >= 2 and peek[0] == "bkp_files" and peek[1] == "push":
         return False
     return True
 
@@ -447,28 +458,12 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
             )
             return 1
         dry = bool(getattr(ns, "dry_run", False)) or tail == ["--dry-run"]
-        if dry:
-            print(
-                "dry-run: would run scripts/trust-caddy-cert.sh (macOS: trust Caddy local CA in "
-                f"System keychain). compose_file={compose_file!r} "
-                f"COMPOSE_PROJECT_NAME={env_add.get('COMPOSE_PROJECT_NAME', '')!r}",
-                file=sys.stderr,
-            )
-            return 0
-        script = config.scripts_dir / "trust-caddy-cert.sh"
-        if not script.is_file():
-            print(f"Missing {script}", file=sys.stderr)
-            return 1
-        run_env = os.environ.copy()
-        for k, v in env_add.items():
-            run_env[k] = str(v)
-        run_env["INDMO_COMPOSE_FILE"] = compose_file
-        return run_cmd(
-            ["/bin/bash", str(script)],
-            cwd=str(repo_root),
-            env=run_env,
-            check=False,
-        ).returncode
+        return trust_caddy_local_ca(
+            compose_file,
+            env_add,
+            config,
+            dry_run=dry,
+        )
 
     if compose_args and compose_args[0] == "manage":
         manage_args = [a for a in compose_args[1:] if a]
@@ -516,6 +511,64 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if compose_args and compose_args[0] == "bkp_files":
         bkp_files_extra = compose_args[1:]
         bkp_files_sub = bkp_files_extra[0] if bkp_files_extra else ""
+        if bkp_files_sub == "push":
+            pm = argparse.ArgumentParser(
+                prog=f"dk {env_name} bkp_files push",
+                description=(
+                    "Rsync a host media directory into the django_media Compose volume "
+                    "(default: dev.fetch_media.dest). Pair with `uv run dev fetch media`."
+                ),
+            )
+            pm.add_argument(
+                "--source",
+                "-s",
+                default=None,
+                help="Host directory (default: paths.fetch_media.dest from tooling.yaml).",
+            )
+            pm.add_argument(
+                "--method",
+                choices=("rsync", "tar"),
+                default="rsync",
+                help="rsync (incremental) or tar via docker run (full stream).",
+            )
+            pm.add_argument(
+                "--image",
+                default="alpine:3.21",
+                help="Alpine image for container rsync / tar fallback.",
+            )
+            pm_args, _unknown = pm.parse_known_args(bkp_files_extra[1:])
+            source = resolve_push_media_source(config, repo_root, pm_args.source)
+            if source is None:
+                return 1
+            rc = ensure_external_stack_volumes(
+                env_add,
+                dry_run=bool(getattr(ns, "dry_run", False)),
+                config=config,
+            )
+            if rc != 0:
+                return rc
+            if not getattr(ns, "yes", False) and not getattr(ns, "dry_run", False):
+                if not sys.stdin.isatty():
+                    print(
+                        "Refusing bkp_files push without a TTY. Pass --yes for non-interactive use.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(
+                    "WARNING: This mirrors host media into the deployment volume "
+                    "(rsync --delete removes files on the volume that are not on the host).",
+                    file=sys.stderr,
+                )
+                if not confirm_by_typing_env_name(env_name):
+                    print("bkp_files push cancelled.", file=sys.stderr)
+                    return 1
+            return run_push_media_rsync(
+                env_add,
+                source=source,
+                dry_run=bool(getattr(ns, "dry_run", False)),
+                method=pm_args.method,
+                alpine_image=str(pm_args.image),
+            )
         if (
             bkp_files_sub
             and needs_restic_write(bkp_files_sub)
@@ -549,6 +602,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         if not extra:
             print(
                 "usage: bkp_files install-systemd [--dry-run] [--enable] | "
+                "push [--source DIR] [--method rsync|tar] | "
                 "init | backup | snapshots | check | stats | restore [SNAPSHOT]",
                 file=sys.stderr,
             )
@@ -611,6 +665,7 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
         print(f"Unknown bkp_files subcommand: {sub}", file=sys.stderr)
         print(
             "Use: bkp_files install-systemd [--dry-run] [--enable] | "
+            "push [--source DIR] [--method rsync|tar] | "
             "init | backup | snapshots | check | stats | restore [SNAPSHOT]",
             file=sys.stderr,
         )
@@ -754,13 +809,29 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 return 1
             return run_pg_dump(compose_file, env_add, extra[1:])
         if sub == "pgrestore":
-            if not db_service_responds(compose_file, env_add):
-                print(
-                    "The `db` service is not running on the deployment host.",
-                    file=sys.stderr,
+            restore_extras = _pg_restore_owner_acl_extras(
+                pg_restore_extras_with_default_archive(
+                    extra[1:],
+                    config.fetch_db_dump_path,
                 )
+            )
+            if "--file" not in restore_extras and sys.stdin.isatty():
                 return 1
-            rc = run_pg_restore(compose_file, env_add, extra[1:])
+            rc = ensure_db_service_running(compose_file, env_add)
+            if rc != 0:
+                return rc
+            print(
+                "bkp_db pgrestore: replacing app database with an empty database before restore …",
+                file=sys.stderr,
+            )
+            rc = run_drop_create_app_database(
+                compose_file,
+                env_add,
+                postgis=config.dev.reset_db.postgis,
+            )
+            if rc != 0:
+                return rc
+            rc = run_pg_restore(compose_file, env_add, restore_extras)
             if rc != 0:
                 return rc
             return run_post_db_restore_manage_commands(

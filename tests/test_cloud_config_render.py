@@ -50,7 +50,7 @@ def test_render_droplet_bootstrap_ufw() -> None:
 def test_render_droplet_bootstrap_unattended_reboot() -> None:
     text = render_droplet_bootstrap()
     assert 'Unattended-Upgrade::Automatic-Reboot "true"' in text
-    assert 'Unattended-Upgrade::Automatic-Reboot-Time "04:00"' in text
+    assert 'Unattended-Upgrade::Automatic-Reboot-Time "07:00"' in text
 
 
 def test_render_droplet_bootstrap_unattended_docker_origin() -> None:

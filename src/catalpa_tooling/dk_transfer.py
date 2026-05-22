@@ -357,7 +357,11 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
             shutil.rmtree(session, ignore_errors=True)
             return rc
         print("transfer: drop + recreate app database (destination) …", file=sys.stderr)
-        rc = run_drop_create_app_database(dst_ctx.compose_file, dst_r)
+        rc = run_drop_create_app_database(
+            dst_ctx.compose_file,
+            dst_r,
+            postgis=config.dev.reset_db.postgis,
+        )
         if rc != 0:
             try:
                 dump_path.unlink(missing_ok=True)

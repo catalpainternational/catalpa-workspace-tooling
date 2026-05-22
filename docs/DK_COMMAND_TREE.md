@@ -4,12 +4,12 @@ Minimal tree for naming review. Environment names (`<env>`) come from `docker/en
 
 ```
 dk
-├── build [SERVICE …]              # stack images (default: all services)
-├── push
-├── transfer SRC DST
+├── push                           # build and push images tagged from git describe
+├── build [SERVICE …]              # build images tagged from git describe
+├── transfer SRC DST               # transfer db and media from one environemnt to another
 │
-├── digoc
-│   ├── auth
+├── digoc                          # access to doctl (probably removing this for access via dk)
+│   ├── auth                        
 │   │   ├── init
 │   │   ├── list
 │   │   ├── remove                 # → host doctl
@@ -24,23 +24,24 @@ dk
 │       └── suggest-env
 │
 └── <env>  [--dry-run] [-y] [--tag TAG]  …
-    ├── info [-e]
-    ├── secrets
-    ├── host [--write]               # verify droplet + site_origin DNS (DO API + public); print docker_host
-    │   └── create [--size …] …      # create droplet, wait, patch docker_host, sync DO DNS; public DNS verify
-    ├── zabbix
+    ├── info [-e]                    # see or edit env info
+    ├── secrets                      # edit env encrypted credentials via SOPS
+    ├── host [--write]               # verify and show droplet info
+    │   └── create [--size …] …      # create droplet
+    ├── zabbix                       # devops monitoring
     │   ├── install
     │   ├── enable
     │   ├── disable
     │   ├── restart
     │   └── logs
-    ├── ensure_volumes
-    ├── trust-caddy-cert
-    ├── manage <django …>
-    ├── pull_media
-    ├── wipe                       # alias: compose down -v
+    ├── ensure_volumes               # utility command 
+    ├── trust-caddy-cert [--dry-run] # macOS: trust Caddy local CA (stack.services.proxy)
+    ├── manage <django …>            # access ./manage.py
+    ├── pull_media                   # volume → host dir (tar)
+    ├── wipe                         # alias: compose down -v
     │
-    ├── bkp_files
+    ├── bkp_files                    # restic backups + host media → volume
+    │   ├── push [--source DIR] [--method rsync|tar]
     │   ├── install-systemd
     │   ├── init
     │   ├── backup
@@ -49,7 +50,7 @@ dk
     │   ├── stats
     │   └── restore [SNAPSHOT]
     │
-    ├── bkp_db
+    ├── bkp_db                       # control pgbackrest backups
     │   ├── configure [verify | stanza-create]
     │   ├── install-systemd
     │   ├── info
@@ -76,7 +77,7 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `host` / `host create` (doctl: droplet + `site_origin` DNS on DigitalOcean + public resolution; `digitalocean.disabled` for manual hosts; default droplet `{project}-{env}`), `zabbix`, `ensure_volumes`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `bkp_files`, `bkp_db`.
+Special verbs (not plain compose): `info`, `secrets`, `host` / `host create` (doctl: droplet + `site_origin` DNS on DigitalOcean + public resolution; `digitalocean.disabled` for manual hosts; default droplet `{project}-{env}`), `zabbix`, `ensure_volumes`, `trust-caddy-cert` (macOS only; uses env compose file + `stack.services.proxy`), `manage`, `pull_media`, `wipe`, `bkp_files`, `bkp_db`.
 
 `bkp_db` / `bkp_files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 
