@@ -356,7 +356,46 @@ def test_cmd_env_host_write_registers_known_host(
         fake_ensure,
     )
     assert cmd_env_host(config, "prod", write=True, verify_dns=False) == 0
-    assert ensure_calls == [("ssh://root@203.0.113.5", {"dry_run": False})]
+    assert ensure_calls == [
+        ("ssh://root@203.0.113.5", {"dry_run": False, "recovery_env_name": "prod"})
+    ]
+    data = yaml.safe_load((env_dir / "info.yaml").read_text(encoding="utf-8"))
+    assert data["docker_host"] == "ssh://root@203.0.113.5"
+
+
+def test_cmd_env_host_write_skips_dns_when_do_api_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "docker_host: ssh://root@old.example.com\n"
+        "site_origin:\n  - www.example.com\n",
+        encoding="utf-8",
+    )
+    dns_calls: list[bool] = []
+
+    def fake_do_verify(*_a, **_k) -> int:
+        dns_calls.append(True)
+        return 1
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.try_resolve_doctl_binary", lambda: Path("/doctl")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_for_link",
+        lambda *_a, **_k: _active_droplet("test-prod"),
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.verify_host_dns", fake_do_verify)
+    monkeypatch.setattr(
+        "catalpa_tooling.ssh_known_hosts.ensure_ssh_known_host_for_docker_host",
+        lambda *_a, **_k: 0,
+    )
+    assert cmd_env_host(config, "prod", write=True) == 0
+    assert dns_calls == []
     data = yaml.safe_load((env_dir / "info.yaml").read_text(encoding="utf-8"))
     assert data["docker_host"] == "ssh://root@203.0.113.5"
 
@@ -387,7 +426,7 @@ def test_cmd_env_host_calls_verify_dns(
         do_calls.append(droplet_ip)
         return 0
 
-    def fake_public_verify(_info, expected_ip: str) -> int:
+    def fake_public_verify(_info, expected_ip: str, **kwargs) -> int:
         public_calls.append(expected_ip)
         return 0
 
@@ -491,7 +530,7 @@ def test_cmd_env_host_disabled_skips_droplet(
 
     public_calls: list[str] = []
 
-    def fake_public(_info, expected_ip: str) -> int:
+    def fake_public(_info, expected_ip: str, **kwargs) -> int:
         public_calls.append(expected_ip)
         return 0
 
@@ -728,3 +767,148 @@ def test_cmd_env_host_create_cli_overrides_info_yaml(
     assert create_kwargs[0]["region"] == "fra1"
     assert create_kwargs[0]["env_size"] == "s-1vcpu-2gb"
     assert create_kwargs[0]["env_region"] == "sgp1"
+
+
+def test_cmd_env_host_create_passes_reuse_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+
+    create_kwargs: list[dict] = []
+
+    def fake_create(*_a, **kwargs):
+        create_kwargs.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.ensure_doctl_available", lambda: Path("/doctl")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id",
+        lambda *_a, **_k: "proj-1",
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_droplets.create_droplet", fake_create)
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link._finish_host_provisioning",
+        lambda *_a, **_k: 0,
+    )
+
+    assert cmd_env_host_create(config, "prod", []) == 0
+    assert create_kwargs[0]["reuse_existing"] is True
+
+    assert cmd_env_host_create(config, "prod", ["--no-reuse-existing"]) == 0
+    assert create_kwargs[1]["reuse_existing"] is False
+
+
+def test_cmd_env_host_create_reuses_existing_droplet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+
+    finish_called = False
+
+    def fake_finish(*_a, **_k):
+        nonlocal finish_called
+        finish_called = True
+        return 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.ensure_doctl_available", lambda: Path("/doctl")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id",
+        lambda *_a, **_k: "proj-1",
+    )
+    def fake_create(*_a, **kwargs):
+        assert kwargs.get("reuse_existing") is True
+        return 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id",
+        lambda *_a, **_k: "proj-1",
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_droplets.create_droplet", fake_create)
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link._finish_host_provisioning",
+        fake_finish,
+    )
+
+    assert cmd_env_host_create(config, "prod", []) == 0
+    assert finish_called is True
+
+
+def test_finish_host_provisioning_runs_dns_after_known_hosts_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling.deploy_do_link import _finish_host_provisioning
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+
+    sync_called: list[bool] = []
+
+    def fake_sync(*_a, **_k) -> int:
+        sync_called.append(True)
+        return 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.cmd_env_host",
+        lambda *_a, **_k: 1,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_for_link",
+        lambda *_a, **_k: _active_droplet("test-prod"),
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.sync_host_dns", fake_sync)
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link._run_host_dns_checks",
+        lambda *_a, **_k: 0,
+    )
+
+    assert _finish_host_provisioning(config, "prod", context=None, dry_run=False) == 1
+    assert sync_called == [True]
+    err = capsys.readouterr().err
+    assert "host --write" in err
+
+
+def test_cmd_env_host_sync_dns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "site_origin:\n  - prod.example.com\n",
+        encoding="utf-8",
+    )
+    sync_calls: list[str] = []
+
+    def fake_sync(_config, _info, *, droplet_ip: str, **_k) -> int:
+        sync_calls.append(droplet_ip)
+        return 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.try_resolve_doctl_binary", lambda: Path("/doctl")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_for_link",
+        lambda *_a, **_k: _active_droplet("test-prod"),
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.sync_host_dns", fake_sync)
+
+    assert cmd_env_host(config, "prod", sync_dns=True) == 0
+    assert sync_calls == ["203.0.113.5"]

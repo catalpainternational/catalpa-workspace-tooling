@@ -267,17 +267,24 @@ def _docker_host_ssh_target(docker_host: str) -> str:
     return f"{DEFAULT_SSH_USER}@{raw}" if raw else ""
 
 
-def _compare_docker_host(configured: str, resolved: str) -> None:
+def _compare_docker_host(configured: str, resolved: str, *, writing: bool = False) -> None:
     configured_target = _docker_host_ssh_target(configured)
     resolved_target = _docker_host_ssh_target(resolved)
     if not configured_target or not resolved_target:
         return
     if configured_target != resolved_target:
-        print(
-            f"Note: info.yaml docker_host ({configured!r}) differs from droplet "
-            f"({resolved!r}). Run with --write to update, or fix the droplet name.",
-            file=sys.stderr,
-        )
+        if writing:
+            print(
+                f"Note: info.yaml docker_host ({configured!r}) differs from droplet "
+                f"({resolved!r}); updating.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Note: info.yaml docker_host ({configured!r}) differs from droplet "
+                f"({resolved!r}). Run with --write to update, or fix the droplet name.",
+                file=sys.stderr,
+            )
 
 
 def _print_configured_docker_host(docker_host: str) -> int:
@@ -342,6 +349,103 @@ def suggest_host_write_command(env_name: str) -> str:
     return f"dk {env_name} host --write"
 
 
+def _print_host_provisioning_recovery(
+    env_name: str,
+    *,
+    known_hosts_failed: bool = False,
+    dns_sync_failed: bool = False,
+    dns_verify_failed: bool = False,
+) -> None:
+    print("Droplet and docker_host are ready. To finish:", file=sys.stderr)
+    if known_hosts_failed:
+        print(f"  dk {env_name} host --write", file=sys.stderr)
+    if dns_sync_failed:
+        print(f"  dk {env_name} host --sync-dns", file=sys.stderr)
+    if dns_verify_failed:
+        print(f"  dk {env_name} host", file=sys.stderr)
+
+
+def _finish_host_provisioning(
+    config: ProjectConfig,
+    env_name: str,
+    *,
+    context: str | None,
+    dry_run: bool = False,
+) -> int:
+    """Patch docker_host, register SSH known_hosts, sync DO DNS, verify DNS."""
+    failures: list[tuple[str, int]] = []
+
+    host_rc = cmd_env_host(
+        config,
+        env_name,
+        write=True,
+        dry_run=dry_run,
+        verify_dns=False,
+        recovery_env_name=env_name,
+    )
+    if host_rc != 0:
+        failures.append(("known_hosts", host_rc))
+
+    loaded = load_env_info(config, env_name)
+    if loaded is None:
+        return 1
+    _, info = loaded
+    link = resolve_env_do_link(config, env_name, info)
+
+    try:
+        droplet = find_droplet_for_link(config, link, context=context)
+    except SystemExit:
+        return 1
+    if droplet is None:
+        print(
+            f"No DigitalOcean droplet named {link.droplet_name!r}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    ip = public_ipv4(droplet)
+    if not ip:
+        print(
+            f"Droplet {link.droplet_name!r} has no public IPv4 yet.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from catalpa_tooling.doctl_domains import sync_host_dns
+
+    sync_rc = sync_host_dns(
+        config,
+        info,
+        droplet_ip=ip,
+        context=context,
+        dry_run=dry_run,
+    )
+    if sync_rc != 0:
+        failures.append(("dns_sync", sync_rc))
+
+    dns_rc = _run_host_dns_checks(
+        config,
+        info,
+        expected_ip=ip,
+        context=context,
+        include_do_api=True,
+        env_name=env_name,
+    )
+    if dns_rc != 0:
+        failures.append(("dns_verify", dns_rc))
+
+    if not failures:
+        return 0
+
+    _print_host_provisioning_recovery(
+        env_name,
+        known_hosts_failed=any(name == "known_hosts" for name, _ in failures),
+        dns_sync_failed=any(name == "dns_sync" for name, _ in failures),
+        dns_verify_failed=any(name == "dns_verify" for name, _ in failures),
+    )
+    return max(rc for _, rc in failures)
+
+
 def _print_no_doctl_hints(
     *,
     env_name: str,
@@ -367,6 +471,7 @@ def _run_host_dns_checks(
     expected_ip: str,
     context: str | None,
     include_do_api: bool,
+    env_name: str | None = None,
 ) -> int:
     """Run DO API and/or public DNS verification; aggregate failures."""
     failures: list[int] = []
@@ -380,7 +485,11 @@ def _run_host_dns_checks(
 
     from catalpa_tooling.dns_resolve import verify_public_dns_from_info
 
-    rc = verify_public_dns_from_info(info, expected_ip)
+    rc = verify_public_dns_from_info(
+        info,
+        expected_ip,
+        recovery_env_name=env_name,
+    )
     if rc != 0:
         failures.append(rc)
 
@@ -437,6 +546,7 @@ def _cmd_env_host_manual(
             expected_ip=expected_ip,
             context=None,
             include_do_api=False,
+            env_name=env_name,
         )
     return 0
 
@@ -448,6 +558,8 @@ def cmd_env_host(
     write: bool = False,
     dry_run: bool = False,
     verify_dns: bool = True,
+    sync_dns: bool = False,
+    recovery_env_name: str | None = None,
 ) -> int:
     """Resolve droplet IP for ``env_name`` and print or patch ``docker_host`` in info.yaml."""
     from catalpa_tooling.doctl_binary import (
@@ -549,15 +661,29 @@ def cmd_env_host(
     print_host_resolution(link=link, droplet=droplet, docker_host=docker_host)
 
     if configured_host:
-        _compare_docker_host(configured_host, docker_host)
+        _compare_docker_host(configured_host, docker_host, writing=write)
 
-    if verify_dns:
+    # host --write only refreshes docker_host; DNS checks run on plain `dk <env> host`
+    # and after `host create` (which syncs DO A records first).
+    if sync_dns:
+        from catalpa_tooling.doctl_domains import sync_host_dns
+
+        return sync_host_dns(
+            config,
+            info,
+            droplet_ip=ip,
+            context=context,
+            dry_run=dry_run,
+        )
+
+    if verify_dns and not write:
         dns_rc = _run_host_dns_checks(
             config,
             info,
             expected_ip=ip,
             context=context,
             include_do_api=True,
+            env_name=env_name,
         )
         if dns_rc != 0:
             return dns_rc
@@ -568,7 +694,11 @@ def cmd_env_host(
             return rc
         from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
 
-        return ensure_ssh_known_host_for_docker_host(docker_host, dry_run=dry_run)
+        return ensure_ssh_known_host_for_docker_host(
+            docker_host,
+            dry_run=dry_run,
+            recovery_env_name=recovery_env_name or env_name,
+        )
     return 0
 
 
@@ -630,6 +760,11 @@ def _host_create_parser(env_name: str) -> argparse.ArgumentParser:
         "--no-monitoring",
         action="store_true",
         help="Omit --enable-monitoring (default: install DO metrics agent)",
+    )
+    p.add_argument(
+        "--no-reuse-existing",
+        action="store_true",
+        help="Fail if the env droplet already exists instead of finishing provisioning",
     )
     return p
 
@@ -712,42 +847,13 @@ def cmd_env_host_create(
         do_config=do_config,
         for_env=None,
         enable_monitoring=False if ns.no_monitoring else None,
+        reuse_existing=not ns.no_reuse_existing,
     )
     if rc != 0 or dry_run:
         return rc
-    host_rc = cmd_env_host(
-        config, env_name, write=True, dry_run=False, verify_dns=False
-    )
-    if host_rc != 0:
-        return host_rc
-
-    loaded2 = load_env_info(config, env_name)
-    if loaded2 is None:
-        return 1
-    _, info2 = loaded2
-    link2 = resolve_env_do_link(config, env_name, info2)
-    try:
-        droplet2 = find_droplet_for_link(config, link2, context=context)
-    except SystemExit:
-        return 1
-    if droplet2 is None:
-        return 1
-    ip2 = public_ipv4(droplet2)
-    from catalpa_tooling.doctl_domains import sync_host_dns, verify_host_dns
-
-    sync_rc = sync_host_dns(
+    return _finish_host_provisioning(
         config,
-        info2,
-        droplet_ip=ip2,
+        env_name,
         context=context,
         dry_run=False,
-    )
-    if sync_rc != 0:
-        return sync_rc
-    return _run_host_dns_checks(
-        config,
-        info2,
-        expected_ip=ip2,
-        context=context,
-        include_do_api=True,
     )

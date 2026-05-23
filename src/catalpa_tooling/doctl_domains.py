@@ -49,7 +49,7 @@ class HostDnsTarget:
 
 @dataclass(frozen=True)
 class DnsVerifyResult:
-    """Outcome of checking one A record."""
+    """Outcome of checking one hostname's DO DNS (A or CNAME chain)."""
 
     target: HostDnsTarget
     ok: bool
@@ -144,6 +144,35 @@ def _record_name_matches(record: dict[str, Any], expected: str, zone: str) -> bo
     return False
 
 
+def _normalize_rdata(data: str) -> str:
+    return data.strip().rstrip(".").lower()
+
+
+def _cname_target_hostname(rdata: str, zone: str) -> str:
+    """Turn DO CNAME rdata (e.g. ``@``, ``catalpa.io.``) into a hostname to resolve."""
+    target = _normalize_rdata(rdata)
+    if not target or target == "@":
+        return _strip_port(zone)
+    return target
+
+
+def find_dns_record(
+    zone: str,
+    record_name: str,
+    record_type: str,
+    *,
+    context: str | None,
+) -> dict[str, Any] | None:
+    """Return the first record of ``record_type`` matching ``record_name`` in ``zone``."""
+    want = record_type.strip().upper()
+    for record in list_domain_records(zone, context=context):
+        if str(record.get("type") or "").upper() != want:
+            continue
+        if _record_name_matches(record, record_name, zone):
+            return record
+    return None
+
+
 def find_a_record(
     zone: str,
     record_name: str,
@@ -151,42 +180,129 @@ def find_a_record(
     context: str | None,
 ) -> dict[str, Any] | None:
     """Return the first A record matching ``record_name`` in ``zone``."""
-    for record in list_domain_records(zone, context=context):
-        if str(record.get("type") or "").upper() != "A":
-            continue
-        if _record_name_matches(record, record_name, zone):
-            return record
-    return None
+    return find_dns_record(zone, record_name, "A", context=context)
 
 
-def _verify_one_a_record(
+def find_cname_record(
+    zone: str,
+    record_name: str,
+    *,
+    context: str | None,
+) -> dict[str, Any] | None:
+    """Return the first CNAME record matching ``record_name`` in ``zone``."""
+    return find_dns_record(zone, record_name, "CNAME", context=context)
+
+
+def do_dns_resolve_ipv4(
+    hostname: str,
+    registered_zones: list[str],
+    *,
+    context: str | None,
+    visited: frozenset[str] | None = None,
+    max_depth: int = 8,
+) -> str | None:
+    """Follow DO A/CNAME records for ``hostname`` and return an IPv4, or None."""
+    host = _strip_port(hostname)
+    if not host:
+        return None
+    seen = visited or frozenset()
+    if host in seen or len(seen) >= max_depth:
+        return None
+    seen = seen | {host}
+
+    mapped = hostname_to_zone_and_record_name(host, registered_zones)
+    if mapped is None:
+        return None
+
+    a_record = find_a_record(mapped.zone, mapped.record_name, context=context)
+    if a_record is not None:
+        return str(a_record.get("data") or "").strip() or None
+
+    cname = find_cname_record(mapped.zone, mapped.record_name, context=context)
+    if cname is None:
+        return None
+
+    target_host = _cname_target_hostname(str(cname.get("data") or ""), mapped.zone)
+    return do_dns_resolve_ipv4(
+        target_host,
+        registered_zones,
+        context=context,
+        visited=seen,
+        max_depth=max_depth,
+    )
+
+
+def _verify_one_dns_record(
     target: HostDnsTarget,
     expected_ip: str,
     *,
     context: str | None,
+    registered_zones: list[str],
 ) -> DnsVerifyResult:
-    record = find_a_record(target.zone, target.record_name, context=context)
     ip = expected_ip.strip()
-    if record is None:
+    record = find_a_record(target.zone, target.record_name, context=context)
+    if record is not None:
+        actual = str(record.get("data") or "").strip()
+        if actual != ip:
+            return DnsVerifyResult(
+                target=target,
+                ok=False,
+                message=(
+                    f"A record for {target.hostname!r} points to {actual!r}, "
+                    f"expected droplet {ip!r}"
+                ),
+            )
         return DnsVerifyResult(
             target=target,
-            ok=False,
-            message=f"no A record for {target.hostname!r} in zone {target.zone!r}",
+            ok=True,
+            message=f"{target.hostname!r} -> {ip}",
         )
-    actual = str(record.get("data") or "").strip()
-    if actual != ip:
+
+    resolved = do_dns_resolve_ipv4(
+        target.hostname, registered_zones, context=context
+    )
+    if resolved == ip:
+        cname = find_cname_record(target.zone, target.record_name, context=context)
+        if cname is not None:
+            cname_target = _cname_target_hostname(str(cname.get("data") or ""), target.zone)
+            return DnsVerifyResult(
+                target=target,
+                ok=True,
+                message=f"{target.hostname!r} CNAME -> {cname_target} -> {ip}",
+            )
+        return DnsVerifyResult(
+            target=target,
+            ok=True,
+            message=f"{target.hostname!r} -> {ip}",
+        )
+
+    cname = find_cname_record(target.zone, target.record_name, context=context)
+    if cname is not None:
+        cname_target = _cname_target_hostname(str(cname.get("data") or ""), target.zone)
+        if resolved:
+            return DnsVerifyResult(
+                target=target,
+                ok=False,
+                message=(
+                    f"CNAME for {target.hostname!r} points to {cname_target!r}, "
+                    f"which resolves to {resolved!r} (expected droplet {ip!r})"
+                ),
+            )
         return DnsVerifyResult(
             target=target,
             ok=False,
             message=(
-                f"A record for {target.hostname!r} points to {actual!r}, "
-                f"expected droplet {ip!r}"
+                f"CNAME for {target.hostname!r} points to {cname_target!r}, "
+                f"but no A record on DO DNS resolves to droplet {ip!r}"
             ),
         )
+
     return DnsVerifyResult(
         target=target,
-        ok=True,
-        message=f"{target.hostname!r} -> {ip}",
+        ok=False,
+        message=(
+            f"no A or CNAME record for {target.hostname!r} in zone {target.zone!r}"
+        ),
     )
 
 
@@ -198,7 +314,7 @@ def verify_host_dns(
     context: str | None,
     project_id: str | None = None,
 ) -> int:
-    """Verify DO DNS zones and A records for ``site_origin`` hostnames. Returns exit code."""
+    """Verify DO DNS zones and A/CNAME records for ``site_origin`` hostnames. Returns exit code."""
     from catalpa_tooling.doctl_projects import (
         list_project_domain_urns,
         resolve_project_id,
@@ -255,7 +371,12 @@ def verify_host_dns(
                     f"--resource=do:domain:{target.zone}"
                 )
 
-        result = _verify_one_a_record(target, droplet_ip, context=context)
+        result = _verify_one_dns_record(
+            target,
+            droplet_ip,
+            context=context,
+            registered_zones=registered,
+        )
         if result.ok:
             ok_count += 1
         else:
@@ -268,7 +389,7 @@ def verify_host_dns(
 
     if ok_count:
         print(
-            f"DNS OK: {ok_count} A record(s) match droplet {droplet_ip} "
+            f"DNS OK: {ok_count} hostname(s) match droplet {droplet_ip} "
             f"across {len(zones_seen)} zone(s).",
             file=sys.stderr,
         )
@@ -284,6 +405,13 @@ def _upsert_a_record(
     ttl: int = DEFAULT_DNS_TTL,
 ) -> None:
     from catalpa_tooling.doctl_binary import run_doctl
+
+    if find_cname_record(target.zone, target.record_name, context=context) is not None:
+        print(
+            f"DNS unchanged: {target.hostname!r} uses CNAME (not replacing with A).",
+            file=sys.stderr,
+        )
+        return
 
     existing = find_a_record(target.zone, target.record_name, context=context)
     if existing is None:

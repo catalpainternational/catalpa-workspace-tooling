@@ -173,6 +173,7 @@ def create_droplet(
     do_config: DigitalOceanConfig | None = None,
     for_env: str | None = None,
     enable_monitoring: bool | None = None,
+    reuse_existing: bool = False,
 ) -> int:
     """Create a droplet with the standard bootstrap cloud-config user-data."""
     from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
@@ -256,6 +257,13 @@ def create_droplet(
             context=context,
         )
         if existing_id is not None:
+            if reuse_existing:
+                print(
+                    f"Droplet {droplet_name!r} already exists in this project "
+                    f"(id {existing_id}); continuing provisioning.",
+                    file=sys.stderr,
+                )
+                return 0
             print(
                 f"Droplet {droplet_name!r} already exists in this project (id {existing_id}). "
                 "Choose another name or remove the existing droplet.",
