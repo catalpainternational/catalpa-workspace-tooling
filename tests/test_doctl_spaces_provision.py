@@ -27,6 +27,7 @@ from catalpa_tooling.config import load_project_config
         ("pgdump", [], False),
         ("restore", [], False),
         ("install-systemd", [], True),
+        ("init", [], True),
     ],
 )
 def test_needs_pgbr_write(sub: str, tail: list[str], expected: bool) -> None:

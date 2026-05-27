@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -520,6 +521,112 @@ def run_pgbackrest_verify(env: dict[str, str], *, image: str) -> int:
     return 0
 
 
+def parse_pgbackrest_info_stanza_healthy(
+    stdout: str, stderr: str, *, stanza: str
+) -> bool:
+    """True when ``pgbackrest info`` output shows the stanza ``status: ok`` (repo metadata valid).
+
+    ``pgbackrest info`` often exits 0 even when the stanza row is ``status: error (…)``; do not
+    rely on the process exit code alone.
+    """
+    text = (stdout or "").strip()
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if payload is not None:
+            stanzas = payload if isinstance(payload, list) else [payload]
+            for entry in stanzas:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("name") != stanza:
+                    continue
+                status = entry.get("status")
+                if isinstance(status, dict):
+                    return status.get("code") == 0
+                if isinstance(status, str):
+                    return status.strip().lower() == "ok"
+            return False
+    body = f"{stdout or ''}\n{stderr or ''}"
+    match = re.search(
+        rf"stanza:\s*{re.escape(stanza)}\s*\n\s*status:\s*(\S+)",
+        body,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    if not match:
+        return False
+    return match.group(1).lower() == "ok"
+
+
+def pgbackrest_stanza_exists_in_repo(
+    env: dict[str, str], *, image: str, config: ProjectConfig | None = None
+) -> bool:
+    """True when ``pgbackrest info`` reports the stanza healthy (``status: ok`` in the repository)."""
+    if resolve_mode(env) != "write":
+        return False
+    stanza = stanza_from_env_for_pgbackrest(env)
+    if not stanza:
+        return False
+    docker_env = _docker_env_for_remote(env)
+    vol_pgb = volume_names(env, config=config)[1]
+    sq = shlex.quote(stanza)
+    r = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_compose_db_platform_args(),
+            "--entrypoint",
+            "pgbackrest",
+            "-v",
+            f"{vol_pgb}:/etc/pgbackrest/conf.d",
+            image,
+            f"--stanza={sq}",
+            "--output=json",
+            "info",
+        ],
+        env=docker_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    if r.returncode != 0 and not (r.stdout or r.stderr):
+        return False
+    healthy = parse_pgbackrest_info_stanza_healthy(
+        r.stdout or "", r.stderr or "", stanza=stanza
+    )
+    if healthy:
+        return True
+    # Older pgbackrest without --output=json: retry plain text info.
+    if (r.stdout or "").strip().startswith(("[", "{")):
+        return False
+    r_text = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_compose_db_platform_args(),
+            "--entrypoint",
+            "pgbackrest",
+            "-v",
+            f"{vol_pgb}:/etc/pgbackrest/conf.d",
+            image,
+            f"--stanza={sq}",
+            "info",
+        ],
+        env=docker_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    return parse_pgbackrest_info_stanza_healthy(
+        r_text.stdout or "", r_text.stderr or "", stanza=stanza
+    )
+
+
 def run_pgbackrest_stanza_create(
     env: dict[str, str], *, image: str, config: ProjectConfig | None = None
 ) -> int:
@@ -555,11 +662,8 @@ def run_pgbackrest_stanza_create(
         log(
             "pgBackRest stanza-create: PostgreSQL PGDATA is missing or not initialized "
             f"(no global/pg_control in Docker volume {vol_data!r}). "
-            "Even with --no-online, pgBackRest needs the data directory on disk. "
-            "Start the db service once (initdb), e.g. from the repo root with the same "
-            "COMPOSE_PROJECT_NAME as this deploy:\n"
-            "  docker compose -f compose.yml up -d db\n"
-            "Then retry."
+            "Run `dk <env> bkp_db init` or `dk <env> bkp_db configure stanza-create` "
+            "(starts `db` automatically), or `dk <env> up -d db` then retry."
         )
         return 1
 

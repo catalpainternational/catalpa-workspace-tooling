@@ -24,6 +24,8 @@ from catalpa_tooling.pgbackrest_db import (
     ensure_db_service_running,
     pg_restore_extras_with_default_archive,
     run_backup as run_pgbackrest_backup_online,
+    run_bkp_db_init,
+    run_bkp_db_stanza_create_flow,
     run_check_online,
     run_configure_verify_online_check,
     run_drop_create_app_database,
@@ -39,7 +41,6 @@ from catalpa_tooling.pgbackrest_volume_config import (
     materialize_configs,
     postgres_image_from_env,
     remove_wipe_data_volumes,
-    run_pgbackrest_stanza_create,
     run_pgbackrest_verify,
     should_materialize_for_compose,
 )
@@ -203,6 +204,42 @@ def _ensure_local_stack_images_built(
     return compose_yml_build(config, env_add=env_add, services=None)
 
 
+def _compose_up_service_index(compose_args: list[str]) -> int:
+    """Index in ``up`` argv before the first service name (or ``len`` if none)."""
+    if not compose_args or compose_args[0] != "up":
+        return len(compose_args)
+    i = 1
+    flags_with_value = frozenset({"-t", "--timeout", "-p", "--profile", "--pull"})
+    while i < len(compose_args):
+        arg = compose_args[i]
+        if not arg.startswith("-"):
+            break
+        i += 1
+        if arg in flags_with_value and i < len(compose_args) and not compose_args[i].startswith("-"):
+            i += 1
+    return i
+
+
+def _insert_up_prepulled_pull_flags(
+    compose_args: list[str], *, use_prepulled_registry: bool
+) -> list[str]:
+    """When using pinned registry images, add ``--pull missing`` and ``--no-build`` before service names."""
+    if not use_prepulled_registry or not compose_args or compose_args[0] != "up":
+        return compose_args
+    out = list(compose_args)
+    inserts: list[str] = []
+    if "--pull" not in out:
+        inserts.extend(["--pull", "missing"])
+    if "--no-build" not in out and "--build" not in out:
+        inserts.append("--no-build")
+    if not inserts:
+        return out
+    i = _compose_up_service_index(out)
+    for part in reversed(inserts):
+        out.insert(i, part)
+    return out
+
+
 def _insert_up_build_if_no_registry(
     compose_args: list[str], *, use_prepulled_registry: bool
 ) -> list[str]:
@@ -214,16 +251,7 @@ def _insert_up_build_if_no_registry(
     if "--build" in compose_args or "--no-build" in compose_args:
         return compose_args
     out = list(compose_args)
-    i = 1
-    flags_with_value = frozenset({"-t", "--timeout", "-p", "--profile", "--pull"})
-    while i < len(out):
-        arg = out[i]
-        if not arg.startswith("-"):
-            break
-        i += 1
-        if arg in flags_with_value and i < len(out) and not out[i].startswith("-"):
-            i += 1
-    out.insert(i, "--build")
+    out.insert(_compose_up_service_index(out), "--build")
     return out
 
 
@@ -698,7 +726,8 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 return rc
         if not extra:
             print(
-                "usage: bkp_db configure [verify|stanza-create] | "
+                "usage: bkp_db init [--install-systemd [--dry-run] [--enable]] | "
+                "configure [verify|stanza-create] | "
                 "install-systemd [--dry-run] [--enable] | "
                 "info | check | version | backup full|incr|diff | pgdump [PG_DUMP_ARG ...] | "
                 "pgrestore [--file ARCHIVE] [PG_RESTORE_ARG ...] | restore [pgBackRest restore args …]",
@@ -715,6 +744,44 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
             )
             return 1
         sub = extra[0]
+        if sub == "init":
+            rc = _ensure_local_stack_images_built(
+                config,
+                env_add,
+                use_prepulled_registry=use_prepulled_registry,
+            )
+            if rc != 0:
+                return rc
+            img = postgres_image_from_env(env_add, config=config)
+            print(f"Postgres image (volume ops / pgBackRest): {img}", file=sys.stderr)
+            rc = run_bkp_db_init(
+                compose_file, env_add, image=img, config=config
+            )
+            if rc != 0:
+                return rc
+            tail = extra[1:]
+            if not tail:
+                return 0
+            if tail[0] != "--install-systemd":
+                print(
+                    f"Unknown bkp_db init arguments: {' '.join(tail)}",
+                    file=sys.stderr,
+                )
+                print(
+                    "Use: bkp_db init | bkp_db init --install-systemd [--dry-run] [--enable]",
+                    file=sys.stderr,
+                )
+                return 1
+            return cmd_install_systemd_backups(
+                config,
+                env_add,
+                str(docker_host),
+                env_name,
+                tail[1:],
+                global_dry_run=bool(getattr(ns, "dry_run", False)),
+                yes=bool(getattr(ns, "yes", False)),
+                fixed_only="pgbackrest",
+            )
         if sub == "configure":
             rc = _ensure_local_stack_images_built(
                 config,
@@ -737,7 +804,9 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
                     return rc
                 return run_configure_verify_online_check(compose_file, env_add)
             if tail == ["stanza-create"]:
-                return run_pgbackrest_stanza_create(env_add, image=img, config=config)
+                return run_bkp_db_stanza_create_flow(
+                    compose_file, env_add, image=img, config=config
+                )
             print(
                 f"Unknown bkp_db configure arguments: {' '.join(tail)}",
                 file=sys.stderr,
@@ -850,7 +919,8 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
             )
         print(f"Unknown bkp_db subcommand: {sub}", file=sys.stderr)
         print(
-            "Use: bkp_db configure [verify|stanza-create] | "
+            "Use: bkp_db init [--install-systemd [--dry-run] [--enable]] | "
+            "configure [verify|stanza-create] | "
             "install-systemd [--dry-run] [--enable] | "
             "info | check | version | backup full|incr|diff | pgdump [PG_DUMP_ARG ...] | "
             "pgrestore [--file ARCHIVE] [PG_RESTORE_ARG ...] | restore [pgBackRest restore args …]",
@@ -896,8 +966,11 @@ def _cmd_deploy(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     compose_args = _strip_dk_up_provision_flag(compose_args)
 
-    if use_prepulled_registry and compose_args and compose_args[0] == "up":
-        compose_args = ["up", "-d", "--pull", "missing", "--no-build"]
+    if use_prepulled_registry:
+        compose_args = _insert_up_prepulled_pull_flags(
+            compose_args,
+            use_prepulled_registry=use_prepulled_registry,
+        )
     else:
         compose_args = _insert_up_build_if_no_registry(
             compose_args,

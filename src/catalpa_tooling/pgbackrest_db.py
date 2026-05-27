@@ -16,10 +16,19 @@ from typing import Literal
 
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.pgbackrest_volume_config import (
+    _docker_env_for_remote,
+    _pgdata_has_control_file,
     conflict_error_message,
+    ensure_external_stack_volumes,
     ensure_pgbackrest_conf_before_restore,
     ensure_postgres_data_volume,
+    materialize_configs,
+    pgbackrest_managed_conf_materialized,
+    pgbackrest_stanza_exists_in_repo,
+    postgres_data_volume_name,
+    postgres_pg1_path,
     resolve_mode,
+    run_pgbackrest_stanza_create,
     stanza_from_env_for_pgbackrest,
 )
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
@@ -182,6 +191,75 @@ def ensure_db_service_running(compose_file: str, env: dict[str, str]) -> int:
         print("bkp_db: `db` service did not become ready.", file=sys.stderr)
         return 1
     return 0
+
+
+def run_bkp_db_stanza_create_flow(
+    compose_file: str,
+    env: dict[str, str],
+    *,
+    image: str,
+    config: ProjectConfig | None = None,
+) -> int:
+    """Materialize conf if needed, ensure PGDATA, skip when stanza exists, then ``stanza-create``."""
+    if not pgbackrest_managed_conf_materialized(env, config=config):
+        print(
+            "pgBackRest stanza-create: materializing volume config from env …",
+            file=sys.stderr,
+        )
+        rc = materialize_configs(
+            env, dry_run=False, postgres_image=image, config=config
+        )
+        if rc != 0:
+            return rc
+
+    if pgbackrest_stanza_exists_in_repo(env, image=image, config=config):
+        print(
+            "pgBackRest: stanza is healthy in repository (info status ok); skipping stanza-create.",
+            file=sys.stderr,
+        )
+        return 0
+
+    docker_env = _docker_env_for_remote(env)
+    vol_data = postgres_data_volume_name(env, config=config)
+    pg1 = postgres_pg1_path(env, config=config)
+    if not _pgdata_has_control_file(docker_env, image, vol_data, pg1_path=pg1):
+        print(
+            "pgBackRest stanza-create: initializing PostgreSQL (starting `db`) …",
+            file=sys.stderr,
+        )
+        rc = ensure_db_service_running(compose_file, env)
+        if rc != 0:
+            return rc
+        if not _pgdata_has_control_file(docker_env, image, vol_data, pg1_path=pg1):
+            print(
+                "pgBackRest stanza-create: PGDATA still missing after starting `db`.",
+                file=sys.stderr,
+            )
+            return 1
+
+    return run_pgbackrest_stanza_create(env, image=image, config=config)
+
+
+def run_bkp_db_init(
+    compose_file: str,
+    env: dict[str, str],
+    *,
+    image: str,
+    config: ProjectConfig | None = None,
+) -> int:
+    """Greenfield backup host: volumes, materialize, start ``db``, idempotent stanza-create."""
+    rc = ensure_external_stack_volumes(env, config=config)
+    if rc != 0:
+        return rc
+    rc = materialize_configs(env, dry_run=False, postgres_image=image, config=config)
+    if rc != 0:
+        return rc
+    rc = ensure_db_service_running(compose_file, env)
+    if rc != 0:
+        return rc
+    return run_bkp_db_stanza_create_flow(
+        compose_file, env, image=image, config=config
+    )
 
 
 def _pg_restore_owner_acl_extras(extras: Sequence[str]) -> list[str]:

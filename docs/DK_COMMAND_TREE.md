@@ -51,6 +51,7 @@ dk
     │   └── restore [SNAPSHOT]
     │
     ├── bkp_db                       # control pgbackrest backups
+    │   ├── init [--install-systemd [--dry-run] [--enable]]
     │   ├── configure [verify | stanza-create]
     │   ├── install-systemd
     │   ├── info

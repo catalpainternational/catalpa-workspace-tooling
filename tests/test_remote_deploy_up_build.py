@@ -8,8 +8,47 @@ from catalpa_tooling.managed_deploy_env import (
 )
 from catalpa_tooling.remote_deploy import (
     _insert_up_build_if_no_registry,
+    _insert_up_prepulled_pull_flags,
     _normalize_dk_env_argv,
 )
+
+
+class TestInsertUpPrepulledPullFlags(unittest.TestCase):
+    def test_inserts_before_service_name(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["up", "-d", "db"],
+                use_prepulled_registry=True,
+            ),
+            ["up", "-d", "--pull", "missing", "--no-build", "db"],
+        )
+
+    def test_skips_when_not_prepulled(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["up", "-d", "db"],
+                use_prepulled_registry=False,
+            ),
+            ["up", "-d", "db"],
+        )
+
+    def test_respects_existing_pull_and_build_flags(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["up", "-d", "--pull", "always", "--build", "django"],
+                use_prepulled_registry=True,
+            ),
+            ["up", "-d", "--pull", "always", "--build", "django"],
+        )
+
+    def test_non_up_unchanged(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["logs", "-f", "db"],
+                use_prepulled_registry=True,
+            ),
+            ["logs", "-f", "db"],
+        )
 
 
 class TestInsertUpBuildIfNoRegistry(unittest.TestCase):

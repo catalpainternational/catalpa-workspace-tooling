@@ -108,7 +108,7 @@ def needs_pgbr_write(sub: str, tail: list[str]) -> bool:
     Restore and ``configure verify`` accept READ-mode credentials (``pgbr_s3_read_*``);
   they must not trigger Spaces bucket creation.
     """
-    if sub in ("install-systemd", "backup"):
+    if sub in ("install-systemd", "backup", "init"):
         return True
     if sub == "configure" and tail == ["stanza-create"]:
         return True
