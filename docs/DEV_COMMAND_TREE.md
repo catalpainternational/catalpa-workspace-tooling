@@ -11,8 +11,8 @@ dev
 │   └── media [--env NAME] [--host USER@HOST] [--dest DIR] [--partial]
 │              [--legacy-path] [--remote PATH] [--compose-project NAME]
 │
-├── runserver [RUNSERVER_ARGS …]     # uv run ./manage.py runserver …
-├── manage <django …>                # uv run ./manage.py …
+├── runserver [RUNSERVER_ARGS …]     # uv run --group dev ./manage.py runserver …
+├── manage <django …>                # uv run --group dev ./manage.py …
 ├── reset-db [--from-dump PATH] [pg_restore args …]
 ├── pg-restore [--file PATH] [pg_restore args …]
 ├── vite                             # npm install + npm run dev (paths.frontend)
@@ -24,7 +24,7 @@ dev
 
 | Key | Role |
 |-----|------|
-| `paths.backend` | Django project dir (`uv run ./manage.py` cwd) |
+| `paths.backend` | Django project dir (`uv run --group dev ./manage.py` cwd) |
 | `paths.frontend` | Frontend dir for `vite` (`npm` / nvm when `.nvmrc` present) |
 | `paths.env_local` | Loaded for `manage`, `runserver`, `reset-db`, `pg-restore` (e.g. `.env.local`) |
 | `paths.fetch_db_dump` | Default output for `fetch db` |
@@ -62,8 +62,8 @@ dev:
 |---------|------|
 | `fetch db` | Run `scripts/fetch_db.sh`: `uv run dk <env> bkp_db pgdump` → `paths.fetch_db_dump` (remote `db` must be up) |
 | `fetch media` | Rsync from deploy host (see below); implemented in catalpa-workspace-tooling (not a shell script) |
-| `runserver` | `uv run ./manage.py runserver` with dev env defaults (`DJANGO_DEBUG=1`, `EMAIL_BACKEND_FOLDER`, `RQ_SYNCHRONOUS=1`) |
-| `manage` | Any `manage.py` subcommand via `uv run` in `paths.backend` |
+| `runserver` | `uv run --group dev ./manage.py runserver` with dev env defaults (`DJANGO_DEBUG=1`, `EMAIL_BACKEND_FOLDER`, `RQ_SYNCHRONOUS=1`) |
+| `manage` | Any `manage.py` subcommand via `uv run --group dev` in `paths.backend` |
 | `reset-db` | Local Postgres: see [reset-db](#reset-db) |
 | `pg-restore` | `pg_restore` into app DB using the same env resolution as `reset-db` (stdin or `--file`) |
 | `vite` | `npm install` then `npm run dev` in `paths.frontend` |
@@ -114,7 +114,7 @@ Uses libpq client tools. Connection comes from `paths.env_local` and `dev.reset_
 
 `--from-dump PATH` overrides the dump file; fails if the path is missing when explicitly set.
 
-After a successful reset, runs `dev.reset_db.post_manage_commands` via local `uv run manage.py` (separate from `ops.post_db_restore`, which runs in Docker after compose restores).
+After a successful reset, runs `dev.reset_db.post_manage_commands` via local `uv run --group dev ./manage.py` (separate from `ops.post_db_restore`, which runs in Docker after compose restores).
 
 | Option | Notes |
 |--------|--------|
@@ -133,7 +133,7 @@ Uses the same DB env resolution as `reset-db`.
 
 ## `runserver` / `manage`
 
-Forwarded to `uv run ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. When DB env vars from `dev.reset_db` are unset, sets the same host/port/name keys as `reset-db` (e.g. `DATABASE_HOST=localhost` for catalpa-site) so Django and libpq use one server. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
+Forwarded to `uv run --group dev ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. When DB env vars from `dev.reset_db` are unset, sets the same host/port/name keys as `reset-db` (e.g. `DATABASE_HOST=localhost` for catalpa-site) so Django and libpq use one server. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
 
 ## `vite`
 

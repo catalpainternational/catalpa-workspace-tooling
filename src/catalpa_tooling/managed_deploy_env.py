@@ -244,15 +244,13 @@ def load_managed_deploy_context(
         info_env = {}
     env_add = _yaml_mapping_to_env(info_env, skip_sops=False)
     env_add.update(_credentials_to_env(creds))
-    env_add.update(
-        {
-            "DOCKER_HOST": str(docker_host),
-            "DJANGO_DEBUG": "0",
-        }
-    )
+    env_add.update({"DOCKER_HOST": str(docker_host)})
+    if "DJANGO_DEBUG" not in env_add:
+        env_add["DJANGO_DEBUG"] = "0"
 
     if site_origin:
         env_add["SITE_ORIGIN"] = site_origin
+        env_add.setdefault("BERO_ORIGIN", site_origin)
     domain_s = domain_env_from_origins(list(site_origins))
     if domain_s:
         env_add["DOMAIN"] = domain_s

@@ -1,0 +1,29 @@
+# catalpa-workspace-tooling — direnv template for consumer repos
+#
+# Setup:
+#   cp scripts/envrc.template .envrc   # from catalpa-workspace-tooling checkout, or copy content
+#   uv sync                            # tooling group must include catalpa-workspace-tooling[completion]
+#   direnv allow
+#
+# Pick ONE variant below (delete the other).
+
+# --- Minimal (completion-focused; no watch_file) ---
+# Requires uv sync once manually when deps change.
+
+PATH_add .venv/bin
+
+if [[ -x .venv/bin/register-python-argcomplete ]]; then
+  export CATALPA_REGISTER_PYTHON_ARGCOMPLETE="${PWD}/.venv/bin/register-python-argcomplete"
+fi
+
+# --- Recommended (auto-sync when lock/manifest changes) ---
+# Uncomment this block and remove the minimal block above.
+#
+# watch_file pyproject.toml uv.lock
+#
+# uv sync --quiet
+# PATH_add .venv/bin
+#
+# if [[ -x .venv/bin/register-python-argcomplete ]]; then
+#   export CATALPA_REGISTER_PYTHON_ARGCOMPLETE="${PWD}/.venv/bin/register-python-argcomplete"
+# fi

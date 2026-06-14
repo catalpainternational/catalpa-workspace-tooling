@@ -427,6 +427,44 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     return 0
 
 
+def populate_transfer_arguments(parser: argparse.ArgumentParser, config: ProjectConfig) -> None:
+    """Add ``dk transfer`` flags and positionals to ``parser``."""
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run preflight checks only (no transfer); exit 1 if preflight fails.",
+    )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip typing the destination env name to confirm (required without a TTY).",
+    )
+    parser.add_argument(
+        "--db",
+        action="store_true",
+        help="Select the database leg (see epilog).",
+    )
+    parser.add_argument(
+        "--media",
+        action="store_true",
+        help="Select the django_media leg (see epilog).",
+    )
+    parser.add_argument(
+        "--workdir",
+        default=None,
+        metavar="DIR",
+        help=f"Parent directory for the transfer session (default: <repo>/{config.ops.transfer_workdir}).",
+    )
+    parser.add_argument(
+        "--keep-workdir",
+        action="store_true",
+        help="Keep the temporary session directory after success.",
+    )
+    parser.add_argument("source_env", help="docker/envs/<name>/ with info.yaml (copy from).")
+    parser.add_argument("dest_env", help="docker/envs/<name>/ with info.yaml (copy into).")
+
+
 def build_transfer_arg_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="dk transfer",
@@ -440,38 +478,5 @@ def build_transfer_arg_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run preflight checks only (no transfer); exit 1 if preflight fails.",
-    )
-    p.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="Skip typing the destination env name to confirm (required without a TTY).",
-    )
-    p.add_argument(
-        "--db",
-        action="store_true",
-        help="Select the database leg (see epilog).",
-    )
-    p.add_argument(
-        "--media",
-        action="store_true",
-        help="Select the django_media leg (see epilog).",
-    )
-    p.add_argument(
-        "--workdir",
-        default=None,
-        metavar="DIR",
-        help=f"Parent directory for the transfer session (default: <repo>/{config.ops.transfer_workdir}).",
-    )
-    p.add_argument(
-        "--keep-workdir",
-        action="store_true",
-        help="Keep the temporary session directory after success.",
-    )
-    p.add_argument("source_env", help="docker/envs/<name>/ with info.yaml (copy from).")
-    p.add_argument("dest_env", help="docker/envs/<name>/ with info.yaml (copy into).")
+    populate_transfer_arguments(p, config)
     return p

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1
+
+### Added
+
+- Unified argparse trees for `dev`, `dk`, `test`, and `scripts` with optional shell completion via `argcomplete` (`[completion]` extra). Register with `register-python-argcomplete` or `scripts/install-completions.sh`.
+- Explicit `dk <env> compose …` subcommand for completion-friendly docker compose passthrough; implicit `dk <env> up -d` remains supported.
+- Multi-project direnv integration: [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) (one-time zsh hook) and [`scripts/envrc.template`](scripts/envrc.template) (per-repo `.envrc`).
+
+### Fixed
+
+- Spaces backup auto-provisioning assigns the bucket to the DigitalOcean project from `digitalocean.project_name` / `project_id` in `tooling.yaml` (via `doctl projects resources assign do:space:<bucket>`), not only the default project.
+
 ## 0.3.0
 
 ### Added

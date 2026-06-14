@@ -272,6 +272,22 @@ def _pg_restore_owner_acl_extras(extras: Sequence[str]) -> list[str]:
     return xs
 
 
+def _pg_restore_has_role(extras: Sequence[str]) -> bool:
+    for i, arg in enumerate(extras):
+        if arg == "--role":
+            return True
+        if arg.startswith("--role="):
+            return True
+    return False
+
+
+def _pg_restore_compose_role_suffix(extras: Sequence[str]) -> str:
+    """Shell suffix for compose ``pg_restore`` so ``--no-owner`` objects belong to ``APP_USER``."""
+    if _pg_restore_has_role(extras):
+        return ""
+    return ' --role "$APP_USER"'
+
+
 def pg_restore_extras_with_default_archive(
     extras: Sequence[str] | None,
     default_archive: Path | None,
@@ -631,6 +647,7 @@ def run_pg_restore(
         )
         if extras:
             inner = inner + " " + " ".join(shlex.quote(a) for a in extras)
+        inner = inner + _pg_restore_compose_role_suffix(extras)
         inner = inner + " " + shlex.quote(container_path)
         try:
             r = run_cmd(

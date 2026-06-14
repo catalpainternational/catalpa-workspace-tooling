@@ -97,3 +97,39 @@ def test_load_managed_deploy_context_sets_domain_and_site_origin(
     )
     assert ctx.env_add["SITE_ORIGIN"] == "https://web.example.com"
     assert ctx.env_add["DOMAIN"] == "web.example.com, api.example.com"
+
+
+def test_load_managed_deploy_context_respects_django_debug_from_info(
+    minimal_project,
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    env_dir = minimal_project.deploy_envs_dir / "local"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "info.yaml").write_text(
+        "name: local\n"
+        "site_origin: http://dev.example\n"
+        "credentials_decrypt_optional: true\n"
+        "env:\n"
+        "  django_debug: 'true'\n",
+        encoding="utf-8",
+    )
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["DJANGO_DEBUG"] == "true"
+
+
+def test_load_managed_deploy_context_defaults_django_debug_off(
+    minimal_project,
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    env_dir = minimal_project.deploy_envs_dir / "local"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "info.yaml").write_text(
+        "name: local\n"
+        "site_origin: https://staging.example\n"
+        "credentials_decrypt_optional: true\n",
+        encoding="utf-8",
+    )
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["DJANGO_DEBUG"] == "0"

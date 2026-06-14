@@ -11,7 +11,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from catalpa_tooling.cli.completion import activate
 from catalpa_tooling.cli_interrupt import run_cli
+from catalpa_tooling.dev_parser import build_dev_parser
 from catalpa_tooling.fetch_media import run_fetch_media
 from catalpa_tooling.config import (
     DEFAULT_LOCAL_PG_HOST,
@@ -25,7 +27,6 @@ _MIN_CUSTOM_DUMP_BYTES = 100_000
 from catalpa_tooling.post_db_restore import run_reset_db_post_manage_commands
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
 from catalpa_tooling.script_discovery import (
-    discover_dev_commands,
     reset_db_post_script,
 )
 from catalpa_tooling.script_runner import run_bash_script
@@ -449,7 +450,7 @@ def _run_uv_manage(args: list[str], *, extra_env: dict[str, str] | None = None) 
         env["RQ_SYNCHRONOUS"] = "1"
     path_prepend = f"{Path.home()}/.local/bin:/opt/homebrew/bin:{env.get('PATH', '')}"
     env["PATH"] = path_prepend
-    cmd = ["uv", "run", "./manage.py", *args]
+    cmd = ["uv", "run", "--group", "dev", "./manage.py", *args]
     return run_cmd(cmd, cwd=cfg.backend_dir, env=env, check=False).returncode
 
 
@@ -526,165 +527,9 @@ def _run_npm(script: str, cwd: Path) -> int:
 
 
 def _dev_main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="dev",
-        description="Local development without Docker: Django, frontend npm scripts, fetch db/media.",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    fetch = subparsers.add_parser(
-        "fetch",
-        help="Fetch DB via `uv run dk <env> bkp_db pgdump`, or media via rsync (SSH).",
-    )
-    fetch_sub = fetch.add_subparsers(dest="resource", required=True)
-
     cfg = _config()
-    default_dk_env = cfg.default_fetch_dk_env
-    legacy_remote_default = (
-        cfg.dev.fetch_media.legacy.remote if cfg.dev.fetch_media.legacy else None
-    )
-
-    p_db = fetch_sub.add_parser(
-        "db",
-        help="Download PostgreSQL custom-format dump via `dk … bkp_db pgdump` (requires `uv`; remote `db` up).",
-    )
-    p_db.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        metavar="PATH",
-        help="Output file (default: paths.fetch_db_dump from tooling.yaml)",
-    )
-    p_db.add_argument(
-        "--env",
-        default=None,
-        metavar="NAME",
-        help=f"dk environment under docker/envs/ (default: dev.fetch_media.dk_env → {default_dk_env!r})",
-    )
-
-    p_media = fetch_sub.add_parser(
-        "media",
-        help="Sync media via rsync (requires rsync + SSH). Default: django_media volume on docker_host from info.yaml.",
-    )
-    p_media.add_argument(
-        "--env",
-        default=None,
-        metavar="NAME",
-        help=(
-            f"dk env for docker_host / compose_project_name from info.yaml "
-            f"(default: dev.fetch_media.dk_env → {default_dk_env!r})."
-        ),
-    )
-    p_media.add_argument(
-        "--host",
-        default=None,
-        metavar="USER@HOST",
-        help="SSH target (override docker_host from info.yaml, or required for --legacy-path without tooling.yaml ssh_host).",
-    )
-    p_media.add_argument(
-        "--remote",
-        default=None,
-        metavar="PATH",
-        help=(
-            "Remote media directory with --legacy-path "
-            f"(default: dev.fetch_media.legacy.remote"
-            f"{f' → {legacy_remote_default!r}' if legacy_remote_default else ''})."
-        ),
-    )
-    p_media.add_argument(
-        "--dest",
-        type=Path,
-        metavar="DIR",
-        help=f"Local directory (default: <repo>/{cfg.dev.fetch_media.dest})",
-    )
-    p_media.add_argument(
-        "--partial",
-        action="store_true",
-        help="Sync only documents/ and original_images/ (skip renditions and other dirs). Default is full tree.",
-    )
-    p_media.add_argument(
-        "--legacy-path",
-        action="store_true",
-        help="Rsync from dev.fetch_media.legacy in tooling.yaml instead of the django_media Docker volume.",
-    )
-    p_media.add_argument(
-        "--compose-project",
-        default=None,
-        metavar="NAME",
-        help="COMPOSE_PROJECT_NAME for volume name <NAME>_django_media (default: compose_project_name from info.yaml).",
-    )
-
-    p_run = subparsers.add_parser("runserver", help="Django dev server (uv run manage.py runserver).")
-    p_run.add_argument(
-        "django_args",
-        nargs=argparse.REMAINDER,
-        help="Extra args passed to runserver (e.g. 0.0.0.0:8000).",
-    )
-    p_run.set_defaults(handler="runserver")
-
-    p_manage = subparsers.add_parser("manage", help="Run any Django management command via uv.")
-    p_manage.add_argument(
-        "manage_args",
-        nargs=argparse.REMAINDER,
-        help="Arguments to ./manage.py (e.g. migrate, shell_plus).",
-    )
-    p_manage.set_defaults(handler="manage")
-
-    p_reset = subparsers.add_parser(
-        "reset-db",
-        help=(
-            "dropdb + createdb + PostGIS + migrate (or scripts/dev-reset-db-post.sh when present; local Postgres)."
-        ),
-    )
-    p_reset.add_argument(
-        "--from-dump",
-        metavar="PATH",
-        dest="from_dump",
-        help=(
-            "After recreate, pg_restore this custom-format archive instead of migrate/post-hook. "
-            "Extra arguments are forwarded to pg_restore (e.g. --no-owner --no-acl)."
-        ),
-    )
-    p_reset.set_defaults(handler="reset-db")
-
-    p_pgrestore = subparsers.add_parser(
-        "pg-restore",
-        help="pg_restore from stdin (custom format); uses POSTGRES_* from .env.local like reset-db.",
-    )
-    p_pgrestore.add_argument(
-        "--file",
-        metavar="PATH",
-        dest="archive_file",
-        help="Read the custom-format archive from PATH instead of stdin.",
-    )
-    p_pgrestore.add_argument(
-        "pg_restore_args",
-        nargs=argparse.REMAINDER,
-        help="Extra pg_restore args (e.g. --clean). --no-owner/--no-acl are added if missing. Default archive is stdin.",
-    )
-    p_pgrestore.set_defaults(handler="pg-restore")
-
-    subparsers.add_parser(
-        "vite",
-        help="npm install then Vue dev server (paths.frontend from tooling.yaml).",
-    ).set_defaults(handler="vite")
-
-    dev_extensions = discover_dev_commands(cfg.scripts_dir)
-    dev_extension_names: set[str] = set()
-    for cmd_name, script_path in dev_extensions.items():
-        dev_extension_names.add(cmd_name)
-        rel = script_path.relative_to(cfg.repo_root)
-        p_ext = subparsers.add_parser(
-            cmd_name,
-            help=f"Run project script {rel} (scripts/dev-*.sh).",
-        )
-        p_ext.add_argument(
-            "script_args",
-            nargs=argparse.REMAINDER,
-            help=f"Arguments forwarded to {script_path.name}.",
-        )
-        p_ext.set_defaults(handler="dev-script", dev_script_path=script_path)
-
+    parser, dev_extension_names = build_dev_parser(cfg)
+    activate(parser)
     args, unknown = parser.parse_known_args()
     # argparse.REMAINDER does not swallow ``--opts`` on ``pg-restore`` once ``--file`` exists;
     # ``parse_known_args`` keeps them so we can forward them to ``pg_restore``.

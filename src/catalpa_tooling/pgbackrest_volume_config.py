@@ -396,6 +396,15 @@ def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | Non
     return 0
 
 
+def _docker_run_volume_work_args() -> list[str]:
+    """One-off volume writes use the db image (often USER postgres) against root-owned named volumes."""
+    return [
+        *_compose_db_platform_args(),
+        "--user",
+        "0",
+    ]
+
+
 def _docker_run_cp(
     volume: str,
     dest_name: str,
@@ -415,13 +424,17 @@ def _docker_run_cp(
             "run",
             "--rm",
             "-i",
+            *_docker_run_volume_work_args(),
             "--entrypoint",
             "/bin/sh",
             "-v",
             f"{volume}:/work",
             image,
             "-c",
-            f"cat > /work/{q} && chmod 644 /work/{q}",
+            (
+                f"cat > /work/{q} && chmod 644 /work/{q} "
+                f"&& chown postgres:postgres /work/{q}"
+            ),
         ],
         env=docker_env,
         input=content.encode("utf-8"),
@@ -436,18 +449,20 @@ def _docker_run_rm(
     *,
     image: str,
 ) -> None:
+    q = shlex.quote(filename)
     run_cmd(
         [
             "docker",
             "run",
             "--rm",
+            *_docker_run_volume_work_args(),
             "--entrypoint",
             "/bin/sh",
             "-v",
             f"{volume}:/work",
             image,
             "-c",
-            f"rm -f /work/{filename}",
+            f"rm -f /work/{q}",
         ],
         env=docker_env,
         check=False,

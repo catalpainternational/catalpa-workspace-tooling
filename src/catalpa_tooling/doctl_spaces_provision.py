@@ -40,6 +40,7 @@ from catalpa_tooling.s3cmd_binary import (
     print_s3cmd_required,
     run_s3cmd,
 )
+from catalpa_tooling.doctl_projects import list_project_resource_urns, resolve_project_id
 from catalpa_tooling.sops_credentials import (
     SopsCommandError,
     SopsNotFoundError,
@@ -136,6 +137,60 @@ def restic_write_configured(env: dict[str, str]) -> bool:
 def _doctl_context(config: ProjectConfig) -> str | None:
     do = config.digitalocean
     return do.context if do else None
+
+
+def _spaces_bucket_urn(bucket: str) -> str:
+    return f"do:space:{bucket}"
+
+
+def _resolve_digitalocean_project_id(
+    config: ProjectConfig,
+    *,
+    context: str | None,
+) -> str | None:
+    do = config.digitalocean
+    if not do or not (do.project_id or do.project_name):
+        return None
+    return resolve_project_id(None, do_config=do, context=context)
+
+
+def _ensure_bucket_in_project(
+    bucket: str,
+    *,
+    config: ProjectConfig,
+    context: str | None,
+    dry_run: bool,
+) -> None:
+    """Assign the Spaces bucket to ``digitalocean.project_name`` / ``project_id`` when configured."""
+    project_id = _resolve_digitalocean_project_id(config, context=context)
+    if not project_id:
+        return
+
+    urn = _spaces_bucket_urn(bucket)
+    if not dry_run:
+        existing = list_project_resource_urns(project_id, context=context)
+        if urn in existing:
+            return
+
+    if dry_run:
+        print(
+            f"dry-run: would run doctl projects resources assign {project_id} "
+            f"--resource={urn!r}",
+            file=sys.stderr,
+        )
+        return
+
+    result = run_doctl(
+        ["projects", "resources", "assign", project_id, "--resource", urn],
+        context=context,
+    )
+    if result.returncode != 0:
+        combined = f"{result.stderr or ''}\n{result.stdout or ''}"
+        err = combined.strip() or f"doctl assign failed (exit {result.returncode})"
+        raise DoctlCommandError(
+            f"Failed to assign Spaces bucket {bucket!r} to DigitalOcean project: {err}",
+            returncode=result.returncode,
+        )
 
 
 def _s3cmd_spaces_args(
@@ -293,6 +348,7 @@ def _create_bucket(
 def _ensure_bucket(
     defaults: SpacesBackupDefaults,
     *,
+    config: ProjectConfig,
     context: str | None,
     env_name: str,
     dry_run: bool,
@@ -308,6 +364,12 @@ def _ensure_bucket(
     try:
         if not _bucket_exists(defaults, access_key=access, secret_key=secret, dry_run=dry_run):
             _create_bucket(defaults, access_key=access, secret_key=secret, dry_run=dry_run)
+        _ensure_bucket_in_project(
+            defaults.bucket,
+            config=config,
+            context=context,
+            dry_run=dry_run,
+        )
     finally:
         if not dry_run:
             _delete_spaces_key(access, context=context, dry_run=dry_run)
@@ -408,6 +470,12 @@ def ensure_spaces_backup_credentials(
                 f"dry-run: would sops set restic_write_* in {creds_path}",
                 file=sys.stderr,
             )
+        _ensure_bucket_in_project(
+            defaults.bucket,
+            config=config,
+            context=context,
+            dry_run=True,
+        )
         return 0
 
     try:
@@ -449,7 +517,13 @@ def ensure_spaces_backup_credentials(
         )
     else:
         try:
-            _ensure_bucket(defaults, context=context, env_name=env_name, dry_run=False)
+            _ensure_bucket(
+                defaults,
+                config=config,
+                context=context,
+                env_name=env_name,
+                dry_run=False,
+            )
             access_key, secret_key = _create_spaces_key(
                 defaults.write_key_name,
                 f"bucket={defaults.bucket};permission=readwrite",

@@ -3,27 +3,47 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
+name = "argcomplete"
+version = "3.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/61/0b9ae6399dd4a58d8c1b1dc5a27d6f2808023d0b5dd3104bb99f45a33ff6/argcomplete-3.6.3.tar.gz", hash = "sha256:62e8ed4fd6a45864acc8235409461b72c9a28ee785a2011cc5eb78318786c89c", size = 73754, upload-time = "2025-10-20T03:33:34.741Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/f5/9373290775639cb67a2fce7f629a1c240dce9f12fe927bc32b2736e16dfc/argcomplete-3.6.3-py3-none-any.whl", hash = "sha256:f5007b3a600ccac5d25bbce33089211dfd49eab4a7718da3f10e3082525a92ce", size = 43846, upload-time = "2025-10-20T03:33:33.021Z" },
+]
+
+[[package]]
 name = "catalpa-workspace-tooling"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "python-dotenv" },
     { name = "pyyaml" },
 ]
 
+[package.optional-dependencies]
+completion = [
+    { name = "argcomplete" },
+]
+
 [package.dev-dependencies]
 test = [
+    { name = "argcomplete" },
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "argcomplete", marker = "extra == 'completion'", specifier = ">=3.2" },
     { name = "python-dotenv", specifier = ">=1" },
     { name = "pyyaml", specifier = ">=6" },
 ]
+provides-extras = ["completion"]
 
 [package.metadata.requires-dev]
-test = [{ name = "pytest", specifier = ">=8.4" }]
+test = [
+    { name = "argcomplete", specifier = ">=3.2" },
+    { name = "pytest", specifier = ">=8.4" },
+]
 
 [[package]]
 name = "colorama"

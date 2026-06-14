@@ -62,7 +62,8 @@ dk
     │   ├── pgrestore
     │   └── restore
     │
-    └── compose …                  # default: up -d (passthrough to docker compose)
+    ├── compose …                  # explicit passthrough (tab completion); e.g. compose up -d
+    └── …                          # implicit compose passthrough (legacy); e.g. up -d
 ```
 
 ## Top-level (no `<env>`)

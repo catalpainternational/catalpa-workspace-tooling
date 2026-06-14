@@ -16,6 +16,76 @@ For local development of this library:
 uv add --editable ../catalpa-workspace-tooling
 ```
 
+### Shell completion (optional)
+
+Install the completion extra in each consumer repo, then wire shell completion once globally and per-repo via direnv.
+
+**1. Per-repo dependency (each tooling project):**
+
+```bash
+uv add --group tooling 'catalpa-workspace-tooling[completion]'
+uv sync
+```
+
+**2. Per-repo direnv (each tooling project):**
+
+Copy [`scripts/envrc.template`](scripts/envrc.template) to `.envrc`, pick minimal or recommended variant, then:
+
+```bash
+direnv allow
+```
+
+The `.envrc` puts `.venv/bin` on `PATH` (so `dk`, `dev`, etc. resolve to that repo's venv) and exports `CATALPA_REGISTER_PYTHON_ARGCOMPLETE` for the zsh hook below. Each repo can pin a different tooling version; switching directories switches which `dk` binary completion invokes.
+
+**3. One-time zsh setup (any machine, not per-repo):**
+
+Copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) to `~/.config/catalpa/direnv.zsh`, then add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
+
+```zsh
+[[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh" ]] && \
+  source "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh"
+```
+
+Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-argcomplete …)"` lines — direnv + the hook replace them.
+
+**Single-project / bash (no direnv):**
+
+```bash
+export PATH="$PWD/.venv/bin:$PATH"
+eval "$(uv run register-python-argcomplete -s zsh dk)"
+eval "$(uv run register-python-argcomplete -s zsh dev)"
+eval "$(uv run register-python-argcomplete -s zsh test)"
+eval "$(uv run register-python-argcomplete -s zsh scripts)"
+```
+
+Or run [`scripts/install-completions.sh`](scripts/install-completions.sh) in a shell where the project venv is active.
+
+**Verify completion**
+
+After `cd` into a tooling repo (with direnv loaded):
+
+```zsh
+whence dk                         # → …/.venv/bin/dk
+echo "${_comps[dk]:-NOT REGISTERED}"   # → _python_argcomplete
+```
+
+CLI probe (argcomplete writes to fd 8, not stdout):
+
+```bash
+_ARGCOMPLETE=1 COMP_LINE="dk local i" COMP_POINT=9 \
+  _ARGCOMPLETE_STDOUT_FILENAME=/tmp/dk-comp dk && tr '\013' ' ' </tmp/dk-comp
+# expect: … info secrets host …
+```
+
+Notes:
+
+- Do **not** use `compdef -p` to check registration — in zsh, `-p` means pattern mode, not print.
+- `_python_argcomplete` may already exist from gcloud; check `_comps[dk]` instead.
+- `watch_file` in `.envrc` only helps when paired with `uv sync` on reload; PATH_add alone does not need it.
+- For docker compose operations, use `dk <env> compose up -d` for tab completion; implicit `dk <env> up -d` still works but completes only special verbs.
+
+Completion is built at runtime from the repo you are in: deploy environment names (`docker/envs/*/info.yaml`), `dev`/`scripts` extensions, and subcommands are discovered automatically.
+
 ## Commands
 
 After install, these console scripts are available:
