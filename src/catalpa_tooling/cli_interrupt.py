@@ -1,4 +1,4 @@
-"""Quiet ``KeyboardInterrupt`` handling for console entrypoints (``uv run dev``, ``dk``, …)."""
+"""Quiet ``KeyboardInterrupt`` handling for console entrypoints (``uv run native``, ``dk``, …)."""
 
 from __future__ import annotations
 

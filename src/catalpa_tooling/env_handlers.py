@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 from catalpa_tooling.compose import _compose
+from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
 from catalpa_tooling.doctl_spaces_provision import (
@@ -64,6 +65,7 @@ from catalpa_tooling.remote_deploy import (
     _strip_dk_up_provision_flag,
     _top_level_zbx_env_from_info,
     _zabbix_env_defaults,
+    resolve_deploy_env_name,
 )
 from catalpa_tooling.restic_files import (
     merge_restic_verbose_from_cli,
@@ -81,6 +83,7 @@ from catalpa_tooling.systemd_remote_install import (
     cmd_install_systemd_backups,
     parse_docker_host_to_ssh_target,
 )
+from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
@@ -151,6 +154,27 @@ def _zabbix_argv_from_ns(ns: argparse.Namespace) -> list[str]:
     return [cmd]
 
 
+def _ensure_stack_volumes(
+    config: ProjectConfig,
+    env_name: str,
+    info: dict,
+    env_add: dict[str, str],
+    storage_volumes: dict,
+    *,
+    dry_run: bool = False,
+) -> int:
+    if storage_volumes:
+        return ensure_host_storage(
+            config,
+            env_name,
+            info,
+            storage_volumes,
+            env_add=env_add,
+            dry_run=dry_run,
+        )
+    return ensure_external_stack_volumes(env_add, dry_run=dry_run, config=config)
+
+
 def _run_compose_path(
     ns: argparse.Namespace,
     config: ProjectConfig,
@@ -163,6 +187,7 @@ def _run_compose_path(
     use_prepulled_registry: bool,
     site_origin: str,
     docker_host: str,
+    storage_volumes: dict,
 ) -> int:
     repo_root = config.repo_root
 
@@ -170,7 +195,14 @@ def _run_compose_path(
         compose_args = ["down", "-v"]
 
     if should_materialize_for_compose(compose_args):
-        rc = ensure_external_stack_volumes(env_add, dry_run=False, config=config)
+        rc = _ensure_stack_volumes(
+            config,
+            env_name,
+            info,
+            env_add,
+            storage_volumes,
+            dry_run=False,
+        )
         if rc != 0:
             return rc
         rc = _ensure_local_stack_images_built(
@@ -229,7 +261,7 @@ def _run_compose_path(
 
 def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     """Run docker compose (or backups) for docker/envs/<env>/info.yaml and credentials."""
-    env_name = ns.env_name
+    env_name = resolve_deploy_env_name(config, ns.env_name)
     repo_root = config.repo_root
     deploy_dir = config.deploy_envs_dir / env_name
     info_path = deploy_dir / "info.yaml"
@@ -342,7 +374,27 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         )
 
     if env_command == "ensure_volumes":
-        return ensure_external_stack_volumes(env_add, dry_run=dry_run, config=config)
+        return _ensure_stack_volumes(
+            config,
+            env_name,
+            info,
+            env_add,
+            ctx.storage_volumes,
+            dry_run=dry_run,
+        )
+
+    if env_command == "storage":
+        if getattr(ns, "storage_command", None) != "ensure":
+            print("usage: dk <env> storage ensure", file=sys.stderr)
+            return 1
+        return _ensure_stack_volumes(
+            config,
+            env_name,
+            info,
+            env_add,
+            ctx.storage_volumes,
+            dry_run=dry_run,
+        )
 
     if env_command == "trust-caddy-cert":
         return trust_caddy_local_ca(
@@ -376,10 +428,16 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             alpine_image=str(ns.image),
         )
 
-    if env_command == "bkp_files":
-        return _handle_bkp_files(ns, config, env_name, env_add, creds_path, docker_host, dry_run)
+    if env_command in ("files", "bkp_files"):
+        if env_command == "bkp_files":
+            warn_deprecated("bkp_files", "files", context=f"dk {env_name}")
+        return _handle_bkp_files(
+            ns, config, env_name, env_add, creds_path, docker_host, dry_run, info, ctx.storage_volumes
+        )
 
-    if env_command == "bkp_db":
+    if env_command in ("db", "bkp_db"):
+        if env_command == "bkp_db":
+            warn_deprecated("bkp_db", "db", context=f"dk {env_name}")
         return _handle_bkp_db(
             ns,
             config,
@@ -405,6 +463,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         use_prepulled_registry=use_prepulled_registry,
         site_origin=site_origin,
         docker_host=docker_host,
+        storage_volumes=ctx.storage_volumes,
     )
 
 
@@ -416,15 +475,24 @@ def _handle_bkp_files(
     creds_path: Path,
     docker_host: str,
     dry_run: bool,
+    info: dict,
+    storage_volumes: dict,
 ) -> int:
     repo_root = config.repo_root
-    sub = ns.bkp_files_command
+    sub = getattr(ns, "files_command", None) or getattr(ns, "bkp_files_command", None)
 
     if sub == "push":
         source = resolve_push_media_source(config, repo_root, ns.source)
         if source is None:
             return 1
-        rc = ensure_external_stack_volumes(env_add, dry_run=dry_run, config=config)
+        rc = _ensure_stack_volumes(
+            config,
+            env_name,
+            info,
+            env_add,
+            storage_volumes,
+            dry_run=dry_run,
+        )
         if rc != 0:
             return rc
         if not ns.yes and not dry_run:
@@ -457,7 +525,7 @@ def _handle_bkp_files(
             env_add,
             creds_path,
             target="restic",
-            command_label=f"dk {env_name} bkp_files",
+            command_label=f"dk {env_name} files",
             dry_run=dry_run,
             yes=bool(ns.yes),
         )
@@ -507,7 +575,7 @@ def _handle_bkp_files(
             skip_confirm=bool(ns.yes),
             config=config,
         )
-    print(f"Unknown bkp_files subcommand: {sub!r}", file=sys.stderr)
+    print(f"Unknown files subcommand: {sub!r}", file=sys.stderr)
     return 1
 
 
@@ -521,7 +589,7 @@ def _handle_bkp_db(
     docker_host: str,
     dry_run: bool,
 ) -> int:
-    sub = ns.bkp_db_command
+    sub = getattr(ns, "db_command", None) or getattr(ns, "bkp_db_command", None)
     bkp_tail: list[str] = []
 
     if sub and needs_pgbr_write(sub, bkp_tail) and not pgbr_write_configured(env_add):
@@ -531,7 +599,7 @@ def _handle_bkp_db(
             env_add,
             creds_path,
             target="pgbackrest",
-            command_label=f"dk {env_name} bkp_db {sub}",
+            command_label=f"dk {env_name} db {sub}",
             dry_run=dry_run,
             yes=bool(ns.yes),
         )
@@ -551,7 +619,9 @@ def _handle_bkp_db(
             return rc
         img = postgres_image_from_env(env_add, config=config)
         print(f"Postgres image (volume ops / pgBackRest): {img}", file=sys.stderr)
-        rc = run_bkp_db_init(compose_file, env_add, image=img, config=config)
+        rc = run_bkp_db_init(
+            compose_file, env_add, image=img, config=config, dk_env_name=env_name
+        )
         if rc != 0:
             return rc
         if not getattr(ns, "install_systemd", False):
@@ -677,7 +747,9 @@ def _handle_bkp_db(
         )
         if "--file" not in restore_extras and sys.stdin.isatty():
             return 1
-        rc = ensure_db_service_running(compose_file, env_add)
+        rc = ensure_db_service_running(
+            compose_file, env_add, config=config, dk_env_name=env_name
+        )
         if rc != 0:
             return rc
         print(
@@ -687,11 +759,11 @@ def _handle_bkp_db(
         rc = run_drop_create_app_database(
             compose_file,
             env_add,
-            postgis=config.dev.reset_db.postgis,
+            postgis=config.native.reset_db.postgis,
         )
         if rc != 0:
             return rc
-        rc = run_pg_restore(compose_file, env_add, restore_extras)
+        rc = run_pg_restore(compose_file, env_add, restore_extras, config=config)
         if rc != 0:
             return rc
         return run_post_db_restore_manage_commands(
@@ -701,5 +773,5 @@ def _handle_bkp_db(
             env_name=env_name,
         )
 
-    print(f"Unknown bkp_db subcommand: {sub!r}", file=sys.stderr)
+    print(f"Unknown db subcommand: {sub!r}", file=sys.stderr)
     return 1

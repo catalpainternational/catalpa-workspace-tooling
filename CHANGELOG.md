@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1
+
+### Breaking (deprecated aliases retained)
+
+- Host development CLI renamed from `local` to `native` (`uv run native …`). The `local` and `dev` entry points remain but print deprecation warnings (`local` is a shell reserved word).
+
+## 0.5.0
+
+### Breaking (deprecated aliases retained for one release)
+
+- Host development CLI renamed from `dev` to `native` (`uv run native …`). The `dev` and `local` entry points remain but print deprecation warnings (`local` is a shell reserved word).
+- `tooling.yaml` section `dev:` / `local:` renamed to `native:` (`NativeConfig`). Loading older keys still works with deprecation warnings.
+- `dk <env> bkp_db` / `bkp_files` renamed to `db` / `files`. Old names remain with deprecation warnings.
+- Deploy env aliases: `paths.deploy.env_aliases` maps deprecated env names to canonical dirs (e.g. `local: full`).
+
+### Added
+
+- `src/catalpa_tooling/deprecation.py` — shared `warn_deprecated()` helper.
+- `docs/NATIVE_COMMAND_TREE.md` (replaces `DEV_COMMAND_TREE.md` / `LOCAL_COMMAND_TREE.md`).
+
 ## 0.4.1
 
 ### Added

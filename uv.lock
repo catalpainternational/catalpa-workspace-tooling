@@ -13,7 +13,7 @@ wheels = [
 
 [[package]]
 name = "catalpa-workspace-tooling"
-version = "0.4.1"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "python-dotenv" },

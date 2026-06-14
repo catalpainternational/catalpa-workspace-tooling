@@ -18,7 +18,7 @@ from catalpa_tooling.dk_transfer import cmd_transfer
 from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.doctl_cli import dispatch_digoc
 from catalpa_tooling.env_handlers import handle_env_command
-from catalpa_tooling.remote_deploy import list_deploy_env_names
+from catalpa_tooling.remote_deploy import list_dk_env_names, list_deploy_env_names, resolve_deploy_env_name
 
 
 def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentParser) -> argparse.Namespace:
@@ -28,7 +28,7 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
         raise SystemExit(1)
 
     first = root_argv[0]
-    envs = set(list_deploy_env_names(config.deploy_envs_dir))
+    envs = set(list_dk_env_names(config))
 
     if first in envs:
         env_argv = normalize_dk_env_argv(root_argv)
@@ -66,7 +66,7 @@ def _main_impl() -> None:
     except SystemExit as exc:
         if exc.code == 0:
             raise
-        envs = list_deploy_env_names(config.deploy_envs_dir)
+        envs = list_dk_env_names(config)
         first = argv[0] if argv else ""
         if first and first not in ("build", "push", "transfer", "digoc") and first not in envs:
             print(

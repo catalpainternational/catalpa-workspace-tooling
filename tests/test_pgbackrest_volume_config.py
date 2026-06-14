@@ -7,7 +7,9 @@ from unittest.mock import MagicMock, patch
 from catalpa_tooling.pgbackrest_volume_config import (
     caddy_data_volume_name,
     conflict_error_message,
+    db_compose_volume_names,
     django_media_volume_name,
+    ensure_db_compose_volumes,
     ensure_pgbackrest_conf_before_restore,
     ensure_postgres_data_volume,
     external_stack_volume_names,
@@ -241,6 +243,32 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             subprocess.CalledProcessError(1, ["docker", "volume", "create"]),
         ]
         self.assertEqual(ensure_postgres_data_volume({}), 1)
+
+    def test_db_compose_volume_names(self) -> None:
+        env = {"COMPOSE_PROJECT_NAME": "jid-full"}
+        self.assertEqual(
+            db_compose_volume_names(env),
+            (
+                "jid-full_postgres_data",
+                "jid-full_postgres_conf",
+                "jid-full_pgbackrest_conf",
+            ),
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_ensure_db_compose_volumes_inspects_all_db_mounts(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0)
+        env = {"COMPOSE_PROJECT_NAME": "jid-full"}
+        self.assertEqual(ensure_db_compose_volumes(env), 0)
+        inspected = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(
+            inspected,
+            [
+                "jid-full_postgres_data",
+                "jid-full_postgres_conf",
+                "jid-full_pgbackrest_conf",
+            ],
+        )
 
 
 class TestPgbackrestManagedConfMaterialized(unittest.TestCase):

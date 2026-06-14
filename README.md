@@ -39,7 +39,7 @@ The `.envrc` puts `.venv/bin` on `PATH` (so `dk`, `dev`, etc. resolve to that re
 
 **3. One-time zsh setup (any machine, not per-repo):**
 
-Copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) to `~/.config/catalpa/direnv.zsh`, then add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
+Copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) (not `install-completions.sh`) to `~/.config/catalpa/direnv.zsh`, then add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
 
 ```zsh
 [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh" ]] && \
@@ -53,6 +53,8 @@ Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-
 ```bash
 export PATH="$PWD/.venv/bin:$PATH"
 eval "$(uv run register-python-argcomplete -s zsh dk)"
+eval "$(uv run register-python-argcomplete -s zsh native)"
+eval "$(uv run register-python-argcomplete -s zsh local)"
 eval "$(uv run register-python-argcomplete -s zsh dev)"
 eval "$(uv run register-python-argcomplete -s zsh test)"
 eval "$(uv run register-python-argcomplete -s zsh scripts)"
@@ -72,7 +74,7 @@ echo "${_comps[dk]:-NOT REGISTERED}"   # → _python_argcomplete
 CLI probe (argcomplete writes to fd 8, not stdout):
 
 ```bash
-_ARGCOMPLETE=1 COMP_LINE="dk local i" COMP_POINT=9 \
+_ARGCOMPLETE=1 COMP_LINE="dk full i" COMP_POINT=9 \
   _ARGCOMPLETE_STDOUT_FILENAME=/tmp/dk-comp dk && tr '\013' ' ' </tmp/dk-comp
 # expect: … info secrets host …
 ```
@@ -84,7 +86,7 @@ Notes:
 - `watch_file` in `.envrc` only helps when paired with `uv sync` on reload; PATH_add alone does not need it.
 - For docker compose operations, use `dk <env> compose up -d` for tab completion; implicit `dk <env> up -d` still works but completes only special verbs.
 
-Completion is built at runtime from the repo you are in: deploy environment names (`docker/envs/*/info.yaml`), `dev`/`scripts` extensions, and subcommands are discovered automatically.
+Completion is built at runtime from the repo you are in: deploy environment names (`docker/envs/*/info.yaml` plus `paths.deploy.env_aliases`), `native`/`scripts` extensions, and subcommands are discovered automatically.
 
 ## Commands
 
@@ -92,7 +94,9 @@ After install, these console scripts are available:
 
 | Command | Purpose |
 |---------|---------|
-| `dev` | Local development helpers (Django, Vite, fetch, plus `scripts/dev-*.sh` extensions) |
+| `native` | Host development helpers (Django, Vite, fetch, plus `scripts/native-*.sh` extensions) |
+| `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
+| `dev` | Deprecated alias for `native` (prints warning) |
 | `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). On macOS, `dk <env> trust-caddy-cert` trusts Caddy's local HTTPS CA for that env's compose stack. |
 | `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
@@ -101,9 +105,9 @@ After install, these console scripts are available:
 
 Place bash scripts under `paths.scripts` in `tooling.yaml`:
 
-- **`scripts/dev-<name>.sh`** → `uv run dev <name>` (e.g. `dev-storybook.sh` → `dev storybook`). Built-in `dev` commands (`runserver`, `vite`, `reset-db`, …) take precedence over discovered names.
-- **`scripts/<name>.sh`** (not `dev-*`) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
-- **`scripts/dev-reset-db-post.sh`** — optional hook after `dev reset-db` recreates the DB and enables PostGIS; replaces the default `migrate`-only tail step.
+- **`scripts/native-<name>.sh`** → `uv run native <name>`. Deprecated `local-*.sh` / `dev-*.sh` still work with warnings.
+- **`scripts/<name>.sh`** (not extension scripts) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
+- **`scripts/native-reset-db-post.sh`** — optional hook after `native reset-db`; older hook names deprecated.
 
 For npm-based dev servers, source the bundled helper:
 
@@ -136,6 +140,7 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 | `dk digoc projects list`, project resolution | `project:read` |
 | `dk digoc droplets list`, `dk <env> host` (droplet verify) | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list` |
 | `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
+| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus block storage create/attach (`block_storage:read`, `block_storage:create`, `block_storage:update` or `api:write`) |
 | `dk <env> host` (DNS verify for `site_origin`) | above, plus `domain:read` |
 | `dk <env> host create` (DNS sync after droplet create) | above, plus `domain:write` (or granular domain record create/update) |
 | `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds) | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete` |
@@ -244,6 +249,30 @@ Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin
 | `DOMAIN` | Comma+space joined hostnames for Caddy and Django (e.g. `catalpa.io, www.catalpa.io`) |
 
 Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
+
+### Host storage (`storage` in `info.yaml`)
+
+Large compose volumes (`django_media`, `postgres_data`, `caddy_data`) can be bound to host paths via pre-created Docker named volumes (local driver bind). Set per environment in `docker/envs/<env>/info.yaml`:
+
+```yaml
+storage:
+  volumes:
+    django_media:
+      path: /mnt/btrfs-data/jid-media   # path-only: mount configured outside dk
+```
+
+Optional DigitalOcean block volume provisioning (on `host create` / `storage ensure`):
+
+```yaml
+storage:
+  volumes:
+    django_media:
+      path: /mnt/jid-media
+      digitalocean:
+        size_gib: 200
+```
+
+Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, and `dk <env> up` (before compose starts).
 
 ## Documentation
 

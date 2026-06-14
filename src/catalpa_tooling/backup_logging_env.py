@@ -12,7 +12,7 @@ from catalpa_tooling.backup_logging_levels import (
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.env_yaml import _yaml_mapping_to_env
 
-_DEFAULT_PGBR_RESTORE_CONSOLE = "info"
+_DEFAULT_PGBR_RESTORE_CONSOLE = "detail"
 _DEFAULT_RESTIC_RESTORE_VERBOSE = 1
 
 
@@ -75,7 +75,7 @@ def merge_backup_logging_env(
     """Defaults from ``tooling.yaml``, overridden by ``info.yaml`` ``pgbackrest`` / ``restic`` / ``env:``.
 
     Restore-specific defaults when still unset after merge:
-    - ``PGBR_RESTORE_LOG_LEVEL_CONSOLE`` ← ``restore_log_level_console`` / ``log_level_console`` / ``info``
+    - ``PGBR_RESTORE_LOG_LEVEL_CONSOLE`` ← ``restore_log_level_console`` / ``log_level_console`` / ``detail``
     - ``RESTIC_RESTORE_VERBOSE`` ← ``restore_verbose`` / ``verbose`` / ``1``
     """
     merged: dict[str, str] = {}

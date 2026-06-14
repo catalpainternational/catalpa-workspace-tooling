@@ -21,6 +21,7 @@ from catalpa_tooling.site_origin import (
     primary_site_origin_from_info,
     site_origin_from_info,
 )
+from catalpa_tooling.storage_config import StorageVolumeSpec, parse_storage_volumes_from_info
 
 __all__ = ["site_origin_from_info"]
 
@@ -97,6 +98,7 @@ class ManagedDeployContext:
     image_registry: str
     info_tag: str | None
     config: ProjectConfig
+    storage_volumes: dict[str, StorageVolumeSpec]
 
 
 def print_managed_deploy_summary(ctx: ManagedDeployContext) -> None:
@@ -144,6 +146,7 @@ def print_managed_deploy_header(
             image_registry=image_registry,
             info_tag=effective_tag,
             config=config,
+            storage_volumes={},
         )
     )
 
@@ -281,6 +284,16 @@ def load_managed_deploy_context(
     env_add.update(vite_build_metadata_env(config, str(release_for_bundle)))
     apply_backup_logging_env(env_add, config, info)
 
+    try:
+        storage_volumes = parse_storage_volumes_from_info(info, config)
+    except Exception as exc:
+        from catalpa_tooling.storage_config import StorageConfigError
+
+        if isinstance(exc, StorageConfigError):
+            print(str(exc), file=sys.stderr)
+            return None
+        raise
+
     return ManagedDeployContext(
         env_name=env_name,
         compose_file=compose_file,
@@ -292,6 +305,7 @@ def load_managed_deploy_context(
         image_registry=image_registry,
         info_tag=effective_tag,
         config=config,
+        storage_volumes=storage_volumes,
     )
 
 

@@ -61,7 +61,7 @@ class TestRunBkpDbStanzaCreateFlow(unittest.TestCase):
             ),
             0,
         )
-        ensure_db.assert_called_once_with("compose.yml", {})
+        ensure_db.assert_called_once_with("compose.yml", {}, config=None)
         stanza_create.assert_called_once()
 
     @patch("catalpa_tooling.pgbackrest_db.run_pgbackrest_stanza_create")

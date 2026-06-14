@@ -35,12 +35,13 @@ dk
     │   ├── restart
     │   └── logs
     ├── ensure_volumes               # utility command 
+    ├── storage ensure               # host paths + optional DO volumes + Docker binds
     ├── trust-caddy-cert [--dry-run] # macOS: trust Caddy local CA (stack.services.proxy)
     ├── manage <django …>            # access ./manage.py
     ├── pull_media                   # volume → host dir (tar)
     ├── wipe                         # alias: compose down -v
     │
-    ├── bkp_files                    # restic backups + host media → volume
+    ├── files                        # restic backups + host media → volume (alias: bkp_files)
     │   ├── push [--source DIR] [--method rsync|tar]
     │   ├── install-systemd
     │   ├── init
@@ -50,7 +51,7 @@ dk
     │   ├── stats
     │   └── restore [SNAPSHOT]
     │
-    ├── bkp_db                       # control pgbackrest backups
+    ├── db                           # pgBackRest backups (alias: bkp_db)
     │   ├── init [--install-systemd [--dry-run] [--enable]]
     │   ├── configure [verify | stanza-create]
     │   ├── install-systemd
@@ -79,10 +80,10 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `host` / `host create` (doctl: droplet + `site_origin` DNS on DigitalOcean + public resolution; `digitalocean.disabled` for manual hosts; default droplet `{project}-{env}`), `zabbix`, `ensure_volumes`, `trust-caddy-cert` (macOS only; uses env compose file + `stack.services.proxy`), `manage`, `pull_media`, `wipe`, `bkp_files`, `bkp_db`.
+Special verbs (not plain compose): `info`, `secrets`, `host` / `host create`, `zabbix`, `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
 
-`bkp_db` / `bkp_files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
+`db` / `files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 
-After a successful DB restore (`bkp_db restore`, `bkp_db pgrestore`, or `transfer` with `--db`), optional `ops.post_db_restore.manage_commands` in `tooling.yaml` run via `docker compose exec` on the web service (default: none). See [README_PGBACKREST.md](../README_PGBACKREST.md#post-restore-django-commands-opspost_db_restore).
+After a successful DB restore (`db restore`, `db pgrestore`, or `transfer` with `--db`), optional `ops.post_db_restore.manage_commands` in `tooling.yaml` run via `docker compose exec` on the web service (default: none). See [README_PGBACKREST.md](../README_PGBACKREST.md#post-restore-django-commands-opspost_db_restore).
 
 Any other first argument is passed to `docker compose` (e.g. `up`, `down`, `ps`, `logs`, `exec`).

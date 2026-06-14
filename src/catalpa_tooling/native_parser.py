@@ -1,4 +1,4 @@
-"""argparse tree for ``dev``."""
+"""argparse tree for ``native``."""
 
 from __future__ import annotations
 
@@ -7,33 +7,33 @@ from pathlib import Path
 
 from catalpa_tooling.cli.completion import attach_choices_completer
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.remote_deploy import list_deploy_env_names
-from catalpa_tooling.script_discovery import discover_dev_commands
+from catalpa_tooling.remote_deploy import list_dk_env_names
+from catalpa_tooling.script_discovery import discover_native_commands
 
 
-def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, set[str]]:
+def build_native_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, set[str]]:
     """Return parser and the set of discovered extension command names."""
     parser = argparse.ArgumentParser(
-        prog="dev",
-        description="Local development without Docker: Django, frontend npm scripts, fetch db/media.",
+        prog="native",
+        description="Host development without Docker: Django, frontend npm scripts, fetch db/media.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     fetch = subparsers.add_parser(
         "fetch",
-        help="Fetch DB via `uv run dk <env> bkp_db pgdump`, or media via rsync (SSH).",
+        help="Fetch DB via `uv run dk <env> db pgdump`, or media via rsync (SSH).",
     )
     fetch_sub = fetch.add_subparsers(dest="resource", required=True)
 
     default_dk_env = config.default_fetch_dk_env
     legacy_remote_default = (
-        config.dev.fetch_media.legacy.remote if config.dev.fetch_media.legacy else None
+        config.native.fetch_media.legacy.remote if config.native.fetch_media.legacy else None
     )
-    deploy_env_choices = list_deploy_env_names(config.deploy_envs_dir)
+    deploy_env_choices = list_dk_env_names(config)
 
     p_db = fetch_sub.add_parser(
         "db",
-        help="Download PostgreSQL custom-format dump via `dk … bkp_db pgdump` (requires `uv`; remote `db` up).",
+        help="Download PostgreSQL custom-format dump via `dk … db pgdump` (requires `uv`; remote `db` up).",
     )
     p_db.add_argument(
         "-o",
@@ -46,7 +46,7 @@ def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, se
         "--env",
         default=None,
         metavar="NAME",
-        help=f"dk environment under docker/envs/ (default: dev.fetch_media.dk_env → {default_dk_env!r})",
+        help=f"dk environment under docker/envs/ (default: native.fetch_media.dk_env → {default_dk_env!r})",
     )
     if deploy_env_choices:
         attach_choices_completer(env_db, deploy_env_choices)
@@ -61,7 +61,7 @@ def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, se
         metavar="NAME",
         help=(
             f"dk env for docker_host / compose_project_name from info.yaml "
-            f"(default: dev.fetch_media.dk_env → {default_dk_env!r})."
+            f"(default: native.fetch_media.dk_env → {default_dk_env!r})."
         ),
     )
     if deploy_env_choices:
@@ -78,7 +78,7 @@ def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, se
         metavar="PATH",
         help=(
             "Remote media directory with --legacy-path "
-            f"(default: dev.fetch_media.legacy.remote"
+            f"(default: native.fetch_media.legacy.remote"
             f"{f' → {legacy_remote_default!r}' if legacy_remote_default else ''})."
         ),
     )
@@ -86,7 +86,7 @@ def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, se
         "--dest",
         type=Path,
         metavar="DIR",
-        help=f"Local directory (default: <repo>/{config.dev.fetch_media.dest})",
+        help=f"Host directory (default: <repo>/{config.native.fetch_media.dest})",
     )
     p_media.add_argument(
         "--partial",
@@ -96,7 +96,7 @@ def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, se
     p_media.add_argument(
         "--legacy-path",
         action="store_true",
-        help="Rsync from dev.fetch_media.legacy in tooling.yaml instead of the django_media Docker volume.",
+        help="Rsync from native.fetch_media.legacy in tooling.yaml instead of the django_media Docker volume.",
     )
     p_media.add_argument(
         "--compose-project",
@@ -124,7 +124,7 @@ def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, se
     p_reset = subparsers.add_parser(
         "reset-db",
         help=(
-            "dropdb + createdb + PostGIS + migrate (or scripts/dev-reset-db-post.sh when present; local Postgres)."
+            "dropdb + createdb + PostGIS + migrate (or scripts/native-reset-db-post.sh when present; host Postgres)."
         ),
     )
     p_reset.add_argument(
@@ -160,20 +160,20 @@ def build_dev_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser, se
         help="npm install then Vue dev server (paths.frontend from tooling.yaml).",
     ).set_defaults(handler="vite")
 
-    dev_extension_names: set[str] = set()
-    dev_extensions = discover_dev_commands(config.scripts_dir)
-    for cmd_name, script_path in dev_extensions.items():
-        dev_extension_names.add(cmd_name)
+    native_extension_names: set[str] = set()
+    native_extensions = discover_native_commands(config.scripts_dir)
+    for cmd_name, script_path in native_extensions.items():
+        native_extension_names.add(cmd_name)
         rel = script_path.relative_to(config.repo_root)
         p_ext = subparsers.add_parser(
             cmd_name,
-            help=f"Run project script {rel} (scripts/dev-*.sh).",
+            help=f"Run project script {rel} (scripts/native-*.sh).",
         )
         p_ext.add_argument(
             "script_args",
             nargs=argparse.REMAINDER,
             help=f"Arguments forwarded to {script_path.name}.",
         )
-        p_ext.set_defaults(handler="dev-script", dev_script_path=script_path)
+        p_ext.set_defaults(handler="native-script", native_script_path=script_path)
 
-    return parser, dev_extension_names
+    return parser, native_extension_names

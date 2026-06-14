@@ -411,6 +411,30 @@ def _finish_host_provisioning(
         )
         return 1
 
+    from catalpa_tooling.host_storage import ensure_do_block_volumes_for_specs
+    from catalpa_tooling.storage_config import parse_storage_volumes_from_info
+
+    try:
+        storage_specs = parse_storage_volumes_from_info(info, config)
+    except Exception as exc:
+        from catalpa_tooling.storage_config import StorageConfigError
+
+        if isinstance(exc, StorageConfigError):
+            print(str(exc), file=sys.stderr)
+            return 1
+        raise
+    if storage_specs:
+        do_rc = ensure_do_block_volumes_for_specs(
+            config,
+            env_name,
+            info,
+            storage_specs,
+            context=context,
+            dry_run=dry_run,
+        )
+        if do_rc != 0:
+            failures.append(("storage", do_rc))
+
     from catalpa_tooling.doctl_domains import sync_host_dns
 
     sync_rc = sync_host_dns(

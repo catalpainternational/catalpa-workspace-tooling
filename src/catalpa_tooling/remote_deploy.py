@@ -66,6 +66,23 @@ def list_deploy_env_names(deploy_envs_dir: Path) -> list[str]:
     return names
 
 
+def list_dk_env_names(config: ProjectConfig) -> list[str]:
+    """Canonical deploy env names plus deprecated alias keys from tooling.yaml."""
+    canonical = list_deploy_env_names(config.deploy_envs_dir)
+    aliases = [name for name in config.paths.deploy.env_aliases if name not in canonical]
+    return sorted(set(canonical) | set(aliases))
+
+
+def resolve_deploy_env_name(config: ProjectConfig, env_name: str) -> str:
+    """Return canonical env name; emit deprecation warning when ``env_name`` is an alias."""
+    from catalpa_tooling.deprecation import warn_deprecated
+
+    canonical = config.resolve_deploy_env_name(env_name)
+    if canonical != env_name:
+        warn_deprecated(f"dk {env_name}", f"dk {canonical}")
+    return canonical
+
+
 def _strip_dk_up_provision_flag(compose_args: list[str]) -> list[str]:
     """Remove dk-only ``--provision`` (volume ensure + materialize configs) before ``docker compose up``."""
     if not compose_args or compose_args[0] != "up":
@@ -146,7 +163,7 @@ def _insert_up_build_if_no_registry(
 def _global_dry_run_runs_systemd_install(peek: list[str]) -> bool:
     """True when global ``--dry-run`` should still load credentials (systemd install via SSH)."""
     if len(peek) >= 2 and peek[1] == "install-systemd":
-        return peek[0] in ("bkp_db", "bkp_files")
+        return peek[0] in ("db", "bkp_db", "files", "bkp_files")
     return False
 
 
@@ -156,12 +173,13 @@ def _dry_run_exits_before_compose_env(peek: list[str]) -> bool:
         return False
     if len(peek) >= 1 and peek[0] in (
         "ensure_volumes",
+        "storage",
         "trust-caddy-cert",
         "pull_media",
         "zabbix",
     ):
         return False
-    if len(peek) >= 2 and peek[0] == "bkp_files" and peek[1] == "push":
+    if len(peek) >= 2 and peek[0] in ("files", "bkp_files") and peek[1] == "push":
         return False
     return True
 

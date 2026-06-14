@@ -14,11 +14,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import ProjectConfig, default_pgbackrest_restore_temp_prefix
 from catalpa_tooling.pgbackrest_volume_config import (
     _docker_env_for_remote,
     _pgdata_has_control_file,
     conflict_error_message,
+    ensure_db_compose_volumes,
     ensure_external_stack_volumes,
     ensure_pgbackrest_conf_before_restore,
     ensure_postgres_data_volume,
@@ -159,10 +160,24 @@ def db_service_responds(compose_file: str, env: dict[str, str]) -> bool:
     return r.returncode == 0
 
 
-def ensure_db_service_running(compose_file: str, env: dict[str, str]) -> int:
+def ensure_db_service_running(
+    compose_file: str,
+    env: dict[str, str],
+    *,
+    config: ProjectConfig | None = None,
+    dk_env_name: str | None = None,
+) -> int:
     """Start ``db`` with ``docker compose up -d db --wait`` when it does not respond to exec."""
     if db_service_responds(compose_file, env):
         return 0
+    bind_kwargs: dict = {}
+    if config is not None and dk_env_name:
+        from catalpa_tooling.storage_config import volume_bind_kwargs
+
+        bind_kwargs = volume_bind_kwargs(config, dk_env_name)
+    rc = ensure_db_compose_volumes(env, config=config, **bind_kwargs)
+    if rc != 0:
+        return rc
     print(
         "bkp_db: `db` service is not running; starting it with "
         "`docker compose up -d db --wait` …",
@@ -227,7 +242,7 @@ def run_bkp_db_stanza_create_flow(
             "pgBackRest stanza-create: initializing PostgreSQL (starting `db`) …",
             file=sys.stderr,
         )
-        rc = ensure_db_service_running(compose_file, env)
+        rc = ensure_db_service_running(compose_file, env, config=config)
         if rc != 0:
             return rc
         if not _pgdata_has_control_file(docker_env, image, vol_data, pg1_path=pg1):
@@ -246,15 +261,21 @@ def run_bkp_db_init(
     *,
     image: str,
     config: ProjectConfig | None = None,
+    dk_env_name: str | None = None,
 ) -> int:
     """Greenfield backup host: volumes, materialize, start ``db``, idempotent stanza-create."""
-    rc = ensure_external_stack_volumes(env, config=config)
+    bind_kwargs: dict = {}
+    if config is not None and dk_env_name:
+        from catalpa_tooling.storage_config import volume_bind_kwargs
+
+        bind_kwargs = volume_bind_kwargs(config, dk_env_name)
+    rc = ensure_external_stack_volumes(env, config=config, **bind_kwargs)
     if rc != 0:
         return rc
     rc = materialize_configs(env, dry_run=False, postgres_image=image, config=config)
     if rc != 0:
         return rc
-    rc = ensure_db_service_running(compose_file, env)
+    rc = ensure_db_service_running(compose_file, env, config=config, dk_env_name=dk_env_name)
     if rc != 0:
         return rc
     return run_bkp_db_stanza_create_flow(
@@ -304,7 +325,7 @@ def pg_restore_extras_with_default_archive(
     if not path.is_file() or path.stat().st_size == 0:
         print(
             f"bkp_db pgrestore: no dump at {path} — fetch one first "
-            "(e.g. `uv run dev fetch db`) or pass `--file PATH`.",
+            "(e.g. `uv run native fetch db`) or pass `--file PATH`.",
             file=sys.stderr,
         )
         return xs
@@ -446,7 +467,7 @@ def run_pg_dump_to_file(
 
 
 def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
-    """``psql`` heredoc run after ``createdb`` (grants; optional PostGIS per ``dev.reset_db.postgis``)."""
+    """``psql`` heredoc run after ``createdb`` (grants; optional PostGIS per ``native.reset_db.postgis``)."""
     lines = [
         "GRANT ALL PRIVILEGES ON DATABASE ${APP_DB} TO ${APP_USER};",
     ]
@@ -472,7 +493,7 @@ def run_drop_create_app_database(
 
     Runs ``dropdb --force`` (PostgreSQL 13+) so existing connections are terminated, then
     ``createdb -O "$APP_USER"``. PostGIS is created only when ``postgis`` is true (from
-    ``tooling.yaml`` ``dev.reset_db.postgis``). Used by ``dk transfer`` and ``bkp_db pgrestore``.
+    ``tooling.yaml`` ``native.reset_db.postgis``). Used by ``dk transfer`` and ``bkp_db pgrestore``.
     """
     merged = _merged_process_env(env)
     psql_body = _drop_create_app_database_psql_block(postgis=postgis)
@@ -510,6 +531,8 @@ def run_pg_restore(
     compose_file: str,
     env: dict[str, str],
     extra_pg_restore_args: Sequence[str] | None = None,
+    *,
+    config: ProjectConfig | None = None,
 ) -> int:
     """Run ``pg_restore`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``).
 
@@ -566,7 +589,12 @@ def run_pg_restore(
             host_archive = Path(temp_spool)
 
         merged = _merged_process_env(env)
-        container_path = f"/tmp/indmo_pgrestore_{os.urandom(8).hex()}.dump"
+        prefix = (
+            config.ops.pgbackrest.restore_temp_prefix
+            if config
+            else default_pgbackrest_restore_temp_prefix("pgrestore")
+        )
+        container_path = f"/tmp/{prefix}{os.urandom(8).hex()}.dump"
 
         cp = run_cmd(
             [
@@ -902,7 +930,10 @@ def run_restore_offline(
     stanza = resolve_stanza(env)
     assert stanza
 
-    if ensure_postgres_data_volume(env, config=config) != 0:
+    from catalpa_tooling.storage_config import volume_bind_kwargs
+
+    bind_kwargs = volume_bind_kwargs(config, env_name) if config is not None else {}
+    if ensure_postgres_data_volume(env, config=config, **bind_kwargs) != 0:
         return 1
 
     if (

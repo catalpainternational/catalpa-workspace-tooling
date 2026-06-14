@@ -14,9 +14,10 @@ _catalpa_direnv_completion() {
     return 0
   fi
   [[ "${_CATALPA_COMP_DONE:-}" == "$reg" ]] && return 0
-  local cmd
-  for cmd in dk dev test scripts; do
-    eval "$("$reg" -s zsh "$cmd")"
+  local cmd out
+  for cmd in dk native local dev test scripts; do
+    out="$("$reg" -s zsh "$cmd" 2>/dev/null)" || continue
+    [[ -n "$out" ]] && eval "$out"
   done
   _CATALPA_COMP_DONE="$reg"
 }

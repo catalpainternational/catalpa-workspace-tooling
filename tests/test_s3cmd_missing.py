@@ -24,7 +24,7 @@ def test_provision_exits_when_s3cmd_missing(
 ) -> None:
     from catalpa_tooling.config import (
         DeployPathsConfig,
-        DevConfig,
+        NativeConfig,
         FetchMediaConfig,
         ResetDbConfig,
         OpsConfig,
@@ -60,6 +60,7 @@ def test_provision_exits_when_s3cmd_missing(
                 default_compose="c.yml",
                 dev_compose="d.yml",
                 credentials_optional_envs=(),
+                env_aliases={},
             ),
         ),
         stack=StackConfig(
@@ -92,7 +93,7 @@ def test_provision_exits_when_s3cmd_missing(
             post_db_restore=PostDbRestoreOpsConfig(envs=None, manage_commands=()),
             default_db_container="db1",
         ),
-        dev=DevConfig(
+        native=NativeConfig(
             fetch_media=FetchMediaConfig(dk_env="prod", dest="media", legacy=None),
             reset_db=ResetDbConfig(
                 postgis=False,

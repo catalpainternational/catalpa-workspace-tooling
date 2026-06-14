@@ -49,7 +49,7 @@ def run_fetch_media(
     legacy_remote: str | None,
     compose_project: str | None,
 ) -> None:
-    """Sync media into ``dest`` (default: ``dev.fetch_media.dest`` under repo root)."""
+    """Sync media into ``dest`` (default: ``native.fetch_media.dest`` under repo root)."""
     if not shutil.which("rsync"):
         print("rsync is not installed or not on PATH.", file=sys.stderr)
         raise SystemExit(1)
@@ -60,11 +60,11 @@ def run_fetch_media(
     local_base = (dest if dest is not None else config.fetch_media_dest_path).resolve()
 
     if legacy_path:
-        legacy = config.dev.fetch_media.legacy
+        legacy = config.native.fetch_media.legacy
         remote_base = (legacy_remote or (legacy.remote if legacy else "")).rstrip("/")
         if not remote_base:
             raise ValueError(
-                "legacy path mode requires dev.fetch_media.legacy.remote in tooling.yaml "
+                "legacy path mode requires native.fetch_media.legacy.remote in tooling.yaml "
                 "or --remote PATH"
             )
         ssh_host = host
@@ -72,7 +72,7 @@ def run_fetch_media(
             ssh_host = legacy.ssh_host
         if not ssh_host:
             raise ValueError(
-                "legacy path mode requires --host USER@HOST or dev.fetch_media.legacy.ssh_host "
+                "legacy path mode requires --host USER@HOST or native.fetch_media.legacy.ssh_host "
                 "in tooling.yaml"
             )
         ssh_target = ssh_target_from_host(ssh_host)

@@ -7,7 +7,7 @@ import argparse
 from catalpa_tooling.cli.completion import attach_choices_completer
 from catalpa_tooling.cli.parents import build_env_flags_parent
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.remote_deploy import list_deploy_env_names
+from catalpa_tooling.remote_deploy import list_dk_env_names
 from catalpa_tooling.zabbix_systemd import DEFAULT_IMAGE, UNIT_NAME
 
 from catalpa_tooling.cli.dk_argv import SPECIAL_ENV_COMMANDS
@@ -61,75 +61,85 @@ def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) 
     p_logs.add_argument("-f", "--follow", action="store_true")
 
 
-def _attach_bkp_files_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
-    p_bkp = cmd_sub.add_parser("bkp_files", help="restic backups and host media → volume.")
-    bkp_sub = p_bkp.add_subparsers(dest="bkp_files_command", required=True)
+def _attach_files_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
+    def _build_files_parser(name: str, *, dest: str) -> argparse.ArgumentParser:
+        p = cmd_sub.add_parser(name, help="restic backups and host media → volume.")
+        sub = p.add_subparsers(dest=dest, required=True)
 
-    p_push = bkp_sub.add_parser("push", help="Rsync host media into django_media volume.")
-    p_push.add_argument("--source", "-s", default=None, help="Host directory (default: dev.fetch_media.dest).")
-    p_push.add_argument("--method", choices=("rsync", "tar"), default="rsync")
-    p_push.add_argument("--image", default="alpine:3.21")
+        p_push = sub.add_parser("push", help="Rsync host media into django_media volume.")
+        p_push.add_argument("--source", "-s", default=None, help="Host directory (default: native.fetch_media.dest).")
+        p_push.add_argument("--method", choices=("rsync", "tar"), default="rsync")
+        p_push.add_argument("--image", default="alpine:3.21")
 
-    p_install = bkp_sub.add_parser("install-systemd", help="Install restic systemd units on deploy host.")
-    p_install.add_argument("--dry-run", action="store_true")
-    p_install.add_argument("--enable", action="store_true")
+        p_install = sub.add_parser("install-systemd", help="Install restic systemd units on deploy host.")
+        p_install.add_argument("--dry-run", action="store_true")
+        p_install.add_argument("--enable", action="store_true")
 
-    for name, help_text in (
-        ("init", "Initialize restic repository."),
-        ("backup", "Run restic backup."),
-        ("snapshots", "List restic snapshots."),
-        ("check", "Run restic check."),
-        ("stats", "Run restic stats."),
-    ):
-        bkp_sub.add_parser(name, help=help_text)
+        for sub_name, help_text in (
+            ("init", "Initialize restic repository."),
+            ("backup", "Run restic backup."),
+            ("snapshots", "List restic snapshots."),
+            ("check", "Run restic check."),
+            ("stats", "Run restic stats."),
+        ):
+            sub.add_parser(sub_name, help=help_text)
 
-    p_restore = bkp_sub.add_parser("restore", help="Restore restic snapshot (default: latest).")
-    p_restore.add_argument(
-        "snapshot",
-        nargs="?",
-        default="latest",
-        help="Snapshot ID (default: latest).",
-    )
+        p_restore = sub.add_parser("restore", help="Restore restic snapshot (default: latest).")
+        p_restore.add_argument(
+            "snapshot",
+            nargs="?",
+            default="latest",
+            help="Snapshot ID (default: latest).",
+        )
+        return p
+
+    _build_files_parser("files", dest="files_command")
+    _build_files_parser("bkp_files", dest="bkp_files_command")
 
 
-def _attach_bkp_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
-    p_bkp = cmd_sub.add_parser("bkp_db", help="pgBackRest backups and pg dump/restore.")
-    bkp_sub = p_bkp.add_subparsers(dest="bkp_db_command", required=True)
+def _attach_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
+    def _build_db_parser(name: str, *, dest: str) -> argparse.ArgumentParser:
+        p = cmd_sub.add_parser(name, help="pgBackRest backups and pg dump/restore.")
+        sub = p.add_subparsers(dest=dest, required=True)
 
-    p_init = bkp_sub.add_parser("init", help="Initialize pgBackRest volumes and stanza.")
-    p_init.add_argument("--install-systemd", dest="install_systemd", action="store_true")
-    p_init.add_argument("--dry-run", action="store_true")
-    p_init.add_argument("--enable", action="store_true")
+        p_init = sub.add_parser("init", help="Initialize pgBackRest volumes and stanza.")
+        p_init.add_argument("--install-systemd", dest="install_systemd", action="store_true")
+        p_init.add_argument("--dry-run", action="store_true")
+        p_init.add_argument("--enable", action="store_true")
 
-    p_configure = bkp_sub.add_parser("configure", help="Materialize pgBackRest config into volume.")
-    configure_sub = p_configure.add_subparsers(dest="configure_mode")
-    configure_sub.add_parser("verify", help="Run offline verify + online check.")
-    configure_sub.add_parser("stanza-create", help="Create stanza (starts db if needed).")
+        p_configure = sub.add_parser("configure", help="Materialize pgBackRest config into volume.")
+        configure_sub = p_configure.add_subparsers(dest="configure_mode")
+        configure_sub.add_parser("verify", help="Run offline verify + online check.")
+        configure_sub.add_parser("stanza-create", help="Create stanza (starts db if needed).")
 
-    p_install = bkp_sub.add_parser("install-systemd", help="Install pgBackRest systemd units.")
-    p_install.add_argument("--dry-run", action="store_true")
-    p_install.add_argument("--enable", action="store_true")
+        p_install = sub.add_parser("install-systemd", help="Install pgBackRest systemd units.")
+        p_install.add_argument("--dry-run", action="store_true")
+        p_install.add_argument("--enable", action="store_true")
 
-    for name in ("info", "check", "version"):
-        bkp_sub.add_parser(name, help=f"pgBackRest {name}.")
+        for sub_name in ("info", "check", "version"):
+            sub.add_parser(sub_name, help=f"pgBackRest {sub_name}.")
 
-    p_backup = bkp_sub.add_parser("backup", help="Online pgBackRest backup.")
-    backup_type = p_backup.add_argument(
-        "backup_type",
-        choices=("full", "incr", "diff"),
-        help="Backup type.",
-    )
-    attach_choices_completer(backup_type, ("full", "incr", "diff"))
+        p_backup = sub.add_parser("backup", help="Online pgBackRest backup.")
+        backup_type = p_backup.add_argument(
+            "backup_type",
+            choices=("full", "incr", "diff"),
+            help="Backup type.",
+        )
+        attach_choices_completer(backup_type, ("full", "incr", "diff"))
 
-    p_pgdump = bkp_sub.add_parser("pgdump", help="pg_dump custom-format archive to stdout.")
-    p_pgdump.add_argument("pg_dump_args", nargs=argparse.REMAINDER)
+        p_pgdump = sub.add_parser("pgdump", help="pg_dump custom-format archive to stdout.")
+        p_pgdump.add_argument("pg_dump_args", nargs=argparse.REMAINDER)
 
-    p_pgrestore = bkp_sub.add_parser("pgrestore", help="pg_restore into app database.")
-    p_pgrestore.add_argument("--file", dest="archive_file", default=None, metavar="PATH")
-    p_pgrestore.add_argument("pg_restore_args", nargs=argparse.REMAINDER)
+        p_pgrestore = sub.add_parser("pgrestore", help="pg_restore into app database.")
+        p_pgrestore.add_argument("--file", dest="archive_file", default=None, metavar="PATH")
+        p_pgrestore.add_argument("pg_restore_args", nargs=argparse.REMAINDER)
 
-    p_restore = bkp_sub.add_parser("restore", help="Offline pgBackRest restore.")
-    p_restore.add_argument("pgbackrest_restore_args", nargs=argparse.REMAINDER)
+        p_restore = sub.add_parser("restore", help="Offline pgBackRest restore.")
+        p_restore.add_argument("pgbackrest_restore_args", nargs=argparse.REMAINDER)
+        return p
+
+    _build_db_parser("db", dest="db_command")
+    _build_db_parser("bkp_db", dest="bkp_db_command")
 
 
 def _attach_env_command_parsers(
@@ -157,6 +167,16 @@ def _attach_env_command_parsers(
 
     cmd_sub.add_parser("ensure_volumes", help="Ensure external stack volumes exist.")
 
+    p_storage = cmd_sub.add_parser(
+        "storage",
+        help="Host storage paths and Docker volume binds (optional DO block volumes).",
+    )
+    storage_sub = p_storage.add_subparsers(dest="storage_command", required=True)
+    storage_sub.add_parser(
+        "ensure",
+        help="Verify host paths, optional DO volumes, and Docker named-volume binds.",
+    )
+
     p_trust = cmd_sub.add_parser(
         "trust-caddy-cert",
         help=f"macOS: trust Caddy local CA ({config.stack_service('proxy')} service).",
@@ -171,12 +191,12 @@ def _attach_env_command_parsers(
 
     cmd_sub.add_parser("wipe", help="Alias: docker compose down -v (with confirmation).")
 
-    _attach_bkp_files_commands(cmd_sub, env_name)
-    _attach_bkp_db_commands(cmd_sub, env_name)
+    _attach_files_commands(cmd_sub, env_name)
+    _attach_db_commands(cmd_sub, env_name)
 
     p_compose = cmd_sub.add_parser(
         "compose",
-        help="Passthrough to docker compose (completion-friendly; e.g. dk local compose up -d).",
+        help="Passthrough to docker compose (completion-friendly; e.g. dk full compose up -d).",
     )
     compose_verb = p_compose.add_argument(
         "compose_argv",
@@ -192,7 +212,7 @@ def attach_env_subparsers(
 ) -> None:
     """Register one subparser per deploy environment under ``dk``."""
     env_flags = build_env_flags_parent()
-    env_names = list_deploy_env_names(config.deploy_envs_dir)
+    env_names = list_dk_env_names(config)
     envs_dir = config.paths.deploy.envs_dir
 
     for name in env_names:

@@ -83,7 +83,7 @@ ops:
     postgres_conf: 30-myapp-pgbackrest-archive.conf   # drop-in on postgres_conf volume
     pgbackrest_conf: 50-myapp-managed.conf            # drop-in on pgbackrest_conf volume
     default_registry: ghcr.io/org/myapp-postgres
-    restore_temp_prefix: myapp_pgrestore_
+    restore_temp_prefix: myapp_pgrestore_   # optional; default {project.name}_pgrestore_
     data_volume: pgdata                               # compose volumes: key (default postgres_data)
     pg1_path: /var/lib/postgresql/18/docker           # PG 18+ image PGDATA (see entrypoint)
     # log_level_console: info
@@ -152,7 +152,7 @@ pgBackRest levels: `off`, `error`, `warn`, `info`, `detail`, `debug`, `trace`. S
 | `info.yaml` → `pgbackrest:` | same |
 | `info.yaml` → `env:` | `pgbr_log_level_console`, `pgbr_log_level_stderr`, `pgbr_restore_log_level_console` |
 
-All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr` when set. Offline **`restore`** uses `restore_log_level_console`, then `log_level_console`, then defaults to **`info`** for console progress. Systemd backup units pick up the same vars when installed via `bkp_db install-systemd` (from the merged deploy env).
+All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr` when set. Offline **`restore`** uses `restore_log_level_console`, then `log_level_console`, then defaults to **`detail`** for console progress. Systemd backup units pick up the same vars when installed via `bkp_db install-systemd` (from the merged deploy env).
 
 ## `bkp_db` subcommands
 
@@ -168,7 +168,7 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `version` | `pgbackrest version` in db container |
 | `backup full\|incr\|diff` | Online backup (db running) |
 | `pgdump [args…]` | `pg_dump` via compose |
-| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; PostGIS only when `dev.reset_db.postgis` is true in `tooling.yaml`) |
+| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; PostGIS only when `native.reset_db.postgis` is true in `tooling.yaml`) |
 | `restore [pgBackRest args…]` | Offline pgBackRest restore |
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `bkp_db configure`** (same as materialize) before the destructive restore confirmation. With global **`dk --yes`**, configure runs automatically without the y/n prompt.

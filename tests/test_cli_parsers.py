@@ -15,7 +15,7 @@ from catalpa_tooling.cli.dk_argv import (
     normalize_dk_root_argv,
 )
 from catalpa_tooling.config import load_project_config
-from catalpa_tooling.dev_parser import build_dev_parser
+from catalpa_tooling.native_parser import build_native_parser
 from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.test_parser import build_test_parser
 from tests.helpers import write_minimal_tooling_tree
@@ -34,7 +34,7 @@ def tooling_repo(tmp_path: Path) -> Path:
 def test_dev_parser_fetch_db(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tooling_repo)
     config = load_project_config(tooling_repo)
-    parser, _ = build_dev_parser(config)
+    parser, _ = build_native_parser(config)
     ns = parser.parse_args(["fetch", "db", "--env", "staging"])
     assert ns.command == "fetch"
     assert ns.resource == "db"
@@ -119,7 +119,7 @@ def test_normalize_dk_env_argv_trailing_yes() -> None:
 def test_dev_parser_has_completer_on_fetch_env(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tooling_repo)
     config = load_project_config(tooling_repo)
-    parser, _ = build_dev_parser(config)
+    parser, _ = build_native_parser(config)
     fetch_db = None
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
@@ -143,19 +143,27 @@ def test_dev_parser_has_completer_on_fetch_env(tooling_repo: Path, monkeypatch: 
 )
 def test_dk_argcomplete_env_subcommands(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Regression: activate() must run before empty-argv help exit."""
+    import subprocess
+
     monkeypatch.chdir(tooling_repo)
     out = tmp_path / "completions"
-    monkeypatch.setenv("_ARGCOMPLETE", "1")
-    monkeypatch.setenv("COMP_LINE", "dk local i")
-    monkeypatch.setenv("COMP_POINT", "9")
-    monkeypatch.setenv("COMP_TYPE", "9")
-    monkeypatch.setenv("_ARGCOMPLETE_STDOUT_FILENAME", str(out))
-    monkeypatch.setattr(sys, "argv", ["dk"])
-    with pytest.raises(SystemExit) as exc:
-        from catalpa_tooling.dk_cli import _main_impl
-
-        _main_impl()
-    assert exc.value.code == 0
+    env = os.environ.copy()
+    env["_ARGCOMPLETE"] = "1"
+    env["COMP_LINE"] = "dk local i"
+    env["COMP_POINT"] = "9"
+    env["COMP_TYPE"] = "9"
+    env["_ARGCOMPLETE_STDOUT_FILENAME"] = str(out)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.argv = ['dk']; from catalpa_tooling.dk_cli import _main_impl; _main_impl()",
+        ],
+        cwd=tooling_repo,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0
     words = out.read_text(encoding="utf-8").split("\013")
     assert "info" in words
     assert "compose" in words

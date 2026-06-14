@@ -12,11 +12,14 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "host",
         "zabbix",
         "ensure_volumes",
+        "storage",
         "trust-caddy-cert",
         "manage",
         "pull_media",
         "wipe",
+        "files",
         "bkp_files",
+        "db",
         "bkp_db",
         "compose",
     }
@@ -99,6 +102,8 @@ def is_implicit_compose_argv(argv: list[str]) -> bool:
     if first not in SPECIAL_ENV_COMMANDS:
         return True
     if first == "host" and len(rest) >= 2 and rest[1] == "create":
+        return False
+    if first == "db" and len(rest) >= 2 and rest[1] == "configure":
         return False
     if first == "bkp_db" and len(rest) >= 2 and rest[1] == "configure":
         return False

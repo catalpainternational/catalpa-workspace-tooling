@@ -46,7 +46,7 @@ paths:
     default_compose: compose.yaml
     dev_compose: compose.dev.yaml
     credentials_optional_envs: [dev]
-dev:
+native:
   reset_db:
     postgis: false
     db_name_env: [DJANGO_DB]

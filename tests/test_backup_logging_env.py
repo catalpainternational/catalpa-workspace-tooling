@@ -12,7 +12,7 @@ from catalpa_tooling.config import load_project_config
 def test_merge_tooling_defaults(minimal_project) -> None:
     cfg = load_project_config(minimal_project.repo_root)
     merged = merge_backup_logging_env(cfg, None)
-    assert merged["PGBR_RESTORE_LOG_LEVEL_CONSOLE"] == "info"
+    assert merged["PGBR_RESTORE_LOG_LEVEL_CONSOLE"] == "detail"
     assert merged["RESTIC_RESTORE_VERBOSE"] == "1"
     assert "PGBR_LOG_LEVEL_CONSOLE" not in merged
     assert "RESTIC_VERBOSE" not in merged

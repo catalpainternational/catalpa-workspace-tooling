@@ -7,7 +7,7 @@ import pytest
 from catalpa_tooling.config import (
     ProjectConfigError,
     ResetDbConfig,
-    _parse_dev,
+    _parse_native,
     _parse_reset_db,
 )
 
@@ -37,11 +37,11 @@ def test_parse_reset_db_catalpa_style() -> None:
     assert cfg.post_manage_commands == (("sync_wagtail_sites", "--profile", "host"),)
 
 
-def test_parse_dev_includes_reset_db() -> None:
-    dev = _parse_dev({"fetch_media": {"dk_env": "prod"}, "reset_db": {"postgis": False}})
-    assert dev.reset_db.postgis is False
-    assert dev.reset_db.pg_restore_args == ("--clean", "--if-exists")
-    assert isinstance(dev.reset_db, ResetDbConfig)
+def test_parse_native_includes_reset_db() -> None:
+    local_cfg = _parse_native({"fetch_media": {"dk_env": "prod"}, "reset_db": {"postgis": False}})
+    assert local_cfg.reset_db.postgis is False
+    assert local_cfg.reset_db.pg_restore_args == ("--clean", "--if-exists")
+    assert isinstance(local_cfg.reset_db, ResetDbConfig)
 
 
 def test_parse_reset_db_rejects_empty_command() -> None:

@@ -25,6 +25,7 @@ def _minimal_ctx(env_name: str, compose_file: str, minimal_project) -> ManagedDe
         image_registry="",
         info_tag=None,
         config=minimal_project,
+        storage_volumes={},
     )
 
 

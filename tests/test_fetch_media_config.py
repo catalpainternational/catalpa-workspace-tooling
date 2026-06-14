@@ -65,17 +65,17 @@ ops:
 def test_default_fetch_media_dk_env_without_dev_section(tmp_path: Path, isolated_tooling: None) -> None:
     _write_minimal_tooling(tmp_path)
     cfg = load_project_config(tmp_path)
-    assert cfg.dev.fetch_media.dk_env == DEFAULT_FETCH_MEDIA_DK_ENV
-    assert cfg.dev.fetch_media.dest == "media"
-    assert cfg.dev.fetch_media.legacy is None
+    assert cfg.native.fetch_media.dk_env == DEFAULT_FETCH_MEDIA_DK_ENV
+    assert cfg.native.fetch_media.dest == "media"
+    assert cfg.native.fetch_media.legacy is None
 
 
-def test_parse_dev_fetch_media(tmp_path: Path, isolated_tooling: None) -> None:
+def test_parse_native_fetch_media(tmp_path: Path, isolated_tooling: None) -> None:
     _write_minimal_tooling(tmp_path)
     (tmp_path / "tooling.yaml").write_text(
         (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
         + """
-dev:
+native:
   fetch_media:
     dk_env: prod
     dest: var/media
@@ -88,7 +88,7 @@ dev:
     cfg = load_project_config(tmp_path)
     assert cfg.default_fetch_dk_env == "prod"
     assert cfg.fetch_media_dest_path == tmp_path / "var/media"
-    assert cfg.dev.fetch_media.legacy == FetchMediaLegacyConfig(
+    assert cfg.native.fetch_media.legacy == FetchMediaLegacyConfig(
         remote="/backup/django_media",
         ssh_host="legacy.example",
     )

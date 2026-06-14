@@ -1,11 +1,11 @@
-# `dev` command tree
+# `native` command tree
 
-Minimal tree for naming review. Run from the **application repo root** (where `tooling.yaml` lives) via `uv run dev …`.
+Minimal tree for naming review. Run from the **application repo root** (where `tooling.yaml` lives) via `uv run native …`. The `dev` entry point is a deprecated alias.
 
 Local server helpers without Docker. Remote fetch commands use `docker/envs/<name>/info.yaml` and optional project scripts under `paths.scripts` (default `tools/`).
 
 ```
-dev
+native
 ├── fetch
 │   ├── db [-o PATH] [--env NAME]
 │   └── media [--env NAME] [--host USER@HOST] [--dest DIR] [--partial]
@@ -17,7 +17,7 @@ dev
 ├── pg-restore [--file PATH] [pg_restore args …]
 ├── vite                             # npm install + npm run dev (paths.frontend)
 │
-└── <name> [script args …]           # optional: scripts/dev-<name>.sh (per repo)
+└── <name> [script args …]           # optional: scripts/native-<name>.sh (per repo)
 ```
 
 ## `tooling.yaml` defaults
@@ -28,22 +28,22 @@ dev
 | `paths.frontend` | Frontend dir for `vite` (`npm` / nvm when `.nvmrc` present) |
 | `paths.env_local` | Loaded for `manage`, `runserver`, `reset-db`, `pg-restore` (e.g. `.env.local`) |
 | `paths.fetch_db_dump` | Default output for `fetch db` |
-| `paths.scripts` | Shell wrappers (`fetch_db.sh`, `dev-*.sh`) |
-| `dev.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
-| `dev.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
-| `dev.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`) |
-| `dev.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate (default: `false`) |
-| `dev.reset_db.pg_restore_args` | Extra `pg_restore` flags when restoring a dump (e.g. `--clean`, `--if-exists`) |
-| `dev.reset_db.post_manage_commands` | `manage.py` argv lists after reset (local host, not compose exec) |
-| `dev.reset_db.db_name_env` / `host_env` / … | Env var names in `paths.env_local` for libpq tools (first set wins) |
-| `dev.reset_db.db_name_fallback` | Optional DB name override; else stem of `paths.fetch_db_dump` (`.custom`/`.dump`), else `{project.name}_db` |
+| `paths.scripts` | Shell wrappers (`fetch_db.sh`, `native-*.sh`; deprecated `local-*.sh`, `dev-*.sh`) |
+| `native.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
+| `native.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
+| `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`) |
+| `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate (default: `false`) |
+| `native.reset_db.pg_restore_args` | Extra `pg_restore` flags when restoring a dump (e.g. `--clean`, `--if-exists`) |
+| `native.reset_db.post_manage_commands` | `manage.py` argv lists after reset (local host, not compose exec) |
+| `native.reset_db.db_name_env` / `host_env` / … | Env var names in `paths.env_local` for libpq tools (first set wins) |
+| `native.reset_db.db_name_fallback` | Optional DB name override; else stem of `paths.fetch_db_dump` (`.custom`/`.dump`), else `{project.name}_db` |
 
-**Host Postgres defaults** (when `.env.local` omits connection vars): `localhost:5432`, database from dump stem or `{project.name}_db`, **no** `PGUSER` / `DJANGO_DB_USER` (libpq and Django use the current OS user — typical for Postgres.app). Set `DJANGO_DB_USER` in `.env.local` when you need a dedicated role. The same defaults are applied to `uv run dev manage` / `runserver` so `reset-db` and Django use one database.
+**Host Postgres defaults** (when `.env.local` omits connection vars): `localhost:5432`, database from dump stem or `{project.name}_db`. **`reset-db` / `pg-restore` libpq tools always omit `-U` / `PGUSER`** (current OS user, typical Postgres.app trust auth) even when `DJANGO_DB_USER` or `POSTGRES_USER` is set for Docker or Django. Django `manage` / `runserver` use the same host/port/name defaults when those vars are unset; set `DJANGO_DB_USER` in `.env.local` only when Django itself needs a dedicated role.
 
 Example (catalpa-site — PostGIS + Wagtail hook only; DB name comes from `paths.fetch_db_dump`):
 
 ```yaml
-dev:
+native:
   fetch_media:
     dk_env: prod
     dest: media
@@ -73,7 +73,7 @@ dev:
 | Option | Default | Notes |
 |--------|---------|--------|
 | `-o`, `--output` | `paths.fetch_db_dump` | Custom-format dump path |
-| `--env` | `dev.fetch_media.dk_env` | Passed to `fetch_db.sh` as `FETCH_DK_ENV` |
+| `--env` | `native.fetch_media.dk_env` | Passed to `fetch_db.sh` as `FETCH_DK_ENV` |
 
 Requires `uv`, `bash`, and network/SSH access to the remote stack (same as `dk <env> bkp_db pgdump`).
 
@@ -83,12 +83,12 @@ Requires `uv`, `bash`, and network/SSH access to the remote stack (same as `dk <
 
 | Option | Default | Notes |
 |--------|---------|--------|
-| `--env` | `dev.fetch_media.dk_env` | Which `info.yaml` supplies `docker_host` / `compose_project_name` |
+| `--env` | `native.fetch_media.dk_env` | Which `info.yaml` supplies `docker_host` / `compose_project_name` |
 | `--host` | from `info.yaml` | Override SSH target (`user@host` or bare hostname → `root@`) |
-| `--dest` | `<repo>/dev.fetch_media.dest` | Local destination |
+| `--dest` | `<repo>/native.fetch_media.dest` | Local destination |
 | `--partial` | off | Only `documents/` and `original_images/` |
 | `--compose-project` | from `info.yaml` or `stack.compose_project_default` | Volume name prefix |
-| `--legacy-path` | off | Use `dev.fetch_media.legacy` instead of Docker volume |
+| `--legacy-path` | off | Use `native.fetch_media.legacy` instead of Docker volume |
 | `--remote` | `legacy.remote` | Remote directory when `--legacy-path` (override) |
 
 Requires `rsync` and `ssh` on PATH.
@@ -101,20 +101,20 @@ Requires `rsync` and `ssh` on PATH.
 uv run dk local bkp_files push
 ```
 
-Default source is the same directory as `fetch media` (`dev.fetch_media.dest`, typically `./media/`). Uses rsync (incremental; `--delete` mirrors the host tree). On macOS Docker Desktop, rsync runs inside a one-off container. Fallback: `--method tar`. Confirm by typing the env name, or `dk --yes`.
+Default source is the same directory as `fetch media` (`native.fetch_media.dest`, typically `./media/`). Uses rsync (incremental; `--delete` mirrors the host tree). On macOS Docker Desktop, rsync runs inside a one-off container. Fallback: `--method tar`. Confirm by typing the env name, or `dk --yes`.
 
 ## `reset-db`
 
-Uses libpq client tools. Connection comes from `paths.env_local` and `dev.reset_db.*_env` keys (see table above).
+Uses libpq client tools. Connection comes from `paths.env_local` and `native.reset_db.*_env` keys (see table above).
 
 **Source selection (default):**
 
 1. If `paths.fetch_db_dump` exists and is non-empty → `pg_restore` that file (after `dropdb` / `createdb`).
-2. Else → optional PostGIS (`dev.reset_db.postgis`) → `migrate`, or `scripts/dev-reset-db-post.sh` if present.
+2. Else → optional PostGIS (`native.reset_db.postgis`) → `migrate`, or `scripts/native-reset-db-post.sh` if present.
 
 `--from-dump PATH` overrides the dump file; fails if the path is missing when explicitly set.
 
-After a successful reset, runs `dev.reset_db.post_manage_commands` via local `uv run --group dev ./manage.py` (separate from `ops.post_db_restore`, which runs in Docker after compose restores).
+After a successful reset, runs `native.reset_db.post_manage_commands` via local `uv run --group dev ./manage.py` (separate from `ops.post_db_restore`, which runs in Docker after compose restores).
 
 | Option | Notes |
 |--------|--------|
@@ -133,15 +133,15 @@ Uses the same DB env resolution as `reset-db`.
 
 ## `runserver` / `manage`
 
-Forwarded to `uv run --group dev ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. When DB env vars from `dev.reset_db` are unset, sets the same host/port/name keys as `reset-db` (e.g. `DATABASE_HOST=localhost` for catalpa-site) so Django and libpq use one server. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
+Forwarded to `uv run --group dev ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. When DB env vars from `native.reset_db` are unset, sets the same host/port/name keys as `reset-db` (e.g. `DATABASE_HOST=localhost` for catalpa-site) so Django and libpq use one server. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
 
 ## `vite`
 
 Runs in `paths.frontend`. If `.nvmrc` exists and `~/.nvm/nvm.sh` is present, uses `nvm use` before `npm`.
 
-## Project extensions (`scripts/dev-*.sh`)
+## Project extensions (`scripts/native-*.sh`)
 
-Files matching `scripts/dev-<name>.sh` register as `dev <name>` (kebab-case stem). They must not clash with built-ins: `fetch`, `runserver`, `manage`, `reset-db`, `pg-restore`, `vite`.
+Files matching `scripts/native-<name>.sh` register as `native <name>` (kebab-case stem). They must not clash with built-ins: `fetch`, `runserver`, `manage`, `reset-db`, `pg-restore`, `vite`.
 
 Arguments after the subcommand are passed to the script. Unknown flags on `pg-restore`, `reset-db --from-dump`, and extension commands are forwarded where supported.
 
@@ -149,7 +149,7 @@ Arguments after the subcommand are passed to the script. Unknown flags on `pg-re
 
 | CLI | Overlap |
 |-----|---------|
-| `scripts` | Non-`dev-` shell helpers under `paths.scripts` (e.g. `fetch-db` → `fetch_db.sh`) |
-| `dk` | Remote deploy, `bkp_db pgdump`, `bkp_files push`, `pull_media` (tar volume export; `dev fetch media` is rsync pull) |
+| `scripts` | Non-`native-` shell helpers under `paths.scripts` (e.g. `fetch-db` → `fetch_db.sh`) |
+| `dk` | Remote deploy, `db pgdump`, `files push`, `pull_media` (tar volume export; `native fetch media` is rsync pull) |
 
 Honcho / Procfile workflows in app repos are outside this CLI (e.g. `bash tools/dev_honcho.sh`).

@@ -23,7 +23,8 @@ from catalpa_tooling.pgbackrest_db import (
 )
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.remote_deploy import list_deploy_env_names
-from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
+from catalpa_tooling.host_storage import ensure_host_storage
+from catalpa_tooling.storage_config import volume_bind_kwargs
 from catalpa_tooling.restic_files import (
     django_media_volume_name,
     resolve_env_with_compose_project,
@@ -127,7 +128,27 @@ def _collect_transfer_preflight_errors(
                 f"transfer: {label} (`{env_name}`): ensuring external volumes …",
                 file=sys.stderr,
             )
-            rc = ensure_external_stack_volumes(env_r, config=config)
+            bind_kwargs = volume_bind_kwargs(config, env_name)
+            if bind_kwargs:
+                import yaml
+
+                info_path = config.deploy_envs_dir / env_name / "info.yaml"
+                with open(info_path, encoding="utf-8") as f:
+                    info = yaml.safe_load(f) or {}
+                from catalpa_tooling.storage_config import parse_storage_volumes_from_info
+
+                specs = parse_storage_volumes_from_info(info, config)
+                rc = ensure_host_storage(
+                    config,
+                    env_name,
+                    info,
+                    specs,
+                    env_add=env_r,
+                )
+            else:
+                from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
+
+                rc = ensure_external_stack_volumes(env_r, config=config)
             if rc != 0:
                 errs.append(
                     f"{label} (`{env_name}`): `ensure_external_stack_volumes` failed (exit {rc})."
@@ -360,7 +381,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         rc = run_drop_create_app_database(
             dst_ctx.compose_file,
             dst_r,
-            postgis=config.dev.reset_db.postgis,
+            postgis=config.native.reset_db.postgis,
         )
         if rc != 0:
             try:
@@ -375,6 +396,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dst_ctx.compose_file,
             dst_r,
             ["--no-owner", "--no-acl", "--file", str(dump_path)],
+            config=config,
         )
         if rc != 0:
             try:
