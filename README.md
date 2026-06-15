@@ -140,7 +140,7 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 | `dk digoc projects list`, project resolution | `project:read` |
 | `dk digoc droplets list`, `dk <env> host` (droplet verify) | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list` |
 | `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
-| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus block storage create/attach (`block_storage:read`, `block_storage:create`, `block_storage:update` or `api:write`) |
+| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`) |
 | `dk <env> host` (DNS verify for `site_origin`) | above, plus `domain:read` |
 | `dk <env> host create` (DNS sync after droplet create) | above, plus `domain:write` (or granular domain record create/update) |
 | `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds) | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete` |
@@ -149,10 +149,14 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 
 **403 on `doctl compute ssh-key list`:** the token is missing **`ssh_key:read`**. That call uses the account keys API (`/v2/account/keys`); [`account:read`](https://docs.digitalocean.com/reference/api/scopes/account/read) is only for profile/billing-style account metadata, not SSH keys. Fix: add `ssh_key:read` to the token, use **Full Access** (`api:write`), or avoid listing by passing explicit keys: `dk <env> host create --ssh-key ID` (repeatable) or `digitalocean.ssh_keys` in `tooling.yaml` (IDs/fingerprints from the control panel or a token that can list keys once).
 
+**403 on `doctl compute volume-action attach`:** the token is missing **`block_storage_action:create`**. Volume create (`block_storage:create`) and attach are separate scopes; a token that can create or list volumes may still fail on attach. See [`block_storage_action:create`](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/).
+
 Convenience aliases (token UI: **Read** / **Full Access**):
 
 - **Read only** — `api:read` — listing projects, droplets, domains, and Spaces keys.
-- **Full access** — `api:write` — droplet create, DNS sync, Spaces key create, and SSH key listing without picking granular scopes.
+- **Full access** — `api:write` — droplet create, block storage create/attach, DNS sync, Spaces key create, and SSH key listing without picking granular scopes.
+
+PATs are created in the [control panel](https://cloud.digitalocean.com/account/api/tokens) only; there is no API to mint another PAT. Custom scopes you can assign are limited by your team role. A Full Access token can run all `dk` workflows itself — use a separate least-privilege token only when you create it manually in the UI.
 
 **Host tools (not PAT):** Spaces bucket create/check uses host `s3cmd` (`mb`, `info`); credential updates use `sops` — see [README_PGBACKREST.md](README_PGBACKREST.md#auto-provision-digitalocean-spaces).
 

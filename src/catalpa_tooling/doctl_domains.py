@@ -77,7 +77,9 @@ def hostname_to_zone_and_record_name(hostname: str, registered_zones: list[str])
     )
     for zone in zones:
         if host == zone:
-            return HostDnsTarget(hostname=host, zone=zone, record_name=zone)
+            # DO apex records use ``@``; the zone name as ``--record-name`` creates
+            # ``zone.zone`` (e.g. khs.temp.build.khs.temp.build).
+            return HostDnsTarget(hostname=host, zone=zone, record_name="@")
         suffix = f".{zone}"
         if host.endswith(suffix):
             label = host[: -len(suffix)]
@@ -181,6 +183,23 @@ def find_a_record(
 ) -> dict[str, Any] | None:
     """Return the first A record matching ``record_name`` in ``zone``."""
     return find_dns_record(zone, record_name, "A", context=context)
+
+
+def find_a_record_exact(
+    zone: str,
+    record_name: str,
+    *,
+    context: str | None,
+) -> dict[str, Any] | None:
+    """Return an A record whose name exactly matches ``record_name`` (no apex aliases)."""
+    expected = record_name.strip().lower()
+    for record in list_domain_records(zone, context=context):
+        if str(record.get("type") or "").upper() != "A":
+            continue
+        name = str(record.get("name") or "").strip().lower()
+        if name == expected:
+            return record
+    return None
 
 
 def find_cname_record(
@@ -396,6 +415,55 @@ def verify_host_dns(
     return 0
 
 
+def _delete_domain_record(
+    zone: str,
+    record_id: object,
+    *,
+    context: str | None,
+    dry_run: bool,
+) -> None:
+    from catalpa_tooling.doctl_binary import DoctlCommandError, format_doctl_failure, run_doctl
+
+    cmd = [
+        "compute",
+        "domain",
+        "records",
+        "delete",
+        zone,
+        str(record_id),
+        "--force",
+    ]
+    if dry_run:
+        print(f"dry-run: would run doctl {' '.join(cmd)}", file=sys.stderr)
+        return
+    result = run_doctl(cmd, context=context)
+    if result.returncode != 0:
+        raise DoctlCommandError(format_doctl_failure(result), returncode=result.returncode)
+
+
+def _remove_malformed_apex_a_record(
+    target: HostDnsTarget,
+    *,
+    context: str | None,
+    dry_run: bool,
+) -> None:
+    """Delete legacy apex A records created with the zone name instead of ``@``."""
+    if target.record_name != "@" or target.hostname != target.zone:
+        return
+    malformed = find_a_record_exact(target.zone, target.zone, context=context)
+    if malformed is None:
+        return
+    record_id = malformed.get("id")
+    if record_id is None:
+        return
+    print(
+        f"Removing malformed apex A record {target.zone!r} in zone {target.zone!r} "
+        f"(use @ for apex; was {malformed.get('data')!r})",
+        file=sys.stderr,
+    )
+    _delete_domain_record(target.zone, record_id, context=context, dry_run=dry_run)
+
+
 def _upsert_a_record(
     target: HostDnsTarget,
     ip: str,
@@ -405,6 +473,8 @@ def _upsert_a_record(
     ttl: int = DEFAULT_DNS_TTL,
 ) -> None:
     from catalpa_tooling.doctl_binary import run_doctl
+
+    _remove_malformed_apex_a_record(target, context=context, dry_run=dry_run)
 
     if find_cname_record(target.zone, target.record_name, context=context) is not None:
         print(
