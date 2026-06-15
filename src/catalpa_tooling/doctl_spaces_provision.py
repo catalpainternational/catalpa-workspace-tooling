@@ -147,10 +147,15 @@ def _resolve_digitalocean_project_id(
     config: ProjectConfig,
     *,
     context: str | None,
+    dry_run: bool = False,
 ) -> str | None:
     do = config.digitalocean
     if not do or not (do.project_id or do.project_name):
         return None
+    if dry_run:
+        from catalpa_tooling.doctl_projects import resolve_project_id_dry_run
+
+        return resolve_project_id_dry_run(do.project_name, do_config=do)
     return resolve_project_id(None, do_config=do, context=context)
 
 
@@ -162,7 +167,9 @@ def _ensure_bucket_in_project(
     dry_run: bool,
 ) -> None:
     """Assign the Spaces bucket to ``digitalocean.project_name`` / ``project_id`` when configured."""
-    project_id = _resolve_digitalocean_project_id(config, context=context)
+    project_id = _resolve_digitalocean_project_id(
+        config, context=context, dry_run=dry_run
+    )
     if not project_id:
         return
 
