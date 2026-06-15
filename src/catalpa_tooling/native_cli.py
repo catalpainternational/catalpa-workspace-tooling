@@ -455,7 +455,7 @@ def _run_uv_manage(args: list[str], *, extra_env: dict[str, str] | None = None) 
         env["RQ_SYNCHRONOUS"] = "1"
     path_prepend = f"{Path.home()}/.local/bin:/opt/homebrew/bin:{env.get('PATH', '')}"
     env["PATH"] = path_prepend
-    cmd = ["uv", "run", "--group", "dev", "./manage.py", *args]
+    cmd = ["uv", "run", "./manage.py", *args]
     return run_cmd(cmd, cwd=cfg.backend_dir, env=env, check=False).returncode
 
 

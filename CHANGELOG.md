@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3
+
+### Fixed
+
+- `native manage` / `native runserver` use plain `uv run ./manage.py` again instead of requiring a `[dependency-groups].dev` table in `paths.backend/pyproject.toml`. Projects that split groups (e.g. `debug`, `test`) no longer need an empty `dev` stub.
+
 ## 0.5.1
 
 ### Breaking (deprecated aliases retained)
