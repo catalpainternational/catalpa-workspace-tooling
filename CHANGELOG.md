@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.4 (unreleased)
+
+### Added
+
+- Cursor agent guardrails for consumer repos: [`scripts/cursorignore.template`](scripts/cursorignore.template), [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc), [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc), and [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md). README onboarding step recommends copying them into each implementing project.
+
 ## 0.5.3
 
 ### Fixed

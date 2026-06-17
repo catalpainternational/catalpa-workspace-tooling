@@ -156,9 +156,19 @@ def build_native_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser,
     p_pgrestore.set_defaults(handler="pg-restore")
 
     subparsers.add_parser(
+        "frontend",
+        help="Install deps and run the frontend dev script (paths.frontend, native.frontend in tooling.yaml).",
+    ).set_defaults(handler="frontend")
+
+    subparsers.add_parser(
         "vite",
-        help="npm install then Vue dev server (paths.frontend from tooling.yaml).",
+        help="Alias for `native frontend` (npm/yarn/pnpm per tooling.yaml).",
     ).set_defaults(handler="vite")
+
+    subparsers.add_parser(
+        "start",
+        help="Start Django + frontend via Honcho (native runserver + native frontend).",
+    ).set_defaults(handler="start")
 
     native_extension_names: set[str] = set()
     native_extensions = discover_native_commands(config.scripts_dir)

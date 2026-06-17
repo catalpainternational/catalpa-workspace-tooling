@@ -15,7 +15,9 @@ native
 ├── manage <django …>                # uv run ./manage.py …
 ├── reset-db [--from-dump PATH] [pg_restore args …]
 ├── pg-restore [--file PATH] [pg_restore args …]
-├── vite                             # npm install + npm run dev (paths.frontend)
+├── frontend                         # install + dev script (paths.frontend, native.frontend)
+├── vite                             # alias for `frontend`
+├── start                            # Honcho: runserver + frontend (see native.start)
 │
 └── <name> [script args …]           # optional: scripts/native-<name>.sh (per repo)
 ```
@@ -25,8 +27,10 @@ native
 | Key | Role |
 |-----|------|
 | `paths.backend` | Django project dir (`uv run ./manage.py` cwd) |
-| `paths.frontend` | Frontend dir for `vite` (`npm` / nvm when `.nvmrc` present) |
+| `paths.frontend` | Frontend dir for `frontend` / `vite` (npm, yarn, or pnpm; nvm when `.nvmrc` present) |
 | `paths.env_local` | Loaded for `manage`, `runserver`, `reset-db`, `pg-restore` (e.g. `.env.local`) |
+| `paths.email_backend_dir` | Default `EMAIL_BACKEND_FOLDER` for host `manage` / `runserver` when unset |
+| `paths.media_dir` | Optional host media tree for `native runserver` / `manage` (`DJANGO_MEDIA_ROOT` when unset) |
 | `paths.fetch_db_dump` | Default output for `fetch db` |
 | `paths.scripts` | Shell wrappers (`fetch_db.sh`, `native-*.sh`; deprecated `local-*.sh`, `dev-*.sh`) |
 | `native.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
@@ -37,6 +41,14 @@ native
 | `native.reset_db.post_manage_commands` | `manage.py` argv lists after reset (local host, not compose exec) |
 | `native.reset_db.db_name_env` / `host_env` / … | Env var names in `paths.env_local` for libpq tools (first set wins) |
 | `native.reset_db.db_name_fallback` | Optional DB name override; else stem of `paths.fetch_db_dump` (`.custom`/`.dump`), else `{project.name}_db` |
+| `native.frontend.package_manager` | Optional `npm`, `yarn`, or `pnpm` (auto-detect from `package.json` / lockfiles when omitted) |
+| `native.frontend.script` | `package.json` script to run (default: `dev`) |
+| `native.frontend.install` | Run package manager install before dev script (default: `true`) |
+| `native.frontend.node_version` | Optional Node version for nvm (e.g. `22`); `.nvmrc` in `paths.frontend` takes precedence |
+| `native.frontend.env` | Extra env vars for the dev-server subprocess only |
+| `native.start.procfile` | Optional checked-in Procfile path (relative to repo root); omit for auto-generated bero default |
+| `native.start.ports` | TCP ports freed on exit when listeners remain (default: `[8000, 8080]`) |
+| `native.start.migrate` | When using auto-generated Procfile, run `native manage migrate` before `runserver` (default: `true`) |
 
 **Host Postgres defaults** (when `.env.local` omits connection vars): `localhost:5432`, database from dump stem or `{project.name}_db`. **`reset-db` / `pg-restore` libpq tools always omit `-U` / `PGUSER`** (current OS user, typical Postgres.app trust auth) even when `DJANGO_DB_USER` or `POSTGRES_USER` is set for Docker or Django. Django `manage` / `runserver` use the same host/port/name defaults when those vars are unset; set `DJANGO_DB_USER` in `.env.local` only when Django itself needs a dedicated role.
 
@@ -66,7 +78,9 @@ native:
 | `manage` | Any `manage.py` subcommand via `uv run ./manage.py` in `paths.backend` |
 | `reset-db` | Local Postgres: see [reset-db](#reset-db) |
 | `pg-restore` | `pg_restore` into app DB using the same env resolution as `reset-db` (stdin or `--file`) |
-| `vite` | `npm install` then `npm run dev` in `paths.frontend` |
+| `frontend` | Install deps and run `native.frontend.script` in `paths.frontend` |
+| `vite` | Alias for `frontend` |
+| `start` | Honcho supervisor: `native runserver` + `native frontend` (Postgres must already be running) |
 
 ## `fetch db`
 
@@ -133,15 +147,67 @@ Uses the same DB env resolution as `reset-db`.
 
 ## `runserver` / `manage`
 
-Forwarded to `uv run ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. When DB env vars from `native.reset_db` are unset, sets the same host/port/name keys as `reset-db` (e.g. `DATABASE_HOST=localhost` for catalpa-site) so Django and libpq use one server. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
+Forwarded to `uv run ./manage.py …` in `paths.backend`. Unset `DJANGO_DEBUG` → `1`. Unset `EMAIL_BACKEND_FOLDER` → `paths.email_backend_dir`. Unset `DJANGO_MEDIA_ROOT` → `paths.media_dir` when configured (same tree as `native fetch media` / `dk dev` host mount). When DB env vars from `native.reset_db` are unset, sets the same host/port/name keys as `reset-db` (e.g. `DATABASE_HOST=localhost` for catalpa-site) so Django and libpq use one server. Clears inherited `VIRTUAL_ENV` before nested `uv run` to avoid workspace/backend env mismatch.
 
-## `vite`
+## `frontend` / `vite`
 
-Runs in `paths.frontend`. If `.nvmrc` exists and `~/.nvm/nvm.sh` is present, uses `nvm use` before `npm`.
+Runs in `paths.frontend`. Package manager: `native.frontend.package_manager`, or auto-detect from `package.json` `packageManager`, then yarn/pnpm lockfiles, else `npm`. Dev script: `native.frontend.script` (default `dev`). Skips install when `native.frontend.install: false`. Applies `native.frontend.env` to the dev-server process only.
+
+Node: when `~/.nvm/nvm.sh` exists, uses `nvm use` if `.nvmrc` is present in `paths.frontend`, else `nvm use <version>` when `native.frontend.node_version` is set.
+
+Example (bero / webpack):
+
+```yaml
+native:
+  frontend:
+    package_manager: yarn
+    script: start
+    node_version: "22"
+    env:
+      WEBPACK_DEVSERVER_PROXY_TARGET: http://127.0.0.1:8000
+      SKIP_SW: "true"
+  start:
+    ports: [8000, 8080]
+```
+
+## `start`
+
+Runs Django and the frontend dev server together via [Honcho](https://github.com/nickstenning/honcho) (dependency of `catalpa-workspace-tooling`). Postgres must already be reachable (host Postgres or `uv run dk dev up -d db`).
+
+**Procfile resolution:**
+
+1. `native.start.procfile` when set (project-specific commands, ports, env exports).
+2. Otherwise auto-generated:
+
+```
+web: sh -c 'uv run native manage migrate && uv run native runserver'
+frontend: uv run native frontend
+```
+
+When `native.start.migrate: false`, the `web` line omits migrate.
+
+On exit (Ctrl-C or process end), configured `native.start.ports` are freed if still in use (`lsof` + SIGTERM/SIGKILL).
+
+Example (JID / bero — auto-generated Procfile):
+
+```yaml
+native:
+  frontend:
+    package_manager: yarn
+    script: start
+    node_version: "22"
+    env:
+      WEBPACK_DEVSERVER_PROXY_TARGET: http://127.0.0.1:8000
+      SKIP_SW: "true"
+  start:
+    ports: [8000, 8080]
+```
+
+Projects with custom webpack or Django ports (e.g. catalpa-site) can check in a Procfile and set `native.start.procfile: tools/Procfile`.
 
 ## Project extensions (`scripts/native-*.sh`)
 
-Files matching `scripts/native-<name>.sh` register as `native <name>` (kebab-case stem). They must not clash with built-ins: `fetch`, `runserver`, `manage`, `reset-db`, `pg-restore`, `vite`.
+Files matching `scripts/native-<name>.sh` register as `native <name>` (kebab-case stem). They must not clash with built-ins: `fetch`, `runserver`, `manage`, `reset-db`, `pg-restore`, `frontend`, `vite`, `start`.
 
 Arguments after the subcommand are passed to the script. Unknown flags on `pg-restore`, `reset-db --from-dump`, and extension commands are forwarded where supported.
 
@@ -151,5 +217,3 @@ Arguments after the subcommand are passed to the script. Unknown flags on `pg-re
 |-----|---------|
 | `scripts` | Non-`native-` shell helpers under `paths.scripts` (e.g. `fetch-db` → `fetch_db.sh`) |
 | `dk` | Remote deploy, `db pgdump`, `files push`, `pull_media` (tar volume export; `native fetch media` is rsync pull) |
-
-Honcho / Procfile workflows in app repos are outside this CLI (e.g. `bash tools/dev_honcho.sh`).

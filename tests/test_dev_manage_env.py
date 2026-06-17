@@ -12,6 +12,22 @@ from catalpa_tooling.native_cli import _django_manage_native_env, _pg_env_for_cl
 from tests.test_fetch_media_config import _write_minimal_tooling
 
 
+def test_manage_env_sets_django_media_root_from_paths_media_dir(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_minimal_tooling(tmp_path)
+    yaml_text = (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+    (tmp_path / "tooling.yaml").write_text(
+        yaml_text.replace("email_backend_dir: email_out", "email_backend_dir: email_out\n  media_dir: media"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DJANGO_MEDIA_ROOT", raising=False)
+    cfg = load_project_config(tmp_path)
+    manage_env = _django_manage_native_env(cfg)
+    assert manage_env["DJANGO_MEDIA_ROOT"] == str((tmp_path / "media").resolve())
+
+
 def test_manage_env_sets_database_host_like_reset_db(
     tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

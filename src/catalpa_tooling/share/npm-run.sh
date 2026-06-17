@@ -4,27 +4,13 @@
 
 set -euo pipefail
 
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=package-run.sh
+source "${_SCRIPT_DIR}/package-run.sh"
+
 npm_run_in_dir() {
 	local dir="$1"
 	local script="$2"
 	local install="${3:-1}"
-
-	if [[ ! -d "$dir" ]]; then
-		echo "npm_run_in_dir: not a directory: ${dir}" >&2
-		return 1
-	fi
-
-	cd "$dir"
-
-	if [[ -f .nvmrc && -f "${HOME}/.nvm/nvm.sh" ]]; then
-		# shellcheck source=/dev/null
-		source "${HOME}/.nvm/nvm.sh"
-		nvm use
-	fi
-
-	if [[ "$install" == "1" ]]; then
-		npm install
-	fi
-
-	npm run "$script"
+	package_run_in_dir "$dir" "$script" "$install" npm
 }

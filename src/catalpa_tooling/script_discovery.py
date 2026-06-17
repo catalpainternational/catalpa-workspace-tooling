@@ -20,7 +20,9 @@ RESERVED_NATIVE_COMMANDS: frozenset[str] = frozenset(
         "manage",
         "reset-db",
         "pg-restore",
+        "frontend",
         "vite",
+        "start",
     }
 )
 

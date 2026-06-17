@@ -1,0 +1,6 @@
+docker/envs/**/credentials.yaml
+docker/envs/**/*credentials.plain.yaml
+.env
+.env.local
+.env.*
+!.env.example

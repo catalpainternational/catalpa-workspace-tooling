@@ -48,6 +48,10 @@ Copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) (not `install-co
 
 Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-argcomplete …)"` lines — direnv + the hook replace them.
 
+**4. Cursor agents (recommended for repos with SOPS credentials):**
+
+Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
+
 **Single-project / bash (no direnv):**
 
 ```bash
@@ -282,12 +286,13 @@ Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, and `dk <env> up
 
 | Document | Contents |
 |----------|----------|
+| [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation) |
 | [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
 | [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |
 | [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
 | [ZABBIX_README.md](ZABBIX_README.md) | `dk <env> zabbix`, UserParameters |
 
-Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (e.g. INDMO `data_import`) and that project’s `docker/envs/` layout as a template.
+Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (e.g. INDMO `data_import`) and that project’s `docker/envs/` layout as a template. Add [Cursor agent guardrails](docs/AGENTS_AND_SECRETS.md) when onboarding a new repo.
 
 ## Development
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -103,6 +104,7 @@ class PathsConfig:
     scripts: str
     env_local: str
     email_backend_dir: str
+    media_dir: str | None
     fetch_db_dump: str
     deploy: DeployPathsConfig
 
@@ -290,10 +292,37 @@ class ResetDbConfig:
     password_env: tuple[str, ...]
 
 
+VALID_PACKAGE_MANAGERS: frozenset[str] = frozenset({"npm", "yarn", "pnpm"})
+DEFAULT_FRONTEND_DEV_SCRIPT = "dev"
+DEFAULT_NATIVE_START_PORTS: tuple[int, ...] = (8000, 8080)
+
+
+@dataclass(frozen=True)
+class StartConfig:
+    """``native.start`` in tooling.yaml (host ``native start`` via Honcho)."""
+
+    procfile: str | None
+    ports: tuple[int, ...]
+    migrate: bool
+
+
+@dataclass(frozen=True)
+class FrontendDevConfig:
+    """``native.frontend`` in tooling.yaml (host ``native frontend`` / ``native vite``)."""
+
+    package_manager: str | None
+    script: str
+    install: bool
+    env: dict[str, str]
+    node_version: str | None
+
+
 @dataclass(frozen=True)
 class NativeConfig:
     fetch_media: FetchMediaConfig
     reset_db: ResetDbConfig
+    frontend: FrontendDevConfig
+    start: StartConfig
 
 
 @dataclass(frozen=True)
@@ -370,6 +399,12 @@ class ProjectConfig:
     @property
     def email_backend_dir(self) -> Path:
         return self.repo_root / self.paths.email_backend_dir
+
+    @property
+    def media_dir(self) -> Path | None:
+        if self.paths.media_dir is None:
+            return None
+        return self.repo_root / self.paths.media_dir
 
     @property
     def fetch_db_dump_path(self) -> Path:
@@ -614,6 +649,11 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
             _require_str(paths_raw, "email_backend_dir", section="paths"),
             field="paths.email_backend_dir",
         ),
+        media_dir=(
+            _validate_rel_path(p, field="paths.media_dir")
+            if (p := _optional_str(paths_raw, "media_dir"))
+            else None
+        ),
         fetch_db_dump=_validate_rel_path(
             _require_str(paths_raw, "fetch_db_dump", section="paths"), field="paths.fetch_db_dump"
         ),
@@ -686,17 +726,121 @@ def _parse_fetch_media(raw: Any) -> FetchMediaConfig:
     )
 
 
+def _parse_frontend_env(raw: Any) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.frontend.env must be a mapping")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        k = str(key).strip()
+        if not k:
+            raise ProjectConfigError("native.frontend.env keys must be non-empty strings")
+        out[k] = str(value)
+    return out
+
+
+def _parse_start_ports(raw: Any) -> tuple[int, ...]:
+    if raw is None:
+        return DEFAULT_NATIVE_START_PORTS
+    if not isinstance(raw, list):
+        raise ProjectConfigError("native.start.ports must be a list of integers")
+    ports: list[int] = []
+    for item in raw:
+        if not isinstance(item, int) or item < 1 or item > 65535:
+            raise ProjectConfigError(
+                f"native.start.ports entries must be integers from 1 to 65535 (got {item!r})"
+            )
+        ports.append(item)
+    return tuple(ports) if ports else DEFAULT_NATIVE_START_PORTS
+
+
+def _parse_start(raw: Any) -> StartConfig:
+    if raw is None:
+        return StartConfig(
+            procfile=None,
+            ports=DEFAULT_NATIVE_START_PORTS,
+            migrate=True,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.start must be a mapping")
+    procfile = _optional_str(raw, "procfile")
+    if procfile is not None:
+        procfile = _validate_rel_path(procfile, field="native.start.procfile")
+    ports = _parse_start_ports(raw.get("ports"))
+    migrate = _optional_bool(raw, "migrate", default=True)
+    return StartConfig(procfile=procfile, ports=ports, migrate=migrate)
+
+
+def _parse_frontend(raw: Any) -> FrontendDevConfig:
+    if raw is None:
+        return FrontendDevConfig(
+            package_manager=None,
+            script=DEFAULT_FRONTEND_DEV_SCRIPT,
+            install=True,
+            env={},
+            node_version=None,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.frontend must be a mapping")
+    package_manager = _optional_str(raw, "package_manager")
+    if package_manager is not None:
+        package_manager = package_manager.lower()
+        if package_manager not in VALID_PACKAGE_MANAGERS:
+            raise ProjectConfigError(
+                f"native.frontend.package_manager must be one of "
+                f"{', '.join(sorted(VALID_PACKAGE_MANAGERS))} (got {package_manager!r})"
+            )
+    script = _optional_str(raw, "script") or DEFAULT_FRONTEND_DEV_SCRIPT
+    install = _optional_bool(raw, "install", default=True)
+    env = _parse_frontend_env(raw.get("env"))
+    node_version = _optional_str(raw, "node_version")
+    return FrontendDevConfig(
+        package_manager=package_manager,
+        script=script,
+        install=install,
+        env=env,
+        node_version=node_version,
+    )
+
+
+def resolve_frontend_package_manager(frontend_dir: Path, *, configured: str | None) -> str:
+    """Resolve npm/yarn/pnpm for ``native frontend`` (explicit config, then auto-detect)."""
+    if configured is not None:
+        return configured
+    pkg_json = frontend_dir / "package.json"
+    if pkg_json.is_file():
+        try:
+            data = json.loads(pkg_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        pm_field = str(data.get("packageManager", "")).split("@", 1)[0].strip().lower()
+        if pm_field in VALID_PACKAGE_MANAGERS:
+            return pm_field
+    if (frontend_dir / ".yarnrc.yml").is_file() or (frontend_dir / "yarn.lock").is_file():
+        return "yarn"
+    if (frontend_dir / "pnpm-lock.yaml").is_file():
+        return "pnpm"
+    return "npm"
+
+
 def _parse_native(raw: Any) -> NativeConfig:
     if raw is None:
         return NativeConfig(
             fetch_media=_parse_fetch_media(None),
             reset_db=_parse_reset_db(None),
+            frontend=_parse_frontend(None),
+            start=_parse_start(None),
         )
     if not isinstance(raw, dict):
         raise ProjectConfigError("native must be a mapping")
     return NativeConfig(
         fetch_media=_parse_fetch_media(raw.get("fetch_media")),
         reset_db=_parse_reset_db(raw.get("reset_db")),
+        frontend=_parse_frontend(raw.get("frontend")),
+        start=_parse_start(raw.get("start")),
     )
 
 
