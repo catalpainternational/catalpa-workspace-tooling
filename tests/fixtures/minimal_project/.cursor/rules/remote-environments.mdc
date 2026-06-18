@@ -1,0 +1,41 @@
+---
+description: Require user confirmation before remote deploy or non-local Docker commands
+alwaysApply: true
+---
+
+# Remote environments and agents
+
+`catalpa-workspace-tooling` uses `docker/envs/<env>/info.yaml`. Environments with `docker_host` (typically **staging**, **prod**) run Docker Compose on **remote hosts** via SSH. **dev** and **full** are local unless you have customized them.
+
+## Local — OK without extra confirmation
+
+Read-only or local-only development:
+
+- `uv run dk dev …` and `uv run dk full …` (including `up`, `down`, `config`, `manage`, `ps` on the local Docker daemon)
+- `uv run native …` on the host (`start`, `runserver`, `frontend`, `manage`, `reset-db`) when Postgres is local or `dk dev up -d db`
+- Inspecting **non-secret** files: `tooling.yaml`, `docker/envs/*/info.yaml`, `credentials.example.yaml`, compose files
+
+## Remote or cross-environment — require explicit user confirmation first
+
+Do **not** run these (or equivalent) until the user clearly confirms the **target env**, **host**, and **action** in the current message:
+
+- `uv run dk staging …`, `uv run dk prod …`, or any `dk <env>` where that env’s `info.yaml` sets `docker_host`
+- Mutating remote compose: `up`, `down`, `restart`, `pull`, `build`, `rm`, `exec`, `run`, `manage`, `db`, `files`, `storage`, `host`, `secrets`, `install-systemd`, `zabbix`, `digoc`
+- `uv run dk push`, `uv run dk transfer`
+- `uv run native fetch db`, `uv run native fetch media` (SSH/rsync to production or staging hosts)
+- Direct `ssh` to deploy hosts, or `docker …` with `DOCKER_HOST=ssh://…`
+- CI/deploy scripts that push images or change remote infrastructure
+
+Read-only remote checks (`dk staging ps`, `dk prod ps`) still need confirmation — they touch production infrastructure and may leak host layout in output.
+
+## How to confirm
+
+Ask once, explicitly, e.g. “May I run `uv run dk staging up -d` on tvi-staging.temp.build?” Proceed only after an unambiguous yes for **that** command and target.
+
+If the user asked for a plan or review only, do not run remote commands.
+
+## Prefer local alternatives
+
+- Validate compose: `uv run dk dev config` (not staging/prod)
+- Test migrations: `uv run dk dev manage migrate` or `uv run native manage migrate`
+- Smoke-test stack: `uv run dk dev up -d` then curl localhost

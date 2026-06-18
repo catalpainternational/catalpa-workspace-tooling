@@ -5,6 +5,9 @@
 #   uv sync                            # tooling group must include catalpa-workspace-tooling[completion]
 #   direnv allow
 #
+# Also recommended: scripts/cursorignore.template → .cursorignore and
+# scripts/cursor-rules/*.mdc → .cursor/rules/ (see docs/AGENTS_AND_SECRETS.md).
+#
 # Pick ONE variant below (delete the other).
 
 # --- Minimal (completion-focused; no watch_file) ---

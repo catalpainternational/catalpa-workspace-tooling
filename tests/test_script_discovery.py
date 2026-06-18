@@ -44,9 +44,12 @@ def test_discover_native_commands_prefers_native_prefix(tmp_path: Path) -> None:
     (scripts / "local-storybook.sh").write_text("#!/bin/bash\n", encoding="utf-8")
     (scripts / "dev-storybook.sh").write_text("#!/bin/bash\n", encoding="utf-8")
     (scripts / "native-vite.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    (scripts / "native-frontend.sh").write_text("#!/bin/bash\n", encoding="utf-8")
     found = discover_native_commands(scripts)
     assert list(found) == ["storybook"]
     assert found["storybook"].name == "native-storybook.sh"
+    assert "vite" not in found
+    assert "frontend" not in found
 
 
 def test_discover_native_commands_falls_back_to_local_then_dev(tmp_path: Path) -> None:

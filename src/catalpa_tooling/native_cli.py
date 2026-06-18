@@ -15,6 +15,7 @@ from catalpa_tooling.cli.completion import activate
 from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.native_parser import build_native_parser
+from catalpa_tooling.native_start import run_native_start
 from catalpa_tooling.fetch_media import run_fetch_media
 from catalpa_tooling.config import (
     DEFAULT_LOCAL_PG_HOST,
@@ -47,8 +48,9 @@ def _django_manage_native_env(cfg: ProjectConfig) -> dict[str, str]:
     """Env merged into every ``uv run ./manage.py …`` invoked by this CLI when keys are unset.
 
     Loads ``.env.local`` first (when present) so local overrides apply; then sets
-    ``DJANGO_DEBUG`` and ``EMAIL_BACKEND_FOLDER`` only if missing — same effect as a
-    minimal ``.env.local`` without requiring that file in every worktree.
+    ``DJANGO_DEBUG``, ``EMAIL_BACKEND_FOLDER``, and ``DJANGO_MEDIA_ROOT`` (when
+    ``paths.media_dir`` is set) only if missing — same effect as a minimal ``.env.local``
+    without requiring that file in every worktree.
 
     DB host/port/name defaults use the same ``native.reset_db`` env key lists as
     ``native reset-db`` / ``native pg-restore`` so Django and libpq hit the same server.
@@ -61,6 +63,8 @@ def _django_manage_native_env(cfg: ProjectConfig) -> dict[str, str]:
         extra["DJANGO_DEBUG"] = "1"
     if not (os.environ.get("EMAIL_BACKEND_FOLDER") or "").strip():
         extra["EMAIL_BACKEND_FOLDER"] = str(cfg.email_backend_dir.resolve())
+    if cfg.media_dir is not None and not (os.environ.get("DJANGO_MEDIA_ROOT") or "").strip():
+        extra["DJANGO_MEDIA_ROOT"] = str(cfg.media_dir.resolve())
     if not _env_first(reset.db_name_env):
         for key in reset.db_name_env:
             extra[key] = db_default
@@ -459,21 +463,97 @@ def _run_uv_manage(args: list[str], *, extra_env: dict[str, str] | None = None) 
     return run_cmd(cmd, cwd=cfg.backend_dir, env=env, check=False).returncode
 
 
-def _use_nvm_in_cwd(cwd: Path) -> bool:
-    """Use nvm only when ``cwd`` has ``.nvmrc`` (``nvm use`` without it fails)."""
+def _nvm_use_shell_prefix(cwd: Path, node_version: str | None) -> str | None:
+    """Return a bash prefix for ``nvm use``, or ``None`` when nvm is unavailable."""
     nvm = Path.home() / ".nvm" / "nvm.sh"
-    return nvm.is_file() and (cwd / ".nvmrc").is_file()
+    if not nvm.is_file():
+        return None
+    nvm_src = f"source {shlex.quote(str(nvm))}"
+    if (cwd / ".nvmrc").is_file():
+        return f"{nvm_src} && nvm use"
+    if node_version and node_version.strip():
+        return f"{nvm_src} && nvm use {shlex.quote(node_version.strip())}"
+    return None
 
 
-def _run_npm_install(cwd: Path) -> int:
-    if _use_nvm_in_cwd(cwd):
-        nvm = Path.home() / ".nvm" / "nvm.sh"
+def _use_nvm_in_cwd(cwd: Path, node_version: str | None = None) -> bool:
+    """Whether to wrap npm/yarn/pnpm in nvm (``.nvmrc`` or configured ``node_version``)."""
+    return _nvm_use_shell_prefix(cwd, node_version) is not None
+
+
+def _pkg_install_cmd(package_manager: str) -> list[str]:
+    if package_manager == "yarn":
+        return ["yarn", "install"]
+    if package_manager == "pnpm":
+        return ["pnpm", "install"]
+    return ["npm", "install"]
+
+
+def _pkg_run_cmd(package_manager: str, script: str) -> list[str]:
+    if package_manager == "yarn":
+        return ["yarn", "run", script]
+    if package_manager == "pnpm":
+        return ["pnpm", "run", script]
+    return ["npm", "run", script]
+
+
+def _run_pkg_install(cwd: Path, package_manager: str, *, node_version: str | None = None) -> int:
+    install_cmd = " ".join(shlex.quote(part) for part in _pkg_install_cmd(package_manager))
+    nvm_prefix = _nvm_use_shell_prefix(cwd, node_version)
+    if nvm_prefix:
         return run_cmd(
-            ["bash", "-lc", f"source {nvm} && nvm use && npm install"],
+            ["bash", "-lc", f"{nvm_prefix} && {install_cmd}"],
             cwd=cwd,
             check=False,
         ).returncode
-    return run_cmd(["npm", "install"], cwd=cwd, check=False).returncode
+    return run_cmd(_pkg_install_cmd(package_manager), cwd=cwd, check=False).returncode
+
+
+def _run_pkg_script(
+    script: str,
+    cwd: Path,
+    package_manager: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+    node_version: str | None = None,
+) -> int:
+    run_cmd_parts = _pkg_run_cmd(package_manager, script)
+    run_cmd_str = " ".join(shlex.quote(part) for part in run_cmd_parts)
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    nvm_prefix = _nvm_use_shell_prefix(cwd, node_version)
+    if nvm_prefix:
+        return run_cmd(
+            ["bash", "-lc", f"{nvm_prefix} && {run_cmd_str}"],
+            cwd=cwd,
+            env=env,
+            check=False,
+        ).returncode
+    return run_cmd(run_cmd_parts, cwd=cwd, env=env, check=False).returncode
+
+
+def _run_frontend_dev() -> int:
+    from catalpa_tooling.config import resolve_frontend_package_manager
+
+    cfg = _config()
+    frontend_cfg = cfg.native.frontend
+    frontend_dir = cfg.frontend_dir
+    package_manager = resolve_frontend_package_manager(
+        frontend_dir, configured=frontend_cfg.package_manager
+    )
+    node_version = frontend_cfg.node_version
+    if frontend_cfg.install:
+        rc = _run_pkg_install(frontend_dir, package_manager, node_version=node_version)
+        if rc != 0:
+            return rc
+    return _run_pkg_script(
+        frontend_cfg.script,
+        frontend_dir,
+        package_manager,
+        extra_env=frontend_cfg.env or None,
+        node_version=node_version,
+    )
 
 
 def _cmd_fetch_db(*, output: Path | None, dk_env: str) -> None:
@@ -518,17 +598,6 @@ def _cmd_fetch_media(
     except ValueError as exc:
         print(f"native fetch media: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-
-
-def _run_npm(script: str, cwd: Path) -> int:
-    if _use_nvm_in_cwd(cwd):
-        nvm = Path.home() / ".nvm" / "nvm.sh"
-        return run_cmd(
-            ["bash", "-lc", f"source {nvm} && nvm use && npm run {script}"],
-            cwd=cwd,
-            check=False,
-        ).returncode
-    return run_cmd(["npm", "run", script], cwd=cwd, check=False).returncode
 
 
 def _native_main() -> None:
@@ -595,12 +664,10 @@ def _native_main() -> None:
             extra = ["--file", str(args.archive_file), *extra]
         extra = _pg_restore_extras_skip_remote_roles(extra)
         sys.exit(_run_pg_restore(extra, config=_config()))
-    if handler == "vite":
-        cfg = _config()
-        rc = _run_npm_install(cfg.frontend_dir)
-        if rc != 0:
-            sys.exit(rc)
-        sys.exit(_run_npm("dev", cfg.frontend_dir))
+    if handler in ("frontend", "vite"):
+        sys.exit(_run_frontend_dev())
+    if handler == "start":
+        sys.exit(run_native_start(cfg))
     if handler == "native-script":
         cfg = _config()
         script_path = getattr(args, "native_script_path", None)
