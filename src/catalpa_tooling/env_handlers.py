@@ -447,6 +447,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             compose_file,
             docker_host,
             dry_run,
+            use_prepulled_registry=use_prepulled_registry,
         )
 
     if env_command == "wipe":
@@ -588,6 +589,8 @@ def _handle_bkp_db(
     compose_file: str,
     docker_host: str,
     dry_run: bool,
+    *,
+    use_prepulled_registry: bool,
 ) -> int:
     sub = getattr(ns, "db_command", None) or getattr(ns, "bkp_db_command", None)
     bkp_tail: list[str] = []
@@ -605,9 +608,6 @@ def _handle_bkp_db(
         )
         if rc != 0:
             return rc
-
-    ctx_reload = load_managed_deploy_context(config, env_name)
-    use_prepulled_registry = ctx_reload.use_prepulled_registry if ctx_reload else False
 
     if sub == "init":
         rc = _ensure_local_stack_images_built(
