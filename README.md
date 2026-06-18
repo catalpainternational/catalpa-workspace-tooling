@@ -16,13 +16,87 @@ For local development of this library:
 uv add --editable ../catalpa-workspace-tooling
 ```
 
+### Shell completion (optional)
+
+Install the completion extra in each consumer repo, then wire shell completion once globally and per-repo via direnv.
+
+**1. Per-repo dependency (each tooling project):**
+
+```bash
+uv add --group tooling 'catalpa-workspace-tooling[completion]'
+uv sync
+```
+
+**2. Per-repo direnv (each tooling project):**
+
+Copy [`scripts/envrc.template`](scripts/envrc.template) to `.envrc`, pick minimal or recommended variant, then:
+
+```bash
+direnv allow
+```
+
+The `.envrc` puts `.venv/bin` on `PATH` (so `dk`, `dev`, etc. resolve to that repo's venv) and exports `CATALPA_REGISTER_PYTHON_ARGCOMPLETE` for the zsh hook below. Each repo can pin a different tooling version; switching directories switches which `dk` binary completion invokes.
+
+**3. One-time zsh setup (any machine, not per-repo):**
+
+Copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) (not `install-completions.sh`) to `~/.config/catalpa/direnv.zsh`, then add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
+
+```zsh
+[[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh" ]] && \
+  source "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh"
+```
+
+Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-argcomplete …)"` lines — direnv + the hook replace them.
+
+**Single-project / bash (no direnv):**
+
+```bash
+export PATH="$PWD/.venv/bin:$PATH"
+eval "$(uv run register-python-argcomplete -s zsh dk)"
+eval "$(uv run register-python-argcomplete -s zsh native)"
+eval "$(uv run register-python-argcomplete -s zsh local)"
+eval "$(uv run register-python-argcomplete -s zsh dev)"
+eval "$(uv run register-python-argcomplete -s zsh test)"
+eval "$(uv run register-python-argcomplete -s zsh scripts)"
+```
+
+Or run [`scripts/install-completions.sh`](scripts/install-completions.sh) in a shell where the project venv is active.
+
+**Verify completion**
+
+After `cd` into a tooling repo (with direnv loaded):
+
+```zsh
+whence dk                         # → …/.venv/bin/dk
+echo "${_comps[dk]:-NOT REGISTERED}"   # → _python_argcomplete
+```
+
+CLI probe (argcomplete writes to fd 8, not stdout):
+
+```bash
+_ARGCOMPLETE=1 COMP_LINE="dk full i" COMP_POINT=9 \
+  _ARGCOMPLETE_STDOUT_FILENAME=/tmp/dk-comp dk && tr '\013' ' ' </tmp/dk-comp
+# expect: … info secrets host …
+```
+
+Notes:
+
+- Do **not** use `compdef -p` to check registration — in zsh, `-p` means pattern mode, not print.
+- `_python_argcomplete` may already exist from gcloud; check `_comps[dk]` instead.
+- `watch_file` in `.envrc` only helps when paired with `uv sync` on reload; PATH_add alone does not need it.
+- For docker compose operations, use `dk <env> compose up -d` for tab completion; implicit `dk <env> up -d` still works but completes only special verbs.
+
+Completion is built at runtime from the repo you are in: deploy environment names (`docker/envs/*/info.yaml` plus `paths.deploy.env_aliases`), `native`/`scripts` extensions, and subcommands are discovered automatically.
+
 ## Commands
 
 After install, these console scripts are available:
 
 | Command | Purpose |
 |---------|---------|
-| `dev` | Local development helpers (Django, Vite, fetch, plus `scripts/dev-*.sh` extensions) |
+| `native` | Host development helpers (Django, Vite, fetch, plus `scripts/native-*.sh` extensions) |
+| `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
+| `dev` | Deprecated alias for `native` (prints warning) |
 | `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). On macOS, `dk <env> trust-caddy-cert` trusts Caddy's local HTTPS CA for that env's compose stack. |
 | `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
@@ -31,9 +105,9 @@ After install, these console scripts are available:
 
 Place bash scripts under `paths.scripts` in `tooling.yaml`:
 
-- **`scripts/dev-<name>.sh`** → `uv run dev <name>` (e.g. `dev-storybook.sh` → `dev storybook`). Built-in `dev` commands (`runserver`, `vite`, `reset-db`, …) take precedence over discovered names.
-- **`scripts/<name>.sh`** (not `dev-*`) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
-- **`scripts/dev-reset-db-post.sh`** — optional hook after `dev reset-db` recreates the DB and enables PostGIS; replaces the default `migrate`-only tail step.
+- **`scripts/native-<name>.sh`** → `uv run native <name>`. Deprecated `local-*.sh` / `dev-*.sh` still work with warnings.
+- **`scripts/<name>.sh`** (not extension scripts) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
+- **`scripts/native-reset-db-post.sh`** — optional hook after `native reset-db`; older hook names deprecated.
 
 For npm-based dev servers, source the bundled helper:
 
@@ -66,6 +140,7 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 | `dk digoc projects list`, project resolution | `project:read` |
 | `dk digoc droplets list`, `dk <env> host` (droplet verify) | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list` |
 | `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
+| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`) |
 | `dk <env> host` (DNS verify for `site_origin`) | above, plus `domain:read` |
 | `dk <env> host create` (DNS sync after droplet create) | above, plus `domain:write` (or granular domain record create/update) |
 | `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds) | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete` |
@@ -74,10 +149,14 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 
 **403 on `doctl compute ssh-key list`:** the token is missing **`ssh_key:read`**. That call uses the account keys API (`/v2/account/keys`); [`account:read`](https://docs.digitalocean.com/reference/api/scopes/account/read) is only for profile/billing-style account metadata, not SSH keys. Fix: add `ssh_key:read` to the token, use **Full Access** (`api:write`), or avoid listing by passing explicit keys: `dk <env> host create --ssh-key ID` (repeatable) or `digitalocean.ssh_keys` in `tooling.yaml` (IDs/fingerprints from the control panel or a token that can list keys once).
 
+**403 on `doctl compute volume-action attach`:** the token is missing **`block_storage_action:create`**. Volume create (`block_storage:create`) and attach are separate scopes; a token that can create or list volumes may still fail on attach. See [`block_storage_action:create`](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/).
+
 Convenience aliases (token UI: **Read** / **Full Access**):
 
 - **Read only** — `api:read` — listing projects, droplets, domains, and Spaces keys.
-- **Full access** — `api:write` — droplet create, DNS sync, Spaces key create, and SSH key listing without picking granular scopes.
+- **Full access** — `api:write` — droplet create, block storage create/attach, DNS sync, Spaces key create, and SSH key listing without picking granular scopes.
+
+PATs are created in the [control panel](https://cloud.digitalocean.com/account/api/tokens) only; there is no API to mint another PAT. Custom scopes you can assign are limited by your team role. A Full Access token can run all `dk` workflows itself — use a separate least-privilege token only when you create it manually in the UI.
 
 **Host tools (not PAT):** Spaces bucket create/check uses host `s3cmd` (`mb`, `info`); credential updates use `sops` — see [README_PGBACKREST.md](README_PGBACKREST.md#auto-provision-digitalocean-spaces).
 
@@ -174,6 +253,30 @@ Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin
 | `DOMAIN` | Comma+space joined hostnames for Caddy and Django (e.g. `catalpa.io, www.catalpa.io`) |
 
 Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
+
+### Host storage (`storage` in `info.yaml`)
+
+Large compose volumes (`django_media`, `postgres_data`, `caddy_data`) can be bound to host paths via pre-created Docker named volumes (local driver bind). Set per environment in `docker/envs/<env>/info.yaml`:
+
+```yaml
+storage:
+  volumes:
+    django_media:
+      path: /mnt/btrfs-data/jid-media   # path-only: mount configured outside dk
+```
+
+Optional DigitalOcean block volume provisioning (on `host create` / `storage ensure`):
+
+```yaml
+storage:
+  volumes:
+    django_media:
+      path: /mnt/jid-media
+      digitalocean:
+        size_gib: 200
+```
+
+Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, and `dk <env> up` (before compose starts).
 
 ## Documentation
 

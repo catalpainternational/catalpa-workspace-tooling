@@ -16,6 +16,7 @@ from catalpa_tooling.backup_logging_levels import (
     parse_optional_pgbr_log_level,
     parse_optional_restic_verbose,
 )
+from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.repo_paths import TOOLING_FILENAME, repo_root_from_cwd
 
 DEFAULT_ROOT_MARKER = "pyproject.toml"
@@ -91,6 +92,7 @@ class DeployPathsConfig:
     default_compose: str
     dev_compose: str
     credentials_optional_envs: tuple[str, ...]
+    env_aliases: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,11 @@ class StackConfig:
 
 # PG 18+ official image layout (see catalpa-postgres-entrypoint.sh); override via tooling.yaml pg1_path.
 DEFAULT_PGBR_PG1_PATH = "/var/lib/postgresql/18/docker"
+
+
+def default_pgbackrest_restore_temp_prefix(project_name: str) -> str:
+    """Default ``/tmp`` archive prefix for compose ``pg_restore`` (``ops.pgbackrest.restore_temp_prefix``)."""
+    return f"{project_name}_pgrestore_"
 
 
 @dataclass(frozen=True)
@@ -201,7 +208,7 @@ class OpsConfig:
 
 @dataclass(frozen=True)
 class FetchMediaLegacyConfig:
-    """Fixed host directory for ``dev fetch media --legacy-path`` (non-Docker deploys)."""
+    """Fixed host directory for ``local fetch media --legacy-path`` (non-Docker deploys)."""
 
     remote: str
     ssh_host: str | None
@@ -209,7 +216,7 @@ class FetchMediaLegacyConfig:
 
 @dataclass(frozen=True)
 class FetchMediaConfig:
-    """``dev.fetch_media`` in tooling.yaml (defaults when the section is omitted)."""
+    """``native.fetch_media`` in tooling.yaml (defaults when the section is omitted)."""
 
     dk_env: str
     dest: str
@@ -247,17 +254,17 @@ DEFAULT_PG_RESTORE_ARGS: tuple[str, ...] = ("--clean", "--if-exists")
 
 
 def local_postgres_db_name(project_name: str) -> str:
-    """Default database name for host ``dev reset-db`` / Django on localhost."""
+    """Default database name for host ``local reset-db`` / Django on localhost."""
     return f"{project_name}_db"
 
 
-def resolve_dev_db_name(config: "ProjectConfig") -> str:
-    """Database name when env vars from ``dev.reset_db.db_name_env`` are unset.
+def resolve_native_db_name(config: "ProjectConfig") -> str:
+    """Database name when env vars from ``native.reset_db.db_name_env`` are unset.
 
     Uses ``db_name_fallback``, else the stem of ``paths.fetch_db_dump`` (e.g.
     ``catalpa_db.custom`` → ``catalpa_db``), else ``local_postgres_db_name``.
     """
-    reset = config.dev.reset_db
+    reset = config.native.reset_db
     if reset.db_name_fallback:
         return reset.db_name_fallback
     dump = config.fetch_db_dump_path
@@ -270,7 +277,7 @@ def resolve_dev_db_name(config: "ProjectConfig") -> str:
 
 @dataclass(frozen=True)
 class ResetDbConfig:
-    """``dev.reset_db`` in tooling.yaml (host ``dev reset-db`` / ``dev pg-restore``)."""
+    """``native.reset_db`` in tooling.yaml (host ``native reset-db`` / ``native pg-restore``)."""
 
     postgis: bool
     pg_restore_args: tuple[str, ...]
@@ -284,7 +291,7 @@ class ResetDbConfig:
 
 
 @dataclass(frozen=True)
-class DevConfig:
+class NativeConfig:
     fetch_media: FetchMediaConfig
     reset_db: ResetDbConfig
 
@@ -333,7 +340,7 @@ class ProjectConfig:
     paths: PathsConfig
     stack: StackConfig
     ops: OpsConfig
-    dev: DevConfig
+    native: NativeConfig
     digitalocean: DigitalOceanConfig | None
     repo_root: Path
     tooling_path: Path
@@ -370,12 +377,12 @@ class ProjectConfig:
 
     @property
     def fetch_media_dest_path(self) -> Path:
-        return self.repo_root / self.dev.fetch_media.dest
+        return self.repo_root / self.native.fetch_media.dest
 
     @property
     def default_fetch_dk_env(self) -> str:
-        """Default ``docker/envs/<name>`` for ``dev fetch db`` / ``dev fetch media``."""
-        return self.dev.fetch_media.dk_env
+        """Default ``docker/envs/<name>`` for ``native fetch db`` / ``native fetch media``."""
+        return self.native.fetch_media.dk_env
 
     @property
     def deploy_envs_dir(self) -> Path:
@@ -407,9 +414,14 @@ class ProjectConfig:
         return svc
 
     def credentials_optional_for_env(self, env_name: str) -> bool:
-        if env_name in self.paths.deploy.credentials_optional_envs:
+        canonical = self.resolve_deploy_env_name(env_name)
+        if canonical in self.paths.deploy.credentials_optional_envs:
             return True
-        return env_name.startswith("local_")
+        return canonical.startswith("local_")
+
+    def resolve_deploy_env_name(self, env_name: str) -> str:
+        """Return canonical env name (follows ``paths.deploy.env_aliases``)."""
+        return self.paths.deploy.env_aliases.get(env_name, env_name)
 
     @classmethod
     def from_cwd(cls) -> ProjectConfig:
@@ -494,49 +506,66 @@ def _parse_reset_db(raw: Any) -> ResetDbConfig:
             password_env=DEFAULT_DB_PASSWORD_ENV_KEYS,
         )
     if not isinstance(raw, dict):
-        raise ProjectConfigError("dev.reset_db must be a mapping")
+        raise ProjectConfigError("native.reset_db must be a mapping")
     fallback = _optional_str(raw, "db_name_fallback")
     return ResetDbConfig(
         postgis=_optional_bool(raw, "postgis", default=False),
         pg_restore_args=(
             _parse_string_list(
                 raw.get("pg_restore_args"),
-                field="dev.reset_db.pg_restore_args",
+                field="native.reset_db.pg_restore_args",
             )
             if raw.get("pg_restore_args") is not None
             else DEFAULT_PG_RESTORE_ARGS
         ),
         post_manage_commands=_parse_manage_commands_list(
             raw.get("post_manage_commands"),
-            field_prefix="dev.reset_db.post_manage_commands",
+            field_prefix="native.reset_db.post_manage_commands",
         ),
         db_name_env=_parse_env_key_list(
             raw.get("db_name_env"),
-            field="dev.reset_db.db_name_env",
+            field="native.reset_db.db_name_env",
             default=DEFAULT_DB_NAME_ENV_KEYS,
         ),
         db_name_fallback=fallback,
         host_env=_parse_env_key_list(
             raw.get("host_env"),
-            field="dev.reset_db.host_env",
+            field="native.reset_db.host_env",
             default=DEFAULT_DB_HOST_ENV_KEYS,
         ),
         port_env=_parse_env_key_list(
             raw.get("port_env"),
-            field="dev.reset_db.port_env",
+            field="native.reset_db.port_env",
             default=DEFAULT_DB_PORT_ENV_KEYS,
         ),
         user_env=_parse_env_key_list(
             raw.get("user_env"),
-            field="dev.reset_db.user_env",
+            field="native.reset_db.user_env",
             default=DEFAULT_DB_USER_ENV_KEYS,
         ),
         password_env=_parse_env_key_list(
             raw.get("password_env"),
-            field="dev.reset_db.password_env",
+            field="native.reset_db.password_env",
             default=DEFAULT_DB_PASSWORD_ENV_KEYS,
         ),
     )
+
+
+def _parse_env_aliases(raw: Any) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("paths.deploy.env_aliases must be a mapping")
+    out: dict[str, str] = {}
+    for key, val in raw.items():
+        alias = str(key).strip()
+        target = str(val).strip()
+        if not alias or not target:
+            raise ProjectConfigError("paths.deploy.env_aliases keys and values must be non-empty strings")
+        if alias == target:
+            raise ProjectConfigError(f"paths.deploy.env_aliases: {alias!r} must not map to itself")
+        out[alias] = target
+    return out
 
 
 def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
@@ -561,6 +590,7 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
             deploy_raw.get("credentials_optional_envs"),
             field="paths.deploy.credentials_optional_envs",
         ),
+        env_aliases=_parse_env_aliases(deploy_raw.get("env_aliases")),
     )
     return PathsConfig(
         backend=_validate_rel_path(
@@ -632,8 +662,8 @@ def _parse_fetch_media_legacy(raw: Any) -> FetchMediaLegacyConfig | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ProjectConfigError("dev.fetch_media.legacy must be a mapping")
-    remote = _require_str(raw, "remote", section="dev.fetch_media.legacy")
+        raise ProjectConfigError("native.fetch_media.legacy must be a mapping")
+    remote = _require_str(raw, "remote", section="native.fetch_media.legacy")
     ssh_host = _optional_str(raw, "ssh_host")
     return FetchMediaLegacyConfig(remote=remote.rstrip("/"), ssh_host=ssh_host)
 
@@ -646,28 +676,56 @@ def _parse_fetch_media(raw: Any) -> FetchMediaConfig:
             legacy=None,
         )
     if not isinstance(raw, dict):
-        raise ProjectConfigError("dev.fetch_media must be a mapping")
+        raise ProjectConfigError("native.fetch_media must be a mapping")
     dest = _optional_str(raw, "dest") or DEFAULT_FETCH_MEDIA_DEST
     dk_env = _optional_str(raw, "dk_env") or DEFAULT_FETCH_MEDIA_DK_ENV
     return FetchMediaConfig(
         dk_env=dk_env,
-        dest=_validate_rel_path(dest, field="dev.fetch_media.dest"),
+        dest=_validate_rel_path(dest, field="native.fetch_media.dest"),
         legacy=_parse_fetch_media_legacy(raw.get("legacy")),
     )
 
 
-def _parse_dev(raw: Any) -> DevConfig:
+def _parse_native(raw: Any) -> NativeConfig:
     if raw is None:
-        return DevConfig(
+        return NativeConfig(
             fetch_media=_parse_fetch_media(None),
             reset_db=_parse_reset_db(None),
         )
     if not isinstance(raw, dict):
-        raise ProjectConfigError("dev must be a mapping")
-    return DevConfig(
+        raise ProjectConfigError("native must be a mapping")
+    return NativeConfig(
         fetch_media=_parse_fetch_media(raw.get("fetch_media")),
         reset_db=_parse_reset_db(raw.get("reset_db")),
     )
+
+
+def _resolve_native_config(data: dict[str, Any]) -> NativeConfig:
+    """Load ``native:`` from tooling.yaml, with deprecated ``local:`` / ``dev:`` fallbacks."""
+    native_raw = data.get("native")
+    local_raw = data.get("local")
+    dev_raw = data.get("dev")
+    if native_raw is not None:
+        if local_raw is not None:
+            warn_deprecated(
+                "local:",
+                "native:",
+                context="tooling.yaml `local:` is ignored when `native:` is present",
+            )
+        if dev_raw is not None:
+            warn_deprecated(
+                "dev:",
+                "native:",
+                context="tooling.yaml `dev:` is ignored when `native:` is present",
+            )
+        return _parse_native(native_raw)
+    if local_raw is not None:
+        warn_deprecated("local:", "native:", context="tooling.yaml")
+        return _parse_native(local_raw)
+    if dev_raw is not None:
+        warn_deprecated("dev:", "native:", context="tooling.yaml")
+        return _parse_native(dev_raw)
+    return _parse_native(None)
 
 
 def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
@@ -719,7 +777,7 @@ def _parse_restic_verbose_field(raw: dict[str, Any], key: str, *, section: str) 
         raise ProjectConfigError(str(e)) from e
 
 
-def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
+def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     pg_raw = _require_mapping(ops_raw.get("pgbackrest"), "ops.pgbackrest")
     zabbix_raw = _require_mapping(ops_raw.get("zabbix"), "ops.zabbix")
     units_raw = _require_mapping(ops_raw.get("systemd_units"), "ops.systemd_units")
@@ -769,7 +827,10 @@ def _parse_ops(ops_raw: dict[str, Any]) -> OpsConfig:
             postgres_conf=_require_str(pg_raw, "postgres_conf", section="ops.pgbackrest"),
             pgbackrest_conf=_require_str(pg_raw, "pgbackrest_conf", section="ops.pgbackrest"),
             default_registry=_require_str(pg_raw, "default_registry", section="ops.pgbackrest"),
-            restore_temp_prefix=_require_str(pg_raw, "restore_temp_prefix", section="ops.pgbackrest"),
+            restore_temp_prefix=(
+                _optional_str(pg_raw, "restore_temp_prefix")
+                or default_pgbackrest_restore_temp_prefix(project_name)
+            ),
             data_volume=_validate_compose_volume_key(
                 _optional_str(pg_raw, "data_volume") or "postgres_data",
                 field="ops.pgbackrest.data_volume",
@@ -827,8 +888,8 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         meta=meta,
         paths=_parse_paths(paths_raw),
         stack=_parse_stack(stack_raw),
-        ops=_parse_ops(ops_raw),
-        dev=_parse_dev(data.get("dev")),
+        ops=_parse_ops(ops_raw, project_name=meta.name),
+        native=_resolve_native_config(data),
         digitalocean=digitalocean,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),

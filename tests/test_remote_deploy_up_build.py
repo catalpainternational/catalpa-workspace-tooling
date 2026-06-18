@@ -6,10 +6,49 @@ from catalpa_tooling.managed_deploy_env import (
     _effective_deploy_image_tag,
     _info_image_tag,
 )
+from catalpa_tooling.cli.dk_argv import normalize_dk_env_argv as _normalize_dk_env_argv
 from catalpa_tooling.remote_deploy import (
     _insert_up_build_if_no_registry,
-    _normalize_dk_env_argv,
+    _insert_up_prepulled_pull_flags,
 )
+
+
+class TestInsertUpPrepulledPullFlags(unittest.TestCase):
+    def test_inserts_before_service_name(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["up", "-d", "db"],
+                use_prepulled_registry=True,
+            ),
+            ["up", "-d", "--pull", "missing", "--no-build", "db"],
+        )
+
+    def test_skips_when_not_prepulled(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["up", "-d", "db"],
+                use_prepulled_registry=False,
+            ),
+            ["up", "-d", "db"],
+        )
+
+    def test_respects_existing_pull_and_build_flags(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["up", "-d", "--pull", "always", "--build", "django"],
+                use_prepulled_registry=True,
+            ),
+            ["up", "-d", "--pull", "always", "--build", "django"],
+        )
+
+    def test_non_up_unchanged(self) -> None:
+        self.assertEqual(
+            _insert_up_prepulled_pull_flags(
+                ["logs", "-f", "db"],
+                use_prepulled_registry=True,
+            ),
+            ["logs", "-f", "db"],
+        )
 
 
 class TestInsertUpBuildIfNoRegistry(unittest.TestCase):
@@ -58,28 +97,19 @@ class TestInsertUpBuildIfNoRegistry(unittest.TestCase):
 
 
 class TestNormalizeDkEnvArgv(unittest.TestCase):
-    def test_env_tag_reordered_before_compose(self) -> None:
+    def test_env_help_becomes_root_help(self) -> None:
+        self.assertEqual(_normalize_dk_env_argv(["local", "--help"]), ["--help"])
+
+    def test_trailing_yes_moved_after_env(self) -> None:
         self.assertEqual(
-            _normalize_dk_env_argv(["staging", "--tag", "v9", "up", "-d"]),
-            ["--tag", "v9", "staging", "up", "-d"],
+            _normalize_dk_env_argv(["demo", "wipe", "--yes"]),
+            ["demo", "--yes", "wipe"],
         )
 
-    def test_env_tag_equals_form(self) -> None:
+    def test_tag_stays_after_env_for_subparser(self) -> None:
         self.assertEqual(
-            _normalize_dk_env_argv(["local", "--tag=v2", "ps"]),
-            ["--tag", "v2", "local", "ps"],
-        )
-
-    def test_dry_run_then_env_then_tag(self) -> None:
-        self.assertEqual(
-            _normalize_dk_env_argv(["demo", "--dry-run", "--tag", "rc1"]),
-            ["--dry-run", "--tag", "rc1", "demo"],
-        )
-
-    def test_yes_trailing_with_tag_after_env(self) -> None:
-        self.assertEqual(
-            _normalize_dk_env_argv(["demo", "--tag", "t1", "wipe", "--yes"]),
-            ["--yes", "--tag", "t1", "demo", "wipe"],
+            _normalize_dk_env_argv(["staging", "--tag", "v9", "info"]),
+            ["staging", "--tag", "v9", "info"],
         )
 
 

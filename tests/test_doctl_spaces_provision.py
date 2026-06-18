@@ -27,6 +27,7 @@ from catalpa_tooling.config import load_project_config
         ("pgdump", [], False),
         ("restore", [], False),
         ("install-systemd", [], True),
+        ("init", [], True),
     ],
 )
 def test_needs_pgbr_write(sub: str, tail: list[str], expected: bool) -> None:
@@ -113,6 +114,7 @@ def test_provision_pgbackrest_calls_s3cmd_and_doctl(
 
     s3cmd_calls: list[list[str]] = []
     doctl_json_calls: list[list[str]] = []
+    doctl_calls: list[list[str]] = []
     sops_sets: list[tuple[str, str]] = []
 
     def fake_s3cmd(args, **kwargs):
@@ -140,9 +142,18 @@ def test_provision_pgbackrest_calls_s3cmd_and_doctl(
     def fake_run_doctl(args, **kwargs):
         from types import SimpleNamespace
 
+        doctl_calls.append(list(args))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.run_doctl", fake_run_doctl)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_spaces_provision.resolve_project_id",
+        lambda *_a, **_k: "proj-uuid-123",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_spaces_provision.list_project_resource_urns",
+        lambda *_a, **_k: [],
+    )
     monkeypatch.setattr("catalpa_tooling.doctl_spaces_provision.apply_credential_sets", fake_apply)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
@@ -170,6 +181,11 @@ def test_provision_pgbackrest_calls_s3cmd_and_doctl(
     keys = dict(sops_sets)
     assert keys["pgbr_s3_write_bucket"] == defaults.bucket
     assert keys["pgbr_s3_write_key"] == "AK123"
+    assign = next(
+        c for c in doctl_calls if c[:3] == ["projects", "resources", "assign"]
+    )
+    assert assign[3] == "proj-uuid-123"
+    assert f"do:space:{defaults.bucket}" in assign
 
 
 def test_provision_restic_reuses_pgbr_keys(
@@ -280,6 +296,11 @@ ops:
     restic:
       - a-restic-files-backup.service
       - a-restic-files-backup.timer
+digitalocean:
+  project_name: Tempu
+  region: sgp1
+  spaces:
+    bucket: backups
 """,
         encoding="utf-8",
     )

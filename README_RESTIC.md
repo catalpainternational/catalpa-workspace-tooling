@@ -69,7 +69,7 @@ Restic uses repeated `-v` (0–4), not pgBackRest log-level names. Configure in 
 | `info.yaml` → `restic:` | same | Per-environment override |
 | `info.yaml` → `env:` | `restic_verbose`, `restic_restore_verbose` | Same (wins over `restic:`) |
 
-`bkp_files restore` defaults to one `-v` when unset (like pgBackRest restore’s default `info` console level). Set `restore_verbose: 0` under `ops.restic` or in `info.yaml` for a quiet restore. Extra `-v` on the CLI (`dk prod bkp_files -v restore`) adds to the configured level for that run.
+`bkp_files restore` defaults to one `-v` when unset (like pgBackRest restore’s default `detail` console level). Set `restore_verbose: 0` under `ops.restic` or in `info.yaml` for a quiet restore. Extra `-v` on the CLI (`dk prod bkp_files -v restore`) adds to the configured level for that run.
 
 ## Auto-provision (DigitalOcean Spaces)
 
@@ -83,7 +83,7 @@ When WRITE-mode `restic_write_*` keys are missing, `dk <env> bkp_files …` can 
 
 | Subcommand | Description |
 |------------|-------------|
-| `push [--source DIR] [--method rsync\|tar]` | Rsync host media into `django_media` (default source: `dev.fetch_media.dest`; pair with `uv run dev fetch media`). Not Restic. |
+| `push [--source DIR] [--method rsync\|tar]` | Rsync host media into `django_media` (default source: `native.fetch_media.dest`; pair with `uv run native fetch media`). Not Restic. |
 | `init` | `restic init` (new repository) |
 | `backup` | Snapshot `django_media` |
 | `snapshots` | List snapshots |

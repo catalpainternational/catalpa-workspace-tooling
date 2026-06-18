@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from catalpa_tooling.config import load_project_config
-from catalpa_tooling.dev_cli import (
+from catalpa_tooling.native_cli import (
     _MIN_CUSTOM_DUMP_BYTES,
     _pg_env_for_cli,
     _resolve_reset_dump_path,
@@ -22,7 +22,7 @@ def test_pg_env_uses_configured_keys(tmp_path: Path, isolated_tooling: None, mon
     (tmp_path / "tooling.yaml").write_text(
         (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
         + """
-dev:
+native:
   reset_db:
     db_name_env: [DJANGO_DB]
     db_name_fallback: catalpa_db
@@ -38,6 +38,22 @@ dev:
     dbname, env = _pg_env_for_cli(cfg)
     assert dbname == "mydb"
     assert env["PGHOST"] == "dbhost"
+
+
+def test_pg_env_ignores_compose_user_env(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_minimal_tooling(tmp_path)
+    (tmp_path / ".env.local").write_text(
+        "DJANGO_DB_USER=bero\nPOSTGRES_USER=postgres\nPOSTGRES_PASSWORD=secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PGUSER", "inherited")
+    monkeypatch.setenv("PGPASSWORD", "inherited")
+    cfg = load_project_config(tmp_path)
+    _, env = _pg_env_for_cli(cfg)
+    assert "PGUSER" not in env
+    assert "PGPASSWORD" not in env
 
 
 def test_pg_env_defaults_from_project_name(
@@ -92,13 +108,13 @@ def test_reset_db_uses_dump_branch(tmp_path: Path, isolated_tooling: None, monke
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/true")
     monkeypatch.setattr(
-        "catalpa_tooling.dev_cli.run_cmd",
+        "catalpa_tooling.native_cli.run_cmd",
         MagicMock(return_value=MagicMock(returncode=0)),
     )
-    monkeypatch.setattr("catalpa_tooling.dev_cli._require_usable_custom_dump", lambda _p: None)
-    monkeypatch.setattr("catalpa_tooling.dev_cli._public_table_count", lambda *_a, **_k: 1)
-    monkeypatch.setattr("catalpa_tooling.dev_cli._run_pg_restore", lambda *_a, **_k: 0)
-    monkeypatch.setattr("catalpa_tooling.dev_cli.run_reset_db_post_manage_commands", lambda _c: 0)
+    monkeypatch.setattr("catalpa_tooling.native_cli._require_usable_custom_dump", lambda _p: None)
+    monkeypatch.setattr("catalpa_tooling.native_cli._public_table_count", lambda *_a, **_k: 1)
+    monkeypatch.setattr("catalpa_tooling.native_cli._run_pg_restore", lambda *_a, **_k: 0)
+    monkeypatch.setattr("catalpa_tooling.native_cli.run_reset_db_post_manage_commands", lambda _c: 0)
 
     rc = _run_reset_db_drop_create_migrate_seed(from_dump=None, explicit_dump=False)
     assert rc == 0
@@ -115,10 +131,10 @@ def test_reset_db_migrate_without_postgis(tmp_path: Path, isolated_tooling: None
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/true")
-    monkeypatch.setattr("catalpa_tooling.dev_cli.run_cmd", fake_run_cmd)
-    monkeypatch.setattr("catalpa_tooling.dev_cli._run_uv_manage", lambda _a: 0)
-    monkeypatch.setattr("catalpa_tooling.dev_cli.run_reset_db_post_manage_commands", lambda _c: 0)
-    monkeypatch.setattr("catalpa_tooling.dev_cli.reset_db_post_script", lambda _d: None)
+    monkeypatch.setattr("catalpa_tooling.native_cli.run_cmd", fake_run_cmd)
+    monkeypatch.setattr("catalpa_tooling.native_cli._run_uv_manage", lambda _a: 0)
+    monkeypatch.setattr("catalpa_tooling.native_cli.run_reset_db_post_manage_commands", lambda _c: 0)
+    monkeypatch.setattr("catalpa_tooling.native_cli.reset_db_post_script", lambda _d: (None, None))
 
     rc = _run_reset_db_drop_create_migrate_seed(from_dump=None, explicit_dump=False)
     assert rc == 0

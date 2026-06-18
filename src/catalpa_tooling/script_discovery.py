@@ -1,16 +1,19 @@
-"""Discover project bash scripts under ``paths.scripts`` for ``dev`` and ``scripts`` CLIs."""
+"""Discover project bash scripts under ``paths.scripts`` for ``native`` and ``scripts`` CLIs."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-DEV_SCRIPT_PREFIX = "dev-"
-DEV_SCRIPT_SUFFIX = ".sh"
-RESET_DB_POST_SCRIPT = "dev-reset-db-post.sh"
+NATIVE_SCRIPT_PREFIX = "native-"
+DEPRECATED_LOCAL_SCRIPT_PREFIX = "local-"
+DEPRECATED_DEV_SCRIPT_PREFIX = "dev-"
+SCRIPT_SUFFIX = ".sh"
+NATIVE_RESET_DB_POST_SCRIPT = "native-reset-db-post.sh"
+DEPRECATED_LOCAL_RESET_DB_POST_SCRIPT = "local-reset-db-post.sh"
+DEPRECATED_RESET_DB_POST_SCRIPT = "dev-reset-db-post.sh"
 
-# Built-in ``dev`` subcommands; discovered ``dev-*.sh`` names must not override these.
-RESERVED_DEV_COMMANDS: frozenset[str] = frozenset(
+RESERVED_NATIVE_COMMANDS: frozenset[str] = frozenset(
     {
         "fetch",
         "runserver",
@@ -29,54 +32,103 @@ def _filename_to_command(stem: str) -> str:
     return stem.replace("_", "-")
 
 
-def dev_command_from_script_name(filename: str) -> str | None:
-    """Return CLI name for ``dev-<name>.sh``, or ``None`` if not a dev extension script."""
-    if not filename.startswith(DEV_SCRIPT_PREFIX) or not filename.endswith(DEV_SCRIPT_SUFFIX):
+def _command_from_prefixed_script(filename: str, prefix: str) -> str | None:
+    if not filename.startswith(prefix) or not filename.endswith(SCRIPT_SUFFIX):
         return None
     if not _FILENAME_RE.match(filename):
         return None
-    stem = filename[: -len(DEV_SCRIPT_SUFFIX)]
-    suffix = stem[len(DEV_SCRIPT_PREFIX) :]
+    stem = filename[: -len(SCRIPT_SUFFIX)]
+    suffix = stem[len(prefix) :]
     if not suffix:
         return None
     return _filename_to_command(suffix)
 
 
+def native_command_from_script_name(filename: str) -> str | None:
+    return _command_from_prefixed_script(filename, NATIVE_SCRIPT_PREFIX)
+
+
+def local_command_from_script_name(filename: str) -> str | None:
+    return _command_from_prefixed_script(filename, DEPRECATED_LOCAL_SCRIPT_PREFIX)
+
+
+def dev_command_from_script_name(filename: str) -> str | None:
+    return _command_from_prefixed_script(filename, DEPRECATED_DEV_SCRIPT_PREFIX)
+
+
 def scripts_command_from_script_name(filename: str) -> str | None:
-    """Return CLI name for a non-dev ``*.sh`` helper."""
-    if filename.startswith(DEV_SCRIPT_PREFIX) or not filename.endswith(DEV_SCRIPT_SUFFIX):
+    """Return CLI name for a non-extension ``*.sh`` helper."""
+    if (
+        filename.startswith(NATIVE_SCRIPT_PREFIX)
+        or filename.startswith(DEPRECATED_LOCAL_SCRIPT_PREFIX)
+        or filename.startswith(DEPRECATED_DEV_SCRIPT_PREFIX)
+        or not filename.endswith(SCRIPT_SUFFIX)
+    ):
         return None
     if filename.startswith("."):
         return None
     if not _FILENAME_RE.match(filename):
         return None
-    stem = filename[: -len(DEV_SCRIPT_SUFFIX)]
+    stem = filename[: -len(SCRIPT_SUFFIX)]
     if not stem:
         return None
     return _filename_to_command(stem)
 
 
-def discover_dev_commands(
+def discover_native_commands(
     scripts_dir: Path,
     *,
-    reserved: frozenset[str] = RESERVED_DEV_COMMANDS,
+    reserved: frozenset[str] = RESERVED_NATIVE_COMMANDS,
 ) -> dict[str, Path]:
-    """Map ``dev`` subcommand names to ``scripts/dev-*.sh`` paths (sorted, no reserved clashes)."""
+    """Map ``native`` subcommand names to ``scripts/native-*.sh`` (or deprecated prefixes)."""
     if not scripts_dir.is_dir():
         return {}
     found: dict[str, Path] = {}
+    deprecated_local: dict[str, Path] = {}
+    deprecated_dev: dict[str, Path] = {}
     for path in sorted(scripts_dir.iterdir()):
         if not path.is_file():
             continue
-        cmd = dev_command_from_script_name(path.name)
-        if cmd is None or cmd in reserved:
+        cmd = native_command_from_script_name(path.name)
+        if cmd is not None and cmd not in reserved:
+            found[cmd] = path.resolve()
             continue
-        found[cmd] = path.resolve()
+        cmd = local_command_from_script_name(path.name)
+        if cmd is not None and cmd not in reserved:
+            deprecated_local[cmd] = path.resolve()
+            continue
+        cmd = dev_command_from_script_name(path.name)
+        if cmd is not None and cmd not in reserved:
+            deprecated_dev[cmd] = path.resolve()
+    for cmd, path in deprecated_local.items():
+        if cmd not in found:
+            found[cmd] = path
+    for cmd, path in deprecated_dev.items():
+        if cmd not in found:
+            found[cmd] = path
     return found
 
 
+def discover_local_commands(
+    scripts_dir: Path,
+    *,
+    reserved: frozenset[str] = RESERVED_NATIVE_COMMANDS,
+) -> dict[str, Path]:
+    """Backward-compatible alias for ``discover_native_commands``."""
+    return discover_native_commands(scripts_dir, reserved=reserved)
+
+
+def discover_dev_commands(
+    scripts_dir: Path,
+    *,
+    reserved: frozenset[str] = RESERVED_NATIVE_COMMANDS,
+) -> dict[str, Path]:
+    """Backward-compatible alias for ``discover_native_commands``."""
+    return discover_native_commands(scripts_dir, reserved=reserved)
+
+
 def discover_scripts_commands(scripts_dir: Path) -> dict[str, Path]:
-    """Map ``scripts`` subcommand names to ``scripts/*.sh`` except ``dev-*.sh``."""
+    """Map ``scripts`` subcommand names to ``scripts/*.sh`` except extension scripts."""
     if not scripts_dir.is_dir():
         return {}
     found: dict[str, Path] = {}
@@ -90,7 +142,19 @@ def discover_scripts_commands(scripts_dir: Path) -> dict[str, Path]:
     return found
 
 
-def reset_db_post_script(scripts_dir: Path) -> Path | None:
-    """Optional hook run after PostGIS when resetting the local DB."""
-    path = scripts_dir / RESET_DB_POST_SCRIPT
-    return path.resolve() if path.is_file() else None
+def reset_db_post_script(scripts_dir: Path) -> tuple[Path | None, str | None]:
+    """Optional hook run after PostGIS when resetting the host DB.
+
+    Returns ``(path, deprecated_prefix)`` where ``deprecated_prefix`` is
+    ``local-``, ``dev-``, or ``None`` for canonical ``native-reset-db-post.sh``.
+    """
+    native_path = scripts_dir / NATIVE_RESET_DB_POST_SCRIPT
+    if native_path.is_file():
+        return native_path.resolve(), None
+    local_path = scripts_dir / DEPRECATED_LOCAL_RESET_DB_POST_SCRIPT
+    if local_path.is_file():
+        return local_path.resolve(), "local-"
+    dev_path = scripts_dir / DEPRECATED_RESET_DB_POST_SCRIPT
+    if dev_path.is_file():
+        return dev_path.resolve(), "dev-"
+    return None, None

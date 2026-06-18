@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from catalpa_tooling import dk_cli
+from catalpa_tooling import env_handlers
 from catalpa_tooling import remote_deploy
 
 
@@ -58,7 +59,7 @@ def test_zabbix_env_defaults_env_overrides_top_level_zbx() -> None:
     assert d["ZBX_METADATA"] == "from-env"
 
 
-def test_cmd_deploy_routes_zabbix_with_env_defaults_and_ssh_target(
+def test_handle_env_routes_zabbix_with_env_defaults_and_ssh_target(
     tmp_path, monkeypatch, isolated_tooling: None
 ) -> None:
     env_name = "staging"
@@ -80,9 +81,9 @@ def test_cmd_deploy_routes_zabbix_with_env_defaults_and_ssh_target(
     write_minimal_tooling_tree(tmp_path)
     config = load_project_config(tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(remote_deploy, "resolve_compose_file_from_info", lambda *_: "compose.yml")
+    monkeypatch.setattr(env_handlers, "resolve_compose_file_from_info", lambda *_: "compose.yml")
     monkeypatch.setattr(
-        remote_deploy,
+        env_handlers,
         "load_managed_deploy_context",
         lambda *_args, **_kwargs: SimpleNamespace(
             env_add={},
@@ -92,7 +93,7 @@ def test_cmd_deploy_routes_zabbix_with_env_defaults_and_ssh_target(
         ),
     )
     monkeypatch.setattr(
-        remote_deploy,
+        env_handlers,
         "resolve_env_with_compose_project",
         lambda _compose_file, env_add, **_kwargs: env_add,
     )
@@ -104,16 +105,23 @@ def test_cmd_deploy_routes_zabbix_with_env_defaults_and_ssh_target(
         called.update(kwargs)
         return 23
 
-    monkeypatch.setattr(remote_deploy, "run_zabbix_deploy", fake_run_zabbix)
+    monkeypatch.setattr(env_handlers, "run_zabbix_deploy", fake_run_zabbix)
 
     ns = argparse.Namespace(
         env_name=env_name,
-        compose_args=["zabbix", "install", "--hostname", "stage-web-01"],
+        env_command="zabbix",
+        zabbix_command="install",
+        image=None,
+        server=None,
+        hostname="stage-web-01",
+        active_allow=None,
+        docker_group_gid=None,
         dry_run=False,
+        force=False,
         yes=False,
         tag=None,
     )
-    rc = remote_deploy._cmd_deploy(ns, config)
+    rc = env_handlers.handle_env_command(ns, config)
     assert rc == 23
     assert called["argv"] == ["install", "--hostname", "stage-web-01"]
     assert called["prog"] == f"dk {env_name} zabbix"
@@ -123,7 +131,7 @@ def test_cmd_deploy_routes_zabbix_with_env_defaults_and_ssh_target(
     assert called["env_defaults"]["ZBX_ACTIVE_ALLOW"] == "True"
 
 
-def test_cmd_deploy_routes_zabbix_with_local_fallback(
+def test_handle_env_routes_zabbix_with_local_fallback(
     tmp_path, monkeypatch, isolated_tooling: None
 ) -> None:
     env_name = "local"
@@ -142,9 +150,9 @@ def test_cmd_deploy_routes_zabbix_with_local_fallback(
     write_minimal_tooling_tree(tmp_path)
     config = load_project_config(tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(remote_deploy, "resolve_compose_file_from_info", lambda *_: "compose.yml")
+    monkeypatch.setattr(env_handlers, "resolve_compose_file_from_info", lambda *_: "compose.yml")
     monkeypatch.setattr(
-        remote_deploy,
+        env_handlers,
         "load_managed_deploy_context",
         lambda *_args, **_kwargs: SimpleNamespace(
             env_add={},
@@ -154,7 +162,7 @@ def test_cmd_deploy_routes_zabbix_with_local_fallback(
         ),
     )
     monkeypatch.setattr(
-        remote_deploy,
+        env_handlers,
         "resolve_env_with_compose_project",
         lambda _compose_file, env_add, **_kwargs: env_add,
     )
@@ -166,16 +174,19 @@ def test_cmd_deploy_routes_zabbix_with_local_fallback(
         called.update(kwargs)
         return 11
 
-    monkeypatch.setattr(remote_deploy, "run_zabbix_deploy", fake_run_zabbix)
+    monkeypatch.setattr(env_handlers, "run_zabbix_deploy", fake_run_zabbix)
 
     ns = argparse.Namespace(
         env_name=env_name,
-        compose_args=["zabbix", "logs", "-n", "20"],
+        env_command="zabbix",
+        zabbix_command="logs",
+        lines=20,
+        follow=False,
         dry_run=False,
         yes=False,
         tag=None,
     )
-    rc = remote_deploy._cmd_deploy(ns, config)
+    rc = env_handlers.handle_env_command(ns, config)
     assert rc == 11
     assert called["argv"] == ["logs", "-n", "20"]
     assert called["ssh_target"] is None
@@ -189,6 +200,6 @@ def test_top_level_dk_zabbix_rejected(monkeypatch, minimal_config, capsys) -> No
 
     with pytest.raises(SystemExit) as exc:
         dk_cli._main_impl()
-    assert exc.value.code == 1
+    assert exc.value.code == 2
     err = capsys.readouterr().err
-    assert "unknown command or environment 'zabbix'" in err
+    assert "unknown command or environment" in err or "invalid choice" in err

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from catalpa_tooling.config import DEFAULT_LOCAL_PG_HOST, DEFAULT_LOCAL_PG_PORT, load_project_config
-from catalpa_tooling.dev_cli import _django_manage_dev_env, _pg_env_for_cli
+from catalpa_tooling.native_cli import _django_manage_native_env, _pg_env_for_cli
 from tests.test_fetch_media_config import _write_minimal_tooling
 
 
@@ -37,7 +37,7 @@ def test_manage_env_sets_database_host_like_reset_db(
 
     cfg = load_project_config(tmp_path)
     _, pg_env = _pg_env_for_cli(cfg)
-    manage_env = _django_manage_dev_env(cfg)
+    manage_env = _django_manage_native_env(cfg)
 
     assert pg_env["PGHOST"] == DEFAULT_LOCAL_PG_HOST
     assert manage_env["DATABASE_HOST"] == DEFAULT_LOCAL_PG_HOST

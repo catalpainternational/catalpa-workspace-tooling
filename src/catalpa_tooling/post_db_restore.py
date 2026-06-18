@@ -95,23 +95,23 @@ def run_post_db_restore_manage_commands(
 
 
 def run_reset_db_post_manage_commands(config: ProjectConfig) -> int:
-    """Run ``dev.reset_db.post_manage_commands`` via local ``uv run manage.py`` (host Postgres)."""
-    commands = config.dev.reset_db.post_manage_commands
+    """Run ``native.reset_db.post_manage_commands`` via host ``uv run manage.py`` (Postgres on localhost)."""
+    commands = config.native.reset_db.post_manage_commands
     if not commands:
         return 0
 
-    from catalpa_tooling.dev_cli import _run_uv_manage
+    from catalpa_tooling.native_cli import _run_uv_manage
 
     print(
-        f"dev reset-db: running {len(commands)} post-restore management command(s)…",
+        f"native reset-db: running {len(commands)} post-restore management command(s)…",
         file=sys.stderr,
     )
     for argv in commands:
         label = " ".join(argv)
-        print(f"dev reset-db: manage.py {label}", file=sys.stderr)
+        print(f"native reset-db: manage.py {label}", file=sys.stderr)
         rc = _run_uv_manage(list(argv))
         if rc != 0:
-            print(f"dev reset-db: `manage.py {label}` failed (exit {rc}).", file=sys.stderr)
+            print(f"native reset-db: `manage.py {label}` failed (exit {rc}).", file=sys.stderr)
             return rc
-    print("dev reset-db: post-restore commands done.", file=sys.stderr)
+    print("native reset-db: post-restore commands done.", file=sys.stderr)
     return 0

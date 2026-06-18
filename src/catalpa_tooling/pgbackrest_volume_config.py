@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -10,7 +11,9 @@ import sys
 from typing import Literal
 
 from catalpa_tooling.config import DEFAULT_PGBR_PG1_PATH, ProjectConfig
-from catalpa_tooling.run_cmd import run as run_cmd
+from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
+from catalpa_tooling.storage_config import CADDY_DATA_VOLUME_KEY
+from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
 
 # PG 18+ data directory when compose mounts ``pgdata:/var/lib/postgresql`` (not …/data).
 _PG18_PGDATA_RE = re.compile(r"^/var/lib/postgresql/\d+/")
@@ -116,6 +119,28 @@ def caddy_data_volume_name(env: dict[str, str], *, config: ProjectConfig | None 
     """Docker volume name for ``caddy_data`` (same as compose.yml ``name:``)."""
     project = _compose_project_name(env, config)
     return f"{project}_caddy_data"
+
+
+def stack_volume_docker_name(
+    env: dict[str, str],
+    volume_key: str,
+    *,
+    config: ProjectConfig | None = None,
+) -> str:
+    """Docker volume name for a bindable compose volume key."""
+    if config is not None:
+        if volume_key == config.ops.pgbackrest.data_volume:
+            return postgres_data_volume_name(env, config=config)
+        if volume_key == config.ops.restic.data_volume:
+            return django_media_volume_name(env, config=config)
+    if volume_key == CADDY_DATA_VOLUME_KEY:
+        return caddy_data_volume_name(env, config=config)
+    if volume_key == "postgres_data":
+        return postgres_data_volume_name(env, config=config)
+    if volume_key == "django_media":
+        return django_media_volume_name(env, config=config)
+    project = _compose_project_name(env, config)
+    return f"{project}_{volume_key}"
 
 
 def _compose_db_platform_args() -> list[str]:
@@ -286,7 +311,86 @@ def conflict_error_message(env: dict[str, str]) -> str | None:
     )
 
 
-def _ensure_volume(name: str, docker_env: dict[str, str]) -> None:
+def _volume_bind_host_path(inspect_entry: dict) -> str | None:
+    """Host path when the volume uses local driver bind opts; else ``None``."""
+    opts = inspect_entry.get("Options")
+    if not isinstance(opts, dict):
+        return None
+    if str(opts.get("o") or "").strip().lower() != "bind":
+        return None
+    device = str(opts.get("device") or "").strip()
+    if not device:
+        return None
+    return device.rstrip("/")
+
+
+def _ssh_target_from_docker_env(docker_env: dict[str, str]) -> str | None:
+    host = str(docker_env.get("DOCKER_HOST") or "").strip()
+    if not host:
+        return None
+    try:
+        return parse_docker_host_to_ssh_target(host)
+    except ValueError:
+        return None
+
+
+def _verify_host_path_on_deploy_host(
+    path: str,
+    docker_env: dict[str, str],
+    *,
+    create: bool = False,
+    label: str = "storage",
+) -> None:
+    """Ensure ``path`` exists (and is writable) on the machine running the Docker daemon."""
+    norm = path.rstrip("/") or "/"
+    q = shlex.quote(norm)
+    if create:
+        script = f"mkdir -p {q}"
+        ssh_target = _ssh_target_from_docker_env(docker_env)
+        if ssh_target:
+            cmd = ["ssh", ssh_target, script]
+        else:
+            cmd = ["/bin/sh", "-c", script]
+        print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
+        run_cmd(cmd, check=True, print_cmd=False)
+    check_script = f"test -d {q} && test -w {q}"
+    ssh_target = _ssh_target_from_docker_env(docker_env)
+    if ssh_target:
+        cmd = ["ssh", ssh_target, check_script]
+    else:
+        cmd = ["/bin/sh", "-c", check_script]
+    print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
+    r = run_cmd(cmd, check=False, print_cmd=False)
+    if r.returncode != 0:
+        if create:
+            hint = f"Host path {norm!r} is not a writable directory after mkdir."
+        else:
+            hint = (
+                f"Host path {norm!r} is missing or not writable on the deploy host. "
+                "Mount storage externally or run `dk <env> storage ensure` with a "
+                "`digitalocean` block to provision and mount a block volume."
+            )
+        print(f"{label}: {hint}", file=sys.stderr)
+        raise subprocess.CalledProcessError(r.returncode, cmd)
+
+
+def _ensure_volume(
+    name: str,
+    docker_env: dict[str, str],
+    *,
+    host_path: str | None = None,
+    create_host_path: bool = False,
+    label: str = "ensure_volumes",
+) -> None:
+    norm_host = (host_path or "").strip().rstrip("/") if host_path else None
+    if norm_host:
+        _verify_host_path_on_deploy_host(
+            norm_host,
+            docker_env,
+            create=create_host_path,
+            label=label,
+        )
+
     r = run_cmd(
         ["docker", "volume", "inspect", name],
         env=docker_env,
@@ -296,8 +400,52 @@ def _ensure_volume(name: str, docker_env: dict[str, str]) -> None:
         print_cmd=False,
     )
     if r.returncode == 0:
+        if norm_host:
+            try:
+                payload = json.loads(r.stdout or "[]")
+            except json.JSONDecodeError:
+                payload = []
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                existing = _volume_bind_host_path(payload[0])
+                if existing is None:
+                    print(
+                        f"{label}: Docker volume {name!r} exists without a host bind mount. "
+                        "Stop the stack, back up data, `docker volume rm` the volume, "
+                        "ensure the host mount path exists, then re-run `ensure_volumes`.",
+                        file=sys.stderr,
+                    )
+                    raise subprocess.CalledProcessError(1, ["docker", "volume", "inspect", name])
+                if existing != norm_host:
+                    print(
+                        f"{label}: Docker volume {name!r} is bound to {existing!r}, "
+                        f"but info.yaml requests {norm_host!r}. "
+                        "Migrate data manually or align info.yaml with the existing bind target.",
+                        file=sys.stderr,
+                    )
+                    raise subprocess.CalledProcessError(1, ["docker", "volume", "inspect", name])
         return
-    run_cmd(["docker", "volume", "create", name], env=docker_env, check=True)
+
+    if norm_host:
+        run_cmd(
+            [
+                "docker",
+                "volume",
+                "create",
+                "--driver",
+                "local",
+                "--opt",
+                "type=none",
+                "--opt",
+                f"device={norm_host}",
+                "--opt",
+                "o=bind",
+                name,
+            ],
+            env=docker_env,
+            check=True,
+        )
+    else:
+        run_cmd(["docker", "volume", "create", name], env=docker_env, check=True)
 
 
 def external_stack_volume_names(
@@ -315,23 +463,57 @@ def external_stack_volume_names(
 
 
 def ensure_external_stack_volumes(
-    env: dict[str, str], *, dry_run: bool = False, config: ProjectConfig | None = None
+    env: dict[str, str],
+    *,
+    dry_run: bool = False,
+    config: ProjectConfig | None = None,
+    volume_hosts: dict[str, str] | None = None,
+    create_host_paths: dict[str, bool] | None = None,
 ) -> int:
     """Create stack external volumes if missing (``docker volume create``). Idempotent.
 
     Uses the same ``DOCKER_HOST`` (if any) as ``docker compose`` for this deploy.
+    ``volume_hosts`` maps compose volume keys (e.g. ``django_media``) to host mount paths
+    for local-driver bind named volumes.
     """
+    volume_hosts = volume_hosts or {}
+    create_host_paths = create_host_paths or {}
     names = external_stack_volume_names(env, config=config)
+    name_to_host: dict[str, str] = {}
+    name_to_create: dict[str, bool] = {}
+    for key, host_path in volume_hosts.items():
+        vol_name = stack_volume_docker_name(env, key, config=config)
+        name_to_host[vol_name] = host_path
+        name_to_create[vol_name] = bool(create_host_paths.get(key))
+
     if dry_run:
-        print(
-            "ensure_volumes (dry-run): would create missing volumes: " + ", ".join(names),
-            file=sys.stderr,
-        )
+        parts = list(names)
+        if name_to_host:
+            bind_desc = ", ".join(
+                f"{n}→{name_to_host[n]!r}" for n in names if n in name_to_host
+            )
+            print(
+                "ensure_volumes (dry-run): would create missing volumes: "
+                + ", ".join(parts)
+                + (f"; host binds: {bind_desc}" if bind_desc else ""),
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "ensure_volumes (dry-run): would create missing volumes: " + ", ".join(parts),
+                file=sys.stderr,
+            )
         return 0
     docker_env = _docker_env_for_remote(env)
     for n in names:
         try:
-            _ensure_volume(n, docker_env)
+            _ensure_volume(
+                n,
+                docker_env,
+                host_path=name_to_host.get(n),
+                create_host_path=name_to_create.get(n, False),
+                label="ensure_volumes",
+            )
         except subprocess.CalledProcessError as e:
             print(f"ensure_volumes: docker volume failed for {n!r}: {e}", file=sys.stderr)
             return 1
@@ -339,16 +521,82 @@ def ensure_external_stack_volumes(
     return 0
 
 
-def ensure_postgres_data_volume(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
+def db_compose_volume_names(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> tuple[str, ...]:
+    """External volumes mounted by the compose ``db`` service (PGDATA + pgBackRest conf)."""
+    pg_conf, pgb_conf = volume_names(env, config=config)
+    return (
+        postgres_data_volume_name(env, config=config),
+        pg_conf,
+        pgb_conf,
+    )
+
+
+def ensure_db_compose_volumes(
+    env: dict[str, str],
+    *,
+    config: ProjectConfig | None = None,
+    volume_hosts: dict[str, str] | None = None,
+    create_host_paths: dict[str, bool] | None = None,
+) -> int:
+    """Create external volumes the ``db`` service mounts if missing (``docker volume create``).
+
+    Idempotent. Used before ``docker compose up -d db`` when external volumes are declared in
+    compose.yml (same ``DOCKER_HOST`` as other deploy volume ops).
+    """
+    volume_hosts = volume_hosts or {}
+    create_host_paths = create_host_paths or {}
+    docker_env = _docker_env_for_remote(env)
+    pg_data_key = config.ops.pgbackrest.data_volume if config else "postgres_data"
+    for name in db_compose_volume_names(env, config=config):
+        host_path = None
+        create_host = False
+        if name == postgres_data_volume_name(env, config=config):
+            host_path = volume_hosts.get(pg_data_key)
+            create_host = bool(create_host_paths.get(pg_data_key))
+        try:
+            _ensure_volume(
+                name,
+                docker_env,
+                host_path=host_path,
+                create_host_path=create_host,
+                label="ensure_db_volumes",
+            )
+        except subprocess.CalledProcessError as e:
+            print(
+                f"ensure_db_volumes: docker volume failed for {name!r}: {e}",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
+
+
+def ensure_postgres_data_volume(
+    env: dict[str, str],
+    *,
+    config: ProjectConfig | None = None,
+    volume_hosts: dict[str, str] | None = None,
+    create_host_paths: dict[str, bool] | None = None,
+) -> int:
     """Create the stack PGDATA named volume if missing (``docker volume create``). Idempotent.
 
     Used by ``bkp_db restore`` so ``docker compose run db`` has a mount target for PGDATA.
     Uses the same ``DOCKER_HOST`` as ``ensure_volumes`` and other deploy volume ops.
     """
+    volume_hosts = volume_hosts or {}
+    create_host_paths = create_host_paths or {}
     docker_env = _docker_env_for_remote(env)
     name = postgres_data_volume_name(env, config=config)
+    pg_data_key = config.ops.pgbackrest.data_volume if config else "postgres_data"
     try:
-        _ensure_volume(name, docker_env)
+        _ensure_volume(
+            name,
+            docker_env,
+            host_path=volume_hosts.get(pg_data_key),
+            create_host_path=bool(create_host_paths.get(pg_data_key)),
+            label="pgBackRest restore",
+        )
     except subprocess.CalledProcessError as e:
         print(
             f"pgBackRest restore: docker volume failed for {name!r}: {e}",
@@ -395,6 +643,15 @@ def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | Non
     return 0
 
 
+def _docker_run_volume_work_args() -> list[str]:
+    """One-off volume writes use the db image (often USER postgres) against root-owned named volumes."""
+    return [
+        *_compose_db_platform_args(),
+        "--user",
+        "0",
+    ]
+
+
 def _docker_run_cp(
     volume: str,
     dest_name: str,
@@ -414,13 +671,17 @@ def _docker_run_cp(
             "run",
             "--rm",
             "-i",
+            *_docker_run_volume_work_args(),
             "--entrypoint",
             "/bin/sh",
             "-v",
             f"{volume}:/work",
             image,
             "-c",
-            f"cat > /work/{q} && chmod 644 /work/{q}",
+            (
+                f"cat > /work/{q} && chmod 644 /work/{q} "
+                f"&& chown postgres:postgres /work/{q}"
+            ),
         ],
         env=docker_env,
         input=content.encode("utf-8"),
@@ -435,18 +696,54 @@ def _docker_run_rm(
     *,
     image: str,
 ) -> None:
+    q = shlex.quote(filename)
     run_cmd(
         [
             "docker",
             "run",
             "--rm",
+            *_docker_run_volume_work_args(),
             "--entrypoint",
             "/bin/sh",
             "-v",
             f"{volume}:/work",
             image,
             "-c",
-            f"rm -f /work/{filename}",
+            f"rm -f /work/{q}",
+        ],
+        env=docker_env,
+        check=False,
+    )
+
+
+def _docker_run_rm_other_confs(
+    volume: str,
+    keep_filename: str,
+    docker_env: dict[str, str],
+    *,
+    image: str,
+) -> None:
+    """Remove other ``*.conf`` drop-ins so pgBackRest/Postgres do not merge duplicate keys."""
+    keep = shlex.quote(keep_filename)
+    run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_docker_run_volume_work_args(),
+            "--entrypoint",
+            "/bin/sh",
+            "-v",
+            f"{volume}:/work",
+            image,
+            "-c",
+            (
+                f"for f in /work/*.conf; do "
+                f'[ -e "$f" ] || continue; '
+                f'[ "$(basename "$f")" = {keep} ] && continue; '
+                f'rm -f "$f"; '
+                f"done"
+            ),
         ],
         env=docker_env,
         check=False,
@@ -520,6 +817,112 @@ def run_pgbackrest_verify(env: dict[str, str], *, image: str) -> int:
     return 0
 
 
+def parse_pgbackrest_info_stanza_healthy(
+    stdout: str, stderr: str, *, stanza: str
+) -> bool:
+    """True when ``pgbackrest info`` output shows the stanza ``status: ok`` (repo metadata valid).
+
+    ``pgbackrest info`` often exits 0 even when the stanza row is ``status: error (…)``; do not
+    rely on the process exit code alone.
+    """
+    text = (stdout or "").strip()
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if payload is not None:
+            stanzas = payload if isinstance(payload, list) else [payload]
+            for entry in stanzas:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("name") != stanza:
+                    continue
+                status = entry.get("status")
+                if isinstance(status, dict):
+                    return status.get("code") == 0
+                if isinstance(status, str):
+                    return status.strip().lower() == "ok"
+            return False
+    body = f"{stdout or ''}\n{stderr or ''}"
+    match = re.search(
+        rf"stanza:\s*{re.escape(stanza)}\s*\n\s*status:\s*(\S+)",
+        body,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    if not match:
+        return False
+    return match.group(1).lower() == "ok"
+
+
+def pgbackrest_stanza_exists_in_repo(
+    env: dict[str, str], *, image: str, config: ProjectConfig | None = None
+) -> bool:
+    """True when ``pgbackrest info`` reports the stanza healthy (``status: ok`` in the repository)."""
+    if resolve_mode(env) != "write":
+        return False
+    stanza = stanza_from_env_for_pgbackrest(env)
+    if not stanza:
+        return False
+    docker_env = _docker_env_for_remote(env)
+    vol_pgb = volume_names(env, config=config)[1]
+    sq = shlex.quote(stanza)
+    r = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_compose_db_platform_args(),
+            "--entrypoint",
+            "pgbackrest",
+            "-v",
+            f"{vol_pgb}:/etc/pgbackrest/conf.d",
+            image,
+            f"--stanza={sq}",
+            "--output=json",
+            "info",
+        ],
+        env=docker_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    if r.returncode != 0 and not (r.stdout or r.stderr):
+        return False
+    healthy = parse_pgbackrest_info_stanza_healthy(
+        r.stdout or "", r.stderr or "", stanza=stanza
+    )
+    if healthy:
+        return True
+    # Older pgbackrest without --output=json: retry plain text info.
+    if (r.stdout or "").strip().startswith(("[", "{")):
+        return False
+    r_text = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_compose_db_platform_args(),
+            "--entrypoint",
+            "pgbackrest",
+            "-v",
+            f"{vol_pgb}:/etc/pgbackrest/conf.d",
+            image,
+            f"--stanza={sq}",
+            "info",
+        ],
+        env=docker_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    return parse_pgbackrest_info_stanza_healthy(
+        r_text.stdout or "", r_text.stderr or "", stanza=stanza
+    )
+
+
 def run_pgbackrest_stanza_create(
     env: dict[str, str], *, image: str, config: ProjectConfig | None = None
 ) -> int:
@@ -555,11 +958,8 @@ def run_pgbackrest_stanza_create(
         log(
             "pgBackRest stanza-create: PostgreSQL PGDATA is missing or not initialized "
             f"(no global/pg_control in Docker volume {vol_data!r}). "
-            "Even with --no-online, pgBackRest needs the data directory on disk. "
-            "Start the db service once (initdb), e.g. from the repo root with the same "
-            "COMPOSE_PROJECT_NAME as this deploy:\n"
-            "  docker compose -f compose.yml up -d db\n"
-            "Then retry."
+            "Run `dk <env> bkp_db init` or `dk <env> bkp_db configure stanza-create` "
+            "(starts `db` automatically), or `dk <env> up -d db` then retry."
         )
         return 1
 
@@ -731,7 +1131,9 @@ def materialize_configs(
 
     try:
         if mode == "none":
+            _docker_run_rm_other_confs(vol_pg, postgres_conf, docker_env, image=image)
             _docker_run_rm(vol_pg, postgres_conf, docker_env, image=image)
+            _docker_run_rm_other_confs(vol_pgb, pgbackrest_conf, docker_env, image=image)
             _docker_run_cp(
                 vol_pgb,
                 pgbackrest_conf,
@@ -750,9 +1152,11 @@ def materialize_configs(
 
         pg1 = postgres_pg1_path(env, config=config)
         pgbr_content = render_pgbackrest_ini(mode, vars_map, env, pg1_path=pg1)
+        _docker_run_rm_other_confs(vol_pgb, pgbackrest_conf, docker_env, image=image)
         _docker_run_cp(vol_pgb, pgbackrest_conf, pgbr_content, docker_env, image=image)
 
         if mode == "write":
+            _docker_run_rm_other_confs(vol_pg, postgres_conf, docker_env, image=image)
             _docker_run_cp(
                 vol_pg,
                 postgres_conf,

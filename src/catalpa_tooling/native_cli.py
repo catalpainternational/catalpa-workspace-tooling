@@ -1,4 +1,4 @@
-"""argparse entrypoint for dev: local processes without Docker (Django, Vite, …)."""
+"""argparse entrypoint for native: host processes without Docker (Django, Vite, …)."""
 
 import argparse
 import os
@@ -11,13 +11,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from catalpa_tooling.cli.completion import activate
 from catalpa_tooling.cli_interrupt import run_cli
+from catalpa_tooling.deprecation import warn_deprecated
+from catalpa_tooling.native_parser import build_native_parser
 from catalpa_tooling.fetch_media import run_fetch_media
 from catalpa_tooling.config import (
     DEFAULT_LOCAL_PG_HOST,
     DEFAULT_LOCAL_PG_PORT,
     ProjectConfig,
-    resolve_dev_db_name,
+    resolve_native_db_name,
 )
 
 # Custom-format dumps smaller than this are almost certainly stubs (fetch not run).
@@ -25,7 +28,6 @@ _MIN_CUSTOM_DUMP_BYTES = 100_000
 from catalpa_tooling.post_db_restore import run_reset_db_post_manage_commands
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
 from catalpa_tooling.script_discovery import (
-    discover_dev_commands,
     reset_db_post_script,
 )
 from catalpa_tooling.script_runner import run_bash_script
@@ -41,19 +43,19 @@ def _load_env_local(cfg: ProjectConfig) -> None:
         load_dotenv(path)
 
 
-def _django_manage_dev_env(cfg: ProjectConfig) -> dict[str, str]:
+def _django_manage_native_env(cfg: ProjectConfig) -> dict[str, str]:
     """Env merged into every ``uv run ./manage.py …`` invoked by this CLI when keys are unset.
 
     Loads ``.env.local`` first (when present) so local overrides apply; then sets
     ``DJANGO_DEBUG`` and ``EMAIL_BACKEND_FOLDER`` only if missing — same effect as a
     minimal ``.env.local`` without requiring that file in every worktree.
 
-    DB host/port/name defaults use the same ``dev.reset_db`` env key lists as
-    ``dev reset-db`` / ``dev pg-restore`` so Django and libpq hit the same server.
+    DB host/port/name defaults use the same ``native.reset_db`` env key lists as
+    ``native reset-db`` / ``native pg-restore`` so Django and libpq hit the same server.
     """
     _load_env_local(cfg)
-    reset = cfg.dev.reset_db
-    db_default = resolve_dev_db_name(cfg)
+    reset = cfg.native.reset_db
+    db_default = resolve_native_db_name(cfg)
     extra: dict[str, str] = {}
     if not (os.environ.get("DJANGO_DEBUG") or "").strip():
         extra["DJANGO_DEBUG"] = "1"
@@ -81,22 +83,20 @@ def _env_first(keys: tuple[str, ...]) -> str | None:
 
 
 def _pg_env_for_cli(config: ProjectConfig) -> tuple[str, dict[str, str]]:
-    """Database connection for libpq CLI tools from ``paths.env_local`` and ``dev.reset_db`` env keys."""
+    """Database connection for libpq CLI tools from ``paths.env_local`` and ``local.reset_db`` env keys.
+
+    Admin tools (``dropdb``, ``createdb``, ``pg_restore``, ``psql``) connect as the current OS
+    user — not ``native.reset_db.user_env`` / compose production roles — so local Postgres.app
+    trust auth works without creating app roles first.
+    """
     _load_env_local(config)
-    reset = config.dev.reset_db
+    reset = config.native.reset_db
     env = os.environ.copy()
-    dbname = _env_first(reset.db_name_env) or resolve_dev_db_name(config)
+    dbname = _env_first(reset.db_name_env) or resolve_native_db_name(config)
     env["PGHOST"] = _env_first(reset.host_env) or DEFAULT_LOCAL_PG_HOST
     env["PGPORT"] = _env_first(reset.port_env) or DEFAULT_LOCAL_PG_PORT
-    if user := _env_first(reset.user_env):
-        env["PGUSER"] = user
-    elif "PGUSER" in env:
-        del env["PGUSER"]
-    if reset.password_env:
-        for key in reset.password_env:
-            if key in os.environ:
-                env["PGPASSWORD"] = os.environ[key]
-                break
+    env.pop("PGUSER", None)
+    env.pop("PGPASSWORD", None)
     return dbname, env
 
 
@@ -106,14 +106,14 @@ def _resolve_reset_dump_path(
     *,
     explicit: bool,
 ) -> Path | None:
-    """Return dump path for ``dev reset-db`` (CLI override or non-empty ``paths.fetch_db_dump``)."""
+    """Return dump path for ``native reset-db`` (CLI override or non-empty ``paths.fetch_db_dump``)."""
     if from_dump is not None:
         path = from_dump.expanduser().resolve()
         if not path.is_file():
-            print(f"dev reset-db: not a file: {path}", file=sys.stderr)
+            print(f"native reset-db: not a file: {path}", file=sys.stderr)
             raise SystemExit(1)
         if path.stat().st_size == 0:
-            print(f"dev reset-db: dump file is empty: {path}", file=sys.stderr)
+            print(f"native reset-db: dump file is empty: {path}", file=sys.stderr)
             raise SystemExit(1)
         return path
     default = config.fetch_db_dump_path
@@ -121,7 +121,7 @@ def _resolve_reset_dump_path(
         return default.resolve()
     if explicit:
         print(
-            f"dev reset-db: no dump at {default} — run `uv run dev fetch db` first "
+            f"native reset-db: no dump at {default} — run `uv run native fetch db` first "
             "or pass --from-dump PATH.",
             file=sys.stderr,
         )
@@ -155,22 +155,22 @@ def _require_usable_custom_dump(path: Path) -> None:
     size = path.stat().st_size
     if size < _MIN_CUSTOM_DUMP_BYTES:
         print(
-            f"dev reset-db: dump is only {size} bytes (expected a fetched production dump): {path}",
+            f"native reset-db: dump is only {size} bytes (expected a fetched production dump): {path}",
             file=sys.stderr,
         )
         print(
-            "  Run `uv run dev fetch db` (or `uv run scripts fetch-db`) to download a real dump.",
+            "  Run `uv run native fetch db` (or `uv run scripts fetch-db`) to download a real dump.",
             file=sys.stderr,
         )
         raise SystemExit(1)
     tables = _custom_dump_table_count(path)
     if tables == 0:
         print(
-            f"dev reset-db: dump contains no TABLE entries (empty archive): {path}",
+            f"native reset-db: dump contains no TABLE entries (empty archive): {path}",
             file=sys.stderr,
         )
         print(
-            "  Run `uv run dev fetch db` to replace it with a production dump.",
+            "  Run `uv run native fetch db` to replace it with a production dump.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -259,19 +259,25 @@ def _run_reset_db_drop_create_migrate_seed(
     for tool in tools:
         if not shutil.which(tool):
             print(
-                f"dev reset-db: `{tool}` not found on PATH (install PostgreSQL client tools).",
+                f"native reset-db: `{tool}` not found on PATH (install PostgreSQL client tools).",
                 file=sys.stderr,
             )
             return 127
 
-    post_script = reset_db_post_script(cfg.scripts_dir)
+    post_script, post_script_deprecated = reset_db_post_script(cfg.scripts_dir)
+    if post_script_deprecated and post_script is not None:
+        warn_deprecated(
+            f"{post_script_deprecated}reset-db-post.sh",
+            "native-reset-db-post.sh",
+            context="scripts",
+        )
     env_file = cfg.env_local_path
     if env_file.is_file():
-        print(f"dev reset-db: loaded {env_file.name} (same as Django settings)", flush=True)
+        print(f"native reset-db: loaded {env_file.name} (same as Django settings)", flush=True)
 
     dbname, env = _pg_env_for_cli(cfg)
     flags = _pg_conn_flags(env)
-    reset_cfg = cfg.dev.reset_db
+    reset_cfg = cfg.native.reset_db
 
     migrate_steps = 0
     if not use_dump:
@@ -280,7 +286,7 @@ def _run_reset_db_drop_create_migrate_seed(
         migrate_steps += 1
     total = 2 + (1 if use_dump else migrate_steps)
 
-    print("dev reset-db: starting (PostgreSQL client tools)", flush=True)
+    print("native reset-db: starting (PostgreSQL client tools)", flush=True)
     print(f"  target: {_pg_target_line(dbname, env)}", flush=True)
 
     step = 1
@@ -320,13 +326,13 @@ def _run_reset_db_drop_create_migrate_seed(
         tables = _public_table_count(dbname, env)
         if tables == 0:
             print(
-                "dev reset-db: database has no public tables after pg_restore "
+                "native reset-db: database has no public tables after pg_restore "
                 f"(target {_pg_target_line(dbname, env)}).",
                 file=sys.stderr,
             )
             print(
                 "  The dump may be wrong or pg_restore failed silently — "
-                "re-fetch with `uv run dev fetch db` and retry.",
+                "re-fetch with `uv run native fetch db` and retry.",
                 file=sys.stderr,
             )
             return 1
@@ -355,7 +361,7 @@ def _run_reset_db_drop_create_migrate_seed(
 
         if post_script is not None:
             print(f"  {step}/{total} bash {post_script.name} (project hook)", flush=True)
-            rc = run_bash_script(cfg, post_script, [], label="dev reset-db")
+            rc = run_bash_script(cfg, post_script, [], label="native reset-db")
             if rc != 0:
                 print(f"  failed: {post_script.name} exited with {rc}", file=sys.stderr, flush=True)
                 return rc
@@ -371,7 +377,7 @@ def _run_reset_db_drop_create_migrate_seed(
     rc = run_reset_db_post_manage_commands(cfg)
     if rc != 0:
         return rc
-    print("dev reset-db: finished successfully.", flush=True)
+    print("native reset-db: finished successfully.", flush=True)
     return 0
 
 
@@ -386,7 +392,7 @@ def _run_pg_restore(extra_pg_restore: list[str], *, config: ProjectConfig | None
     """
     if not shutil.which("pg_restore"):
         print(
-            "dev pg-restore: `pg_restore` not found on PATH (install PostgreSQL client tools).",
+            "native pg-restore: `pg_restore` not found on PATH (install PostgreSQL client tools).",
             file=sys.stderr,
         )
         return 127
@@ -396,11 +402,11 @@ def _run_pg_restore(extra_pg_restore: list[str], *, config: ProjectConfig | None
     if "--file" in extras:
         i = extras.index("--file")
         if i + 1 >= len(extras):
-            print("dev pg-restore: --file requires a path", file=sys.stderr)
+            print("native pg-restore: --file requires a path", file=sys.stderr)
             return 1
         path = Path(extras[i + 1]).expanduser()
         if not path.is_file():
-            print(f"dev pg-restore: not a file: {path}", file=sys.stderr)
+            print(f"native pg-restore: not a file: {path}", file=sys.stderr)
             return 1
         archive_path = path
         extras = extras[:i] + extras[i + 2 :]
@@ -409,16 +415,16 @@ def _run_pg_restore(extra_pg_restore: list[str], *, config: ProjectConfig | None
     env_file = cfg.env_local_path
     if env_file.is_file():
         print(
-            f"dev pg-restore: loaded {env_file.name} (same as Django settings)",
+            f"native pg-restore: loaded {env_file.name} (same as Django settings)",
             flush=True,
             file=sys.stderr,
         )
     dbname, env = _pg_env_for_cli(cfg)
     flags = _pg_conn_flags(env)
-    print(f"dev pg-restore: target {_pg_target_line(dbname, env)}", flush=True, file=sys.stderr)
+    print(f"native pg-restore: target {_pg_target_line(dbname, env)}", flush=True, file=sys.stderr)
     if archive_path is None:
         print(
-            "dev pg-restore: reading custom-format archive from stdin (pipe or `< file.dump`)",
+            "native pg-restore: reading custom-format archive from stdin (pipe or `< file.dump`)",
             flush=True,
             file=sys.stderr,
         )
@@ -436,12 +442,12 @@ def _run_pg_restore(extra_pg_restore: list[str], *, config: ProjectConfig | None
 
 def _run_uv_manage(args: list[str], *, extra_env: dict[str, str] | None = None) -> int:
     cfg = _config()
-    merge_dev = _django_manage_dev_env(cfg)
+    merge_local = _django_manage_native_env(cfg)
     env = os.environ.copy()
-    # Outer `uv run dev …` sets VIRTUAL_ENV to the workspace `.venv`. Nested `uv run` in
+    # Outer `uv run native …` sets VIRTUAL_ENV to the workspace `.venv`. Nested `uv run` in
     # django_backend targets that project’s env; inherited VIRTUAL_ENV mismatches and uv warns.
     env.pop("VIRTUAL_ENV", None)
-    env.update(merge_dev)
+    env.update(merge_local)
     if extra_env:
         env.update(extra_env)
     # Run django-rq jobs in-process (no rqworker/rqscheduler) unless the user set RQ_SYNCHRONOUS explicitly.
@@ -507,10 +513,10 @@ def _cmd_fetch_media(
             compose_project=compose_project,
         )
     except FileNotFoundError as exc:
-        print(f"dev fetch media: {exc}", file=sys.stderr)
+        print(f"native fetch media: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     except ValueError as exc:
-        print(f"dev fetch media: {exc}", file=sys.stderr)
+        print(f"native fetch media: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
 
@@ -525,173 +531,17 @@ def _run_npm(script: str, cwd: Path) -> int:
     return run_cmd(["npm", "run", script], cwd=cwd, check=False).returncode
 
 
-def _dev_main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="dev",
-        description="Local development without Docker: Django, frontend npm scripts, fetch db/media.",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    fetch = subparsers.add_parser(
-        "fetch",
-        help="Fetch DB via `uv run dk <env> bkp_db pgdump`, or media via rsync (SSH).",
-    )
-    fetch_sub = fetch.add_subparsers(dest="resource", required=True)
-
+def _native_main() -> None:
     cfg = _config()
-    default_dk_env = cfg.default_fetch_dk_env
-    legacy_remote_default = (
-        cfg.dev.fetch_media.legacy.remote if cfg.dev.fetch_media.legacy else None
-    )
-
-    p_db = fetch_sub.add_parser(
-        "db",
-        help="Download PostgreSQL custom-format dump via `dk … bkp_db pgdump` (requires `uv`; remote `db` up).",
-    )
-    p_db.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        metavar="PATH",
-        help="Output file (default: paths.fetch_db_dump from tooling.yaml)",
-    )
-    p_db.add_argument(
-        "--env",
-        default=None,
-        metavar="NAME",
-        help=f"dk environment under docker/envs/ (default: dev.fetch_media.dk_env → {default_dk_env!r})",
-    )
-
-    p_media = fetch_sub.add_parser(
-        "media",
-        help="Sync media via rsync (requires rsync + SSH). Default: django_media volume on docker_host from info.yaml.",
-    )
-    p_media.add_argument(
-        "--env",
-        default=None,
-        metavar="NAME",
-        help=(
-            f"dk env for docker_host / compose_project_name from info.yaml "
-            f"(default: dev.fetch_media.dk_env → {default_dk_env!r})."
-        ),
-    )
-    p_media.add_argument(
-        "--host",
-        default=None,
-        metavar="USER@HOST",
-        help="SSH target (override docker_host from info.yaml, or required for --legacy-path without tooling.yaml ssh_host).",
-    )
-    p_media.add_argument(
-        "--remote",
-        default=None,
-        metavar="PATH",
-        help=(
-            "Remote media directory with --legacy-path "
-            f"(default: dev.fetch_media.legacy.remote"
-            f"{f' → {legacy_remote_default!r}' if legacy_remote_default else ''})."
-        ),
-    )
-    p_media.add_argument(
-        "--dest",
-        type=Path,
-        metavar="DIR",
-        help=f"Local directory (default: <repo>/{cfg.dev.fetch_media.dest})",
-    )
-    p_media.add_argument(
-        "--partial",
-        action="store_true",
-        help="Sync only documents/ and original_images/ (skip renditions and other dirs). Default is full tree.",
-    )
-    p_media.add_argument(
-        "--legacy-path",
-        action="store_true",
-        help="Rsync from dev.fetch_media.legacy in tooling.yaml instead of the django_media Docker volume.",
-    )
-    p_media.add_argument(
-        "--compose-project",
-        default=None,
-        metavar="NAME",
-        help="COMPOSE_PROJECT_NAME for volume name <NAME>_django_media (default: compose_project_name from info.yaml).",
-    )
-
-    p_run = subparsers.add_parser("runserver", help="Django dev server (uv run manage.py runserver).")
-    p_run.add_argument(
-        "django_args",
-        nargs=argparse.REMAINDER,
-        help="Extra args passed to runserver (e.g. 0.0.0.0:8000).",
-    )
-    p_run.set_defaults(handler="runserver")
-
-    p_manage = subparsers.add_parser("manage", help="Run any Django management command via uv.")
-    p_manage.add_argument(
-        "manage_args",
-        nargs=argparse.REMAINDER,
-        help="Arguments to ./manage.py (e.g. migrate, shell_plus).",
-    )
-    p_manage.set_defaults(handler="manage")
-
-    p_reset = subparsers.add_parser(
-        "reset-db",
-        help=(
-            "dropdb + createdb + PostGIS + migrate (or scripts/dev-reset-db-post.sh when present; local Postgres)."
-        ),
-    )
-    p_reset.add_argument(
-        "--from-dump",
-        metavar="PATH",
-        dest="from_dump",
-        help=(
-            "After recreate, pg_restore this custom-format archive instead of migrate/post-hook. "
-            "Extra arguments are forwarded to pg_restore (e.g. --no-owner --no-acl)."
-        ),
-    )
-    p_reset.set_defaults(handler="reset-db")
-
-    p_pgrestore = subparsers.add_parser(
-        "pg-restore",
-        help="pg_restore from stdin (custom format); uses POSTGRES_* from .env.local like reset-db.",
-    )
-    p_pgrestore.add_argument(
-        "--file",
-        metavar="PATH",
-        dest="archive_file",
-        help="Read the custom-format archive from PATH instead of stdin.",
-    )
-    p_pgrestore.add_argument(
-        "pg_restore_args",
-        nargs=argparse.REMAINDER,
-        help="Extra pg_restore args (e.g. --clean). --no-owner/--no-acl are added if missing. Default archive is stdin.",
-    )
-    p_pgrestore.set_defaults(handler="pg-restore")
-
-    subparsers.add_parser(
-        "vite",
-        help="npm install then Vue dev server (paths.frontend from tooling.yaml).",
-    ).set_defaults(handler="vite")
-
-    dev_extensions = discover_dev_commands(cfg.scripts_dir)
-    dev_extension_names: set[str] = set()
-    for cmd_name, script_path in dev_extensions.items():
-        dev_extension_names.add(cmd_name)
-        rel = script_path.relative_to(cfg.repo_root)
-        p_ext = subparsers.add_parser(
-            cmd_name,
-            help=f"Run project script {rel} (scripts/dev-*.sh).",
-        )
-        p_ext.add_argument(
-            "script_args",
-            nargs=argparse.REMAINDER,
-            help=f"Arguments forwarded to {script_path.name}.",
-        )
-        p_ext.set_defaults(handler="dev-script", dev_script_path=script_path)
-
+    parser, native_extension_names = build_native_parser(cfg)
+    activate(parser)
     args, unknown = parser.parse_known_args()
     # argparse.REMAINDER does not swallow ``--opts`` on ``pg-restore`` once ``--file`` exists;
     # ``parse_known_args`` keeps them so we can forward them to ``pg_restore``.
     allow_unknown = (
         args.command == "pg-restore"
         or (args.command == "reset-db" and getattr(args, "from_dump", None))
-        or args.command in dev_extension_names
+        or args.command in native_extension_names
     )
     if unknown and not allow_unknown:
         parser.error(
@@ -725,7 +575,7 @@ def _dev_main() -> None:
     if handler == "manage":
         extra = [a for a in getattr(args, "manage_args", []) if a]
         if not extra:
-            print("dev manage: pass at least one management command (e.g. migrate).", file=sys.stderr)
+            print("native manage: pass at least one management command (e.g. migrate).", file=sys.stderr)
             sys.exit(2)
         sys.exit(_run_uv_manage(extra))
     if handler == "reset-db":
@@ -751,18 +601,33 @@ def _dev_main() -> None:
         if rc != 0:
             sys.exit(rc)
         sys.exit(_run_npm("dev", cfg.frontend_dir))
-    if handler == "dev-script":
+    if handler == "native-script":
         cfg = _config()
-        script_path = getattr(args, "dev_script_path", None)
+        script_path = getattr(args, "native_script_path", None)
         if script_path is None:
-            print("dev: internal error (missing dev_script_path)", file=sys.stderr)
+            print("native: internal error (missing native_script_path)", file=sys.stderr)
             sys.exit(2)
+        if script_path.name.startswith("dev-"):
+            warn_deprecated(
+                f"scripts/{script_path.name}",
+                f"scripts/native-{script_path.name[len('dev-'):]}",
+            )
+        elif script_path.name.startswith("local-"):
+            warn_deprecated(
+                f"scripts/{script_path.name}",
+                f"scripts/native-{script_path.name[len('local-'):]}",
+            )
         extra = [a for a in getattr(args, "script_args", []) if a]
         extra.extend(unknown)
-        sys.exit(run_bash_script(cfg, script_path, extra, label=f"dev {args.command}"))
+        sys.exit(run_bash_script(cfg, script_path, extra, label=f"native {args.command}"))
 
     sys.exit(1)
 
 
 def main() -> None:
-    run_cli(_dev_main, label="dev")
+    entry = Path(sys.argv[0]).name
+    if entry == "dev":
+        warn_deprecated("dev", "native")
+    elif entry == "local":
+        warn_deprecated("local", "native")
+    run_cli(_native_main, label="native")

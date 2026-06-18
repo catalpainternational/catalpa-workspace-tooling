@@ -91,7 +91,14 @@ def test_hostname_to_zone_apex() -> None:
     t = hostname_to_zone_and_record_name("catalpa.io", ["catalpa.io", "io"])
     assert t is not None
     assert t.zone == "catalpa.io"
-    assert t.record_name == "catalpa.io"
+    assert t.record_name == "@"
+
+
+def test_hostname_to_zone_apex_subdomain_zone() -> None:
+    t = hostname_to_zone_and_record_name("khs.temp.build", ["temp.build", "khs.temp.build"])
+    assert t is not None
+    assert t.zone == "khs.temp.build"
+    assert t.record_name == "@"
 
 
 def test_hostname_to_zone_www() -> None:
@@ -199,7 +206,7 @@ def test_find_a_record_matches_apex_at(monkeypatch: pytest.MonkeyPatch) -> None:
         "catalpa_tooling.doctl_domains.list_domain_records",
         lambda _zone, *, context: records,
     )
-    found = find_a_record("catalpa.io", "catalpa.io", context=None)
+    found = find_a_record("catalpa.io", "@", context=None)
     assert found is not None
     assert found["data"] == "1.2.3.4"
 
@@ -434,3 +441,69 @@ def test_sync_host_dns_invalid_ttl_returns_error(
         config, info, droplet_ip="203.0.113.5", context=None, dry_run=True
     ) == 1
     assert "dns_ttl" in capsys.readouterr().err.lower()
+
+
+def test_sync_host_dns_apex_uses_at_record_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    config = _load_config(tmp_path)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_registered_domains",
+        lambda *, context: ["khs.temp.build"],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.find_a_record_exact",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.find_a_record", lambda *a, **k: None)
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.find_cname_record", lambda *a, **k: None)
+    created: list[list[str]] = []
+
+    def fake_run(args: list[str], *, context: str | None, **kwargs: Any) -> Any:
+        created.append(list(args))
+        from types import SimpleNamespace
+
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", fake_run)
+    info = {"site_origin": ["https://khs.temp.build"]}
+    assert sync_host_dns(
+        config, info, droplet_ip="178.128.109.40", context=None, dry_run=False
+    ) == 0
+    assert created
+    assert "--record-name" in created[0]
+    assert created[0][created[0].index("--record-name") + 1] == "@"
+
+
+def test_sync_host_dns_removes_malformed_apex_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    config = _load_config(tmp_path)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_registered_domains",
+        lambda *, context: ["khs.temp.build"],
+    )
+    malformed = {"id": 42, "type": "A", "name": "khs.temp.build", "data": "178.128.109.40"}
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.find_a_record_exact",
+        lambda zone, name, *, context: malformed if name == zone else None,
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.find_a_record", lambda *a, **k: None)
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.find_cname_record", lambda *a, **k: None)
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], *, context: str | None, **kwargs: Any) -> Any:
+        calls.append(list(args))
+        from types import SimpleNamespace
+
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", fake_run)
+    info = {"site_origin": ["https://khs.temp.build"]}
+    assert sync_host_dns(
+        config, info, droplet_ip="178.128.109.40", context=None, dry_run=False
+    ) == 0
+    err = capsys.readouterr().err
+    assert "Removing malformed apex A record" in err
+    assert calls[0][0:4] == ["compute", "domain", "records", "delete"]
+    assert calls[1][calls[1].index("--record-name") + 1] == "@"

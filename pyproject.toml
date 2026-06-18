@@ -1,19 +1,24 @@
 [project]
 name = "catalpa-workspace-tooling"
-version = "0.3.0"
+version = "0.5.3"
 description = "Deploy and development CLIs driven by a repo-root tooling.yaml manifest"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["PyYAML>=6", "python-dotenv>=1"]
 
+[project.optional-dependencies]
+completion = ["argcomplete>=3.2"]
+
 [project.scripts]
-dev = "catalpa_tooling.dev_cli:main"
+native = "catalpa_tooling.native_cli:main"
+local = "catalpa_tooling.native_cli:main"
+dev = "catalpa_tooling.native_cli:main"
 dk = "catalpa_tooling.dk_cli:main"
 test = "catalpa_tooling.test_cli:main"
 scripts = "catalpa_tooling.scripts_cli:main"
 
 [dependency-groups]
-test = ["pytest>=8.4"]
+test = ["pytest>=8.4", "argcomplete>=3.2"]
 
 [build-system]
 requires = ["hatchling"]

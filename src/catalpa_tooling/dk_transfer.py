@@ -23,7 +23,8 @@ from catalpa_tooling.pgbackrest_db import (
 )
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.remote_deploy import list_deploy_env_names
-from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
+from catalpa_tooling.host_storage import ensure_host_storage
+from catalpa_tooling.storage_config import volume_bind_kwargs
 from catalpa_tooling.restic_files import (
     django_media_volume_name,
     resolve_env_with_compose_project,
@@ -127,7 +128,27 @@ def _collect_transfer_preflight_errors(
                 f"transfer: {label} (`{env_name}`): ensuring external volumes …",
                 file=sys.stderr,
             )
-            rc = ensure_external_stack_volumes(env_r, config=config)
+            bind_kwargs = volume_bind_kwargs(config, env_name)
+            if bind_kwargs:
+                import yaml
+
+                info_path = config.deploy_envs_dir / env_name / "info.yaml"
+                with open(info_path, encoding="utf-8") as f:
+                    info = yaml.safe_load(f) or {}
+                from catalpa_tooling.storage_config import parse_storage_volumes_from_info
+
+                specs = parse_storage_volumes_from_info(info, config)
+                rc = ensure_host_storage(
+                    config,
+                    env_name,
+                    info,
+                    specs,
+                    env_add=env_r,
+                )
+            else:
+                from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
+
+                rc = ensure_external_stack_volumes(env_r, config=config)
             if rc != 0:
                 errs.append(
                     f"{label} (`{env_name}`): `ensure_external_stack_volumes` failed (exit {rc})."
@@ -360,7 +381,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         rc = run_drop_create_app_database(
             dst_ctx.compose_file,
             dst_r,
-            postgis=config.dev.reset_db.postgis,
+            postgis=config.native.reset_db.postgis,
         )
         if rc != 0:
             try:
@@ -375,6 +396,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dst_ctx.compose_file,
             dst_r,
             ["--no-owner", "--no-acl", "--file", str(dump_path)],
+            config=config,
         )
         if rc != 0:
             try:
@@ -427,6 +449,44 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     return 0
 
 
+def populate_transfer_arguments(parser: argparse.ArgumentParser, config: ProjectConfig) -> None:
+    """Add ``dk transfer`` flags and positionals to ``parser``."""
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run preflight checks only (no transfer); exit 1 if preflight fails.",
+    )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip typing the destination env name to confirm (required without a TTY).",
+    )
+    parser.add_argument(
+        "--db",
+        action="store_true",
+        help="Select the database leg (see epilog).",
+    )
+    parser.add_argument(
+        "--media",
+        action="store_true",
+        help="Select the django_media leg (see epilog).",
+    )
+    parser.add_argument(
+        "--workdir",
+        default=None,
+        metavar="DIR",
+        help=f"Parent directory for the transfer session (default: <repo>/{config.ops.transfer_workdir}).",
+    )
+    parser.add_argument(
+        "--keep-workdir",
+        action="store_true",
+        help="Keep the temporary session directory after success.",
+    )
+    parser.add_argument("source_env", help="docker/envs/<name>/ with info.yaml (copy from).")
+    parser.add_argument("dest_env", help="docker/envs/<name>/ with info.yaml (copy into).")
+
+
 def build_transfer_arg_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="dk transfer",
@@ -440,38 +500,5 @@ def build_transfer_arg_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run preflight checks only (no transfer); exit 1 if preflight fails.",
-    )
-    p.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="Skip typing the destination env name to confirm (required without a TTY).",
-    )
-    p.add_argument(
-        "--db",
-        action="store_true",
-        help="Select the database leg (see epilog).",
-    )
-    p.add_argument(
-        "--media",
-        action="store_true",
-        help="Select the django_media leg (see epilog).",
-    )
-    p.add_argument(
-        "--workdir",
-        default=None,
-        metavar="DIR",
-        help=f"Parent directory for the transfer session (default: <repo>/{config.ops.transfer_workdir}).",
-    )
-    p.add_argument(
-        "--keep-workdir",
-        action="store_true",
-        help="Keep the temporary session directory after success.",
-    )
-    p.add_argument("source_env", help="docker/envs/<name>/ with info.yaml (copy from).")
-    p.add_argument("dest_env", help="docker/envs/<name>/ with info.yaml (copy into).")
+    populate_transfer_arguments(p, config)
     return p

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.3
+
+### Fixed
+
+- `native manage` / `native runserver` use plain `uv run ./manage.py` again instead of requiring a `[dependency-groups].dev` table in `paths.backend/pyproject.toml`. Projects that split groups (e.g. `debug`, `test`) no longer need an empty `dev` stub.
+
+## 0.5.1
+
+### Breaking (deprecated aliases retained)
+
+- Host development CLI renamed from `local` to `native` (`uv run native …`). The `local` and `dev` entry points remain but print deprecation warnings (`local` is a shell reserved word).
+
+## 0.5.0
+
+### Breaking (deprecated aliases retained for one release)
+
+- Host development CLI renamed from `dev` to `native` (`uv run native …`). The `dev` and `local` entry points remain but print deprecation warnings (`local` is a shell reserved word).
+- `tooling.yaml` section `dev:` / `local:` renamed to `native:` (`NativeConfig`). Loading older keys still works with deprecation warnings.
+- `dk <env> bkp_db` / `bkp_files` renamed to `db` / `files`. Old names remain with deprecation warnings.
+- Deploy env aliases: `paths.deploy.env_aliases` maps deprecated env names to canonical dirs (e.g. `local: full`).
+
+### Added
+
+- `src/catalpa_tooling/deprecation.py` — shared `warn_deprecated()` helper.
+- `docs/NATIVE_COMMAND_TREE.md` (replaces `DEV_COMMAND_TREE.md` / `LOCAL_COMMAND_TREE.md`).
+
+## 0.4.1
+
+### Added
+
+- Unified argparse trees for `dev`, `dk`, `test`, and `scripts` with optional shell completion via `argcomplete` (`[completion]` extra). Register with `register-python-argcomplete` or `scripts/install-completions.sh`.
+- Explicit `dk <env> compose …` subcommand for completion-friendly docker compose passthrough; implicit `dk <env> up -d` remains supported.
+- Multi-project direnv integration: [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) (one-time zsh hook) and [`scripts/envrc.template`](scripts/envrc.template) (per-repo `.envrc`).
+
+### Fixed
+
+- Spaces backup auto-provisioning assigns the bucket to the DigitalOcean project from `digitalocean.project_name` / `project_id` in `tooling.yaml` (via `doctl projects resources assign do:space:<bucket>`), not only the default project.
+
 ## 0.3.0
 
 ### Added

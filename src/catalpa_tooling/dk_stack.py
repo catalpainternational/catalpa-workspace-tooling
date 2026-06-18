@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from catalpa_tooling.config import ProjectConfig
@@ -17,6 +18,46 @@ from catalpa_tooling.images import (
 from catalpa_tooling.tty_restore import restore_controlling_tty
 
 _BUILD_TIME_TZ = ZoneInfo("Asia/Dili")
+
+# Compose substitution placeholders when credentials are not loaded (replaces repo build.env).
+_BUILD_PLACEHOLDERS: dict[str, str] = {
+    "POSTGRES_PASSWORD": "build_placeholder",
+    "DJANGO_DB_PASSWORD": "build_placeholder",
+    "METABASE_DB_PASSWORD": "build_placeholder",
+    "DJANGO_SECRET_KEY": "build-placeholder-not-for-production",
+    "BERO_ORIGIN": "https://build.example",
+    "DJANGO_ORIGIN": "https://build.example",
+    "METABASE_ORIGIN": "https://build.example",
+}
+
+
+def _load_dotenv_file(path: Path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE env file (no export prefix, # comments)."""
+    if not path.is_file():
+        return {}
+    out: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        out[key] = value.strip().strip('"').strip("'")
+    return out
+
+
+def _project_env_file(config: ProjectConfig) -> Path:
+    return config.repo_root / "jid.env"
+
+
+def _apply_build_placeholders(env: dict[str, str]) -> None:
+    for key, value in _BUILD_PLACEHOLDERS.items():
+        if not (env.get(key) or "").strip():
+            env[key] = value
 
 
 def stack_build_services(config: ProjectConfig) -> tuple[str, ...]:
@@ -204,8 +245,9 @@ def env_for_stack_build(
     image_registry: str | None = None,
     image_tag: str | None = None,
 ) -> dict[str, str]:
-    """Env vars for compose build: OCI labels, ``STACK_IMAGE_*`` aligned with compose.yml defaults."""
-    out: dict[str, str] = {}
+    """Env vars for compose build: project env, placeholders, ``STACK_IMAGE_*``, VITE metadata."""
+    out: dict[str, str] = dict(_load_dotenv_file(_project_env_file(config)))
+    _apply_build_placeholders(out)
     gh = (github_repository or "").strip() or _github_repository(config.repo_root)
     if gh:
         out["GITHUB_REPOSITORY"] = gh

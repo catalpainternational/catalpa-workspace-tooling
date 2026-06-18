@@ -125,7 +125,7 @@ def rsync_pull_remote_to_local(ssh_target: str, remote_path: str, local_path: Pa
     remote = f"{ssh_target}:{remote_path}"
     cmd = [*RSYNC_BASE, remote, str(local_path)]
     print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-    return run_cmd(cmd, check=False).returncode
+    return run_cmd(cmd, check=False, print_cmd=False).returncode
 
 
 def rsync_push_local_to_dest(
@@ -147,7 +147,7 @@ def rsync_push_local_to_dest(
         cmd.extend(["--dry-run", "--itemize-changes"])
     cmd.extend([src, dest_norm])
     print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-    return run_cmd(cmd, check=False).returncode
+    return run_cmd(cmd, check=False, print_cmd=False).returncode
 
 
 def rsync_push_via_container(
@@ -203,7 +203,7 @@ def resolve_push_media_source(
     repo_root: Path,
     raw: str | None,
 ) -> Path | None:
-    """Resolve host media directory for ``bkp_files push`` (default ``dev.fetch_media.dest``)."""
+    """Resolve host media directory for ``bkp_files push`` (default ``native.fetch_media.dest``)."""
     if raw:
         p = Path(raw).expanduser()
         path = p.resolve() if p.is_absolute() else (repo_root / p).resolve()
@@ -228,7 +228,7 @@ def resolve_push_media_source(
         return resolved
 
     print(
-        f"bkp_files push: no media at {default} — run `uv run dev fetch media` first "
+        f"bkp_files push: no media at {default} — run `uv run native fetch media` first "
         "or pass `--source PATH`.",
         file=sys.stderr,
     )

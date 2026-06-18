@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from catalpa_tooling.dev_cli import _dev_main
+from catalpa_tooling.native_cli import _native_main
 from catalpa_tooling.scripts_cli import _scripts_main
 from tests.helpers import write_minimal_tooling_tree
 
@@ -25,7 +25,7 @@ def test_dev_help_lists_discovered_extension(
     buf = StringIO()
     monkeypatch.setattr(sys, "stdout", buf)
     with pytest.raises(SystemExit) as exc:
-        _dev_main()
+        _native_main()
     assert exc.value.code == 0
     assert "foo" in buf.getvalue()
 
@@ -43,7 +43,7 @@ def test_dev_runs_discovered_script(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["dev", "foo", "bar"])
     with pytest.raises(SystemExit) as exc:
-        _dev_main()
+        _native_main()
     assert exc.value.code == 0
 
 

@@ -13,7 +13,7 @@ from catalpa_tooling.doctl_binary import (
     print_doctl_required,
     run_doctl,
 )
-from catalpa_tooling.cloud_config.render import DEFAULT_TIMEZONE, render_droplet_bootstrap
+from catalpa_tooling.cloud_config.render import render_droplet_bootstrap
 from catalpa_tooling.deploy_do_link import (
     cmd_env_host,
     cmd_env_host_create,
@@ -27,92 +27,6 @@ from catalpa_tooling.doctl_projects import (
 )
 
 PROG = "dk digoc"
-
-
-def _cmd_auth_init(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog=f"{PROG} auth init")
-    p.add_argument(
-        "--context",
-        help="Named authentication context (default: default)",
-    )
-    p.add_argument(
-        "-t",
-        "--access-token",
-        dest="access_token",
-        metavar="TOKEN",
-        help="API token (non-interactive; forwarded to host doctl)",
-    )
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
-    ensure_doctl_available()
-    args = ["auth", "init"]
-    if ns.context:
-        args.extend(["--context", ns.context])
-    if ns.access_token:
-        args.extend(["--access-token", ns.access_token])
-    elif sys.stdin.isatty():
-        args.append("--interactive")
-    else:
-        print(
-            f"{PROG} auth init: not a TTY and no --access-token given.\n"
-            "Run in a terminal, pass -t TOKEN, or clear a bad token with:\n"
-            "  dk digoc auth remove --context default",
-            file=sys.stderr,
-        )
-        return 1
-    return run_doctl(args).returncode
-
-
-def _cmd_auth_forward(subcommand: str, argv: list[str]) -> int:
-    """Pass through to host ``doctl auth <subcommand>`` (remove, switch, …)."""
-    ensure_doctl_available()
-    return run_doctl(["auth", subcommand, *argv]).returncode
-
-
-def _cmd_auth_list(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog=f"{PROG} auth list")
-    p.add_argument("--context", help="Unused; listed for symmetry with other subcommands")
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
-    ensure_doctl_available()
-    return run_doctl(["auth", "list"], context=ns.context).returncode
-
-
-def _cmd_projects_list(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog=f"{PROG} projects list")
-    p.add_argument("--context", help="Authentication context")
-    p.add_argument(
-        "--format",
-        default="ID,Name,Purpose",
-        help="Columns for host doctl output (default: ID,Name,Purpose)",
-    )
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
-    ensure_doctl_available()
-    return run_doctl(
-        ["projects", "list", "--format", ns.format],
-        context=ns.context,
-    ).returncode
-
-
-def _cmd_cloud_config_print(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(
-        prog=f"{PROG} cloud-config print",
-        description="Print rendered droplet bootstrap cloud-config (#cloud-config).",
-    )
-    p.add_argument(
-        "--timezone",
-        default=DEFAULT_TIMEZONE,
-        help=f"IANA timezone (default: {DEFAULT_TIMEZONE})",
-    )
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
-    print(render_droplet_bootstrap(timezone=ns.timezone), end="")
-    return 0
 
 
 def _forward_host_create_argv(ns: argparse.Namespace) -> list[str]:
@@ -154,61 +68,65 @@ def _load_do_config_for_droplets(
         raise SystemExit(1) from e
 
 
-def _cmd_droplets_create(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(
-        prog=f"{PROG} droplets create",
-        description="Create a droplet with Docker CE, UFW, unattended upgrades, and SSH hardening.",
-    )
-    p.add_argument(
-        "name",
-        nargs="?",
-        default=None,
-        help="Droplet hostname (default with --for-env: digitalocean.droplet_name or {project}-{env})",
-    )
-    p.add_argument(
-        "--for-env",
-        metavar="ENV",
-        help="Use resolved droplet name for ENV (info.yaml override or {project}-{env}) when NAME is omitted",
-    )
-    p.add_argument(
-        "--project",
-        metavar="NAME|UUID",
-        help="Project name or UUID (default: digitalocean.* in tooling.yaml)",
-    )
-    p.add_argument("--size", help="Droplet size slug (e.g. s-2vcpu-4gb)")
-    p.add_argument(
-        "--image",
-        help="Image slug (default: ubuntu-24-04-x64 or digitalocean.image)",
-    )
-    p.add_argument("--region", help="Region slug (e.g. sgp1)")
-    p.add_argument(
-        "--ssh-key",
-        action="append",
-        dest="ssh_keys",
-        default=[],
-        metavar="ID|FINGERPRINT",
-        help="SSH key ID or fingerprint (repeatable; default: all keys from host doctl)",
-    )
-    p.add_argument(
-        "--timezone",
-        help=f"IANA timezone (default: {DEFAULT_TIMEZONE} or digitalocean.timezone)",
-    )
-    p.add_argument("--context", help="Authentication context")
-    p.add_argument("--wait", action="store_true", help="Wait until the droplet is active")
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print cloud-config and host doctl command without creating",
-    )
-    p.add_argument(
-        "--no-monitoring",
-        action="store_true",
-        help="Omit --enable-monitoring (default: install DO metrics agent)",
-    )
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
+def _cmd_auth_init(ns_or_argv: argparse.Namespace | list[str]) -> int:
+    if isinstance(ns_or_argv, list):
+        return run_digoc(["auth", "init", *ns_or_argv])
+    ns = ns_or_argv
+    ensure_doctl_available()
+    args = ["auth", "init"]
+    if ns.context:
+        args.extend(["--context", ns.context])
+    if ns.access_token:
+        args.extend(["--access-token", ns.access_token])
+    elif sys.stdin.isatty():
+        args.append("--interactive")
+    else:
+        print(
+            f"{PROG} auth init: not a TTY and no --access-token given.\n"
+            "Run in a terminal, pass -t TOKEN, or clear a bad token with:\n"
+            "  dk digoc auth remove --context default",
+            file=sys.stderr,
+        )
+        return 1
+    return run_doctl(args).returncode
 
+
+def _cmd_auth_forward(subcommand: str, argv: list[str]) -> int:
+    ensure_doctl_available()
+    return run_doctl(["auth", subcommand, *argv]).returncode
+
+
+def _cmd_auth_list(ns_or_argv: argparse.Namespace | list[str]) -> int:
+    if isinstance(ns_or_argv, list):
+        return run_digoc(["auth", "list", *ns_or_argv])
+    ns = ns_or_argv
+    ensure_doctl_available()
+    return run_doctl(["auth", "list"], context=ns.context).returncode
+
+
+def _cmd_projects_list(ns_or_argv: argparse.Namespace | list[str]) -> int:
+    if isinstance(ns_or_argv, list):
+        return run_digoc(["projects", "list", *ns_or_argv])
+    ns = ns_or_argv
+    ensure_doctl_available()
+    return run_doctl(
+        ["projects", "list", "--format", ns.format],
+        context=ns.context,
+    ).returncode
+
+
+def _cmd_cloud_config_print(ns_or_argv: argparse.Namespace | list[str]) -> int:
+    if isinstance(ns_or_argv, list):
+        return run_digoc(["cloud-config", "print", *ns_or_argv])
+    ns = ns_or_argv
+    print(render_droplet_bootstrap(timezone=ns.timezone), end="")
+    return 0
+
+
+def _cmd_droplets_create(ns_or_argv: argparse.Namespace | list[str]) -> int:
+    if isinstance(ns_or_argv, list):
+        return run_digoc(["droplets", "create", *ns_or_argv])
+    ns = ns_or_argv
     droplet_name = (ns.name or "").strip() if ns.name else ""
     for_env = (ns.for_env or "").strip()
 
@@ -256,7 +174,8 @@ def _cmd_droplets_create(argv: list[str]) -> int:
         )
 
     if not droplet_name:
-        p.error("NAME is required (env droplets: dk <env> host create)")
+        print("NAME is required (env droplets: dk <env> host create)", file=sys.stderr)
+        return 2
 
     do_config, manifest_context = _load_do_config_for_droplets(project_flag=ns.project)
     if cfg is not None and do_config is None:
@@ -284,31 +203,10 @@ def _cmd_droplets_create(argv: list[str]) -> int:
     )
 
 
-def _cmd_droplets_list(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(
-        prog=f"{PROG} droplets list",
-        description="List droplets assigned to a DigitalOcean project.",
-    )
-    p.add_argument(
-        "--project",
-        metavar="NAME|UUID",
-        help="Project name or UUID (default: digitalocean.* in tooling.yaml)",
-    )
-    p.add_argument("--context", help="Authentication context")
-    p.add_argument(
-        "--format",
-        default=",".join(("ID", "Name", "PublicIPv4", "PrivateIPv4", "Region", "Status")),
-        help="Comma-separated columns for text output",
-    )
-    p.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit JSON (droplet objects)",
-    )
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
-
+def _cmd_droplets_list(ns_or_argv: argparse.Namespace | list[str]) -> int:
+    if isinstance(ns_or_argv, list):
+        return run_digoc(["droplets", "list", *ns_or_argv])
+    ns = ns_or_argv
     ensure_doctl_available()
     cfg: ProjectConfig | None = None
     try:
@@ -335,20 +233,10 @@ def _cmd_droplets_list(argv: list[str]) -> int:
     )
 
 
-def _cmd_droplets_suggest_env(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(
-        prog=f"{PROG} droplets suggest-env",
-        description="Print suggested docker_host for a dk deploy environment (same as dk <env> host).",
-    )
-    p.add_argument("env", help="Deploy environment name (docker/envs/<env>/)")
-    p.add_argument(
-        "--write",
-        action="store_true",
-        help="Write docker_host to info.yaml",
-    )
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
+def _cmd_droplets_suggest_env(ns_or_argv: argparse.Namespace | list[str]) -> int:
+    if isinstance(ns_or_argv, list):
+        return run_digoc(["droplets", "suggest-env", *ns_or_argv])
+    ns = ns_or_argv
     try:
         cfg = ProjectConfig.from_cwd()
     except ProjectConfigError as e:
@@ -362,89 +250,60 @@ def _cmd_droplets_suggest_env(argv: list[str]) -> int:
     return cmd_env_host(cfg, env, write=ns.write, dry_run=False)
 
 
-def _print_help() -> None:
-    print(
-        f"""usage: {PROG} [-h] {{auth,cloud-config,projects,droplets}} ...
-
-DigitalOcean helpers for dk deploy (requires the official doctl binary on PATH or DOCTL_BIN).
-
-  {PROG} auth init [--context NAME] [-t TOKEN]   Initialize API token (interactive)
-  {PROG} auth list                    List authentication contexts
-  {PROG} auth remove --context NAME   Remove a stored context
-  {PROG} auth switch --context NAME   Switch active context
-  {PROG} cloud-config print           Print droplet bootstrap cloud-config
-  {PROG} projects list                List DigitalOcean projects
-  {PROG} droplets list [--project …]  List droplets in a project (Env column when tooling.yaml present)
-  {PROG} droplets create [NAME] …     Create a droplet (env: use dk <env> host create)
-  {PROG} droplets suggest-env ENV     Deprecated; use dk <env> host
-
-Run from an application repo root to use digitalocean.* defaults in tooling.yaml."""
-    )
-
-
-def _run_digoc_impl(argv: list[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help"):
-        _print_help()
-        return 0 if argv and argv[0] in ("-h", "--help") else 1
-
-    top = argv[0]
-    rest = argv[1:]
-
-    if top == "auth":
-        if not rest or rest[0] in ("-h", "--help"):
-            print(f"usage: {PROG} auth {{init,list,remove,switch}}", file=sys.stderr)
-            return 0 if rest and rest[0] in ("-h", "--help") else 1
-        sub = rest[0]
-        sub_argv = rest[1:]
-        if sub == "init":
-            return _cmd_auth_init(sub_argv)
-        if sub == "list":
-            return _cmd_auth_list(sub_argv)
-        return _cmd_auth_forward(sub, sub_argv)
-
-    if top == "projects":
-        if not rest or rest[0] in ("-h", "--help"):
-            print(f"usage: {PROG} projects list", file=sys.stderr)
-            return 0 if rest and rest[0] in ("-h", "--help") else 1
-        if rest[0] == "list":
-            return _cmd_projects_list(rest[1:])
-        print(f"unknown projects command: {rest[0]!r}", file=sys.stderr)
-        return 1
-
-    if top == "cloud-config":
-        if not rest or rest[0] in ("-h", "--help"):
-            print(f"usage: {PROG} cloud-config print", file=sys.stderr)
-            return 0 if rest and rest[0] in ("-h", "--help") else 1
-        if rest[0] == "print":
-            return _cmd_cloud_config_print(rest[1:])
-        print(f"unknown cloud-config command: {rest[0]!r}", file=sys.stderr)
-        return 1
-
-    if top == "droplets":
-        if not rest or rest[0] in ("-h", "--help"):
-            print(f"usage: {PROG} droplets {{list,create,suggest-env}}", file=sys.stderr)
-            return 0 if rest and rest[0] in ("-h", "--help") else 1
-        if rest[0] == "list":
-            return _cmd_droplets_list(rest[1:])
-        if rest[0] == "create":
-            return _cmd_droplets_create(rest[1:])
-        if rest[0] == "suggest-env":
-            return _cmd_droplets_suggest_env(rest[1:])
-        print(f"unknown droplets command: {rest[0]!r}", file=sys.stderr)
-        return 1
-
-    print(f"unknown command: {top!r}", file=sys.stderr)
-    _print_help()
-    return 1
-
-
-def run_digoc(argv: list[str]) -> int:
-    """Dispatch ``dk digoc …`` subcommands. Returns an exit code (does not call ``sys.exit``)."""
+def dispatch_digoc(ns: argparse.Namespace) -> int:
+    """Dispatch parsed ``dk digoc …`` namespace to handler implementations."""
     try:
-        return _run_digoc_impl(argv)
+        handler = getattr(ns, "handler", None)
+        if handler == "auth-init":
+            return _cmd_auth_init(ns)
+        if handler == "auth-list":
+            return _cmd_auth_list(ns)
+        if handler == "auth-forward":
+            sub = getattr(ns, "auth_forward_sub", None) or ns.auth_command
+            return _cmd_auth_forward(sub, [])
+        if handler == "projects-list":
+            return _cmd_projects_list(ns)
+        if handler == "cloud-config-print":
+            return _cmd_cloud_config_print(ns)
+        if handler == "droplets-list":
+            return _cmd_droplets_list(ns)
+        if handler == "droplets-create":
+            return _cmd_droplets_create(ns)
+        if handler == "droplets-suggest-env":
+            return _cmd_droplets_suggest_env(ns)
+        print(f"dk digoc: unknown handler {handler!r}", file=sys.stderr)
+        return 1
     except DoctlNotFoundError as e:
         print_doctl_required(e)
         return 1
     except DoctlCommandError as e:
         print(str(e), file=sys.stderr)
         return e.returncode
+
+
+def run_digoc(argv: list[str]) -> int:
+    """Legacy argv dispatch for tests; prefer ``dispatch_digoc`` after parsing."""
+    from catalpa_tooling.digoc_parser import build_digoc_parser
+
+    config = None
+    try:
+        config = ProjectConfig.from_cwd()
+    except (ProjectConfigError, FileNotFoundError):
+        pass
+
+    if not argv:
+        build_digoc_parser(config).print_help()
+        return 1
+    if argv[0] in ("-h", "--help"):
+        build_digoc_parser(config).print_help()
+        return 0
+
+    parser = build_digoc_parser(config)
+    try:
+        ns = parser.parse_args(argv)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 1
+        return int(code) if int(code) != 0 else 1
+    return dispatch_digoc(ns)

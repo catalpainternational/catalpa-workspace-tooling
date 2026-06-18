@@ -25,7 +25,7 @@ def test_confirm_accepts_stripped_match(monkeypatch) -> None:
 
 def test_confirm_prompt_quotes_env_name_only(monkeypatch, capsys) -> None:
     monkeypatch.setattr("builtins.input", lambda: "")
-    confirm_by_typing_env_name("local")
+    confirm_by_typing_env_name("native")
     err = capsys.readouterr().err
-    assert "Type 'local' (environment name) to confirm" in err
-    assert "the environment name 'local'" not in err
+    assert "Type 'native' (environment name) to confirm" in err
+    assert "the environment name 'native'" not in err

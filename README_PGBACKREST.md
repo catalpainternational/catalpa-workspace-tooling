@@ -57,7 +57,7 @@ Use `pgbr_s3_read_*` → `PGBR_S3_READ_*` with the same suffixes. **Do not set W
 
 ## Auto-provision (DigitalOcean Spaces)
 
-When WRITE-mode `pgbr_s3_write_*` keys are missing, `dk <env> bkp_db` commands that require write access (backup, `configure stanza-create`, `install-systemd`, etc.) can create a Spaces bucket and access key interactively. **`restore` and `configure verify` use READ or WRITE credentials and never auto-provision** — set `pgbr_s3_read_*` on restore-only hosts (e.g. local/dev).
+When WRITE-mode `pgbr_s3_write_*` keys are missing, `dk <env> bkp_db` commands that require write access (backup, `init`, `configure stanza-create`, `install-systemd`, etc.) can create a Spaces bucket and access key interactively. **`restore` and `configure verify` use READ or WRITE credentials and never auto-provision** — set `pgbr_s3_read_*` on restore-only hosts (e.g. local/dev).
 
 - Host **`doctl`** — Spaces access keys (`doctl spaces keys create`); PAT scopes in [README.md](README.md#digitalocean-pat-scopes)
 - Host **`s3cmd`** — bucket create / existence check (`s3cmd mb`, `s3cmd info`)
@@ -83,7 +83,7 @@ ops:
     postgres_conf: 30-myapp-pgbackrest-archive.conf   # drop-in on postgres_conf volume
     pgbackrest_conf: 50-myapp-managed.conf            # drop-in on pgbackrest_conf volume
     default_registry: ghcr.io/org/myapp-postgres
-    restore_temp_prefix: myapp_pgrestore_
+    restore_temp_prefix: myapp_pgrestore_   # optional; default {project.name}_pgrestore_
     data_volume: pgdata                               # compose volumes: key (default postgres_data)
     pg1_path: /var/lib/postgresql/18/docker           # PG 18+ image PGDATA (see entrypoint)
     # log_level_console: info
@@ -93,41 +93,52 @@ ops:
 
 Filenames must match what your Postgres image and compose volumes expect. When the `db` service mounts `pgdata:/var/lib/postgresql`, set `pg1_path` to the real cluster directory (official Postgres 18+ images use `/var/lib/postgresql/<major>/docker`, not `…/data`). Override per deploy with env `PGBR_PG1_PATH` if needed. After changing `pg1_path`, run `bkp_db configure` again so the `pgbackrest_conf` volume picks up the new `pg1-path`.
 
-## Apply configuration to a new host
+## New backup host checklist
 
-Prerequisites: `docker/envs/<env>/info.yaml` has `docker_host` (SSH URL to the deploy machine).
+Prerequisites: `docker/envs/<env>/info.yaml` has `docker_host` (SSH URL to the deploy machine) and complete `pgbr_s3_write_*` in credentials (or use auto-provision on write commands).
 
 From the **application repo root**:
 
 ```bash
-# 1) Create external compose volumes on the remote Docker host
-dk prod ensure_volumes
+dk prod host create                    # droplet + docker_host (if not already set)
 
-# 2) Write pgBackRest + Postgres archive config into named volumes
-dk prod bkp_db configure
-dk prod bkp_db configure verify          # optional: version + online check (db must be up)
-dk prod bkp_db configure stanza-create   # first time only; WRITE mode + initialized PGDATA
+dk prod bkp_db init                    # volumes + conf + db init + stanza (idempotent)
 
-# 3) Start the stack (also materializes on plain `up`)
+dk prod up -d                          # full stack (volumes + conf already done by init or any prior up)
+dk prod bkp_db install-systemd --enable
+dk prod bkp_db backup full             # optional sanity check
+```
+
+| Step | What happens |
+|------|----------------|
+| `host create` | Deploy machine and `docker_host` in `info.yaml`. |
+| `bkp_db init` | Creates external volumes, materializes pgBackRest/Postgres conf, starts `db` if needed, registers S3 stanza (skips if already present). |
+| `up -d` | Starts the rest of the stack (also runs volume ensure + materialize if you skipped `init`). |
+| `install-systemd` | Host timers for full/incr backups — [README_SYSTEMD.md](README_SYSTEMD.md). |
+
+**Equivalent manual flow** (no `init`):
+
+```bash
+dk prod host create
+dk prod bkp_db configure stanza-create   # materializes conf if needed, starts db, creates stanza
 dk prod up -d
-# or: dk prod up --provision -d
-
-# 4) Sanity-check
-dk prod bkp_db info
-dk prod bkp_db backup full
-
-# 5) Scheduled backups on the host
-dk prod bkp_db install-systemd --dry-run
 dk prod bkp_db install-systemd --enable
 ```
 
-| Step | Effect |
-|------|--------|
-| `ensure_volumes` | Creates compose `external` volumes (`*_postgres_data`, `*_postgres_conf`, `*_pgbackrest_conf`, …) on `DOCKER_HOST`. |
-| `bkp_db configure` | Renders managed pgBackRest INI and WAL `archive_command` into conf volumes via one-off `docker run`. |
-| `configure verify` | `pgbackrest version` on the conf volume, then online `check` in the running `db` container. |
-| `configure stanza-create` | Registers stanza metadata in S3 (once per new repo path; needs initialized PostgreSQL data). |
-| `install-systemd` | See [README_SYSTEMD.md](README_SYSTEMD.md). |
+### What `dk <env> up` does automatically
+
+Every **`dk <env> up …`** (including `up -d db`) runs **`ensure_volumes`** and **`materialize_configs`** before calling `docker compose`. You do **not** need separate `ensure_volumes` or `bkp_db configure` before `up` unless you want config on disk without starting containers.
+
+The dk-only flag **`--provision`** on `up` is stripped before compose and does not add extra steps — plain `up` already materializes.
+
+### Advanced (without starting the stack)
+
+| Command | Effect |
+|---------|--------|
+| `ensure_volumes` | Create compose `external` volumes only. |
+| `bkp_db configure` | Materialize pgBackRest INI + WAL `archive_command` into conf volumes only. |
+| `bkp_db configure verify` | `pgbackrest version` on conf volume, then online `check` (`db` must be running). |
+| `bkp_db configure stanza-create` | Same stanza step as `init` (starts `db` if PGDATA empty; idempotent). |
 
 Without any `PGBR_S3_WRITE_*`, materialize leaves **WAL archiving off** and a local-repo baseline (suitable for dev).
 
@@ -141,22 +152,23 @@ pgBackRest levels: `off`, `error`, `warn`, `info`, `detail`, `debug`, `trace`. S
 | `info.yaml` → `pgbackrest:` | same |
 | `info.yaml` → `env:` | `pgbr_log_level_console`, `pgbr_log_level_stderr`, `pgbr_restore_log_level_console` |
 
-All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr` when set. Offline **`restore`** uses `restore_log_level_console`, then `log_level_console`, then defaults to **`info`** for console progress. Systemd backup units pick up the same vars when installed via `bkp_db install-systemd` (from the merged deploy env).
+All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr` when set. Offline **`restore`** uses `restore_log_level_console`, then `log_level_console`, then defaults to **`detail`** for console progress. Systemd backup units pick up the same vars when installed via `bkp_db install-systemd` (from the merged deploy env).
 
 ## `bkp_db` subcommands
 
 | Subcommand | Description |
 |------------|-------------|
+| `init` | Greenfield backup host: volumes + materialize + start `db` + stanza-create (idempotent) |
 | `configure` | Materialize volume config from `PGBR_S3_*` |
 | `configure verify` | Preflight + online check (db running) |
-| `configure stanza-create` | `pgbackrest stanza-create` (WRITE only) |
+| `configure stanza-create` | Stanza in S3 (WRITE only; starts `db` if needed; skips if stanza exists) |
 | `install-systemd [--dry-run] [--enable]` | Install timer units on deploy host |
 | `info` | `pgbackrest info` in db container |
 | `check` | Online `pgbackrest check` |
 | `version` | `pgbackrest version` in db container |
 | `backup full\|incr\|diff` | Online backup (db running) |
 | `pgdump [args…]` | `pg_dump` via compose |
-| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; PostGIS only when `dev.reset_db.postgis` is true in `tooling.yaml`) |
+| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; PostGIS only when `native.reset_db.postgis` is true in `tooling.yaml`) |
 | `restore [pgBackRest args…]` | Offline pgBackRest restore |
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `bkp_db configure`** (same as materialize) before the destructive restore confirmation. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
@@ -208,8 +220,9 @@ After `install-systemd`, the host has `@CONFIG_DIR@/pgbackrest-backup.env` with 
 | `PGBR_S3_WRITE_* and PGBR_S3_READ_* are mutually exclusive` | Both prefixes set in one env. |
 | `Skipping pgBackRest systemd files: PGBR_S3_WRITE_STANZA is not set` | WRITE credentials missing. |
 | `Could not discover a unique db container` | Stack not up, multiple Postgres containers, or set `pgbr_db_container`. |
-| Archive still off after deploy | Run `bkp_db configure` or `up --provision`; entrypoint may not overwrite provisioned drop-ins. |
-| `stanza-create` fails on empty PGDATA | Start `db` once so initdb creates `global/pg_control`, then retry. |
+| Archive still off after deploy | Run `bkp_db configure` or any `dk <env> up`; entrypoint may not overwrite provisioned drop-ins. |
+| `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically); or `dk <env> up -d db` then retry. |
+| `info` shows `missing stanza path` after `init` skipped stanza-create | Broken or empty S3 repo prefix; clear repo path or fix credentials, then re-run `bkp_db configure stanza-create` (tooling only skips when `info` reports `status: ok`). |
 | `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
 
 App-specific Postgres image and compose notes belong in the consumer repo (e.g. `docker/postgres/README.md`).
