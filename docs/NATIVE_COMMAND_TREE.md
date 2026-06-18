@@ -32,7 +32,7 @@ native
 | `paths.email_backend_dir` | Default `EMAIL_BACKEND_FOLDER` for host `manage` / `runserver` when unset |
 | `paths.media_dir` | Optional host media tree for `native runserver` / `manage` (`DJANGO_MEDIA_ROOT` when unset) |
 | `paths.fetch_db_dump` | Default output for `fetch db` |
-| `paths.scripts` | Shell wrappers (`fetch_db.sh`, `native-*.sh`; deprecated `local-*.sh`, `dev-*.sh`) |
+| `paths.scripts` | Shell wrappers (`fetch_db.sh`, `native-*.sh`; deprecated `local-*.sh`, `dev-*.sh`). String or ordered list; first directory wins on name clash |
 | `native.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
 | `native.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
 | `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`) |
@@ -215,5 +215,5 @@ Arguments after the subcommand are passed to the script. Unknown flags on `pg-re
 
 | CLI | Overlap |
 |-----|---------|
-| `scripts` | Non-`native-` shell helpers under `paths.scripts` (e.g. `fetch-db` → `fetch_db.sh`) |
+| `scripts` | Non-`native-` shell helpers under `paths.scripts` (string or list; e.g. `fetch-db` → `fetch_db.sh`) |
 | `dk` | Remote deploy, `db pgdump`, `files push`, `pull_media` (tar volume export; `native fetch media` is rsync pull) |

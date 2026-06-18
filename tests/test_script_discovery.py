@@ -78,3 +78,28 @@ def test_reset_db_post_script(tmp_path: Path) -> None:
     (scripts / DEPRECATED_RESET_DB_POST_SCRIPT).write_text("#!/bin/bash\n", encoding="utf-8")
     path, deprecated = reset_db_post_script(scripts)
     assert deprecated == "dev-"
+
+
+def test_discover_scripts_commands_merges_dirs_first_wins(tmp_path: Path) -> None:
+    primary = tmp_path / "scripts"
+    shared = tmp_path / "bero_scripts"
+    primary.mkdir()
+    shared.mkdir()
+    (primary / "fetch_db.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    (shared / "fetch_metabase_db.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    (shared / "fetch_db.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+
+    found = discover_scripts_commands([primary, shared])
+    assert set(found) == {"fetch-db", "fetch-metabase-db"}
+    assert found["fetch-db"].parent == primary
+    assert found["fetch-metabase-db"].parent == shared
+
+
+def test_discover_scripts_commands_skips_missing_dir(tmp_path: Path) -> None:
+    primary = tmp_path / "scripts"
+    primary.mkdir()
+    (primary / "helper.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    missing = tmp_path / "nope"
+
+    found = discover_scripts_commands([primary, missing])
+    assert list(found) == ["helper"]

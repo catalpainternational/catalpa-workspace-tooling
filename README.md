@@ -107,11 +107,22 @@ After install, these console scripts are available:
 
 ### Project script extensions
 
-Place bash scripts under `paths.scripts` in `tooling.yaml`:
+Place bash scripts under `paths.scripts` in `tooling.yaml` (a single directory or an **ordered list**). When using a list, **earlier directories win** if the same command name appears in more than one path (so project `scripts/` can override shared helpers):
+
+```yaml
+paths:
+  scripts: scripts
+  # Bero + Metabase consumers:
+  # scripts:
+  #   - scripts
+  #   - bero/docker/postgres/scripts
+```
 
 - **`scripts/native-<name>.sh`** → `uv run native <name>`. Deprecated `local-*.sh` / `dev-*.sh` still work with warnings.
 - **`scripts/<name>.sh`** (not extension scripts) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
 - **`scripts/native-reset-db-post.sh`** — optional hook after `native reset-db`; older hook names deprecated.
+
+Scripts receive `CATALPA_REPO_ROOT`, `CATALPA_FRONTEND_DIR`, and optional Metabase fetch defaults (`FETCH_DB_SSH_HOST`, `FETCH_DB_OUTPUT`) from tooling when run via `uv run scripts …`.
 
 For npm-based dev servers, source the bundled helper:
 

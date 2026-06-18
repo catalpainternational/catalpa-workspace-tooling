@@ -12,6 +12,8 @@ def test_load_minimal_project(minimal_project) -> None:
     assert minimal_project.meta.name == "minimal"
     assert minimal_project.ops.pgbackrest.restore_temp_prefix == "app_pgrestore_"
     assert minimal_project.backend_dir == minimal_project.repo_root / "backend"
+    assert minimal_project.paths.scripts == ("scripts",)
+    assert minimal_project.scripts_dir == minimal_project.repo_root / "scripts"
     assert minimal_project.image_component("web") == "app-web"
     assert minimal_project.stack.compose_project_default == "app_compose"
     assert minimal_project.ops.restic.data_volume == "django_media"
@@ -72,6 +74,59 @@ ops:
     (tmp_path / "docker" / "images.yaml").write_text("image_registry: x\n", encoding="utf-8")
     cfg = load_project_config(tmp_path)
     assert cfg.ops.pgbackrest.restore_temp_prefix == "myapp_pgrestore_"
+
+
+def test_paths_scripts_accepts_list(tmp_path: Path, isolated_tooling: None) -> None:
+    (tmp_path / "pyproject.toml").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "tooling.yaml").write_text(
+        """
+project:
+  name: myapp
+paths:
+  backend: .
+  frontend: bero
+  scripts:
+    - scripts
+    - bero/docker/postgres/scripts
+  env_local: .env
+  email_backend_dir: e
+  fetch_db_dump: d
+  deploy:
+    envs_dir: docker/envs
+    images_config: docker/images.yaml
+    default_compose: compose.yml
+    dev_compose: compose.dev.yaml
+stack:
+  compose_project_default: p
+  services: {web: w, proxy: p, db: d}
+  images:
+    registry_key: image_registry
+    components: {web: w, proxy: p, db: d}
+  healthcheck: {service: w, url: http://localhost/healthz}
+ops:
+  install_prefix: /opt/x
+  config_dir: /etc/x
+  systemd_unit_prefix: x-
+  transfer_workdir: .x
+  default_db_container: x_db
+  pgbackrest:
+    postgres_conf: a.conf
+    pgbackrest_conf: b.conf
+    default_registry: reg
+  zabbix:
+    unit_name: u.service
+    userparams_file: 99.conf
+  systemd_units:
+    pgbackrest: []
+    restic: []
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "docker").mkdir()
+    (tmp_path / "docker" / "images.yaml").write_text("image_registry: x\n", encoding="utf-8")
+    cfg = load_project_config(tmp_path)
+    assert cfg.paths.scripts == ("scripts", "bero/docker/postgres/scripts")
+    assert len(cfg.scripts_dirs) == 2
 
 
 def test_missing_required_key(tmp_path: Path, isolated_tooling: None) -> None:

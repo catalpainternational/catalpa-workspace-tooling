@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 NATIVE_SCRIPT_PREFIX = "native-"
@@ -129,18 +130,29 @@ def discover_dev_commands(
     return discover_native_commands(scripts_dir, reserved=reserved)
 
 
-def discover_scripts_commands(scripts_dir: Path) -> dict[str, Path]:
-    """Map ``scripts`` subcommand names to ``scripts/*.sh`` except extension scripts."""
-    if not scripts_dir.is_dir():
-        return {}
+def discover_scripts_commands(scripts_dirs: Path | Sequence[Path]) -> dict[str, Path]:
+    """Map ``scripts`` subcommand names to ``*.sh`` under one or more directories.
+
+    When multiple directories are given, earlier entries win on command-name collision.
+    Missing directories are skipped.
+    """
+    dirs: tuple[Path, ...]
+    if isinstance(scripts_dirs, Path):
+        dirs = (scripts_dirs,)
+    else:
+        dirs = tuple(scripts_dirs)
+
     found: dict[str, Path] = {}
-    for path in sorted(scripts_dir.iterdir()):
-        if not path.is_file():
+    for scripts_dir in dirs:
+        if not scripts_dir.is_dir():
             continue
-        cmd = scripts_command_from_script_name(path.name)
-        if cmd is None:
-            continue
-        found[cmd] = path.resolve()
+        for path in sorted(scripts_dir.iterdir()):
+            if not path.is_file():
+                continue
+            cmd = scripts_command_from_script_name(path.name)
+            if cmd is None or cmd in found:
+                continue
+            found[cmd] = path.resolve()
     return found
 
 
