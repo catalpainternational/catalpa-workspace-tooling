@@ -224,5 +224,7 @@ After `install-systemd`, the host has `@CONFIG_DIR@/pgbackrest-backup.env` with 
 | `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically); or `dk <env> up -d db` then retry. |
 | `info` shows `missing stanza path` after `init` skipped stanza-create | Broken or empty S3 repo prefix; clear repo path or fix credentials, then re-run `bkp_db configure stanza-create` (tooling only skips when `info` reports `status: ok`). |
 | `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
+| `invalid checkpoint record` / `could not locate required checkpoint record` after restore | Often an **online** deploy backup with no WAL archive chain in the repo (`pgbackrest info` shows `wal archive min/max: none present`). Wipe `postgres_data`, restore from an **offline** full backup, or pass `dk <env> db restore -- --type=immediate --archive-mode=off`. Re-create deploy backups with Postgres stopped (see `upgrade_postgres` `backup.sh`). |
+| `dk <env> db restore -- …` passes invalid option `--` to pgBackRest | Omit the `--` separator, or upgrade tooling (leading `--` is stripped before invoke). |
 
 App-specific Postgres image and compose notes belong in the consumer repo (e.g. `docker/postgres/README.md`).

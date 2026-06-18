@@ -687,6 +687,8 @@ def _handle_bkp_db(
 
     if sub == "restore":
         restore_extra = list(getattr(ns, "pgbackrest_restore_args", None) or [])
+        while restore_extra and restore_extra[0] == "--":
+            restore_extra.pop(0)
         if not ns.yes and not sys.stdin.isatty():
             print(
                 "Refusing restore without a TTY. Pass --yes if you intend to run non-interactive.",
