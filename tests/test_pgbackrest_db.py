@@ -217,7 +217,7 @@ class TestRemoveInterruptedComposeRunDb(unittest.TestCase):
         self.assertEqual(calls[0][:2], ["docker", "ps"])
         self.assertIn("label=com.docker.compose.oneoff=True", calls[0])
         self.assertIn("label=com.docker.compose.project=ligainan_dev", calls[0])
-        self.assertEqual(calls[1], ["docker", "stop", "abc123", "def456"])
+        self.assertEqual(calls[1], ["docker", "kill", "abc123", "def456"])
         self.assertEqual(calls[2], ["docker", "rm", "-f", "abc123", "def456"])
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -799,6 +800,27 @@ def _list_oneoff_db_container_ids(env: dict[str, str]) -> list[str]:
         check=False,
         print_cmd=False,
     )
+    ids = [line for line in (listed.stdout or "").splitlines() if line.strip()]
+    if ids:
+        return ids
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+    if not project:
+        return []
+    # Fallback: ``docker compose run db`` names containers ``{project}-db-run-<hash>``.
+    listed = run_cmd(
+        [
+            "docker",
+            "ps",
+            "-q",
+            "--filter",
+            f"name={project}-db-run-",
+        ],
+        env=merged,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
     return [line for line in (listed.stdout or "").splitlines() if line.strip()]
 
 
@@ -806,22 +828,23 @@ def _remove_interrupted_compose_run_db(compose_file: str, env: dict[str, str]) -
     """Stop and remove one-off ``db`` containers left when ``compose run`` is interrupted."""
     ids = _list_oneoff_db_container_ids(env)
     if not ids:
+        print(
+            "pgBackRest restore: no interrupted one-off `db` container found to stop.",
+            file=sys.stderr,
+        )
         return
     merged = _merged_process_env(env)
     print(
-        "pgBackRest restore: stopping interrupted one-off `db` container(s)…",
+        f"pgBackRest restore: stopping interrupted one-off `db` container(s): "
+        f"{', '.join(ids)}…",
         file=sys.stderr,
     )
     run_cmd(
-        ["docker", "stop", *ids],
+        ["docker", "kill", *ids],
         env=merged,
         stdin=subprocess.DEVNULL,
         check=False,
         print_cmd=False,
-    )
-    print(
-        "pgBackRest restore: removing interrupted one-off `db` container(s)…",
-        file=sys.stderr,
     )
     run_cmd(
         ["docker", "rm", "-f", *ids],
@@ -852,6 +875,11 @@ def _restore_db_logs_silenced(merged_env: dict[str, str]) -> bool:
 def _terminate_log_follower(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
         return
+    if proc.stdout is not None:
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
     proc.terminate()
     try:
         proc.wait(timeout=15)
@@ -917,6 +945,15 @@ def wait_db_logs_for_recovery_ready(
 
     th = threading.Thread(target=_read_loop, daemon=True)
     th.start()
+    old_sigint = signal.getsignal(signal.SIGINT)
+
+    def _sigint_during_logs(signum: int, frame: object | None) -> None:
+        _terminate_log_follower(proc)
+        th.join(timeout=5)
+        signal.signal(signal.SIGINT, old_sigint)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _sigint_during_logs)
     try:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
@@ -944,6 +981,7 @@ def wait_db_logs_for_recovery_ready(
         th.join(timeout=5)
         raise
     finally:
+        signal.signal(signal.SIGINT, old_sigint)
         _terminate_log_follower(proc)
         th.join(timeout=5)
 

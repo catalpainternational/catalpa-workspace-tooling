@@ -7,6 +7,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -53,25 +54,53 @@ def run_interruptible(
 ) -> subprocess.CompletedProcess[Any]:
     """Run ``cmd`` and stop the full process tree on Ctrl-C.
 
-    Unlike ``subprocess.run``, a KeyboardInterrupt terminates the child (and its
-    process group on POSIX) instead of leaving long-running grandchildren such as
-    ``docker compose run`` containers behind. Optional ``on_interrupt`` runs after
-    the tree is signalled (e.g. remove orphaned one-off containers).
+    Unlike ``subprocess.run``, Ctrl-C terminates the child (and its process group on
+    POSIX) instead of leaving long-running grandchildren such as ``docker compose run``
+    containers behind. A SIGINT handler runs cleanup immediately — needed because
+    ``docker compose run`` often stops streaming logs on Ctrl-C while the CLI keeps
+    blocking in ``wait()`` until the container exits, without raising ``KeyboardInterrupt``
+    in the parent. Optional ``on_interrupt`` runs after the tree is signalled (e.g.
+    stop/remove orphaned one-off containers).
     """
     if print_cmd:
         print(f"$ {format_shell_command(cmd)}", flush=True)
     popen_kwargs = dict(kwargs)
     popen_kwargs.pop("check", None)
     proc = subprocess.Popen(list(cmd), start_new_session=True, **popen_kwargs)
-    try:
-        rc = proc.wait()
-    except KeyboardInterrupt:
+    interrupted = threading.Event()
+    old_sigint = signal.getsignal(signal.SIGINT)
+
+    def _handle_sigint(signum: int, frame: object | None) -> None:
+        if interrupted.is_set():
+            if callable(old_sigint) and old_sigint not in (
+                signal.SIG_DFL,
+                signal.SIG_IGN,
+            ):
+                old_sigint(signum, frame)  # type: ignore[misc, operator]
+            raise KeyboardInterrupt
+        interrupted.set()
         print("\nInterrupted.", file=sys.stderr, flush=True)
         terminate_process_tree(proc, timeout=terminate_timeout)
         if on_interrupt is not None:
             on_interrupt()
-        return subprocess.CompletedProcess(list(cmd), _EXIT_SIGINT)
-    return subprocess.CompletedProcess(list(cmd), rc)
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+    try:
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            if not interrupted.is_set():
+                interrupted.set()
+                print("\nInterrupted.", file=sys.stderr, flush=True)
+                terminate_process_tree(proc, timeout=terminate_timeout)
+                if on_interrupt is not None:
+                    on_interrupt()
+            return subprocess.CompletedProcess(list(cmd), _EXIT_SIGINT)
+        if interrupted.is_set():
+            return subprocess.CompletedProcess(list(cmd), _EXIT_SIGINT)
+        return subprocess.CompletedProcess(list(cmd), rc)
+    finally:
+        signal.signal(signal.SIGINT, old_sigint)
 
 
 def run(cmd: Sequence[str], *, print_cmd: bool = True, **kwargs: Any) -> subprocess.CompletedProcess:
