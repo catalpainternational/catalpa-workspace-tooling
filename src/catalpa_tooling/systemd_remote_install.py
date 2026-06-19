@@ -11,10 +11,12 @@ from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.restic_files import (
+    RESTIC_FILES_BACKUP_PATH_KEY,
     RESTIC_FILES_DATA_VOLUME_KEY,
     aws_env_vars_for_s3_restic_env_file,
     normalize_restic_credentials,
     resolve_env_with_compose_project,
+    restic_backup_mount_path,
     validate_restic_env_for_systemd,
     restic_data_volume_key,
 )
@@ -164,6 +166,10 @@ def render_restic_env(
     if project:
         lines.append(f"COMPOSE_PROJECT_NAME={project}")
     lines.append(f"{RESTIC_FILES_DATA_VOLUME_KEY}={restic_data_volume_key(config)}")
+    backup_path = restic_backup_mount_path(config=config)
+    default_backup_path = f"/backup/{restic_data_volume_key(config)}"
+    if backup_path != default_backup_path:
+        lines.append(f"{RESTIC_FILES_BACKUP_PATH_KEY}={backup_path}")
     order = [
         "RESTIC_REPOSITORY",
         "RESTIC_PASSWORD",

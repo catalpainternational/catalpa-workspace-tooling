@@ -51,8 +51,9 @@ RESTIC_IMAGE: Final[str] = "restic/restic:0.17.3"
 # Default mount when ``ops.restic.data_volume`` is ``django_media`` (must match paths in snapshots).
 DJANGO_MEDIA_MOUNT: Final[str] = "/backup/django_media"
 
-# Env key written to restic-files-backup.env for systemd (see restic-files-backup.sh).
+# Env keys written to restic-files-backup.env for systemd (see restic-files-backup.sh).
 RESTIC_FILES_DATA_VOLUME_KEY: Final[str] = "RESTIC_FILES_DATA_VOLUME"
+RESTIC_FILES_BACKUP_PATH_KEY: Final[str] = "RESTIC_FILES_BACKUP_PATH"
 
 
 def restic_data_volume_key(config: ProjectConfig | None) -> str:
@@ -67,7 +68,13 @@ def _restic_data_volume_key(config: ProjectConfig | None) -> str:
 
 
 def restic_backup_mount_path(*, config: ProjectConfig | None = None) -> str:
-    """Path inside the restic container (``/backup/<ops.restic.data_volume>``)."""
+    """Path inside the restic container used for backup/restore snapshot paths.
+
+    Defaults to ``/backup/<ops.restic.data_volume>``; override with ``ops.restic.backup_path``
+    when existing snapshots use a different prefix (legacy host mounts).
+    """
+    if config is not None and config.ops.restic.backup_path:
+        return config.ops.restic.backup_path
     return f"/backup/{_restic_data_volume_key(config)}"
 
 def _default_compose_project(config: ProjectConfig | None) -> str:

@@ -10,7 +10,7 @@ set -euo pipefail
 DATA_VOLUME="${RESTIC_FILES_DATA_VOLUME:-django_media}"
 VOL="${COMPOSE_PROJECT_NAME}_${DATA_VOLUME}"
 IMAGE="${RESTIC_IMAGE:-restic/restic:0.17.3}"
-MOUNT="/backup/${DATA_VOLUME}"
+MOUNT="${RESTIC_FILES_BACKUP_PATH:-/backup/${DATA_VOLUME}}"
 
 # restic reads AWS_* inside the container; host can set RESTIC_S3_* (or legacy AWS_*).
 EXTRA_ENV=()
