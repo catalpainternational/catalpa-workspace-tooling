@@ -212,10 +212,15 @@ class OpsConfig:
 
 @dataclass(frozen=True)
 class FetchMediaLegacyConfig:
-    """Fixed host directory for ``local fetch media --legacy-path`` (non-Docker deploys)."""
+    """Fixed host directory for ``local fetch media --legacy-path`` (non-Docker deploys).
+
+    When ``default`` is true, ``native fetch media`` uses legacy path mode unless
+    ``--no-legacy-path`` is passed.
+    """
 
     remote: str
     ssh_host: str | None
+    default: bool = False
 
 
 @dataclass(frozen=True)
@@ -759,7 +764,12 @@ def _parse_fetch_media_legacy(raw: Any) -> FetchMediaLegacyConfig | None:
         raise ProjectConfigError("native.fetch_media.legacy must be a mapping")
     remote = _require_str(raw, "remote", section="native.fetch_media.legacy")
     ssh_host = _optional_str(raw, "ssh_host")
-    return FetchMediaLegacyConfig(remote=remote.rstrip("/"), ssh_host=ssh_host)
+    use_legacy = _optional_bool(raw, "default", default=False)
+    return FetchMediaLegacyConfig(
+        remote=remote.rstrip("/"),
+        ssh_host=ssh_host,
+        default=use_legacy,
+    )
 
 
 def _parse_fetch_media(raw: Any) -> FetchMediaConfig:

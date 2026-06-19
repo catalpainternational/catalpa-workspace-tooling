@@ -35,7 +35,7 @@ native
 | `paths.scripts` | Shell wrappers (`fetch_db.sh`, `native-*.sh`; deprecated `local-*.sh`, `dev-*.sh`). String or ordered list; first directory wins on name clash |
 | `native.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
 | `native.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
-| `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`) |
+| `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`, optional `default: true`) |
 | `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate (default: `false`) |
 | `native.reset_db.pg_restore_args` | Extra `pg_restore` flags when restoring a dump (e.g. `--clean`, `--if-exists`) |
 | `native.reset_db.post_manage_commands` | `manage.py` argv lists after reset (local host, not compose exec) |
@@ -60,6 +60,7 @@ native:
     dk_env: prod
     dest: media
     legacy:
+      default: true
       remote: /backup/django_media
       ssh_host: site-production.catalpa.build
   reset_db:
@@ -102,12 +103,12 @@ Requires `uv`, `bash`, and network/SSH access to the remote stack (same as `dk <
 | `--dest` | `<repo>/native.fetch_media.dest` | Local destination |
 | `--partial` | off | Only `documents/` and `original_images/` |
 | `--compose-project` | from `info.yaml` or `stack.compose_project_default` | Volume name prefix |
-| `--legacy-path` | off | Use `native.fetch_media.legacy` instead of Docker volume |
+| `--legacy-path` / `--no-legacy-path` | `native.fetch_media.legacy.default` (else off) | Use `native.fetch_media.legacy` instead of Docker volume |
 | `--remote` | `legacy.remote` | Remote directory when `--legacy-path` (override) |
 
 Requires `rsync` and `ssh` on PATH.
 
-**Legacy path mode:** rsync from a fixed directory on the SSH host (`--legacy-path`). Needs `legacy.remote` in `tooling.yaml` or `--remote`, and `legacy.ssh_host` or `--host`.
+**Legacy path mode:** rsync from a fixed directory on the SSH host (`--legacy-path`, or by default when `legacy.default: true` in tooling.yaml). Needs `legacy.remote` in tooling.yaml or `--remote`, and `legacy.ssh_host` or `--host`. Use `--no-legacy-path` to force Docker volume mode.
 
 **Load into a local Compose stack** (named `django_media` volume, not host bind-mount):
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.4 (unreleased)
+
+### Added
+
+- `native.fetch_media.legacy.default: true` in tooling.yaml — opt-in default for `--legacy-path` on `native fetch media` (use `--no-legacy-path` to force Docker volume mode).
+
 ## 0.6.4 (unreleased)
 
 ### Added
