@@ -42,6 +42,7 @@ from catalpa_tooling.pgbackrest_db import (
     run_info,
     run_pg_dump,
     run_pg_restore,
+    plan_restore_offline,
     run_restore_offline,
     run_version,
     _pg_restore_owner_acl_extras,
@@ -689,6 +690,16 @@ def _handle_bkp_db(
         restore_extra = list(getattr(ns, "pgbackrest_restore_args", None) or [])
         while restore_extra and restore_extra[0] == "--":
             restore_extra.pop(0)
+        restore_dry = dry_run or bool(getattr(ns, "restore_dry_run", False))
+        if restore_dry:
+            return plan_restore_offline(
+                env_add,
+                compose_file=compose_file,
+                env_name=env_name,
+                extra_pgbackrest_args=restore_extra,
+                config=config,
+                docker_host=str(docker_host),
+            )
         if not ns.yes and not sys.stdin.isatty():
             print(
                 "Refusing restore without a TTY. Pass --yes if you intend to run non-interactive.",
