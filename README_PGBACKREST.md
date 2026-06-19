@@ -169,9 +169,9 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `backup full\|incr\|diff` | Online backup (db running) |
 | `pgdump [args…]` | `pg_dump` via compose |
 | `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; PostGIS only when `native.reset_db.postgis` is true in `tooling.yaml`) |
-| `restore [pgBackRest args…]` | Offline pgBackRest restore |
+| `restore [pgBackRest args…]` | Offline pgBackRest restore (`--dry-run` prints stanza, repo path, and compose command) |
 
-On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `bkp_db configure`** (same as materialize) before the destructive restore confirmation. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
+On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
 
 Offline restore may require global `dk --yes` when not attached to a TTY.
 
@@ -226,5 +226,7 @@ After `install-systemd`, the host has `@CONFIG_DIR@/pgbackrest-backup.env` with 
 | `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
 | `invalid checkpoint record` / `could not locate required checkpoint record` after restore | Often an **online** deploy backup with no WAL archive chain in the repo (`pgbackrest info` shows `wal archive min/max: none present`). Wipe `postgres_data`, restore from an **offline** full backup, or pass `dk <env> db restore -- --type=immediate --archive-mode=off`. Re-create deploy backups with Postgres stopped (see `upgrade_postgres` `backup.sh`). |
 | `dk <env> db restore -- …` passes invalid option `--` to pgBackRest | Omit the `--` separator, or upgrade tooling (leading `--` is stripped before invoke). |
+| Restore uses wrong S3 `repo1-path` after editing credentials | Volume config was stale; run `dk <env> db restore --dry-run` to compare volume vs env, then `dk <env> db configure` or accept the restore prompt to re-materialize. |
+| Ctrl-C during restore leaves containers running | Upgrade tooling: interrupt stops compose, one-off `db` containers, and log follow; restart with `docker compose up -d db` if needed. |
 
 App-specific Postgres image and compose notes belong in the consumer repo (e.g. `docker/postgres/README.md`).

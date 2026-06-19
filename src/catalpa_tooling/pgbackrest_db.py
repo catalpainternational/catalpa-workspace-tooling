@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,10 +20,12 @@ from catalpa_tooling.pgbackrest_volume_config import (
     _docker_env_for_remote,
     _pgdata_has_control_file,
     conflict_error_message,
+    describe_pgbackrest_conf_status,
     ensure_db_compose_volumes,
     ensure_external_stack_volumes,
     ensure_pgbackrest_conf_before_restore,
     ensure_postgres_data_volume,
+    expected_pgbackrest_repo_settings,
     materialize_configs,
     pgbackrest_managed_conf_materialized,
     pgbackrest_stanza_exists_in_repo,
@@ -34,7 +37,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
 )
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
-from catalpa_tooling.run_cmd import run as run_cmd
+from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
 from catalpa_tooling.run_cmd import run_interruptible
 
 BackupType = Literal["full", "incr", "diff"]
@@ -732,7 +735,7 @@ def run_backup(compose_file: str, env: dict[str, str], backup_type: BackupType) 
 
 def _compose_stop_db(compose_file: str, env: dict[str, str]) -> int:
     """``docker compose stop db`` (idempotent)."""
-    return run_cmd(
+    r = run_interruptible(
         [
             "docker",
             "compose",
@@ -744,7 +747,8 @@ def _compose_stop_db(compose_file: str, env: dict[str, str]) -> int:
         env=_merged_process_env(env),
         stdin=subprocess.DEVNULL,
         check=False,
-    ).returncode
+    )
+    return r.returncode
 
 
 def _compose_up_db(
@@ -762,17 +766,16 @@ def _compose_up_db(
     if force_recreate:
         argv.append("--force-recreate")
     argv.append("db")
-    return run_cmd(
+    r = run_interruptible(
         argv,
         env=_merged_process_env(env),
         stdin=subprocess.DEVNULL,
         check=False,
-    ).returncode
+    )
+    return r.returncode
 
 
-def _remove_interrupted_compose_run_db(compose_file: str, env: dict[str, str]) -> None:
-    """Remove one-off ``db`` containers left when ``compose run`` is interrupted."""
-    merged = _merged_process_env(env)
+def _oneoff_db_container_filters(env: dict[str, str]) -> list[str]:
     filters = [
         "label=com.docker.compose.oneoff=True",
         "label=com.docker.compose.service=db",
@@ -780,8 +783,13 @@ def _remove_interrupted_compose_run_db(compose_file: str, env: dict[str, str]) -
     project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
     if project:
         filters.append(f"label=com.docker.compose.project={project}")
+    return filters
+
+
+def _list_oneoff_db_container_ids(env: dict[str, str]) -> list[str]:
+    merged = _merged_process_env(env)
     ps_argv = ["docker", "ps", "-q"]
-    for f in filters:
+    for f in _oneoff_db_container_filters(env):
         ps_argv.extend(["--filter", f])
     listed = run_cmd(
         ps_argv,
@@ -791,9 +799,26 @@ def _remove_interrupted_compose_run_db(compose_file: str, env: dict[str, str]) -
         check=False,
         print_cmd=False,
     )
-    ids = [line for line in (listed.stdout or "").splitlines() if line.strip()]
+    return [line for line in (listed.stdout or "").splitlines() if line.strip()]
+
+
+def _remove_interrupted_compose_run_db(compose_file: str, env: dict[str, str]) -> None:
+    """Stop and remove one-off ``db`` containers left when ``compose run`` is interrupted."""
+    ids = _list_oneoff_db_container_ids(env)
     if not ids:
         return
+    merged = _merged_process_env(env)
+    print(
+        "pgBackRest restore: stopping interrupted one-off `db` container(s)…",
+        file=sys.stderr,
+    )
+    run_cmd(
+        ["docker", "stop", *ids],
+        env=merged,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        print_cmd=False,
+    )
     print(
         "pgBackRest restore: removing interrupted one-off `db` container(s)…",
         file=sys.stderr,
@@ -824,6 +849,17 @@ def _restore_db_logs_silenced(merged_env: dict[str, str]) -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def _terminate_log_follower(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def wait_db_logs_for_recovery_ready(
     compose_file: str,
     env: dict[str, str],
@@ -840,6 +876,7 @@ def wait_db_logs_for_recovery_ready(
     after that timestamp are considered — avoids matching a previous container start.
 
     Returns ``(True, "")`` on success, or ``(False, reason)`` on failure/timeout.
+    Raises ``KeyboardInterrupt`` when the user presses Ctrl-C (after stopping log follow).
     """
     merged = _merged_process_env(env)
     silence_db_logs = _restore_db_logs_silenced(merged)
@@ -862,6 +899,7 @@ def wait_db_logs_for_recovery_ready(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        start_new_session=True,
     )
     ready = threading.Event()
 
@@ -880,8 +918,18 @@ def wait_db_logs_for_recovery_ready(
     th = threading.Thread(target=_read_loop, daemon=True)
     th.start()
     try:
-        if ready.wait(timeout=timeout_sec):
-            return True, ""
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            remaining = min(1.0, deadline - time.monotonic())
+            if remaining <= 0:
+                break
+            if ready.wait(timeout=remaining):
+                return True, ""
+            if proc.poll() is not None:
+                return (
+                    False,
+                    "`docker compose logs -f db` exited before PostgreSQL reported recovery complete.",
+                )
         if proc.poll() is not None:
             return (
                 False,
@@ -891,14 +939,119 @@ def wait_db_logs_for_recovery_ready(
             False,
             f"timed out after {timeout_sec}s waiting for `{_PG_RECOVERY_READY_LOG}` in `db` logs.",
         )
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+    except KeyboardInterrupt:
+        _terminate_log_follower(proc)
         th.join(timeout=5)
+        raise
+    finally:
+        _terminate_log_follower(proc)
+        th.join(timeout=5)
+
+
+def build_restore_offline_argv(
+    env: dict[str, str],
+    *,
+    compose_file: str,
+    extra_pgbackrest_args: Sequence[str] | None = None,
+) -> list[str] | None:
+    """Return ``docker compose run … pgbackrest restore`` argv, or ``None`` if env is invalid."""
+    err = validate_pgbackrest_env(env)
+    if err:
+        return None
+    stanza = resolve_stanza(env)
+    if not stanza:
+        return None
+    extras = tuple(extra_pgbackrest_args or ())
+    extra_shell = " ".join(shlex.quote(a) for a in extras)
+    inner = (
+        f"pgbackrest {_log_level_argv_shell(env, for_restore=True)}"
+        f"--stanza={shlex.quote(stanza)} restore --delta"
+    )
+    if extra_shell:
+        inner = f"{inner} {extra_shell}"
+    return [
+        "docker",
+        "compose",
+        "-f",
+        compose_file,
+        "run",
+        "-T",
+        "--rm",
+        "--no-deps",
+        "-u",
+        "postgres",
+        "--entrypoint",
+        "/bin/sh",
+        "db",
+        "-c",
+        inner,
+    ]
+
+
+def plan_restore_offline(
+    env: dict[str, str],
+    *,
+    compose_file: str,
+    env_name: str,
+    extra_pgbackrest_args: Sequence[str] | None = None,
+    config: ProjectConfig | None = None,
+    docker_host: str = "",
+) -> int:
+    """Print the offline pgBackRest restore plan (``dk <env> db restore --dry-run``)."""
+    err = validate_pgbackrest_env(env)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
+    stanza = resolve_stanza(env)
+    if not stanza:
+        print("pgBackRest restore: could not determine stanza from env.", file=sys.stderr)
+        return 1
+
+    mode = resolve_mode(env)
+    expected = expected_pgbackrest_repo_settings(env, config=config)
+    pg1 = postgres_pg1_path(env, config=config)
+    data_vol = postgres_data_volume_name(env, config=config)
+    restore_argv = build_restore_offline_argv(
+        env,
+        compose_file=compose_file,
+        extra_pgbackrest_args=extra_pgbackrest_args,
+    )
+    if restore_argv is None:
+        print("pgBackRest restore: could not build restore command.", file=sys.stderr)
+        return 1
+
+    print("dry-run: pgBackRest offline restore plan", file=sys.stderr)
+    print(f"  Environment: {env_name}", file=sys.stderr)
+    print(f"  Compose file: {compose_file}", file=sys.stderr)
+    dh = (docker_host or env.get("DOCKER_HOST") or "").strip()
+    print(f"  DOCKER_HOST: {dh or '(default local socket)'}", file=sys.stderr)
+    print(f"  pgBackRest mode: {mode}", file=sys.stderr)
+    print(f"  Stanza: {stanza}", file=sys.stderr)
+    if expected:
+        print(f"  S3 bucket: {expected.bucket}", file=sys.stderr)
+        print(f"  S3 region: {expected.region or '(default)'}", file=sys.stderr)
+        if expected.endpoint:
+            print(f"  S3 endpoint: {expected.endpoint}", file=sys.stderr)
+        print(f"  repo1-path: {expected.repo_path}", file=sys.stderr)
+    print(f"  PGDATA volume: {data_vol}", file=sys.stderr)
+    print(f"  pg1-path: {pg1}", file=sys.stderr)
+    print(f"  Volume config: {describe_pgbackrest_conf_status(env, config=config)}", file=sys.stderr)
+    print(
+        "  Steps: ensure volumes → sync pgBackRest config if needed → "
+        "stop `db` if running → pgBackRest restore → "
+        "`docker compose up -d --force-recreate db` → wait for recovery → post-restore hooks",
+        file=sys.stderr,
+    )
+    print(f"  pgBackRest command: {format_shell_command(restore_argv)}", file=sys.stderr)
+    if config is not None:
+        run_post_db_restore_manage_commands(
+            config,
+            compose_file=compose_file,
+            env_add=env,
+            env_name=env_name,
+            dry_run=True,
+        )
+    return 0
 
 
 def run_restore_offline(
@@ -965,6 +1118,9 @@ def run_restore_offline(
             file=sys.stderr,
         )
         rc = _compose_stop_db(compose_file, env)
+        if rc == 130:
+            print("pgBackRest restore: cancelled.", file=sys.stderr)
+            return rc
         if rc != 0:
             print(
                 f"pgBackRest restore: `docker compose -f {compose_file} stop db` failed "
@@ -980,32 +1136,15 @@ def run_restore_offline(
             )
             return 1
 
-    extras = tuple(extra_pgbackrest_args or ())
-    extra_shell = " ".join(shlex.quote(a) for a in extras)
-    inner = (
-        f"pgbackrest {_log_level_argv_shell(env, for_restore=True)}"
-        f"--stanza={shlex.quote(stanza)} restore --delta"
+    restore_argv = build_restore_offline_argv(
+        env,
+        compose_file=compose_file,
+        extra_pgbackrest_args=extra_pgbackrest_args,
     )
-    if extra_shell:
-        inner = f"{inner} {extra_shell}"
+    if restore_argv is None:
+        print("pgBackRest restore: could not build restore command.", file=sys.stderr)
+        return 1
 
-    restore_argv = [
-        "docker",
-        "compose",
-        "-f",
-        compose_file,
-        "run",
-        "-T",
-        "--rm",
-        "--no-deps",
-        "-u",
-        "postgres",
-        "--entrypoint",
-        "/bin/sh",
-        "db",
-        "-c",
-        inner,
-    ]
     r = run_interruptible(
         restore_argv,
         env=_merged_process_env(env),
@@ -1031,6 +1170,13 @@ def run_restore_offline(
     )
     logs_since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     rc_up = _compose_up_db(compose_file, env, force_recreate=True)
+    if rc_up == 130:
+        print("pgBackRest restore: cancelled during `db` startup.", file=sys.stderr)
+        print(
+            "The data directory was restored; start `db` with `docker compose up -d db` when ready.",
+            file=sys.stderr,
+        )
+        return rc_up
     if rc_up != 0:
         print(
             f"pgBackRest restore: `docker compose up -d --force-recreate db` failed (exit {rc_up}). "
@@ -1040,9 +1186,17 @@ def run_restore_offline(
         return rc_up
 
     timeout_sec = _restore_recovery_timeout_sec(env)
-    ok, reason = wait_db_logs_for_recovery_ready(
-        compose_file, env, timeout_sec=timeout_sec, since=logs_since
-    )
+    try:
+        ok, reason = wait_db_logs_for_recovery_ready(
+            compose_file, env, timeout_sec=timeout_sec, since=logs_since
+        )
+    except KeyboardInterrupt:
+        print("pgBackRest restore: cancelled while waiting for PostgreSQL recovery.", file=sys.stderr)
+        print(
+            "The `db` service may still be recovering; check `docker compose logs -f db`.",
+            file=sys.stderr,
+        )
+        return 130
     if not ok:
         print(f"pgBackRest restore: {reason}", file=sys.stderr)
         print(

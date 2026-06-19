@@ -12,6 +12,8 @@ from catalpa_tooling.pgbackrest_db import (
     _remove_interrupted_compose_run_db,
     _restore_db_logs_silenced,
     _restore_recovery_timeout_sec,
+    build_restore_offline_argv,
+    plan_restore_offline,
     run_backup,
     run_drop_create_app_database,
     run_restore_offline,
@@ -195,7 +197,7 @@ class TestWaitDbLogsForRecoveryReady(unittest.TestCase):
 
 
 class TestRemoveInterruptedComposeRunDb(unittest.TestCase):
-    def test_removes_listed_oneoff_containers(self) -> None:
+    def test_stops_and_removes_listed_oneoff_containers(self) -> None:
         calls: list[list[str]] = []
 
         def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -211,11 +213,46 @@ class TestRemoveInterruptedComposeRunDb(unittest.TestCase):
                 "compose.yml",
                 {"COMPOSE_PROJECT_NAME": "ligainan_dev"},
             )
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertEqual(calls[0][:2], ["docker", "ps"])
         self.assertIn("label=com.docker.compose.oneoff=True", calls[0])
         self.assertIn("label=com.docker.compose.project=ligainan_dev", calls[0])
-        self.assertEqual(calls[1], ["docker", "rm", "-f", "abc123", "def456"])
+        self.assertEqual(calls[1], ["docker", "stop", "abc123", "def456"])
+        self.assertEqual(calls[2], ["docker", "rm", "-f", "abc123", "def456"])
+
+
+class TestPlanRestoreOffline(unittest.TestCase):
+    def test_prints_repo_path_and_command(self) -> None:
+        env = {
+            "PGBR_S3_READ_BUCKET": "backups",
+            "PGBR_S3_READ_REGION": "sgp1",
+            "PGBR_S3_READ_KEY": "key",
+            "PGBR_S3_READ_SECRET": "secret",
+            "PGBR_S3_READ_REPO_PATH": "/app/prod/pgbackrest",
+            "PGBR_S3_READ_STANZA": "main",
+        }
+        with (
+            patch(
+                "catalpa_tooling.pgbackrest_db.describe_pgbackrest_conf_status",
+                return_value="volume config matches credentials",
+            ),
+            patch(
+                "catalpa_tooling.pgbackrest_db.run_post_db_restore_manage_commands",
+                return_value=0,
+            ),
+            patch("catalpa_tooling.pgbackrest_db.run_cmd") as mock_run,
+        ):
+            rc = plan_restore_offline(
+                env,
+                compose_file="compose.dev.yaml",
+                env_name="dev",
+                config=None,
+            )
+        self.assertEqual(rc, 0)
+        mock_run.assert_not_called()
+        argv = build_restore_offline_argv(env, compose_file="compose.dev.yaml")
+        assert argv is not None
+        self.assertIn("restore --delta", argv[-1])
 
 
 class TestRunRestoreOfflineInterrupt(unittest.TestCase):
@@ -252,6 +289,41 @@ class TestRunRestoreOfflineInterrupt(unittest.TestCase):
         self.assertEqual(rc, 130)
         run_int.assert_called_once()
         up_db.assert_not_called()
+
+    def test_cancelled_during_recovery_returns_130_without_hooks(self) -> None:
+        ok = MagicMock()
+        ok.returncode = 0
+        with (
+            patch(
+                "catalpa_tooling.pgbackrest_db.validate_pgbackrest_env",
+                return_value=None,
+            ),
+            patch("catalpa_tooling.pgbackrest_db.resolve_stanza", return_value="main"),
+            patch("catalpa_tooling.pgbackrest_db.ensure_postgres_data_volume", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.ensure_pgbackrest_conf_before_restore",
+                return_value=0,
+            ),
+            patch("catalpa_tooling.pgbackrest_db.db_service_responds", return_value=False),
+            patch("catalpa_tooling.pgbackrest_db.run_interruptible", return_value=ok),
+            patch("catalpa_tooling.pgbackrest_db._compose_up_db", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.wait_db_logs_for_recovery_ready",
+                side_effect=KeyboardInterrupt,
+            ),
+            patch(
+                "catalpa_tooling.pgbackrest_db.run_post_db_restore_manage_commands",
+            ) as hooks,
+        ):
+            rc = run_restore_offline(
+                {"PGBR_STANZA": "main"},
+                compose_file="compose.yml",
+                env_name="dev",
+                skip_confirm=True,
+                config=MagicMock(),
+            )
+        self.assertEqual(rc, 130)
+        hooks.assert_not_called()
 
 
 class TestRunRestoreOfflinePostHooks(unittest.TestCase):
