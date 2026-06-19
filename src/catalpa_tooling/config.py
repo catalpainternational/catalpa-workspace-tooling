@@ -164,6 +164,7 @@ class ResticOpsConfig:
     """Compose volume key restic backs up (``{COMPOSE_PROJECT_NAME}_{data_volume}``)."""
 
     data_volume: str
+    backup_path: str | None = None
     verbose: int | None = None
     restore_verbose: int | None = None
 
@@ -1015,6 +1016,9 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         _optional_str(restic_raw, "data_volume") or DEFAULT_RESTIC_DATA_VOLUME,
         field="ops.restic.data_volume",
     )
+    restic_backup_path = _optional_str(restic_raw, "backup_path")
+    if restic_backup_path is not None and not restic_backup_path.startswith("/"):
+        raise ProjectConfigError("ops.restic.backup_path must be an absolute path")
     return OpsConfig(
         install_prefix=_require_str(ops_raw, "install_prefix", section="ops"),
         config_dir=_require_str(ops_raw, "config_dir", section="ops"),
@@ -1047,6 +1051,7 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         ),
         restic=ResticOpsConfig(
             data_volume=restic_data_volume,
+            backup_path=restic_backup_path,
             verbose=_parse_restic_verbose_field(restic_raw, "verbose", section="ops.restic"),
             restore_verbose=_parse_restic_verbose_field(
                 restic_raw, "restore_verbose", section="ops.restic"

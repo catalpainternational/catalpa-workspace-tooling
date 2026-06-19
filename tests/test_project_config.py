@@ -307,6 +307,23 @@ def test_restic_invalid_data_volume(tmp_path: Path, isolated_tooling: None) -> N
         load_project_config(tmp_path)
 
 
+def test_restic_invalid_backup_path(tmp_path: Path, isolated_tooling: None) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text.replace(
+            "  zabbix:",
+            "  restic:\n    backup_path: relative/path\n  zabbix:",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectConfigError, match="ops.restic.backup_path"):
+        load_project_config(tmp_path)
+
+
 def test_indmo_reference_tooling_snapshot(tmp_path: Path, isolated_tooling: None) -> None:
     """Guard the bundled INDMO reference manifest (consumer parity check)."""
     ref = Path(__file__).parent / "fixtures" / "indmo_reference_tooling.yaml"
