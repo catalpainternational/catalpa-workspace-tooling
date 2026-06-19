@@ -271,13 +271,22 @@ Top-level **`domain`** (string or list) is still accepted but deprecated; prefer
 
 ### Host storage (`storage` in `info.yaml`)
 
-Large compose volumes (`django_media`, `postgres_data`, `caddy_data`) can be bound to host paths via pre-created Docker named volumes (local driver bind). Set per environment in `docker/envs/<env>/info.yaml`:
+Compose data volumes use stable Docker names (`name: ${COMPOSE_PROJECT_NAME}_…`). Two independent choices:
+
+| Axis | Where | Purpose |
+|------|--------|---------|
+| **Host path on deploy** | `storage.volumes.<key>.path` in `docker/envs/<env>/info.yaml` | Bind `django_media`, `postgres_data`, or `caddy_data` to a mounted path (optional DO block provisioning) |
+| **Volume lifecycle** | `external: true` per volume in the project `compose.yaml` (optional) | Compose fail-fast vs compose-managed create/remove |
+
+When `storage.volumes` is set, tooling pre-creates bind-mounted named volumes before `docker compose up` (`dk up`, `storage ensure`, and post-restore hooks). Host bind placement does **not** require `external: true` in compose.
+
+Example path-only bind (mount configured outside `dk`):
 
 ```yaml
 storage:
   volumes:
     django_media:
-      path: /mnt/btrfs-data/jid-media   # path-only: mount configured outside dk
+      path: /mnt/btrfs-data/jid-media
 ```
 
 Optional DigitalOcean block volume provisioning (on `host create` / `storage ensure`):
@@ -291,7 +300,7 @@ storage:
         size_gib: 200
 ```
 
-Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, and `dk <env> up` (before compose starts).
+Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, `dk <env> up`, and `ops.post_db_restore` hooks after DB restore (ensure volumes before starting the web service).
 
 ## Documentation
 

@@ -190,7 +190,7 @@ ops:
       - migrate --noinput          # string form is split with shlex
 ```
 
-Each entry is arguments after `manage.py` (same as `dk <env> manage …`). `{env_name}` is replaced with the deploy env name. The web service is started and health-checked before commands run.
+Each entry is arguments after `manage.py` (same as `dk <env> manage …`). `{env_name}` is replaced with the deploy env name. Stack volumes are ensured (including host binds from `storage.volumes` when configured), then the web service is started and health-checked before commands run.
 
 ## Optional tuning (process env)
 

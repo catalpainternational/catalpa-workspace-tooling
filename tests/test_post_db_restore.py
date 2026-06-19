@@ -65,7 +65,13 @@ def test_runs_commands_in_order(minimal_project) -> None:
         m.returncode = 0
         return m
 
-    with patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose):
+    with (
+        patch(
+            "catalpa_tooling.post_db_restore._ensure_stack_volumes",
+            return_value=0,
+        ) as ensure_volumes,
+        patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose),
+    ):
         assert (
             run_post_db_restore_manage_commands(
                 cfg,
@@ -76,6 +82,7 @@ def test_runs_commands_in_order(minimal_project) -> None:
             == 0
         )
 
+    ensure_volumes.assert_called_once()
     assert calls[0] == ["up", "-d", "web", "--wait"]
     assert calls[1][:4] == ["exec", "-T", "web", "./manage.py"]
     assert calls[1][4:] == ["sync_wagtail_sites", "--profile", "dev"]
@@ -96,7 +103,10 @@ def test_expands_env_name_placeholder(minimal_project) -> None:
         m.returncode = 0
         return m
 
-    with patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose):
+    with (
+        patch("catalpa_tooling.post_db_restore._ensure_stack_volumes", return_value=0),
+        patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose),
+    ):
         run_post_db_restore_manage_commands(
             cfg,
             compose_file="compose.yml",
@@ -122,7 +132,10 @@ def test_propagates_first_failure(minimal_project) -> None:
             m.returncode = 0
         return m
 
-    with patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose):
+    with (
+        patch("catalpa_tooling.post_db_restore._ensure_stack_volumes", return_value=0),
+        patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose),
+    ):
         assert (
             run_post_db_restore_manage_commands(
                 cfg,
@@ -134,12 +147,49 @@ def test_propagates_first_failure(minimal_project) -> None:
         )
 
 
-def test_dry_run_prints_without_compose(minimal_project, capsys) -> None:
-    cfg = _config_with_hooks(
-        minimal_project,
-        commands=(("migrate",),),
-    )
-    with patch("catalpa_tooling.post_db_restore._compose") as compose:
+def test_ensures_stack_volumes_before_compose_up(minimal_project) -> None:
+    cfg = _config_with_hooks(minimal_project, commands=(("migrate",),))
+    call_order: list[str] = []
+
+    def fake_ensure(*args: object, **kwargs: object) -> int:
+        call_order.append("ensure")
+        return 0
+
+    def fake_compose(compose_file: str, *args: str, **kwargs: object) -> MagicMock:
+        call_order.append("compose")
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    with (
+        patch(
+            "catalpa_tooling.post_db_restore._ensure_stack_volumes",
+            side_effect=fake_ensure,
+        ),
+        patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose),
+    ):
+        assert (
+            run_post_db_restore_manage_commands(
+                cfg,
+                compose_file="compose.yml",
+                env_add={"COMPOSE_PROJECT_NAME": "app"},
+                env_name="dev",
+            )
+            == 0
+        )
+
+    assert call_order[:2] == ["ensure", "compose"]
+
+
+def test_dry_run_ensures_volumes_before_plan(minimal_project, capsys) -> None:
+    cfg = _config_with_hooks(minimal_project, commands=(("migrate",),))
+    with (
+        patch(
+            "catalpa_tooling.post_db_restore._ensure_stack_volumes",
+            return_value=0,
+        ) as ensure_volumes,
+        patch("catalpa_tooling.post_db_restore._compose") as compose,
+    ):
         assert (
             run_post_db_restore_manage_commands(
                 cfg,
@@ -151,6 +201,33 @@ def test_dry_run_prints_without_compose(minimal_project, capsys) -> None:
             == 0
         )
         compose.assert_not_called()
+    ensure_volumes.assert_called_once_with(
+        cfg,
+        "local",
+        {},
+        dry_run=True,
+    )
     err = capsys.readouterr().err
     assert "dry-run" in err
     assert "manage.py migrate" in err
+
+
+def test_propagates_volume_ensure_failure(minimal_project) -> None:
+    cfg = _config_with_hooks(minimal_project, commands=(("migrate",),))
+    with (
+        patch(
+            "catalpa_tooling.post_db_restore._ensure_stack_volumes",
+            return_value=1,
+        ),
+        patch("catalpa_tooling.post_db_restore._compose") as compose,
+    ):
+        assert (
+            run_post_db_restore_manage_commands(
+                cfg,
+                compose_file="compose.yml",
+                env_add={},
+                env_name="local",
+            )
+            == 1
+        )
+        compose.assert_not_called()
