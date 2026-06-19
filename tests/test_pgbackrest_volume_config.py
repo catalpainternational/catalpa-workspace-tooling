@@ -247,9 +247,20 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
             MagicMock(returncode=1),
             MagicMock(returncode=0),
         ]
-        self.assertEqual(ensure_postgres_data_volume({}), 0)
+        env = {"COMPOSE_PROJECT_NAME": "jid-full"}
+        self.assertEqual(ensure_postgres_data_volume(env), 0)
         self.assertEqual(mock_run.call_count, 2)
-        self.assertEqual(mock_run.call_args_list[1][0][0][:3], ["docker", "volume", "create"])
+        create_cmd = mock_run.call_args_list[1][0][0]
+        self.assertEqual(create_cmd[:3], ["docker", "volume", "create"])
+        self.assertIn(
+            "com.docker.compose.project=jid-full",
+            create_cmd,
+        )
+        self.assertIn(
+            "com.docker.compose.volume=postgres_data",
+            create_cmd,
+        )
+        self.assertEqual(create_cmd[-1], "jid-full_postgres_data")
 
     @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
     def test_ensure_postgres_data_volume_returns_1_on_create_failure(self, mock_run: MagicMock) -> None:

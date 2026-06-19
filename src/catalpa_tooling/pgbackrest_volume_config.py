@@ -296,6 +296,56 @@ def stack_volume_docker_name(
     return f"{project}_{volume_key}"
 
 
+_COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+_COMPOSE_VOLUME_LABEL = "com.docker.compose.volume"
+
+
+def _compose_volume_create_label_args(
+    compose_project: str,
+    compose_volume_key: str,
+) -> list[str]:
+    """Docker CLI args so Compose recognizes a pre-created named volume as its own."""
+    project = compose_project.strip()
+    key = compose_volume_key.strip()
+    if not project or not key:
+        return []
+    return [
+        "--label",
+        f"{_COMPOSE_PROJECT_LABEL}={project}",
+        "--label",
+        f"{_COMPOSE_VOLUME_LABEL}={key}",
+    ]
+
+
+def _stack_volumes_with_compose_keys(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> tuple[tuple[str, str], ...]:
+    """``(docker_volume_name, compose_volume_key)`` pairs for stack volume ensure."""
+    pg_conf, pgb_conf = volume_names(env, config=config)
+    pg_data_key = _postgres_data_volume_key(config)
+    media_key = config.ops.restic.data_volume if config else "django_media"
+    return (
+        (postgres_data_volume_name(env, config=config), pg_data_key),
+        (django_media_volume_name(env, config=config), media_key),
+        (caddy_data_volume_name(env, config=config), CADDY_DATA_VOLUME_KEY),
+        (pg_conf, "postgres_conf"),
+        (pgb_conf, "pgbackrest_conf"),
+    )
+
+
+def _db_volumes_with_compose_keys(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> tuple[tuple[str, str], ...]:
+    """``(docker_volume_name, compose_volume_key)`` for volumes mounted by ``db``."""
+    pg_conf, pgb_conf = volume_names(env, config=config)
+    pg_data_key = _postgres_data_volume_key(config)
+    return (
+        (postgres_data_volume_name(env, config=config), pg_data_key),
+        (pg_conf, "postgres_conf"),
+        (pgb_conf, "pgbackrest_conf"),
+    )
+
+
 def _compose_db_platform_args() -> list[str]:
     """Match ``compose.yml`` ``db`` service ``platform: linux/amd64`` for one-off ``docker run``."""
     return ["--platform", "linux/amd64"]
@@ -534,8 +584,14 @@ def _ensure_volume(
     host_path: str | None = None,
     create_host_path: bool = False,
     label: str = "ensure_volumes",
+    compose_project: str | None = None,
+    compose_volume_key: str | None = None,
 ) -> None:
     norm_host = (host_path or "").strip().rstrip("/") if host_path else None
+    compose_labels = _compose_volume_create_label_args(
+        compose_project or "",
+        compose_volume_key or "",
+    )
     if norm_host:
         _verify_host_path_on_deploy_host(
             norm_host,
@@ -592,13 +648,18 @@ def _ensure_volume(
                 f"device={norm_host}",
                 "--opt",
                 "o=bind",
+                *compose_labels,
                 name,
             ],
             env=docker_env,
             check=True,
         )
     else:
-        run_cmd(["docker", "volume", "create", name], env=docker_env, check=True)
+        run_cmd(
+            ["docker", "volume", "create", *compose_labels, name],
+            env=docker_env,
+            check=True,
+        )
 
 
 def external_stack_volume_names(
@@ -631,9 +692,11 @@ def ensure_external_stack_volumes(
     """
     volume_hosts = volume_hosts or {}
     create_host_paths = create_host_paths or {}
-    names = external_stack_volume_names(env, config=config)
+    volumes = _stack_volumes_with_compose_keys(env, config=config)
+    names = tuple(name for name, _ in volumes)
     name_to_host: dict[str, str] = {}
     name_to_create: dict[str, bool] = {}
+    name_to_key = dict(volumes)
     for key, host_path in volume_hosts.items():
         vol_name = stack_volume_docker_name(env, key, config=config)
         name_to_host[vol_name] = host_path
@@ -658,6 +721,7 @@ def ensure_external_stack_volumes(
             )
         return 0
     docker_env = _docker_env_for_remote(env)
+    compose_project = _compose_project_name(env, config)
     for n in names:
         try:
             _ensure_volume(
@@ -666,6 +730,8 @@ def ensure_external_stack_volumes(
                 host_path=name_to_host.get(n),
                 create_host_path=name_to_create.get(n, False),
                 label="ensure_volumes",
+                compose_project=compose_project,
+                compose_volume_key=name_to_key[n],
             )
         except subprocess.CalledProcessError as e:
             print(f"ensure_volumes: docker volume failed for {n!r}: {e}", file=sys.stderr)
@@ -702,10 +768,11 @@ def ensure_db_compose_volumes(
     create_host_paths = create_host_paths or {}
     docker_env = _docker_env_for_remote(env)
     pg_data_key = config.ops.pgbackrest.data_volume if config else "postgres_data"
-    for name in db_compose_volume_names(env, config=config):
+    compose_project = _compose_project_name(env, config)
+    for name, volume_key in _db_volumes_with_compose_keys(env, config=config):
         host_path = None
         create_host = False
-        if name == postgres_data_volume_name(env, config=config):
+        if volume_key == pg_data_key:
             host_path = volume_hosts.get(pg_data_key)
             create_host = bool(create_host_paths.get(pg_data_key))
         try:
@@ -715,6 +782,8 @@ def ensure_db_compose_volumes(
                 host_path=host_path,
                 create_host_path=create_host,
                 label="ensure_db_volumes",
+                compose_project=compose_project,
+                compose_volume_key=volume_key,
             )
         except subprocess.CalledProcessError as e:
             print(
@@ -749,6 +818,8 @@ def ensure_postgres_data_volume(
             host_path=volume_hosts.get(pg_data_key),
             create_host_path=bool(create_host_paths.get(pg_data_key)),
             label="pgBackRest restore",
+            compose_project=_compose_project_name(env, config),
+            compose_volume_key=pg_data_key,
         )
     except subprocess.CalledProcessError as e:
         print(
@@ -1313,8 +1384,19 @@ def materialize_configs(
         return 0
 
     try:
-        _ensure_volume(vol_pg, docker_env)
-        _ensure_volume(vol_pgb, docker_env)
+        compose_project = _compose_project_name(env, config)
+        _ensure_volume(
+            vol_pg,
+            docker_env,
+            compose_project=compose_project,
+            compose_volume_key="postgres_conf",
+        )
+        _ensure_volume(
+            vol_pgb,
+            docker_env,
+            compose_project=compose_project,
+            compose_volume_key="pgbackrest_conf",
+        )
     except subprocess.CalledProcessError as e:
         log(f"pgBackRest: docker volume failed: {e}")
         return 1
