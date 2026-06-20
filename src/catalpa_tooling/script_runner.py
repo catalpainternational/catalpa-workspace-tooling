@@ -8,6 +8,7 @@ from pathlib import Path
 
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
+from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_ssh_target
 
 
 def script_process_env(config: ProjectConfig) -> dict[str, str]:
@@ -20,6 +21,9 @@ def script_process_env(config: ProjectConfig) -> dict[str, str]:
     dump = config.fetch_metabase_db_dump_path
     if dump is not None:
         env["FETCH_DB_OUTPUT"] = str(dump)
+    ssh_host = (env.get("FETCH_DB_SSH_HOST") or "").strip()
+    if ssh_host and ensure_ssh_known_host_for_ssh_target(ssh_host) != 0:
+        raise SystemExit(1)
     return env
 
 

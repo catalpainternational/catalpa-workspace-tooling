@@ -196,6 +196,10 @@ def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, m
     )
     monkeypatch.setattr("catalpa_tooling.fetch_media.rsync_pull_remote_to_local", fake_rsync)
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.ensure_ssh_known_host_for_ssh_target",
+        lambda *_a, **_k: 0,
+    )
 
     run_fetch_media(cfg, dk_env="prod", host=None, dest=tmp_path / "media", partial=False, legacy_path=False, legacy_remote=None, compose_project=None)
     assert calls == [("u@h", "/vol/mount/", tmp_path / "media")]

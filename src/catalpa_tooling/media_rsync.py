@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING, Literal
 
 from catalpa_tooling.restic_files import _default_compose_project, django_media_volume_name
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
+from catalpa_tooling.ssh_known_hosts import (
+    ensure_ssh_known_host_for_ssh_target,
+    is_ssh_host_key_verification_error,
+    print_ssh_host_key_hint,
+)
 from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
 
 if TYPE_CHECKING:
@@ -78,6 +83,8 @@ def docker_volume_mountpoint_ssh(ssh_target: str, volume_name: str, *, label: st
         )
         if err:
             print(err, file=sys.stderr)
+        if is_ssh_host_key_verification_error(err):
+            print_ssh_host_key_hint(ssh_target=ssh_target)
         raise SystemExit(proc.returncode or 1)
     return _parse_volume_mountpoint_json(proc.stdout or "", volume_name, label=label)
 
@@ -125,7 +132,14 @@ def rsync_pull_remote_to_local(ssh_target: str, remote_path: str, local_path: Pa
     remote = f"{ssh_target}:{remote_path}"
     cmd = [*RSYNC_BASE, remote, str(local_path)]
     print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-    return run_cmd(cmd, check=False, print_cmd=False).returncode
+    proc = run_cmd(cmd, check=False, print_cmd=False, capture_output=True, text=True)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        if err:
+            print(err, file=sys.stderr)
+        if is_ssh_host_key_verification_error(err):
+            print_ssh_host_key_hint(ssh_target=ssh_target)
+    return proc.returncode
 
 
 def rsync_push_local_to_dest(

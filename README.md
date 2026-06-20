@@ -239,7 +239,7 @@ dk prod host --sync-dns   # create/update DO A records for site_origin (no known
 dk digoc droplets list    # includes Env column when tooling.yaml is present
 ```
 
-After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`, with retries until sshd is reachable) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted.
+After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`, with retries until sshd is reachable) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted, and before `native fetch db` / `native fetch media` when they SSH to a host configured in `tooling.yaml` (legacy `ssh_host`, `fetch_metabase_db.ssh_host`, or the env’s `docker_host`).
 
 **New droplets:** DigitalOcean may report a droplet `active` before SSH accepts connections on port 22. The tooling waits up to ~2 minutes; if registration still fails, `docker_host` is usually already patched — finish with `dk <env> host --write` (or re-run `host create`, which resumes when the droplet already exists).
 

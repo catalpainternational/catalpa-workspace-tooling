@@ -193,6 +193,11 @@ def load_managed_deploy_context(
         recovery_env_name=env_name,
     )
     if kh_rc != 0:
+        print(
+            f"Could not register SSH host key for {docker_host!r}. "
+            "Remote `dk` commands need the deploy host in ~/.ssh/known_hosts.",
+            file=sys.stderr,
+        )
         return None
 
     images_config = _load_images_config(config)

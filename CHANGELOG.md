@@ -6,6 +6,7 @@
 
 - `setup-shell` adds `compinit` to the catalpa block when `~/.zshrc` has no completion init (and no Oh My Zsh). `setup-shell --status` reports `completion init (compinit)`.
 - `catalpa-direnv.zsh` skips tab-completion registration until `compdef` is available (no more `compdef: command not found` when re-sourcing `~/.zshrc`).
+- `native fetch db` / `native fetch media` and SSH-backed scripts register deploy host keys in `~/.ssh/known_hosts` automatically (same `ssh-keyscan` flow as `dk` on remote envs). Clearer messages when host-key verification still fails.
 
 ### Changed
 

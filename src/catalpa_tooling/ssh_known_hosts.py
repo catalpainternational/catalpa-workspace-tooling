@@ -24,6 +24,31 @@ def known_hosts_path() -> Path:
     return Path.home() / ".ssh" / "known_hosts"
 
 
+def host_and_port_from_ssh_target(ssh_target: str) -> tuple[str, int]:
+    """Parse ``user@host``, ``host``, or ``user@host:port`` into ``(hostname, port)``."""
+    raw = (ssh_target or "").strip()
+    if not raw:
+        raise ValueError("empty SSH target")
+    host_part = raw.split("@", 1)[-1] if "@" in raw else raw
+    if host_part.startswith("[") and "]:" in host_part:
+        host = host_part[1 : host_part.index("]")]
+        port = int(host_part.split("]:", 1)[1])
+    elif ":" in host_part:
+        host, port_s = host_part.rsplit(":", 1)
+        try:
+            port = int(port_s)
+        except ValueError:
+            host = host_part
+            port = 22
+    else:
+        host = host_part
+        port = 22
+    host = host.strip()
+    if not host:
+        raise ValueError(f"invalid SSH target: {ssh_target!r}")
+    return host, port
+
+
 def ssh_host_from_docker_host(docker_host: str) -> str | None:
     """Return hostname or IP for SSH, or None if ``docker_host`` is not an SSH remote."""
     raw = (docker_host or "").strip()
@@ -223,4 +248,59 @@ def ensure_ssh_known_host_for_docker_host(
         timeout_seconds=timeout_seconds,
         poll_interval=poll_interval,
         recovery_env_name=recovery_env_name,
+    )
+
+
+def ensure_ssh_known_host_for_ssh_target(
+    ssh_target: str,
+    *,
+    dry_run: bool = False,
+    known_hosts: Path | None = None,
+    timeout_seconds: int = DEFAULT_SSH_READY_TIMEOUT_SECONDS,
+    poll_interval: int = DEFAULT_SSH_READY_POLL_INTERVAL,
+    recovery_env_name: str | None = None,
+) -> int:
+    """Ensure OpenSSH knows the host in ``user@host`` (``native fetch``, rsync, etc.)."""
+    try:
+        host, port = host_and_port_from_ssh_target(ssh_target)
+    except ValueError:
+        return 0
+    return ensure_known_host(
+        host,
+        port=port,
+        dry_run=dry_run,
+        known_hosts=known_hosts,
+        timeout_seconds=timeout_seconds,
+        poll_interval=poll_interval,
+        recovery_env_name=recovery_env_name,
+    )
+
+
+_SSH_HOST_KEY_HINT = (
+    "SSH host key verification failed. The tooling normally registers deploy hosts "
+    "automatically; if this persists, run:\n"
+    "  ssh-keyscan -H HOST >> ~/.ssh/known_hosts\n"
+    "or connect once manually: ssh USER@HOST"
+)
+
+
+def print_ssh_host_key_hint(*, ssh_target: str | None = None) -> None:
+    """Print recovery steps after a host-key verification failure."""
+    print(_SSH_HOST_KEY_HINT, file=sys.stderr)
+    if ssh_target:
+        try:
+            host, port = host_and_port_from_ssh_target(ssh_target)
+        except ValueError:
+            return
+        port_flag = f" -p {port}" if port != 22 else ""
+        print(f"  ssh-keyscan -H{port_flag} {host}", file=sys.stderr)
+
+
+def is_ssh_host_key_verification_error(text: str) -> bool:
+    """True when OpenSSH output indicates a missing or changed host key."""
+    lower = (text or "").lower()
+    return (
+        "host key verification failed" in lower
+        or "no ssh host key" in lower
+        or "remote host identification has changed" in lower
     )
