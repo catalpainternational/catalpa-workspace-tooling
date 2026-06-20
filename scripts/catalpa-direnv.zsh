@@ -13,6 +13,7 @@
 
 _catalpa_direnv_completion() {
   emulate -L zsh
+  (( $+functions[compdef] )) || return 0
   local reg="${CATALPA_REGISTER_PYTHON_ARGCOMPLETE:-}"
   if [[ -z "$reg" || ! -x "$reg" ]]; then
     _CATALPA_COMP_DONE=

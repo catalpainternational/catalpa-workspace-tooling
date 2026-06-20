@@ -10,7 +10,9 @@ from catalpa_tooling.shell_setup import (
     apply_setup,
     build_next_steps,
     build_zshrc_block,
+    completion_init_before_catalpa_source,
     extract_catalpa_block,
+    needs_compinit_in_catalpa_block,
     next_steps_context,
     patch_zshrc_content,
     plan_remove,
@@ -76,6 +78,68 @@ def test_extract_catalpa_block() -> None:
     assert extracted.rstrip().endswith(MARKER_END)
 
 
+def test_build_zshrc_block_includes_compinit_when_requested() -> None:
+    block = build_zshrc_block(
+        include_direnv_hook=True,
+        include_completion=True,
+        include_compinit=True,
+    )
+    assert "autoload -Uz compinit" in block
+    assert "compinit" in block
+    assert block.index("compinit") < block.index("direnv hook zsh")
+    assert block.index("direnv hook zsh") < block.index("catalpa/direnv.zsh")
+
+
+def test_needs_compinit_in_catalpa_block_empty_zshrc() -> None:
+    assert needs_compinit_in_catalpa_block("", include_completion=True) is True
+    assert needs_compinit_in_catalpa_block("", include_completion=False) is False
+
+
+def test_completion_init_before_catalpa_source_detects_compinit() -> None:
+    zshrc = "# header\nautoload -Uz compinit\ncompinit\n"
+    assert completion_init_before_catalpa_source(zshrc) is True
+
+
+def test_completion_init_before_catalpa_source_detects_oh_my_zsh() -> None:
+    zshrc = 'export ZSH="$HOME/.oh-my-zsh"\nsource $ZSH/oh-my-zsh.sh\n'
+    assert completion_init_before_catalpa_source(zshrc) is True
+
+
+def test_plan_setup_adds_compinit_on_fresh_zshrc(tmp_path: Path) -> None:
+    zshrc = tmp_path / ".zshrc"
+    dest = tmp_path / "catalpa" / "direnv.zsh"
+    zshrc.write_text("", encoding="utf-8")
+
+    plan = plan_setup(zshrc_path=zshrc, catalpa_direnv_dest=dest)
+    assert "compinit" in plan.zshrc_block
+    assert plan.patch_zshrc is True
+
+
+def test_plan_setup_skips_compinit_when_oh_my_zsh(tmp_path: Path) -> None:
+    zshrc = tmp_path / ".zshrc"
+    dest = tmp_path / "catalpa" / "direnv.zsh"
+    zshrc.write_text('source $ZSH/oh-my-zsh.sh\n', encoding="utf-8")
+
+    plan = plan_setup(zshrc_path=zshrc, catalpa_direnv_dest=dest)
+    assert "compinit" not in plan.zshrc_block
+
+
+def test_plan_setup_upgrades_block_to_add_compinit(tmp_path: Path) -> None:
+    zshrc = tmp_path / ".zshrc"
+    dest = tmp_path / "catalpa" / "direnv.zsh"
+    old_block = build_zshrc_block(
+        include_direnv_hook=True,
+        include_completion=True,
+        include_compinit=False,
+    )
+    zshrc.write_text(old_block, encoding="utf-8")
+
+    plan = plan_setup(zshrc_path=zshrc, catalpa_direnv_dest=dest)
+    assert "compinit" in plan.zshrc_block
+    assert plan.patch_zshrc is True
+    assert any("Adding compinit" in warning for warning in plan.warnings)
+
+
 def test_build_next_steps_in_repo_needs_reload(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("catalpa_tooling.shell_setup.shutil.which", lambda _cmd: None)
     (tmp_path / "tooling.yaml").write_text("project:\n  name: test\n", encoding="utf-8")
@@ -87,7 +151,10 @@ def test_build_next_steps_in_repo_needs_reload(tmp_path: Path, monkeypatch) -> N
         environ={},
     )
     steps = build_next_steps(ctx)
-    assert steps == (f"source {tmp_path / '.zshrc'} && direnv reload", "whence dk   # → …/.venv/bin/dk")
+    assert steps == (
+        f"Open a new terminal tab (preferred), or run: source {tmp_path / '.zshrc'} && direnv reload",
+        "whence dk   # → …/.venv/bin/dk",
+    )
 
 
 def test_build_next_steps_in_repo_already_loaded(tmp_path: Path) -> None:
@@ -114,7 +181,7 @@ def test_build_next_steps_after_zshrc_patch(tmp_path: Path, monkeypatch) -> None
         environ={},
     )
     steps = build_next_steps(ctx)
-    assert steps[0] == f"source {zshrc} && direnv reload"
+    assert steps[0] == f"Open a new terminal tab (preferred), or run: source {zshrc} && direnv reload"
 
 
 def test_build_next_steps_outside_repo(monkeypatch) -> None:
@@ -125,7 +192,7 @@ def test_build_next_steps_outside_repo(monkeypatch) -> None:
         environ={},
     )
     steps = build_next_steps(ctx)
-    assert steps[0].startswith("source ")
+    assert steps[0].startswith("Open a new terminal tab (preferred), or run: source ")
     assert "cd into your tooling repo" in steps[1]
     assert "direnv allow" in steps[2]
 

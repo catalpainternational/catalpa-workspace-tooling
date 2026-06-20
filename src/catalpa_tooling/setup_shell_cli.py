@@ -70,6 +70,7 @@ def _print_status() -> int:
     print(f"  catalpa source: {status.catalpa_source_present}")
     print(f"catalpa-direnv.zsh installed: {status.catalpa_direnv_installed}")
     print(f"  matches package: {status.catalpa_direnv_matches_package}")
+    print(f"completion init (compinit): {status.completion_init_ready}")
     if status.legacy_dk_wrapper or status.legacy_argcomplete_eval:
         print("legacy config detected in ~/.zshrc (see warnings when running install)")
     ready = (
@@ -77,6 +78,10 @@ def _print_status() -> int:
         and status.catalpa_direnv_installed
         and status.catalpa_direnv_matches_package
         and status.catalpa_source_present
+        and (
+            not status.catalpa_source_present
+            or status.completion_init_ready
+        )
     )
     print(f"ready: {ready}")
     return 0 if ready else 1

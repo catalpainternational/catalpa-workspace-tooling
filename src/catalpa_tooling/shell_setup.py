@@ -13,9 +13,14 @@ from catalpa_tooling.shell_assets import catalpa_direnv_zsh_path
 MARKER_START = "# >>> catalpa-shell-setup >>>"
 MARKER_END = "# <<< catalpa-shell-setup <<<"
 DIRENV_HOOK_LINE = 'eval "$(direnv hook zsh)"'
+COMPINIT_LINES = ("autoload -Uz compinit", "compinit")
 CATALPA_SOURCE_LINE = (
     '[[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh" ]] && \\\n'
     '  source "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh"'
+)
+_ZSH_FRAMEWORK_COMPINIT = re.compile(
+    r"oh-my-zsh|source\s+.*\$ZSH/oh-my-zsh",
+    re.I,
 )
 DEFAULT_CATALPA_CONFIG_DIR = Path(
     os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
@@ -34,6 +39,7 @@ class ShellSetupStatus:
     catalpa_direnv_matches_package: bool
     legacy_dk_wrapper: bool
     legacy_argcomplete_eval: bool
+    completion_init_ready: bool
 
 
 @dataclass(frozen=True)
@@ -53,8 +59,42 @@ def default_zshrc_path() -> Path:
     return Path.home() / ".zshrc"
 
 
-def build_zshrc_block(*, include_direnv_hook: bool, include_completion: bool) -> str:
+def _framework_or_compinit_in_text(text: str) -> bool:
+    if re.search(r"\bcompinit\b", text):
+        return True
+    return _ZSH_FRAMEWORK_COMPINIT.search(text) is not None
+
+
+def completion_init_before_catalpa_source(zshrc_text: str) -> bool:
+    """True when compinit (or a framework that runs it) precedes catalpa/direnv.zsh."""
+    src_pos = zshrc_text.find("catalpa/direnv.zsh")
+    prefix = zshrc_text[:src_pos] if src_pos != -1 else zshrc_text
+    return _framework_or_compinit_in_text(prefix)
+
+
+def needs_compinit_in_catalpa_block(
+    zshrc_text: str,
+    *,
+    include_completion: bool,
+) -> bool:
+    if not include_completion:
+        return False
+    block = extract_catalpa_block(zshrc_text) or ""
+    outside = zshrc_text.replace(block, "", 1) if block else zshrc_text
+    if _framework_or_compinit_in_text(outside):
+        return False
+    return True
+
+
+def build_zshrc_block(
+    *,
+    include_direnv_hook: bool,
+    include_completion: bool,
+    include_compinit: bool = False,
+) -> str:
     lines = [MARKER_START]
+    if include_compinit:
+        lines.extend(COMPINIT_LINES)
     if include_direnv_hook:
         lines.append(DIRENV_HOOK_LINE)
     if include_completion:
@@ -106,6 +146,7 @@ def inspect_status(
         catalpa_direnv_matches_package=dest_text == package_text,
         legacy_dk_wrapper=any("dk() {" in w for w in legacy),
         legacy_argcomplete_eval=any("register-python-argcomplete" in w for w in legacy),
+        completion_init_ready=completion_init_before_catalpa_source(zshrc_text),
     )
 
 
@@ -156,18 +197,34 @@ def plan_setup(
     zshrc_text = _read_text(zshrc)
     package_text = catalpa_direnv_zsh_path().read_text(encoding="utf-8")
     dest_text = _read_text(dest)
+    include_completion = not skip_completion
+    include_compinit = needs_compinit_in_catalpa_block(
+        zshrc_text,
+        include_completion=include_completion,
+    )
     block = build_zshrc_block(
         include_direnv_hook=not skip_direnv_hook,
-        include_completion=not skip_completion,
+        include_completion=include_completion,
+        include_compinit=include_compinit,
     )
     new_zshrc = patch_zshrc_content(zshrc_text, block)
+    warnings = list(_legacy_warnings(zshrc_text))
+    existing_block = extract_catalpa_block(zshrc_text)
+    if (
+        include_compinit
+        and existing_block is not None
+        and "compinit" not in existing_block
+    ):
+        warnings.append(
+            "Adding compinit to catalpa-shell-setup block (tab completion requires it)."
+        )
     return ShellSetupPlan(
         zshrc_path=zshrc,
         catalpa_direnv_dest=dest,
         write_catalpa_direnv=not skip_completion and dest_text != package_text,
         patch_zshrc=new_zshrc != zshrc_text,
         zshrc_block=block,
-        warnings=_legacy_warnings(zshrc_text),
+        warnings=tuple(warnings),
     )
 
 
@@ -303,7 +360,7 @@ def build_next_steps(ctx: NextStepsContext) -> tuple[str, ...]:
         cmd = f"source {ctx.zshrc_path}"
         if ctx.in_tooling_repo and ctx.has_envrc:
             cmd += " && direnv reload"
-        steps.append(cmd)
+        steps.append(f"Open a new terminal tab (preferred), or run: {cmd}")
 
     if not ctx.in_tooling_repo:
         steps.append("cd into your tooling repo   # direnv loads .envrc on entry")

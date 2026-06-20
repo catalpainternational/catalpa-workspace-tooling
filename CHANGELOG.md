@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `setup-shell` adds `compinit` to the catalpa block when `~/.zshrc` has no completion init (and no Oh My Zsh). `setup-shell --status` reports `completion init (compinit)`.
+- `catalpa-direnv.zsh` skips tab-completion registration until `compdef` is available (no more `compdef: command not found` when re-sourcing `~/.zshrc`).
+
+### Changed
+
+- `setup-shell` next-steps hint prefers opening a new terminal tab over `source ~/.zshrc`.
+
 ## 0.7.7
 
 ### Added
