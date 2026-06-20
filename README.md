@@ -37,11 +37,22 @@ direnv allow
 
 The `.envrc` puts `.venv/bin` on `PATH` (so `dk`, `dev`, etc. resolve to that repo's venv) and exports `CATALPA_REGISTER_PYTHON_ARGCOMPLETE` for the zsh hook below. Each repo can pin a different tooling version; switching directories switches which `dk` binary completion invokes.
 
-**3. One-time zsh setup (any machine, not per-repo):**
+**3. One-time machine setup (zsh, any Catalpa tooling repo):**
 
-Copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) (not `install-completions.sh`) to `~/.config/catalpa/direnv.zsh`, then add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
+Run once after `uv sync` (before `direnv allow` — `dk` is not on PATH yet):
+
+```bash
+uv run setup-shell
+```
+
+This installs `~/.config/catalpa/direnv.zsh` from the package and patches `~/.zshrc` with the direnv hook plus the completion source. Re-run safely; use `uv run setup-shell --status` to check. Remove with `uv run setup-shell --remove`.
+
+Open a new shell, `cd` into a tooling repo, and `direnv allow`. Verify: `whence dk` → `…/.venv/bin/dk`.
+
+**Manual fallback (no `setup-shell`):** copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) to `~/.config/catalpa/direnv.zsh`, add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
 
 ```zsh
+eval "$(direnv hook zsh)"
 [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh" ]] && \
   source "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh"
 ```

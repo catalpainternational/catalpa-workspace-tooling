@@ -1,8 +1,3 @@
-# Canonical copy: src/catalpa_tooling/shell/catalpa-direnv.zsh (shipped in the wheel).
-# This path is kept for direct links from docs and older checkouts.
-#
-# Prefer: uv run setup-shell
-#
 # catalpa-workspace-tooling: register tab completion when direnv loads a tooling repo.
 #
 # One-time setup (~/.zshrc, after eval "$(direnv hook zsh)"):

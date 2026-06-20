@@ -34,7 +34,7 @@ done
 cat <<'EOF'
 Add the eval lines above to ~/.bashrc or ~/.zshrc (after compinit for zsh).
 
-For zsh with multiple tooling repos, prefer direnv + scripts/catalpa-direnv.zsh
+For zsh with multiple tooling repos, prefer direnv + `uv run setup-shell`
 (see README “Shell completion” → Multi-project direnv flow).
 
 zsh users with `alias dk='uv run dk'`: use `setopt complete_aliases` before the alias,

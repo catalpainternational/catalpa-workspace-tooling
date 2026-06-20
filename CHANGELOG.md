@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.7
+
+### Added
+
+- Top-level `setup-shell` CLI: one-time zsh + direnv bootstrap (`uv run setup-shell`). Ships `catalpa-direnv.zsh` in the wheel (`src/catalpa_tooling/shell/`). Uninstall with `setup-shell --remove`. Re-register completion after `source ~/.zshrc` (compinit-safe).
+
 ## 0.7.4 (unreleased)
 
 ### Added
