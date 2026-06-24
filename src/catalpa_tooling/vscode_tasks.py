@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-SETUP_VSCODE_GENERATOR_VERSION = "4"
+SETUP_VSCODE_GENERATOR_VERSION = "5"
 MANAGED_MARKER_KEY = "_catalpa_setup_vscode"
 
 PATH_ENV = (
@@ -36,8 +36,40 @@ def _site_origin_py(info_yaml: str) -> str:
 def _start_stack_hint_py(info_yaml: str, open_task_label: str) -> str:
     return (
         "import yaml; "
-        f"o=yaml.safe_load(open('{info_yaml}'))['site_origin']; "
-        f"print(f'\\nSite: {{o}}\\nOpen with task: {open_task_label}')"
+        f"info=yaml.safe_load(open('{info_yaml}')) or {{}}; "
+        f"o=info.get('site_origin',''); "
+        f"print(f'\\nSite: {{o}}\\nOpen with task: {open_task_label}'); "
+        "from catalpa_tooling.dev_lan_access import dev_lan_access_enabled; "
+        "dev_lan_access_enabled(info) and print('LAN testing: task Dev: Show LAN URLs')"
+    )
+
+
+def _dev_lan_urls_py(info_yaml: str) -> str:
+    return (
+        "import yaml; "
+        f"from catalpa_tooling.dev_lan_access import print_dev_lan_urls; "
+        f"print_dev_lan_urls(yaml.safe_load(open('{info_yaml}')) or {{}})"
+    )
+
+
+def _first_dev_lan_url_py(info_yaml: str) -> str:
+    return (
+        "import yaml; "
+        "from catalpa_tooling.dev_lan_access import format_dev_lan_urls; "
+        f"urls=format_dev_lan_urls(yaml.safe_load(open('{info_yaml}')) or {{}}); "
+        "print(urls[0] if urls else '', end='')"
+    )
+
+
+def _open_dev_lan_browser_task(label: str, info_yaml: str) -> dict[str, Any]:
+    url_py = _first_dev_lan_url_py(info_yaml)
+    open_osx = f'open "$(uv run python -c "{url_py}")"'
+    open_linux = f'xdg-open "$(uv run python -c "{url_py}")"'
+    return _shell_task(
+        label,
+        open_linux,
+        osx_command=open_osx,
+        linux_command=open_linux,
     )
 
 
@@ -144,6 +176,11 @@ def _dev_tasks(*, include_full: bool) -> list[dict[str, Any]]:
             focus=False,
         ),
         _open_browser_task("Dev: Open site in browser", DEV_INFO_YAML),
+        _shell_task(
+            "Dev: Show LAN URLs",
+            f'uv run python -c "{_dev_lan_urls_py(DEV_INFO_YAML)}"',
+        ),
+        _open_dev_lan_browser_task("Dev: Open site on LAN", DEV_INFO_YAML),
         _shell_task(
             "Dev: Restore database from backup",
             "uv run dk dev -y db restore",

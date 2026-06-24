@@ -167,4 +167,7 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
 
     apply_setup(plan_setup())
     data = json.loads((tmp_path / ".vscode/tasks.json").read_text(encoding="utf-8"))
-    assert data[MANAGED_MARKER_KEY] == "4"
+    assert data[MANAGED_MARKER_KEY] == "5"
+    labels = [t["label"] for t in data["tasks"]]
+    assert "Dev: Show LAN URLs" in labels
+    assert "Dev: Open site on LAN" in labels
