@@ -4,6 +4,7 @@
 
 ### Added
 
+- `setup-vscode` CLI: scaffold VS Code tasks for `dk dev` and `dk full` (`uv run setup-vscode`). No SSH-backed fetch tasks. Writes `.vscode/tasks.json`, `extensions.json`, and `settings.json`; patches `.gitignore` for committed VS Code files. Uninstall managed files with `setup-vscode --remove`.
 - `setup-shell` adds `compinit` to the catalpa block when `~/.zshrc` has no completion init (and no Oh My Zsh). `setup-shell --status` reports `completion init (compinit)`.
 - `catalpa-direnv.zsh` skips tab-completion registration until `compdef` is available (no more `compdef: command not found` when re-sourcing `~/.zshrc`).
 - `native fetch db` / `native fetch media` and SSH-backed scripts register deploy host keys in `~/.ssh/known_hosts` automatically (same `ssh-keyscan` flow as `dk` on remote envs). Clearer messages when host-key verification still fails.

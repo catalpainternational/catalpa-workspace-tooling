@@ -49,6 +49,18 @@ This installs `~/.config/catalpa/direnv.zsh` from the package and patches `~/.zs
 
 Open a new shell, `cd` into a tooling repo, and `direnv allow`. Verify: `whence dk` → `…/.venv/bin/dk`.
 
+**VS Code tasks (optional, per tooling repo):**
+
+After `uv sync`, scaffold dev tasks once per project:
+
+```bash
+uv run setup-vscode
+```
+
+Then use **Terminal → Run Task** (Cmd+Shift+P → “Tasks: Run Task”). Bero projects get **dk dev** tasks (start/stop stack, logs, open site, Django manage, backup restore) and **dk full** tasks when `docker/envs/full/info.yaml` exists. SSH-backed fetch tasks are not included — run `native fetch db` / `native fetch media` from a terminal when needed.
+
+Check status with `uv run setup-vscode --status`. Remove scaffolded files with `uv run setup-vscode --remove`.
+
 **Manual fallback (no `setup-shell`):** copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) to `~/.config/catalpa/direnv.zsh`, add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
 
 ```zsh
