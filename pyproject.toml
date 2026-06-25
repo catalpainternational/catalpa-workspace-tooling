@@ -17,6 +17,7 @@ dk = "catalpa_tooling.dk_cli:main"
 test = "catalpa_tooling.test_cli:main"
 scripts = "catalpa_tooling.scripts_cli:main"
 setup-shell = "catalpa_tooling.setup_shell_cli:main"
+setup-vscode = "catalpa_tooling.setup_vscode_cli:main"
 
 [dependency-groups]
 test = ["pytest>=8.4", "argcomplete>=3.2"]
