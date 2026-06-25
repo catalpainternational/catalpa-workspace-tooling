@@ -34,9 +34,14 @@ class EnvDoLink:
     region: str | None = None
 
 
+def normalize_droplet_hostname(name: str) -> str:
+    """Return a DigitalOcean-valid droplet hostname (``_`` → ``-``)."""
+    return name.replace("_", "-")
+
+
 def default_droplet_name(config: ProjectConfig, env_name: str) -> str:
-    """Default DigitalOcean droplet hostname: ``{project.name}-{env}``."""
-    return f"{config.meta.name}-{env_name}"
+    """Default DigitalOcean droplet hostname: ``{project.name}-{env}`` (underscores → hyphens)."""
+    return normalize_droplet_hostname(f"{config.meta.name}-{env_name}")
 
 
 def _env_do_str(raw: dict[str, Any], key: str) -> str | None:
@@ -80,7 +85,7 @@ def read_env_do_link(info: dict[str, Any]) -> EnvDoLink | None:
     if not droplet_name:
         return None
     return EnvDoLink(
-        droplet_name=droplet_name,
+        droplet_name=normalize_droplet_hostname(droplet_name),
         ssh_user=ssh_user,
         size=size,
         region=region,
@@ -97,7 +102,7 @@ def resolve_env_do_link(
     droplet_name, ssh_user, size, region = _parse_env_do_block(info.get("digitalocean"))
     if droplet_name:
         return EnvDoLink(
-            droplet_name=droplet_name,
+            droplet_name=normalize_droplet_hostname(droplet_name),
             ssh_user=ssh_user,
             size=size,
             region=region,
