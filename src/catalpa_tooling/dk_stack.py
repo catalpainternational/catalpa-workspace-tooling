@@ -51,7 +51,7 @@ def _load_dotenv_file(path: Path) -> dict[str, str]:
 
 
 def _project_env_file(config: ProjectConfig) -> Path:
-    return config.repo_root / "jid.env"
+    return config.repo_root / f"{config.meta.name}.env"
 
 
 def _apply_build_placeholders(env: dict[str, str]) -> None:
