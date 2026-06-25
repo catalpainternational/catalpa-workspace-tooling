@@ -4,6 +4,7 @@
 
 ### Added
 
+- **LAN dev access** for local `dk dev`: auto-detects the host’s LAN IP and Bonjour `.local` name, injects `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` for Django, and prints LAN URLs on stack start. Opt out with `dev_lan_access: false` in `docker/envs/dev/info.yaml`. VS Code tasks: **Dev: Show LAN URLs**, **Dev: Open site on LAN**.
 - `setup-vscode` CLI: scaffold VS Code tasks for `dk dev` and `dk full` (`uv run setup-vscode`). No SSH-backed fetch tasks. Writes `.vscode/tasks.json`, `extensions.json`, and `settings.json`; patches `.gitignore` for committed VS Code files. Uninstall managed files with `setup-vscode --remove`.
 - `setup-shell` adds `compinit` to the catalpa block when `~/.zshrc` has no completion init (and no Oh My Zsh). `setup-shell --status` reports `completion init (compinit)`.
 - `catalpa-direnv.zsh` skips tab-completion registration until `compdef` is available (no more `compdef: command not found` when re-sourcing `~/.zshrc`).
