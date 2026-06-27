@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -10,6 +11,7 @@ import pytest
 from catalpa_tooling.config import load_project_config
 from catalpa_tooling.native_cli import (
     _MIN_CUSTOM_DUMP_BYTES,
+    _django_manage_native_env,
     _pg_env_for_cli,
     _resolve_reset_dump_path,
     _run_reset_db_drop_create_migrate_seed,
@@ -54,6 +56,23 @@ def test_pg_env_ignores_compose_user_env(
     _, env = _pg_env_for_cli(cfg)
     assert "PGUSER" not in env
     assert "PGPASSWORD" not in env
+
+
+def test_env_local_overrides_inherited_project_env(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates direnv ``*.env`` plus ``native`` reading ``paths.env_local``."""
+    _write_minimal_tooling(tmp_path)
+    (tmp_path / ".env.local").write_text(
+        "DJANGO_DB_HOST=127.0.0.1\nDJANGO_DB_PORT=5432\nDJANGO_DB_USER=\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DJANGO_DB_USER", "bero")
+    monkeypatch.setenv("DJANGO_DB_HOST", "db")
+    cfg = load_project_config(tmp_path)
+    _django_manage_native_env(cfg)
+    assert os.environ["DJANGO_DB_USER"] == ""
+    assert os.environ["DJANGO_DB_HOST"] == "127.0.0.1"
 
 
 def test_pg_env_defaults_from_project_name(
