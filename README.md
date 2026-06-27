@@ -227,7 +227,7 @@ By default, **all SSH keys** on your DigitalOcean account are embedded (via host
 
 ### Linking droplets to `dk` environments
 
-By default the DigitalOcean droplet name is **`{project.name}-{env}`** from `tooling.yaml` and the deploy env folder (e.g. `catalpa-site-prod`). Override in `docker/envs/<env>/info.yaml`:
+By default the DigitalOcean droplet name is **`{project.name}-{env}`** from `tooling.yaml` and the deploy env folder (e.g. `catalpa-site-prod`). Underscores in `project.name` or explicit `droplet_name` values are converted to hyphens (DO hostnames allow only `a-z`, `A-Z`, `0-9`, `.`, and `-`). Override in `docker/envs/<env>/info.yaml`:
 
 ```yaml
 digitalocean:
