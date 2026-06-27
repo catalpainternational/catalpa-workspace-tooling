@@ -12,6 +12,7 @@
 
 ### Changed
 
+- `native` loads `paths.env_local` with override so local host Postgres settings (e.g. empty `DJANGO_DB_USER` for Postgres.app) replace inherited project env without adding `.env.local` to direnv.
 - `setup-shell` next-steps hint prefers opening a new terminal tab over `source ~/.zshrc`.
 
 ## 0.7.7

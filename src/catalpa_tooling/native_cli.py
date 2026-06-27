@@ -39,10 +39,14 @@ def _config() -> ProjectConfig:
 
 
 def _load_env_local(cfg: ProjectConfig) -> None:
-    """Load repo-root ``.env.local`` into ``os.environ`` (from ``tooling.yaml`` ``paths.env_local``)."""
+    """Load repo-root ``.env.local`` into ``os.environ`` (from ``tooling.yaml`` ``paths.env_local``).
+
+    Uses ``override=True`` so values from ``paths.env_local`` win over inherited shell env
+    (e.g. ``DJANGO_DB_USER`` from a project ``*.env`` loaded by direnv) for native commands only.
+    """
     path = cfg.env_local_path
     if path.is_file():
-        load_dotenv(path)
+        load_dotenv(path, override=True)
 
 
 def _django_manage_native_env(cfg: ProjectConfig) -> dict[str, str]:
