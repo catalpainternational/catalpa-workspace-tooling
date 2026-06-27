@@ -42,6 +42,7 @@ from catalpa_tooling.pgbackrest_db import (
     run_info,
     run_pg_dump,
     run_pg_restore,
+    plan_restore_offline,
     run_restore_offline,
     run_version,
     _pg_restore_owner_acl_extras,
@@ -447,6 +448,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             compose_file,
             docker_host,
             dry_run,
+            use_prepulled_registry=use_prepulled_registry,
         )
 
     if env_command == "wipe":
@@ -588,6 +590,8 @@ def _handle_bkp_db(
     compose_file: str,
     docker_host: str,
     dry_run: bool,
+    *,
+    use_prepulled_registry: bool,
 ) -> int:
     sub = getattr(ns, "db_command", None) or getattr(ns, "bkp_db_command", None)
     bkp_tail: list[str] = []
@@ -605,9 +609,6 @@ def _handle_bkp_db(
         )
         if rc != 0:
             return rc
-
-    ctx_reload = load_managed_deploy_context(config, env_name)
-    use_prepulled_registry = ctx_reload.use_prepulled_registry if ctx_reload else False
 
     if sub == "init":
         rc = _ensure_local_stack_images_built(
@@ -687,6 +688,18 @@ def _handle_bkp_db(
 
     if sub == "restore":
         restore_extra = list(getattr(ns, "pgbackrest_restore_args", None) or [])
+        while restore_extra and restore_extra[0] == "--":
+            restore_extra.pop(0)
+        restore_dry = dry_run or bool(getattr(ns, "restore_dry_run", False))
+        if restore_dry:
+            return plan_restore_offline(
+                env_add,
+                compose_file=compose_file,
+                env_name=env_name,
+                extra_pgbackrest_args=restore_extra,
+                config=config,
+                docker_host=str(docker_host),
+            )
         if not ns.yes and not sys.stdin.isatty():
             print(
                 "Refusing restore without a TTY. Pass --yes if you intend to run non-interactive.",

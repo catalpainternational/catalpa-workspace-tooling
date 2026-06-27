@@ -24,6 +24,7 @@ def test_provision_exits_when_s3cmd_missing(
 ) -> None:
     from catalpa_tooling.config import (
         DeployPathsConfig,
+        FetchMetabaseDbConfig,
         NativeConfig,
         FetchMediaConfig,
         FrontendDevConfig,
@@ -52,11 +53,12 @@ def test_provision_exits_when_s3cmd_missing(
             backend="b",
             frontend="f",
             prototype=None,
-            scripts="s",
+            scripts=("s",),
             env_local=".env",
             email_backend_dir="e",
             media_dir=None,
             fetch_db_dump="d",
+            fetch_metabase_db_dump=None,
             deploy=DeployPathsConfig(
                 envs_dir="docker/envs",
                 images_config="i.yaml",
@@ -98,6 +100,7 @@ def test_provision_exits_when_s3cmd_missing(
         ),
         native=NativeConfig(
             fetch_media=FetchMediaConfig(dk_env="prod", dest="media", legacy=None),
+            fetch_metabase_db=FetchMetabaseDbConfig(ssh_host=None),
             reset_db=ResetDbConfig(
                 postgis=False,
                 pg_restore_args=("--clean", "--if-exists"),

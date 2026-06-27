@@ -10,7 +10,10 @@ import pytest
 from catalpa_tooling.ssh_known_hosts import (
     ensure_known_host,
     ensure_ssh_known_host_for_docker_host,
+    ensure_ssh_known_host_for_ssh_target,
+    host_and_port_from_ssh_target,
     host_in_known_hosts,
+    is_ssh_host_key_verification_error,
     known_hosts_path,
     ssh_host_from_docker_host,
 )
@@ -19,6 +22,33 @@ from catalpa_tooling.ssh_known_hosts import (
 def test_ssh_host_from_docker_host_ssh_url() -> None:
     assert ssh_host_from_docker_host("ssh://root@1.2.3.4") == "1.2.3.4"
     assert ssh_host_from_docker_host("ssh://deploy@host.example.com") == "host.example.com"
+
+
+def test_host_and_port_from_ssh_target() -> None:
+    assert host_and_port_from_ssh_target("root@bero.catalpa.io") == ("bero.catalpa.io", 22)
+    assert host_and_port_from_ssh_target("deploy@10.0.0.5:2222") == ("10.0.0.5", 2222)
+    assert host_and_port_from_ssh_target("host.example") == ("host.example", 22)
+
+
+def test_ensure_ssh_known_host_for_ssh_target_delegates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kh = tmp_path / "known_hosts"
+    called: list[tuple[str, int]] = []
+
+    def fake_ensure(host: str, *, port: int = 22, **kwargs):
+        called.append((host, port))
+        return 0
+
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.ensure_known_host", fake_ensure)
+    assert ensure_ssh_known_host_for_ssh_target("root@bero.catalpa.io", known_hosts=kh) == 0
+    assert called == [("bero.catalpa.io", 22)]
+
+
+def test_is_ssh_host_key_verification_error() -> None:
+    assert is_ssh_host_key_verification_error("Host key verification failed.")
+    assert is_ssh_host_key_verification_error("No SSH host key is known for bero.catalpa.io")
+    assert not is_ssh_host_key_verification_error("connection timed out")
 
 
 def test_ssh_host_from_docker_host_user_at_host() -> None:

@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **LAN dev access** for local `dk dev`: auto-detects the host’s LAN IP and Bonjour `.local` name, injects `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` for Django, and prints LAN URLs on stack start. Opt out with `dev_lan_access: false` in `docker/envs/dev/info.yaml`. VS Code tasks: **Dev: Show LAN URLs**, **Dev: Open site on LAN**.
+- `setup-vscode` CLI: scaffold VS Code tasks for `dk dev` and `dk full` (`uv run setup-vscode`). No SSH-backed fetch tasks. Writes `.vscode/tasks.json`, `extensions.json`, and `settings.json`; patches `.gitignore` for committed VS Code files. Uninstall managed files with `setup-vscode --remove`.
+- `setup-shell` adds `compinit` to the catalpa block when `~/.zshrc` has no completion init (and no Oh My Zsh). `setup-shell --status` reports `completion init (compinit)`.
+- `catalpa-direnv.zsh` skips tab-completion registration until `compdef` is available (no more `compdef: command not found` when re-sourcing `~/.zshrc`).
+- `native fetch db` / `native fetch media` and SSH-backed scripts register deploy host keys in `~/.ssh/known_hosts` automatically (same `ssh-keyscan` flow as `dk` on remote envs). Clearer messages when host-key verification still fails.
+
+### Changed
+
+- `native` loads `paths.env_local` with override so local host Postgres settings (e.g. empty `DJANGO_DB_USER` for Postgres.app) replace inherited project env without adding `.env.local` to direnv.
+- `setup-shell` next-steps hint prefers opening a new terminal tab over `source ~/.zshrc`.
+
+## 0.7.7
+
+### Added
+
+- Top-level `setup-shell` CLI: one-time zsh + direnv bootstrap (`uv run setup-shell`). Ships `catalpa-direnv.zsh` in the wheel (`src/catalpa_tooling/shell/`). Uninstall with `setup-shell --remove`. Re-register completion after `source ~/.zshrc` (compinit-safe).
+
+## 0.7.4 (unreleased)
+
+### Added
+
+- `native.fetch_media.legacy.default: true` in tooling.yaml — opt-in default for `--legacy-path` on `native fetch media` (use `--no-legacy-path` to force Docker volume mode).
+
 ## 0.6.4 (unreleased)
 
 ### Added

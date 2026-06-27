@@ -14,6 +14,7 @@ from catalpa_tooling.deploy_do_link import (
     droplet_name_to_env_map,
     format_docker_host,
     is_digitalocean_host_disabled,
+    normalize_droplet_hostname,
     patch_info_docker_host,
     public_ipv4,
     read_env_do_link,
@@ -174,8 +175,27 @@ def _active_droplet(name: str, ip: str = "203.0.113.5") -> dict:
     }
 
 
+def test_normalize_droplet_hostname_replaces_underscores() -> None:
+    assert normalize_droplet_hostname("catalpa_bero-staging") == "catalpa-bero-staging"
+    assert normalize_droplet_hostname("jid-staging") == "jid-staging"
+
+
 def test_default_droplet_name(minimal_project) -> None:
     assert default_droplet_name(minimal_project, "prod") == "minimal-prod"
+
+
+def test_default_droplet_name_replaces_underscores_in_project_name(
+    minimal_project,
+) -> None:
+    from dataclasses import replace
+
+    from catalpa_tooling.config import ProjectMetaConfig
+
+    config = replace(
+        minimal_project,
+        meta=ProjectMetaConfig(name="catalpa_bero", root_marker="tooling.yaml"),
+    )
+    assert default_droplet_name(config, "staging") == "catalpa-bero-staging"
 
 
 def test_resolve_env_do_link_default_and_explicit(minimal_project) -> None:
@@ -199,6 +219,12 @@ def test_resolve_env_do_link_default_and_explicit(minimal_project) -> None:
         size=None,
         region=None,
     )
+    with_underscore = resolve_env_do_link(
+        minimal_project,
+        "prod",
+        {"digitalocean": {"droplet_name": "catalpa_bero-production"}},
+    )
+    assert with_underscore.droplet_name == "catalpa-bero-production"
 
 
 def test_resolve_env_do_link_size_region_without_droplet_name(minimal_project) -> None:

@@ -214,3 +214,19 @@ def test_django_media_volume_name_custom_data_volume(minimal_project, tmp_path) 
     assert restic_backup_mount_path(config=cfg) == "/backup/user_uploads"
     body = render_restic_env({}, config=cfg)
     assert "RESTIC_FILES_DATA_VOLUME=user_uploads" in body
+
+
+def test_restic_backup_mount_path_custom_backup_path(minimal_project, tmp_path) -> None:
+    tooling = minimal_project.tooling_path
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(
+        text.replace(
+            "  zabbix:",
+            "  restic:\n    backup_path: /mnt/btrfs-data/jid-media\n  zabbix:",
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_project_config(minimal_project.repo_root)
+    assert restic_backup_mount_path(config=cfg) == "/mnt/btrfs-data/jid-media"
+    body = render_restic_env({}, config=cfg)
+    assert "RESTIC_FILES_BACKUP_PATH=/mnt/btrfs-data/jid-media" in body

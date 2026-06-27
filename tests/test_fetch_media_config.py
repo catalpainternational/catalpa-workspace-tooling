@@ -13,6 +13,7 @@ from catalpa_tooling.config import (
 )
 from catalpa_tooling.fetch_media import dk_info_fetch_media_defaults, run_fetch_media
 from catalpa_tooling.media_rsync import docker_volume_mountpoint_ssh, ssh_target_from_host
+from catalpa_tooling.native_parser import build_native_parser
 
 
 def _write_minimal_tooling(tmp_path: Path, *, compose_default: str = "app_compose") -> None:
@@ -91,7 +92,52 @@ native:
     assert cfg.native.fetch_media.legacy == FetchMediaLegacyConfig(
         remote="/backup/django_media",
         ssh_host="legacy.example",
+        default=False,
     )
+
+
+def test_parse_native_fetch_media_legacy_default_true(tmp_path: Path, isolated_tooling: None) -> None:
+    _write_minimal_tooling(tmp_path)
+    (tmp_path / "tooling.yaml").write_text(
+        (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+        + """
+native:
+  fetch_media:
+    legacy:
+      default: true
+      remote: /backup/django_media
+      ssh_host: legacy.example
+""",
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.native.fetch_media.legacy == FetchMediaLegacyConfig(
+        remote="/backup/django_media",
+        ssh_host="legacy.example",
+        default=True,
+    )
+
+
+def test_native_parser_fetch_media_legacy_path_default(tmp_path: Path, isolated_tooling: None) -> None:
+    _write_minimal_tooling(tmp_path)
+    (tmp_path / "tooling.yaml").write_text(
+        (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+        + """
+native:
+  fetch_media:
+    legacy:
+      default: true
+      remote: /backup/django_media
+      ssh_host: legacy.example
+""",
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    parser, _ = build_native_parser(cfg)
+    ns = parser.parse_args(["fetch", "media"])
+    assert ns.legacy_path is True
+    ns_off = parser.parse_args(["fetch", "media", "--no-legacy-path"])
+    assert ns_off.legacy_path is False
 
 
 def test_dk_info_fetch_media_defaults(tmp_path: Path, isolated_tooling: None) -> None:
@@ -150,6 +196,10 @@ def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, m
     )
     monkeypatch.setattr("catalpa_tooling.fetch_media.rsync_pull_remote_to_local", fake_rsync)
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.ensure_ssh_known_host_for_ssh_target",
+        lambda *_a, **_k: 0,
+    )
 
     run_fetch_media(cfg, dk_env="prod", host=None, dest=tmp_path / "media", partial=False, legacy_path=False, legacy_remote=None, compose_project=None)
     assert calls == [("u@h", "/vol/mount/", tmp_path / "media")]

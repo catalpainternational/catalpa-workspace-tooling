@@ -193,6 +193,11 @@ def load_managed_deploy_context(
         recovery_env_name=env_name,
     )
     if kh_rc != 0:
+        print(
+            f"Could not register SSH host key for {docker_host!r}. "
+            "Remote `dk` commands need the deploy host in ~/.ssh/known_hosts.",
+            file=sys.stderr,
+        )
         return None
 
     images_config = _load_images_config(config)
@@ -283,6 +288,13 @@ def load_managed_deploy_context(
     release_for_bundle = env_add.get("STACK_IMAGE_TAG") or yaml_tag_s or _default_image_tag(repo_root)
     env_add.update(vite_build_metadata_env(config, str(release_for_bundle)))
     apply_backup_logging_env(env_add, config, info)
+
+    from catalpa_tooling.dev_lan_access import build_dev_lan_env, dev_lan_access_enabled, print_dev_lan_urls
+
+    if dev_lan_access_enabled(info):
+        env_add.update(build_dev_lan_env(info))
+        if env_add.get("BERO_EXTRA_ORIGINS"):
+            print_dev_lan_urls(info)
 
     try:
         storage_volumes = parse_storage_volumes_from_info(info, config)

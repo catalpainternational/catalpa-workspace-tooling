@@ -18,6 +18,7 @@ from catalpa_tooling.deploy_do_link import (
     cmd_env_host,
     cmd_env_host_create,
     droplet_name_for_env,
+    normalize_droplet_hostname,
 )
 from catalpa_tooling.doctl_droplets import create_droplet
 from catalpa_tooling.doctl_projects import (
@@ -127,7 +128,7 @@ def _cmd_droplets_create(ns_or_argv: argparse.Namespace | list[str]) -> int:
     if isinstance(ns_or_argv, list):
         return run_digoc(["droplets", "create", *ns_or_argv])
     ns = ns_or_argv
-    droplet_name = (ns.name or "").strip() if ns.name else ""
+    droplet_name = normalize_droplet_hostname((ns.name or "").strip()) if ns.name else ""
     for_env = (ns.for_env or "").strip()
 
     cfg: ProjectConfig | None = None

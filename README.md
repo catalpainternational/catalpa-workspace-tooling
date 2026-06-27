@@ -37,11 +37,34 @@ direnv allow
 
 The `.envrc` puts `.venv/bin` on `PATH` (so `dk`, `dev`, etc. resolve to that repo's venv) and exports `CATALPA_REGISTER_PYTHON_ARGCOMPLETE` for the zsh hook below. Each repo can pin a different tooling version; switching directories switches which `dk` binary completion invokes.
 
-**3. One-time zsh setup (any machine, not per-repo):**
+**3. One-time machine setup (zsh, any Catalpa tooling repo):**
 
-Copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) (not `install-completions.sh`) to `~/.config/catalpa/direnv.zsh`, then add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
+Run once after `uv sync` (before `direnv allow` — `dk` is not on PATH yet):
+
+```bash
+uv run setup-shell
+```
+
+This installs `~/.config/catalpa/direnv.zsh` from the package and patches `~/.zshrc` with the direnv hook plus the completion source. Re-run safely; use `uv run setup-shell --status` to check. Remove with `uv run setup-shell --remove`.
+
+Open a new shell, `cd` into a tooling repo, and `direnv allow`. Verify: `whence dk` → `…/.venv/bin/dk`.
+
+**VS Code tasks (optional, per tooling repo):**
+
+After `uv sync`, scaffold dev tasks once per project:
+
+```bash
+uv run setup-vscode
+```
+
+Then use **Terminal → Run Task** (Cmd+Shift+P → “Tasks: Run Task”). Bero projects get **dk dev** tasks (start/stop stack, logs, open site, Django manage, backup restore) and **dk full** tasks when `docker/envs/full/info.yaml` exists. SSH-backed fetch tasks are not included — run `native fetch db` / `native fetch media` from a terminal when needed.
+
+Check status with `uv run setup-vscode --status`. Remove scaffolded files with `uv run setup-vscode --remove`.
+
+**Manual fallback (no `setup-shell`):** copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) to `~/.config/catalpa/direnv.zsh`, add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
 
 ```zsh
+eval "$(direnv hook zsh)"
 [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh" ]] && \
   source "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/direnv.zsh"
 ```
@@ -107,11 +130,22 @@ After install, these console scripts are available:
 
 ### Project script extensions
 
-Place bash scripts under `paths.scripts` in `tooling.yaml`:
+Place bash scripts under `paths.scripts` in `tooling.yaml` (a single directory or an **ordered list**). When using a list, **earlier directories win** if the same command name appears in more than one path (so project `scripts/` can override shared helpers):
+
+```yaml
+paths:
+  scripts: scripts
+  # Bero + Metabase consumers:
+  # scripts:
+  #   - scripts
+  #   - bero/docker/postgres/scripts
+```
 
 - **`scripts/native-<name>.sh`** → `uv run native <name>`. Deprecated `local-*.sh` / `dev-*.sh` still work with warnings.
 - **`scripts/<name>.sh`** (not extension scripts) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
 - **`scripts/native-reset-db-post.sh`** — optional hook after `native reset-db`; older hook names deprecated.
+
+Scripts receive `CATALPA_REPO_ROOT`, `CATALPA_FRONTEND_DIR`, and optional Metabase fetch defaults (`FETCH_DB_SSH_HOST`, `FETCH_DB_OUTPUT`) from tooling when run via `uv run scripts …`.
 
 For npm-based dev servers, source the bundled helper:
 
@@ -193,7 +227,7 @@ By default, **all SSH keys** on your DigitalOcean account are embedded (via host
 
 ### Linking droplets to `dk` environments
 
-By default the DigitalOcean droplet name is **`{project.name}-{env}`** from `tooling.yaml` and the deploy env folder (e.g. `catalpa-site-prod`). Override in `docker/envs/<env>/info.yaml`:
+By default the DigitalOcean droplet name is **`{project.name}-{env}`** from `tooling.yaml` and the deploy env folder (e.g. `catalpa-site-prod`). Underscores in `project.name` or explicit `droplet_name` values are converted to hyphens (DO hostnames allow only `a-z`, `A-Z`, `0-9`, `.`, and `-`). Override in `docker/envs/<env>/info.yaml`:
 
 ```yaml
 digitalocean:
@@ -217,7 +251,7 @@ dk prod host --sync-dns   # create/update DO A records for site_origin (no known
 dk digoc droplets list    # includes Env column when tooling.yaml is present
 ```
 
-After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`, with retries until sshd is reachable) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted.
+After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`, with retries until sshd is reachable) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted, and before `native fetch db` / `native fetch media` when they SSH to a host configured in `tooling.yaml` (legacy `ssh_host`, `fetch_metabase_db.ssh_host`, or the env’s `docker_host`).
 
 **New droplets:** DigitalOcean may report a droplet `active` before SSH accepts connections on port 22. The tooling waits up to ~2 minutes; if registration still fails, `docker_host` is usually already patched — finish with `dk <env> host --write` (or re-run `host create`, which resumes when the droplet already exists).
 
@@ -260,13 +294,22 @@ Top-level **`domain`** (string or list) is still accepted but deprecated; prefer
 
 ### Host storage (`storage` in `info.yaml`)
 
-Large compose volumes (`django_media`, `postgres_data`, `caddy_data`) can be bound to host paths via pre-created Docker named volumes (local driver bind). Set per environment in `docker/envs/<env>/info.yaml`:
+Compose data volumes use stable Docker names (`name: ${COMPOSE_PROJECT_NAME}_…`). Two independent choices:
+
+| Axis | Where | Purpose |
+|------|--------|---------|
+| **Host path on deploy** | `storage.volumes.<key>.path` in `docker/envs/<env>/info.yaml` | Bind `django_media`, `postgres_data`, or `caddy_data` to a mounted path (optional DO block provisioning) |
+| **Volume lifecycle** | `external: true` per volume in the project `compose.yaml` (optional) | Compose fail-fast vs compose-managed create/remove |
+
+When `storage.volumes` is set, tooling pre-creates bind-mounted named volumes before `docker compose up` (`dk up`, `storage ensure`, and post-restore hooks). Host bind placement does **not** require `external: true` in compose.
+
+Example path-only bind (mount configured outside `dk`):
 
 ```yaml
 storage:
   volumes:
     django_media:
-      path: /mnt/btrfs-data/jid-media   # path-only: mount configured outside dk
+      path: /mnt/btrfs-data/jid-media
 ```
 
 Optional DigitalOcean block volume provisioning (on `host create` / `storage ensure`):
@@ -280,7 +323,9 @@ storage:
         size_gib: 200
 ```
 
-Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, and `dk <env> up` (before compose starts).
+Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, `dk <env> up`, and `ops.post_db_restore` hooks after DB restore (ensure volumes before starting the web service).
+
+When tooling pre-creates named volumes for non-`external` compose definitions, it applies Docker Compose metadata labels (`com.docker.compose.project`, `com.docker.compose.volume`) so Compose does not warn that the volume “was not created by Docker Compose”. Volumes created before this behavior (or by plain `docker volume create`) may still warn until removed and recreated (e.g. via `dk <env> wipe`).
 
 ## Documentation
 

@@ -3,6 +3,7 @@
 # Setup:
 #   cp scripts/envrc.template .envrc   # from catalpa-workspace-tooling checkout, or copy content
 #   uv sync                            # tooling group must include catalpa-workspace-tooling[completion]
+#   uv run setup-shell                 # once per machine (direnv hook + completion)
 #   direnv allow
 #
 # Also recommended: scripts/cursorignore.template → .cursorignore and

@@ -15,7 +15,13 @@ from catalpa_tooling.media_rsync import (
     ssh_target_from_host,
 )
 from catalpa_tooling.restic_files import django_media_volume_name
+from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_ssh_target
 from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
+
+
+def _ensure_ssh_target_known(ssh_target: str) -> None:
+    if ensure_ssh_known_host_for_ssh_target(ssh_target) != 0:
+        raise SystemExit(1)
 
 
 def dk_info_fetch_media_defaults(config: ProjectConfig, env_name: str) -> tuple[str, str]:
@@ -91,6 +97,10 @@ def run_fetch_media(
             config=config,
         )
         print(f"Resolving Docker volume {volume!r} on {ssh_target} …", file=sys.stderr)
+
+    _ensure_ssh_target_known(ssh_target)
+
+    if not legacy_path:
         remote_base = docker_volume_mountpoint_ssh(ssh_target, volume, label="fetch media")
 
     if partial:

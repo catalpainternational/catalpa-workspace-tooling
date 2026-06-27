@@ -101,11 +101,12 @@ class PathsConfig:
     backend: str
     frontend: str
     prototype: str | None
-    scripts: str
+    scripts: tuple[str, ...]
     env_local: str
     email_backend_dir: str
     media_dir: str | None
     fetch_db_dump: str
+    fetch_metabase_db_dump: str | None
     deploy: DeployPathsConfig
 
 
@@ -163,6 +164,7 @@ class ResticOpsConfig:
     """Compose volume key restic backs up (``{COMPOSE_PROJECT_NAME}_{data_volume}``)."""
 
     data_volume: str
+    backup_path: str | None = None
     verbose: int | None = None
     restore_verbose: int | None = None
 
@@ -210,9 +212,21 @@ class OpsConfig:
 
 @dataclass(frozen=True)
 class FetchMediaLegacyConfig:
-    """Fixed host directory for ``local fetch media --legacy-path`` (non-Docker deploys)."""
+    """Fixed host directory for ``local fetch media --legacy-path`` (non-Docker deploys).
+
+    When ``default`` is true, ``native fetch media`` uses legacy path mode unless
+    ``--no-legacy-path`` is passed.
+    """
 
     remote: str
+    ssh_host: str | None
+    default: bool = False
+
+
+@dataclass(frozen=True)
+class FetchMetabaseDbConfig:
+    """``native.fetch_metabase_db`` in tooling.yaml (optional Metabase dump fetch defaults)."""
+
     ssh_host: str | None
 
 
@@ -320,6 +334,7 @@ class FrontendDevConfig:
 @dataclass(frozen=True)
 class NativeConfig:
     fetch_media: FetchMediaConfig
+    fetch_metabase_db: FetchMetabaseDbConfig
     reset_db: ResetDbConfig
     frontend: FrontendDevConfig
     start: StartConfig
@@ -390,7 +405,13 @@ class ProjectConfig:
 
     @property
     def scripts_dir(self) -> Path:
-        return self.repo_root / self.paths.scripts
+        """Primary scripts directory (first ``paths.scripts`` entry)."""
+        return self.repo_root / self.paths.scripts[0]
+
+    @property
+    def scripts_dirs(self) -> tuple[Path, ...]:
+        """All configured script directories (``paths.scripts`` string or list)."""
+        return tuple(self.repo_root / rel for rel in self.paths.scripts)
 
     @property
     def env_local_path(self) -> Path:
@@ -409,6 +430,12 @@ class ProjectConfig:
     @property
     def fetch_db_dump_path(self) -> Path:
         return self.repo_root / self.paths.fetch_db_dump
+
+    @property
+    def fetch_metabase_db_dump_path(self) -> Path | None:
+        if self.paths.fetch_metabase_db_dump is None:
+            return None
+        return self.repo_root / self.paths.fetch_metabase_db_dump
 
     @property
     def fetch_media_dest_path(self) -> Path:
@@ -603,6 +630,35 @@ def _parse_env_aliases(raw: Any) -> dict[str, str]:
     return out
 
 
+def _parse_scripts_paths(raw: Any) -> tuple[str, ...]:
+    """``paths.scripts``: single directory or ordered list (first wins on name clash)."""
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            raise ProjectConfigError("paths.scripts must not be empty")
+        return (_validate_rel_path(s, field="paths.scripts"),)
+    if isinstance(raw, list):
+        if not raw:
+            raise ProjectConfigError("paths.scripts list must not be empty")
+        out: list[str] = []
+        for i, item in enumerate(raw):
+            s = str(item).strip()
+            if not s:
+                raise ProjectConfigError(f"Empty entry in paths.scripts[{i}]")
+            out.append(_validate_rel_path(s, field=f"paths.scripts[{i}]"))
+        return tuple(out)
+    raise ProjectConfigError("paths.scripts must be a string or list of strings")
+
+
+def _parse_fetch_metabase_db(raw: Any) -> FetchMetabaseDbConfig:
+    if raw is None:
+        return FetchMetabaseDbConfig(ssh_host=None)
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.fetch_metabase_db must be a mapping")
+    ssh_host = _optional_str(raw, "ssh_host")
+    return FetchMetabaseDbConfig(ssh_host=ssh_host)
+
+
 def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
     deploy_raw = _require_mapping(paths_raw.get("deploy"), "paths.deploy")
     deploy = DeployPathsConfig(
@@ -639,9 +695,7 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
             if (p := _optional_str(paths_raw, "prototype"))
             else None
         ),
-        scripts=_validate_rel_path(
-            _require_str(paths_raw, "scripts", section="paths"), field="paths.scripts"
-        ),
+        scripts=_parse_scripts_paths(paths_raw.get("scripts")),
         env_local=_validate_rel_path(
             _require_str(paths_raw, "env_local", section="paths"), field="paths.env_local"
         ),
@@ -656,6 +710,11 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
         ),
         fetch_db_dump=_validate_rel_path(
             _require_str(paths_raw, "fetch_db_dump", section="paths"), field="paths.fetch_db_dump"
+        ),
+        fetch_metabase_db_dump=(
+            _validate_rel_path(p, field="paths.fetch_metabase_db_dump")
+            if (p := _optional_str(paths_raw, "fetch_metabase_db_dump"))
+            else None
         ),
         deploy=deploy,
     )
@@ -705,7 +764,12 @@ def _parse_fetch_media_legacy(raw: Any) -> FetchMediaLegacyConfig | None:
         raise ProjectConfigError("native.fetch_media.legacy must be a mapping")
     remote = _require_str(raw, "remote", section="native.fetch_media.legacy")
     ssh_host = _optional_str(raw, "ssh_host")
-    return FetchMediaLegacyConfig(remote=remote.rstrip("/"), ssh_host=ssh_host)
+    use_legacy = _optional_bool(raw, "default", default=False)
+    return FetchMediaLegacyConfig(
+        remote=remote.rstrip("/"),
+        ssh_host=ssh_host,
+        default=use_legacy,
+    )
 
 
 def _parse_fetch_media(raw: Any) -> FetchMediaConfig:
@@ -830,6 +894,7 @@ def _parse_native(raw: Any) -> NativeConfig:
     if raw is None:
         return NativeConfig(
             fetch_media=_parse_fetch_media(None),
+            fetch_metabase_db=_parse_fetch_metabase_db(None),
             reset_db=_parse_reset_db(None),
             frontend=_parse_frontend(None),
             start=_parse_start(None),
@@ -838,6 +903,7 @@ def _parse_native(raw: Any) -> NativeConfig:
         raise ProjectConfigError("native must be a mapping")
     return NativeConfig(
         fetch_media=_parse_fetch_media(raw.get("fetch_media")),
+        fetch_metabase_db=_parse_fetch_metabase_db(raw.get("fetch_metabase_db")),
         reset_db=_parse_reset_db(raw.get("reset_db")),
         frontend=_parse_frontend(raw.get("frontend")),
         start=_parse_start(raw.get("start")),
@@ -960,6 +1026,9 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         _optional_str(restic_raw, "data_volume") or DEFAULT_RESTIC_DATA_VOLUME,
         field="ops.restic.data_volume",
     )
+    restic_backup_path = _optional_str(restic_raw, "backup_path")
+    if restic_backup_path is not None and not restic_backup_path.startswith("/"):
+        raise ProjectConfigError("ops.restic.backup_path must be an absolute path")
     return OpsConfig(
         install_prefix=_require_str(ops_raw, "install_prefix", section="ops"),
         config_dir=_require_str(ops_raw, "config_dir", section="ops"),
@@ -992,6 +1061,7 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         ),
         restic=ResticOpsConfig(
             data_volume=restic_data_volume,
+            backup_path=restic_backup_path,
             verbose=_parse_restic_verbose_field(restic_raw, "verbose", section="ops.restic"),
             restore_verbose=_parse_restic_verbose_field(
                 restic_raw, "restore_verbose", section="ops.restic"

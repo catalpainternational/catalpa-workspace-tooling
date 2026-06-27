@@ -18,7 +18,10 @@ Configure the compose volume key in `tooling.yaml`:
 ops:
   restic:
     data_volume: django_media   # optional; default django_media
+    backup_path: /mnt/btrfs-data/myapp-media   # optional; path prefix in snapshots
 ```
+
+When ``backup_path`` is set, the compose volume is mounted at that path inside the restic container for backup and restore (must match paths in existing snapshots). Default: ``/backup/{data_volume}``.
 
 `COMPOSE_PROJECT_NAME` must match the Compose project on the deploy host (from `info.yaml` env or `stack.compose_project_default` in `tooling.yaml`). The volume key must match the `volumes:` name in your compose file.
 

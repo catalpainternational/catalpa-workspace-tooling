@@ -176,9 +176,10 @@ def create_droplet(
     reuse_existing: bool = False,
 ) -> int:
     """Create a droplet with the standard bootstrap cloud-config user-data."""
+    from catalpa_tooling.deploy_do_link import normalize_droplet_hostname
     from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
 
-    droplet_name = name.strip()
+    droplet_name = normalize_droplet_hostname(name.strip())
     if not droplet_name:
         print("Droplet name is required.", file=sys.stderr)
         return 1

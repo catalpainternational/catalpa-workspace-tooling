@@ -29,6 +29,9 @@ def build_native_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser,
     legacy_remote_default = (
         config.native.fetch_media.legacy.remote if config.native.fetch_media.legacy else None
     )
+    legacy_path_default = (
+        config.native.fetch_media.legacy.default if config.native.fetch_media.legacy else False
+    )
     deploy_env_choices = list_dk_env_names(config)
 
     p_db = fetch_sub.add_parser(
@@ -95,8 +98,12 @@ def build_native_parser(config: ProjectConfig) -> tuple[argparse.ArgumentParser,
     )
     p_media.add_argument(
         "--legacy-path",
-        action="store_true",
-        help="Rsync from native.fetch_media.legacy in tooling.yaml instead of the django_media Docker volume.",
+        action=argparse.BooleanOptionalAction,
+        default=legacy_path_default,
+        help=(
+            "Rsync from native.fetch_media.legacy in tooling.yaml instead of the django_media "
+            "Docker volume (default: native.fetch_media.legacy.default when set, else off)."
+        ),
     )
     p_media.add_argument(
         "--compose-project",

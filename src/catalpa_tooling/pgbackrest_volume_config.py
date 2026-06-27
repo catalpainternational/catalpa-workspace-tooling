@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import Literal
 
 from catalpa_tooling.config import DEFAULT_PGBR_PG1_PATH, ProjectConfig
@@ -48,6 +49,158 @@ SUFFIX_TO_GLOBAL: dict[str, str] = {
     "REPO_PATH": "repo1-path",
 }
 REQUIRED_SUFFIXES = frozenset({"BUCKET", "REGION", "KEY", "SECRET", "REPO_PATH", "STANZA"})
+
+
+@dataclass(frozen=True)
+class PgbackrestRepoSettings:
+    """S3 repo settings materialized into the pgbackrest_conf volume drop-in."""
+
+    stanza: str
+    repo_path: str
+    bucket: str
+    region: str
+    endpoint: str
+    pg1_path: str
+
+
+def _parse_pgbackrest_managed_ini(content: str) -> PgbackrestRepoSettings | None:
+    """Parse managed drop-in INI (``[global]`` + ``[<stanza>]`` with ``pg1-path``)."""
+    global_opts: dict[str, str] = {}
+    stanza_name = ""
+    stanza_opts: dict[str, str] = {}
+    section: str | None = None
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            if section != "global" and not section.startswith("global:"):
+                stanza_name = section
+                stanza_opts = {}
+            continue
+        if "=" not in line or section is None:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if section == "global":
+            global_opts[key] = value
+        elif section == stanza_name:
+            stanza_opts[key] = value
+    repo_path = global_opts.get("repo1-path", "")
+    bucket = global_opts.get("repo1-s3-bucket", "")
+    pg1_path = stanza_opts.get("pg1-path", "")
+    if not stanza_name or not repo_path or not bucket or not pg1_path:
+        return None
+    return PgbackrestRepoSettings(
+        stanza=stanza_name,
+        repo_path=repo_path,
+        bucket=bucket,
+        region=global_opts.get("repo1-s3-region", ""),
+        endpoint=global_opts.get("repo1-s3-endpoint", ""),
+        pg1_path=pg1_path,
+    )
+
+
+def expected_pgbackrest_repo_settings(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> PgbackrestRepoSettings | None:
+    """Repo settings that ``materialize_configs`` would write from current env."""
+    mode = resolve_mode(env)
+    if mode not in ("write", "read"):
+        return None
+    prefix = PREFIX_WRITE if mode == "write" else PREFIX_READ
+    vars_map = _extract_stanza_vars(env, prefix)
+    if _validate_repo_vars(vars_map, mode=mode):
+        return None
+    return PgbackrestRepoSettings(
+        stanza=vars_map["STANZA"],
+        repo_path=vars_map["REPO_PATH"],
+        bucket=vars_map["BUCKET"],
+        region=vars_map.get("REGION", ""),
+        endpoint=vars_map.get("ENDPOINT", ""),
+        pg1_path=postgres_pg1_path(env, config=config),
+    )
+
+
+def repo_settings_match(
+    volume: PgbackrestRepoSettings, expected: PgbackrestRepoSettings
+) -> bool:
+    return (
+        volume.stanza == expected.stanza
+        and volume.repo_path == expected.repo_path
+        and volume.bucket == expected.bucket
+        and volume.region == expected.region
+        and volume.endpoint == expected.endpoint
+        and volume.pg1_path == expected.pg1_path
+    )
+
+
+def read_managed_pgbackrest_repo_settings(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> PgbackrestRepoSettings | None:
+    """Read and parse the managed pgBackRest drop-in from the ``pgbackrest_conf`` volume."""
+    if not pgbackrest_managed_conf_materialized(env, config=config):
+        return None
+    conf_name = (
+        config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
+    )
+    vol_pgb = volume_names(env, config=config)[1]
+    image = postgres_image_from_env(env, config=config)
+    docker_env = _docker_env_for_remote(env)
+    conf_path = f"/etc/pgbackrest/conf.d/{conf_name}"
+    r = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            *_compose_db_platform_args(),
+            "--entrypoint",
+            "/bin/sh",
+            "-v",
+            f"{vol_pgb}:/etc/pgbackrest/conf.d",
+            image,
+            "-c",
+            f"cat {shlex.quote(conf_path)}",
+        ],
+        env=docker_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    if r.returncode != 0:
+        return None
+    return _parse_pgbackrest_managed_ini(r.stdout or "")
+
+
+def describe_pgbackrest_conf_status(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> str:
+    """Human-readable volume config vs credentials (for ``db restore --dry-run``)."""
+    expected = expected_pgbackrest_repo_settings(env, config=config)
+    if expected is None:
+        mode = resolve_mode(env)
+        if mode == "none":
+            return "no PGBR_S3_* credentials (configure required before restore)"
+        conflict = conflict_error_message(env)
+        if conflict:
+            return "credential conflict (WRITE and READ both set)"
+        return "incomplete PGBR_S3_* credentials"
+    volume = read_managed_pgbackrest_repo_settings(env, config=config)
+    if volume is None:
+        return "volume config missing (would run `db configure` before restore)"
+    if repo_settings_match(volume, expected):
+        return "volume config matches credentials"
+    return (
+        "volume config STALE — would re-run `db configure` before restore:\n"
+        f"    volume:  stanza={volume.stanza!r} repo1-path={volume.repo_path!r} "
+        f"bucket={volume.bucket!r}\n"
+        f"    env:     stanza={expected.stanza!r} repo1-path={expected.repo_path!r} "
+        f"bucket={expected.bucket!r}"
+    )
+
 
 # Optional tuning (env), not part of PGBR_S3_WRITE_/READ_ — see render_pgbackrest_ini / README_PGBACKREST.md.
 def _env_str(env: dict[str, str], key: str, default: str) -> str:
@@ -141,6 +294,56 @@ def stack_volume_docker_name(
         return django_media_volume_name(env, config=config)
     project = _compose_project_name(env, config)
     return f"{project}_{volume_key}"
+
+
+_COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+_COMPOSE_VOLUME_LABEL = "com.docker.compose.volume"
+
+
+def _compose_volume_create_label_args(
+    compose_project: str,
+    compose_volume_key: str,
+) -> list[str]:
+    """Docker CLI args so Compose recognizes a pre-created named volume as its own."""
+    project = compose_project.strip()
+    key = compose_volume_key.strip()
+    if not project or not key:
+        return []
+    return [
+        "--label",
+        f"{_COMPOSE_PROJECT_LABEL}={project}",
+        "--label",
+        f"{_COMPOSE_VOLUME_LABEL}={key}",
+    ]
+
+
+def _stack_volumes_with_compose_keys(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> tuple[tuple[str, str], ...]:
+    """``(docker_volume_name, compose_volume_key)`` pairs for stack volume ensure."""
+    pg_conf, pgb_conf = volume_names(env, config=config)
+    pg_data_key = _postgres_data_volume_key(config)
+    media_key = config.ops.restic.data_volume if config else "django_media"
+    return (
+        (postgres_data_volume_name(env, config=config), pg_data_key),
+        (django_media_volume_name(env, config=config), media_key),
+        (caddy_data_volume_name(env, config=config), CADDY_DATA_VOLUME_KEY),
+        (pg_conf, "postgres_conf"),
+        (pgb_conf, "pgbackrest_conf"),
+    )
+
+
+def _db_volumes_with_compose_keys(
+    env: dict[str, str], *, config: ProjectConfig | None = None
+) -> tuple[tuple[str, str], ...]:
+    """``(docker_volume_name, compose_volume_key)`` for volumes mounted by ``db``."""
+    pg_conf, pgb_conf = volume_names(env, config=config)
+    pg_data_key = _postgres_data_volume_key(config)
+    return (
+        (postgres_data_volume_name(env, config=config), pg_data_key),
+        (pg_conf, "postgres_conf"),
+        (pgb_conf, "pgbackrest_conf"),
+    )
 
 
 def _compose_db_platform_args() -> list[str]:
@@ -381,8 +584,14 @@ def _ensure_volume(
     host_path: str | None = None,
     create_host_path: bool = False,
     label: str = "ensure_volumes",
+    compose_project: str | None = None,
+    compose_volume_key: str | None = None,
 ) -> None:
     norm_host = (host_path or "").strip().rstrip("/") if host_path else None
+    compose_labels = _compose_volume_create_label_args(
+        compose_project or "",
+        compose_volume_key or "",
+    )
     if norm_host:
         _verify_host_path_on_deploy_host(
             norm_host,
@@ -439,13 +648,18 @@ def _ensure_volume(
                 f"device={norm_host}",
                 "--opt",
                 "o=bind",
+                *compose_labels,
                 name,
             ],
             env=docker_env,
             check=True,
         )
     else:
-        run_cmd(["docker", "volume", "create", name], env=docker_env, check=True)
+        run_cmd(
+            ["docker", "volume", "create", *compose_labels, name],
+            env=docker_env,
+            check=True,
+        )
 
 
 def external_stack_volume_names(
@@ -478,9 +692,11 @@ def ensure_external_stack_volumes(
     """
     volume_hosts = volume_hosts or {}
     create_host_paths = create_host_paths or {}
-    names = external_stack_volume_names(env, config=config)
+    volumes = _stack_volumes_with_compose_keys(env, config=config)
+    names = tuple(name for name, _ in volumes)
     name_to_host: dict[str, str] = {}
     name_to_create: dict[str, bool] = {}
+    name_to_key = dict(volumes)
     for key, host_path in volume_hosts.items():
         vol_name = stack_volume_docker_name(env, key, config=config)
         name_to_host[vol_name] = host_path
@@ -505,6 +721,7 @@ def ensure_external_stack_volumes(
             )
         return 0
     docker_env = _docker_env_for_remote(env)
+    compose_project = _compose_project_name(env, config)
     for n in names:
         try:
             _ensure_volume(
@@ -513,6 +730,8 @@ def ensure_external_stack_volumes(
                 host_path=name_to_host.get(n),
                 create_host_path=name_to_create.get(n, False),
                 label="ensure_volumes",
+                compose_project=compose_project,
+                compose_volume_key=name_to_key[n],
             )
         except subprocess.CalledProcessError as e:
             print(f"ensure_volumes: docker volume failed for {n!r}: {e}", file=sys.stderr)
@@ -549,10 +768,11 @@ def ensure_db_compose_volumes(
     create_host_paths = create_host_paths or {}
     docker_env = _docker_env_for_remote(env)
     pg_data_key = config.ops.pgbackrest.data_volume if config else "postgres_data"
-    for name in db_compose_volume_names(env, config=config):
+    compose_project = _compose_project_name(env, config)
+    for name, volume_key in _db_volumes_with_compose_keys(env, config=config):
         host_path = None
         create_host = False
-        if name == postgres_data_volume_name(env, config=config):
+        if volume_key == pg_data_key:
             host_path = volume_hosts.get(pg_data_key)
             create_host = bool(create_host_paths.get(pg_data_key))
         try:
@@ -562,6 +782,8 @@ def ensure_db_compose_volumes(
                 host_path=host_path,
                 create_host_path=create_host,
                 label="ensure_db_volumes",
+                compose_project=compose_project,
+                compose_volume_key=volume_key,
             )
         except subprocess.CalledProcessError as e:
             print(
@@ -596,6 +818,8 @@ def ensure_postgres_data_volume(
             host_path=volume_hosts.get(pg_data_key),
             create_host_path=bool(create_host_paths.get(pg_data_key)),
             label="pgBackRest restore",
+            compose_project=_compose_project_name(env, config),
+            compose_volume_key=pg_data_key,
         )
     except subprocess.CalledProcessError as e:
         print(
@@ -1035,47 +1259,84 @@ def ensure_pgbackrest_conf_before_restore(
     config: ProjectConfig | None = None,
     skip_configure_confirm: bool = False,
 ) -> int:
-    """Ensure managed pgBackRest config exists on the deploy host before offline restore.
+    """Ensure managed pgBackRest config on the deploy host matches credentials before offline restore.
 
-    When the ``pgbackrest_conf`` volume is empty or only has a baseline ``[global]`` stub,
-    offers to run ``materialize_configs`` (same as ``bkp_db configure``). With
-    ``skip_configure_confirm`` (global ``dk --yes``), configures without a y/n prompt.
+    When the ``pgbackrest_conf`` volume is empty, offers to run ``materialize_configs``.
+    When materialized config differs from current ``PGBR_S3_READ_*`` / ``PGBR_S3_WRITE_*`` env,
+    prints a diff and re-materializes (same prompt rules). With ``skip_configure_confirm``
+    (global ``dk --yes``), configures without a y/n prompt.
     """
-    if pgbackrest_managed_conf_materialized(env, config=config):
-        return 0
+    conflict = conflict_error_message(env)
+    if conflict:
+        print(conflict, file=sys.stderr)
+        return 1
 
-    vol_pgb = volume_names(env, config=config)[1]
     mode = resolve_mode(env)
     if mode == "none":
+        vol_pgb = volume_names(env, config=config)[1]
         print(
             "pgBackRest restore: pgBackRest config is not on the deploy host "
             f"({vol_pgb!r} missing managed stanza config). "
             "Set PGBR_S3_READ_* or PGBR_S3_WRITE_* in credentials, then run "
-            "`dk <env> bkp_db configure`.",
+            "`dk <env> db configure`.",
             file=sys.stderr,
         )
         return 1
 
-    print(
-        "pgBackRest restore: managed config is missing on the deploy host "
-        f"({vol_pgb!r} has no {config.ops.pgbackrest.pgbackrest_conf if config else '50-indmo-managed.conf'} "
-        "with pg1-path).",
-        file=sys.stderr,
+    expected = expected_pgbackrest_repo_settings(env, config=config)
+    if expected is None:
+        prefix = PREFIX_WRITE if mode == "write" else PREFIX_READ
+        vars_map = _extract_stanza_vars(env, prefix)
+        missing_err = _validate_repo_vars(vars_map, mode=mode)
+        if missing_err:
+            print(missing_err, file=sys.stderr)
+        return 1
+
+    volume = read_managed_pgbackrest_repo_settings(env, config=config)
+    if volume and repo_settings_match(volume, expected):
+        return 0
+
+    vol_pgb = volume_names(env, config=config)[1]
+    conf_name = (
+        config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
     )
+    if volume:
+        print(
+            "pgBackRest restore: volume config does not match current credentials "
+            f"({vol_pgb!r} / {conf_name}).",
+            file=sys.stderr,
+        )
+        print(
+            f"  volume:  stanza={volume.stanza!r} repo1-path={volume.repo_path!r} "
+            f"bucket={volume.bucket!r}",
+            file=sys.stderr,
+        )
+        print(
+            f"  env:     stanza={expected.stanza!r} repo1-path={expected.repo_path!r} "
+            f"bucket={expected.bucket!r}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "pgBackRest restore: managed config is missing on the deploy host "
+            f"({vol_pgb!r} has no {conf_name} with pg1-path).",
+            file=sys.stderr,
+        )
+
     if not skip_configure_confirm:
         from catalpa_tooling.cli_confirm import confirm_yes_default_no
 
         if not confirm_yes_default_no(
-            "Run `bkp_db configure` now to write pgBackRest config into that volume? (y/N): "
+            "Run `db configure` now to write pgBackRest config into that volume? (y/N): "
         ):
             print(
-                "Cancelled. Run `dk <env> bkp_db configure`, then retry restore.",
+                "Cancelled. Run `dk <env> db configure`, then retry restore.",
                 file=sys.stderr,
             )
             return 1
     else:
         print(
-            "pgBackRest restore: running `bkp_db configure` (--yes)…",
+            "pgBackRest restore: running `db configure` (--yes)…",
             file=sys.stderr,
         )
 
@@ -1123,8 +1384,19 @@ def materialize_configs(
         return 0
 
     try:
-        _ensure_volume(vol_pg, docker_env)
-        _ensure_volume(vol_pgb, docker_env)
+        compose_project = _compose_project_name(env, config)
+        _ensure_volume(
+            vol_pg,
+            docker_env,
+            compose_project=compose_project,
+            compose_volume_key="postgres_conf",
+        )
+        _ensure_volume(
+            vol_pgb,
+            docker_env,
+            compose_project=compose_project,
+            compose_volume_key="pgbackrest_conf",
+        )
     except subprocess.CalledProcessError as e:
         log(f"pgBackRest: docker volume failed: {e}")
         return 1
