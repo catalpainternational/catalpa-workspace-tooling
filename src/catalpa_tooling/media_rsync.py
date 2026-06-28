@@ -132,14 +132,7 @@ def rsync_pull_remote_to_local(ssh_target: str, remote_path: str, local_path: Pa
     remote = f"{ssh_target}:{remote_path}"
     cmd = [*RSYNC_BASE, remote, str(local_path)]
     print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-    proc = run_cmd(cmd, check=False, print_cmd=False, capture_output=True, text=True)
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()
-        if err:
-            print(err, file=sys.stderr)
-        if is_ssh_host_key_verification_error(err):
-            print_ssh_host_key_hint(ssh_target=ssh_target)
-    return proc.returncode
+    return run_cmd(cmd, check=False, print_cmd=False).returncode
 
 
 def rsync_push_local_to_dest(
