@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.3
+
+### Fixed
+
+- **`test smoke` / stack healthcheck** — in-container HTTP probe now sends a `Host` header derived from `BERO_ORIGIN` (or `SITE_ORIGIN`), fixing timeouts when dev stacks use `*.dev.localhost` while the probe hits `http://localhost:8000/cms/`.
+- **`dev_lan_access`** — merge `bero_extra_allowed_hosts` from `info.yaml` with LAN-detected hosts instead of overwriting `BERO_EXTRA_ALLOWED_HOSTS`.
+
 ## 0.8.1
 
 ### Added

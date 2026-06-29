@@ -1,6 +1,6 @@
 [project]
 name = "catalpa-workspace-tooling"
-version = "0.8.1"
+version = "0.8.3"
 description = "Deploy and development CLIs driven by a repo-root tooling.yaml manifest"
 readme = "README.md"
 requires-python = ">=3.12"

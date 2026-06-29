@@ -191,7 +191,7 @@ Future v2 may add `tooling.yaml` keys: `smoke.pytest_dir`, `smoke.skip_playwrigh
 | `missing …/smoke` | No test directory under `paths.frontend` |
 | Playwright not found after direnv | Add `smoke` to `[tool.uv] default-groups` |
 | `SMOKE_FE_URL not set` | Ran `pytest` directly instead of `uv run test smoke` |
-| Healthcheck timeout | Wrong `stack.healthcheck.url` or web service not up |
+| Healthcheck timeout | Wrong `stack.healthcheck.url`, web not up, or **DisallowedHost** when `BERO_ORIGIN` is not `localhost` (fixed in tooling v0.8.3+: in-container probe sends `Host` from `BERO_ORIGIN`) |
 | FE URL did not respond | `site_origin` / proxy port mismatch with running stack |
 | `treebeard.E001` in container only | Native vs docker lock drift (bero: `bero/docs/PYTHON_LOCK_ALIGNMENT.md`) |
 | `dk build django` fails after adding smoke to bero pyproject | Smoke deps belong in consumer `pyproject.toml` only |
