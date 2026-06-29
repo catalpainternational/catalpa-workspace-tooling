@@ -4,6 +4,7 @@ from catalpa_tooling.pgbackrest_db import (
     _pg_restore_compose_role_suffix,
     _pg_restore_has_role,
     _pg_restore_owner_acl_extras,
+    pg_restore_compose_extras,
 )
 
 
@@ -24,3 +25,15 @@ def test_pg_restore_compose_role_suffix_defaults_to_app_user() -> None:
 def test_pg_restore_compose_role_suffix_skips_when_role_provided() -> None:
     assert _pg_restore_compose_role_suffix(["--role", "other"]) == ""
     assert _pg_restore_compose_role_suffix(["--role=other"]) == ""
+
+
+def test_pg_restore_compose_extras_adds_no_comments_for_postgis() -> None:
+    assert pg_restore_compose_extras([], postgis=True) == [
+        "--no-comments",
+        "--no-acl",
+        "--no-owner",
+    ]
+
+
+def test_pg_restore_compose_extras_omits_no_comments_without_postgis() -> None:
+    assert pg_restore_compose_extras([], postgis=False) == ["--no-acl", "--no-owner"]

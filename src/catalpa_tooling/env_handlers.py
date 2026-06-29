@@ -45,7 +45,7 @@ from catalpa_tooling.pgbackrest_db import (
     plan_restore_offline,
     run_restore_offline,
     run_version,
-    _pg_restore_owner_acl_extras,
+    pg_restore_compose_extras,
 )
 from catalpa_tooling.pgbackrest_volume_config import (
     ensure_external_stack_volumes,
@@ -752,11 +752,12 @@ def _handle_bkp_db(
         extras = list(getattr(ns, "pg_restore_args", None) or [])
         if getattr(ns, "archive_file", None):
             extras = ["--file", str(ns.archive_file), *extras]
-        restore_extras = _pg_restore_owner_acl_extras(
+        restore_extras = pg_restore_compose_extras(
             pg_restore_extras_with_default_archive(
                 extras,
                 config.fetch_db_dump_path,
-            )
+            ),
+            postgis=config.native.reset_db.postgis,
         )
         if "--file" not in restore_extras and sys.stdin.isatty():
             return 1
