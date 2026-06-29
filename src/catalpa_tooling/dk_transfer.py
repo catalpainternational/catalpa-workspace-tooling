@@ -17,6 +17,7 @@ from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.media_pull import run_pull_media, run_push_media
 from catalpa_tooling.pgbackrest_db import (
     db_service_responds,
+    pg_restore_compose_extras,
     run_drop_create_app_database,
     run_pg_dump_to_file,
     run_pg_restore,
@@ -395,7 +396,10 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         rc = run_pg_restore(
             dst_ctx.compose_file,
             dst_r,
-            ["--no-owner", "--no-acl", "--file", str(dump_path)],
+            pg_restore_compose_extras(
+                ["--file", str(dump_path)],
+                postgis=config.native.reset_db.postgis,
+            ),
             config=config,
         )
         if rc != 0:

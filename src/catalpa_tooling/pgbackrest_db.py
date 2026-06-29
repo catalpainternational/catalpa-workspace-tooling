@@ -297,6 +297,22 @@ def _pg_restore_owner_acl_extras(extras: Sequence[str]) -> list[str]:
     return xs
 
 
+def pg_restore_compose_extras(
+    extras: Sequence[str] | None = None,
+    *,
+    postgis: bool = False,
+) -> list[str]:
+    """``pg_restore`` flags for compose restore (``dk transfer``, ``bkp_db pgrestore``).
+
+    When ``postgis`` is true, skip extension comments (app user is not extension owner)
+    after pre-created PostGIS catalog tables are granted to the app user.
+    """
+    xs = _pg_restore_owner_acl_extras(list(extras or ()))
+    if postgis and "--no-comments" not in xs:
+        xs.insert(0, "--no-comments")
+    return xs
+
+
 def _pg_restore_has_role(extras: Sequence[str]) -> bool:
     for i, arg in enumerate(extras):
         if arg == "--role":
@@ -471,12 +487,22 @@ def run_pg_dump_to_file(
 
 
 def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
-    """``psql`` heredoc run after ``createdb`` (grants; optional PostGIS per ``native.reset_db.postgis``)."""
+    """``psql`` heredoc run after ``createdb`` (grants; optional PostGIS prep for dump restore).
+
+    When ``postgis`` is true, create PostGIS as superuser and grant catalog tables to the
+    app user so ``pg_restore --role APP_USER`` can reload ``spatial_ref_sys`` (extension
+    comments are skipped via ``--no-comments``; only the extension owner may comment).
+    """
     lines = [
         "GRANT ALL PRIVILEGES ON DATABASE ${APP_DB} TO ${APP_USER};",
     ]
     if postgis:
-        lines.append("CREATE EXTENSION IF NOT EXISTS postgis;")
+        lines.extend(
+            [
+                "CREATE EXTENSION IF NOT EXISTS postgis;",
+                "GRANT ALL ON ALL TABLES IN SCHEMA public TO ${APP_USER};",
+            ]
+        )
     lines.extend(
         [
             "GRANT ALL ON SCHEMA public TO ${APP_USER};",
@@ -496,8 +522,9 @@ def run_drop_create_app_database(
     """Replace the Django app database with an empty one (grants match project init scripts).
 
     Runs ``dropdb --force`` (PostgreSQL 13+) so existing connections are terminated, then
-    ``createdb -O "$APP_USER"``. PostGIS is created only when ``postgis`` is true (from
-    ``tooling.yaml`` ``native.reset_db.postgis``). Used by ``dk transfer`` and ``bkp_db pgrestore``.
+    ``createdb -O "$APP_USER"``. When ``postgis`` is true (``tooling.yaml`` ``native.reset_db.postgis``),
+    PostGIS is pre-created and its catalog tables are granted to the app user before
+    ``pg_restore``. Used by ``dk transfer`` and ``bkp_db pgrestore``.
     """
     merged = _merged_process_env(env)
     psql_body = _drop_create_app_database_psql_block(postgis=postgis)
