@@ -32,4 +32,26 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
         nargs=argparse.REMAINDER,
         help="Arguments forwarded to pytest (e.g. tests/test_foo.py -k name).",
     )
+    p_smoke = subparsers.add_parser(
+        "smoke",
+        help="Project smoke tests (stack, migrations, HTTP, Playwright PWA load).",
+    )
+    p_smoke.add_argument("--env", default="dev", help="Deploy env (default: dev).")
+    p_smoke.add_argument("--no-up", action="store_true", help="Skip docker compose up -d.")
+    p_smoke.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Use migrate --check instead of migrate --noinput.",
+    )
+    p_smoke.add_argument(
+        "--fresh-db",
+        action="store_true",
+        help="Ephemeral empty-DB migration test (local; skipped in CI).",
+    )
+    p_smoke.add_argument("--ci", action="store_true", help="CI mode (ignore --fresh-db).")
+    p_smoke.add_argument(
+        "pytest_args",
+        nargs=argparse.REMAINDER,
+        help="Extra pytest args after `--`.",
+    )
     return parser
