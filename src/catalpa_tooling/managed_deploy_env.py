@@ -292,7 +292,21 @@ def load_managed_deploy_context(
     from catalpa_tooling.dev_lan_access import build_dev_lan_env, dev_lan_access_enabled, print_dev_lan_urls
 
     if dev_lan_access_enabled(info):
-        env_add.update(build_dev_lan_env(info))
+        lan_env = build_dev_lan_env(info)
+        for key in ("BERO_EXTRA_ALLOWED_HOSTS", "BERO_EXTRA_ORIGINS"):
+            if key not in lan_env:
+                continue
+            existing = (env_add.get(key) or "").strip()
+            if existing:
+                seen: set[str] = set()
+                merged: list[str] = []
+                for part in f"{existing},{lan_env[key]}".split(","):
+                    part = part.strip()
+                    if part and part not in seen:
+                        seen.add(part)
+                        merged.append(part)
+                lan_env[key] = ",".join(merged)
+        env_add.update(lan_env)
         if env_add.get("BERO_EXTRA_ORIGINS"):
             print_dev_lan_urls(info)
 
