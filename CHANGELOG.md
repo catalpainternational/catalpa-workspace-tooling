@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.8.1
+
+### Added
+
+- **`test smoke`** — layered project health checks for Django compose stacks: optional `compose up`, DB wait, in-container `migrate` / `check` / `makemigrations --check`, `stack.healthcheck` web probe, HTTP GET on `site_origin`, then pytest in `{paths.frontend}/smoke`. Flags: `--env`, `--no-up`, `--check-only`, `--fresh-db`, `--ci`.
+
 ### Added
 
 - **LAN dev access** for local `dk dev`: auto-detects the host’s LAN IP and Bonjour `.local` name, injects `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` for Django, and prints LAN URLs on stack start. Opt out with `dev_lan_access: false` in `docker/envs/dev/info.yaml`. VS Code tasks: **Dev: Show LAN URLs**, **Dev: Open site on LAN**.

@@ -7,6 +7,7 @@ from catalpa_tooling.cli.completion import activate
 from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
+from catalpa_tooling.smoke_cli import run_smoke
 from catalpa_tooling.test_parser import build_test_parser
 
 
@@ -59,6 +60,24 @@ def _test_main() -> None:
         sys.exit(_run_vitest(extra))
     if args.command == "workspace":
         sys.exit(_run_workspace_tests(extra))
+    if args.command == "smoke":
+        import os
+
+        ci_mode = bool(getattr(args, "ci", False)) or (
+            (os.environ.get("CI") or "").strip().lower() in {"1", "true", "yes"}
+        )
+        smoke_extra = [a for a in extra if a != "--"]
+        sys.exit(
+            run_smoke(
+                _config(),
+                env_name=getattr(args, "env", "dev"),
+                no_up=bool(getattr(args, "no_up", False)),
+                check_only=bool(getattr(args, "check_only", False)),
+                fresh_db=bool(getattr(args, "fresh_db", False)),
+                ci_mode=ci_mode,
+                pytest_args=smoke_extra,
+            )
+        )
 
     sys.exit(1)
 
