@@ -73,7 +73,7 @@ Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-
 
 **4. Cursor agents (recommended for repos with SOPS credentials):**
 
-Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
+Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. For bero / Django compose consumers, optionally add [`scripts/cursor-rules/smoke-tests.mdc`](scripts/cursor-rules/smoke-tests.mdc). See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
 
 **Single-project / bash (no direnv):**
 
@@ -125,7 +125,7 @@ After install, these console scripts are available:
 | `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
 | `dev` | Deprecated alias for `native` (prints warning) |
 | `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). On macOS, `dk <env> trust-caddy-cert` trusts Caddy's local HTTPS CA for that env's compose stack. |
-| `test` | Run backend pytest, frontend Vitest, or repo-root tooling tests |
+| `test` | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
 
 ### Project script extensions
@@ -331,6 +331,7 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 
 | Document | Contents |
 |----------|----------|
+| [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `test smoke` prerequisites, authoring tests, flags |
 | [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation) |
 | [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
 | [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |

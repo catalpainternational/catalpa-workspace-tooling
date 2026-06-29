@@ -6,7 +6,7 @@
 
 ### Added
 
-- **`test smoke`** — layered project health checks for Django compose stacks: optional `compose up`, DB wait, in-container `migrate` / `check` / `makemigrations --check`, `stack.healthcheck` web probe, HTTP GET on `site_origin`, then pytest in `{paths.frontend}/smoke`. Flags: `--env`, `--no-up`, `--check-only`, `--fresh-db`, `--ci`.
+- **`test smoke`** — layered project health checks for Django compose stacks: optional `compose up`, DB wait, in-container `migrate` / `check` / `makemigrations --check`, `stack.healthcheck` web probe, HTTP GET on `site_origin`, then pytest in `{paths.frontend}/smoke`. Flags: `--env`, `--no-up`, `--check-only`, `--fresh-db`, `--ci`. Documented in [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md).
 
 ### Added
 
