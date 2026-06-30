@@ -47,6 +47,7 @@ native
 | `native.frontend.node_version` | Optional Node version for nvm (e.g. `22`); `.nvmrc` in `paths.frontend` takes precedence |
 | `native.frontend.env` | Extra env vars for the dev-server subprocess only |
 | `native.start.procfile` | Optional checked-in Procfile path (relative to repo root); omit for auto-generated bero default |
+| `native.django.port` | Host port for `native runserver` (e.g. `8005` for PEP digit 5); default Django `8000` when unset |
 | `native.start.ports` | TCP ports freed on exit when listeners remain (default: `[8000, 8080]`) |
 | `native.start.migrate` | When using auto-generated Procfile, run `native manage migrate` before `runserver` (default: `true`) |
 

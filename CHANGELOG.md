@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.8.4
+
+### Fixed
+
+- **`test smoke`** — before `docker compose up`, run the same preflight as `dk <env> up`: `ensure_volumes`, local image build when not using a pinned registry, and `materialize_configs`. Fixes failures after `dk dev wipe` when external volumes were missing.
+
 ## 0.8.3
 
 ### Fixed
