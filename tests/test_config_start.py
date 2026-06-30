@@ -52,3 +52,19 @@ def test_parse_start_rejects_invalid_ports() -> None:
 def test_parse_native_includes_start() -> None:
     cfg = _parse_native({"start": {"ports": [8000, 8080]}})
     assert cfg.start.ports == (8000, 8080)
+
+
+def test_parse_django_port() -> None:
+    from catalpa_tooling.config import DjangoDevConfig, _parse_django, native_runserver_bind
+
+    assert _parse_django(None) == DjangoDevConfig(port=None)
+    assert _parse_django({"port": 8005}) == DjangoDevConfig(port=8005)
+    assert native_runserver_bind(DjangoDevConfig(port=8004)) == "0.0.0.0:8004"
+    assert native_runserver_bind(DjangoDevConfig(port=None)) is None
+
+
+def test_render_default_procfile_with_django_bind() -> None:
+    from catalpa_tooling.native_start import render_default_procfile
+
+    text = render_default_procfile(migrate=False, runserver_bind="0.0.0.0:8005")
+    assert "runserver 0.0.0.0:8005" in text

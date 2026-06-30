@@ -321,6 +321,13 @@ class StartConfig:
 
 
 @dataclass(frozen=True)
+class DjangoDevConfig:
+    """``native.django`` in tooling.yaml (host ``native runserver`` bind port)."""
+
+    port: int | None
+
+
+@dataclass(frozen=True)
 class FrontendDevConfig:
     """``native.frontend`` in tooling.yaml (host ``native frontend`` / ``native vite``)."""
 
@@ -336,6 +343,7 @@ class NativeConfig:
     fetch_media: FetchMediaConfig
     fetch_metabase_db: FetchMetabaseDbConfig
     reset_db: ResetDbConfig
+    django: DjangoDevConfig
     frontend: FrontendDevConfig
     start: StartConfig
 
@@ -806,6 +814,34 @@ def _parse_frontend_env(raw: Any) -> dict[str, str]:
     return out
 
 
+def _parse_django_port(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.django must be a mapping")
+    port = raw.get("port")
+    if port is None:
+        return None
+    if not isinstance(port, int) or port < 1 or port > 65535:
+        raise ProjectConfigError(
+            f"native.django.port must be an integer from 1 to 65535 (got {port!r})"
+        )
+    return port
+
+
+def _parse_django(raw: Any) -> DjangoDevConfig:
+    if raw is None:
+        return DjangoDevConfig(port=None)
+    return DjangoDevConfig(port=_parse_django_port(raw))
+
+
+def native_runserver_bind(django: DjangoDevConfig) -> str | None:
+    """Return ``0.0.0.0:<port>`` when ``native.django.port`` is configured."""
+    if django.port is None:
+        return None
+    return f"0.0.0.0:{django.port}"
+
+
 def _parse_start_ports(raw: Any) -> tuple[int, ...]:
     if raw is None:
         return DEFAULT_NATIVE_START_PORTS
@@ -896,6 +932,7 @@ def _parse_native(raw: Any) -> NativeConfig:
             fetch_media=_parse_fetch_media(None),
             fetch_metabase_db=_parse_fetch_metabase_db(None),
             reset_db=_parse_reset_db(None),
+            django=_parse_django(None),
             frontend=_parse_frontend(None),
             start=_parse_start(None),
         )
@@ -905,6 +942,7 @@ def _parse_native(raw: Any) -> NativeConfig:
         fetch_media=_parse_fetch_media(raw.get("fetch_media")),
         fetch_metabase_db=_parse_fetch_metabase_db(raw.get("fetch_metabase_db")),
         reset_db=_parse_reset_db(raw.get("reset_db")),
+        django=_parse_django(raw.get("django")),
         frontend=_parse_frontend(raw.get("frontend")),
         start=_parse_start(raw.get("start")),
     )

@@ -663,7 +663,13 @@ def _native_main() -> None:
     handler = args.handler
 
     if handler == "runserver":
+        from catalpa_tooling.config import native_runserver_bind
+
         extra = [a for a in getattr(args, "django_args", []) if a]
+        if not extra:
+            bind = native_runserver_bind(cfg.native.django)
+            if bind:
+                extra = [bind]
         sys.exit(_run_uv_manage(["runserver", *extra]))
     if handler == "manage":
         extra = [a for a in getattr(args, "manage_args", []) if a]

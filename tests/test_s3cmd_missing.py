@@ -25,6 +25,7 @@ def test_provision_exits_when_s3cmd_missing(
     from catalpa_tooling.config import (
         DeployPathsConfig,
         FetchMetabaseDbConfig,
+        DjangoDevConfig,
         NativeConfig,
         FetchMediaConfig,
         FrontendDevConfig,
@@ -112,6 +113,7 @@ def test_provision_exits_when_s3cmd_missing(
                 user_env=("POSTGRES_USER",),
                 password_env=("POSTGRES_PASSWORD",),
             ),
+            django=DjangoDevConfig(port=None),
             frontend=FrontendDevConfig(
                 package_manager=None,
                 script="dev",

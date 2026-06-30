@@ -11,8 +11,11 @@ import yaml
 
 from catalpa_tooling.compose import _compose, _wait_for_web_service
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.managed_deploy_env import load_managed_deploy_context, resolve_compose_file_from_info
+from catalpa_tooling.env_handlers import _ensure_stack_volumes
+from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context, resolve_compose_file_from_info
 from catalpa_tooling.pgbackrest_db import db_service_responds
+from catalpa_tooling.pgbackrest_volume_config import materialize_configs, postgres_image_from_env
+from catalpa_tooling.remote_deploy import _ensure_local_stack_images_built, _insert_up_build_if_no_registry
 from catalpa_tooling.restic_files import resolve_env_with_compose_project
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import primary_site_origin_from_info
@@ -28,7 +31,9 @@ def _load_env_info(config: ProjectConfig, env_name: str) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _resolve_deploy_context(config: ProjectConfig, env_name: str) -> tuple[str, dict[str, str], str] | None:
+def _resolve_deploy_context(
+    config: ProjectConfig, env_name: str
+) -> tuple[str, dict[str, str], str, ManagedDeployContext, dict] | None:
     info = _load_env_info(config, env_name)
     if not info:
         return None
@@ -50,7 +55,38 @@ def _resolve_deploy_context(config: ProjectConfig, env_name: str) -> tuple[str, 
         dk_env_name=env_name,
     )
     site_origin = primary_site_origin_from_info(info) or ctx.site_origin
-    return compose_file, env_add, site_origin
+    return compose_file, env_add, site_origin, ctx, info
+
+
+def _prepare_compose_up(
+    ctx: ManagedDeployContext,
+    info: dict,
+    env_add: dict[str, str],
+) -> int:
+    """Match ``dk <env> up`` preflight: volumes, local builds, pgBackRest config materialization."""
+    rc = _ensure_stack_volumes(
+        ctx.config,
+        ctx.env_name,
+        info,
+        env_add,
+        ctx.storage_volumes,
+        dry_run=False,
+    )
+    if rc != 0:
+        return rc
+    rc = _ensure_local_stack_images_built(
+        ctx.config,
+        env_add,
+        use_prepulled_registry=ctx.use_prepulled_registry,
+    )
+    if rc != 0:
+        return rc
+    return materialize_configs(
+        env_add,
+        dry_run=False,
+        postgres_image=postgres_image_from_env(env_add, config=ctx.config),
+        config=ctx.config,
+    )
 
 
 def _run_compose_manage(
@@ -234,12 +270,19 @@ def run_smoke(
     resolved = _resolve_deploy_context(config, env_name)
     if resolved is None:
         return 1
-    compose_file, env_add, site_origin = resolved
-    fe_url = (site_origin or "http://127.0.0.1:9001").rstrip("/") + "/"
+    compose_file, env_add, site_origin, deploy_ctx, info = resolved
+    fe_url = (site_origin or "http://127.0.0.1:9011").rstrip("/") + "/"
 
     if not no_up:
         print(f"smoke: starting stack ({compose_file})", file=sys.stderr)
-        if _compose(compose_file, "up", "-d", env_add=env_add, check=False).returncode != 0:
+        if _prepare_compose_up(deploy_ctx, info, env_add) != 0:
+            print("smoke: stack prepare failed", file=sys.stderr)
+            return 1
+        compose_argv = _insert_up_build_if_no_registry(
+            ["up", "-d"],
+            use_prepulled_registry=deploy_ctx.use_prepulled_registry,
+        )
+        if _compose(compose_file, *compose_argv, env_add=env_add, check=False).returncode != 0:
             print("smoke: docker compose up failed", file=sys.stderr)
             return 1
 

@@ -17,14 +17,14 @@ Fast project-health checks for Django + Docker Compose stacks. Tooling orchestra
 Ordered pipeline (implemented in `smoke_cli.run_smoke`):
 
 1. Resolve `docker/envs/<env>/info.yaml` and compose file
-2. Optional `docker compose up -d` (skip with `--no-up`)
+2. Optional `docker compose up -d` (skip with `--no-up`); when starting the stack, run **`ensure_volumes`**, local **`compose build`** (when not using pinned registry images), and **`materialize_configs`** — same preflight as `dk <env> up`
 3. Wait for Postgres (`pg_isready`)
 4. Optional `--fresh-db`: migrate on ephemeral `{dbname}_smoke_empty` (local only; ignored with `--ci`)
 5. Primary DB: `compose exec <web> ./manage.py migrate` (`--check-only` → `migrate --check`)
 6. `manage check`
 7. `makemigrations --check --dry-run`
 8. Wait for `stack.healthcheck` on the web service
-9. HTTP GET `{site_origin}/` (fallback `http://127.0.0.1:9001/`)
+9. HTTP GET `{site_origin}/` (fallback `http://127.0.0.1:9011/`)
 10. `uv run --group smoke pytest {paths.frontend}/smoke` with `SMOKE_FE_URL` set
 
 ```mermaid
@@ -41,6 +41,10 @@ flowchart TD
 ```
 
 Migrations run **inside the web container** (`compose exec`), not via `native manage` — same env as deploy and `dk dev`.
+
+## Port allocation
+
+Dev smoke tests use `site_origin` from `docker/envs/dev/info.yaml` (port **901N**). See **`bero/docs/PORTS.md`** in the consumer repo for the full 7-port scheme.
 
 ## Project prerequisites
 
@@ -156,7 +160,7 @@ See also [bero/README_TESTING.md](https://github.com/catalpainternational/bero/b
 
 1. Create `{paths.frontend}/smoke/` with `conftest.py` and at least one HTTP test (copy from [minimal fixture](../tests/fixtures/minimal_project/frontend/smoke/))
 2. Set `stack.healthcheck.url` to a route your web container serves
-3. Set `site_origin` in dev `info.yaml` to the URL users hit (proxy port, e.g. `:9001`)
+3. Set `site_origin` in dev `info.yaml` to the URL users hit (proxy port, e.g. dev `:901N` — see `bero/docs/PORTS.md`)
 4. Add smoke dependency group (above)
 5. Run `uv run test smoke`
 
@@ -168,7 +172,7 @@ These work for all stacks but use bero-oriented fallbacks:
 |---------|-------|
 | `--fresh-db` DB name | `bero_db` if `DJANGO_DB` / `POSTGRES_DB` unset |
 | `--fresh-db` DB owner | `bero` if `DJANGO_DB_USER` / `POSTGRES_USER` unset |
-| FE URL fallback | `http://127.0.0.1:9001/` if `site_origin` missing |
+| FE URL fallback | `http://127.0.0.1:9011/` if `site_origin` missing |
 | Missing smoke dir message | mentions "bero submodule smoke tests" |
 
 Future v2 may add `tooling.yaml` keys: `smoke.pytest_dir`, `smoke.skip_playwright`, configurable DB fallbacks.
