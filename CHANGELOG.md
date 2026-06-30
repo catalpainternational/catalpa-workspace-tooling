@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.8.5
+
+### Fixed
+
+- **`test smoke` / dev frontend** — poll `site_origin` with retries (up to 120s, 60s per request) instead of a single 10s HTTP GET. Dev stacks serve the webpack dev server on `NODE_PORT`; the first compile can take ~60s while Django is already healthy.
+
 ## 0.8.4
 
 ### Fixed

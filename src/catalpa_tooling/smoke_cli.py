@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -225,11 +226,36 @@ def _fresh_db_smoke(
 
 
 def _http_get_ok(url: str, *, timeout: float = 10.0) -> bool:
+    ok, _ = _http_get_detail(url, timeout=timeout)
+    return ok
+
+
+def _http_get_detail(url: str, *, timeout: float = 10.0) -> tuple[bool, str | None]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return 200 <= resp.status < 400
-    except (urllib.error.URLError, TimeoutError, ValueError):
-        return False
+            ok = 200 <= resp.status < 400
+            if not ok:
+                return False, f"status_{resp.status}"
+            return True, None
+    except Exception as exc:
+        return False, f"{type(exc).__name__}:{exc!s}"[:200]
+
+
+def _wait_for_frontend_url(
+    url: str,
+    *,
+    timeout_seconds: int = 120,
+    poll_interval: int = 3,
+    request_timeout: float = 60.0,
+) -> bool:
+    """Poll ``site_origin`` until HTTP 2xx/3xx (webpack dev server blocks until first compile)."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        ok, _ = _http_get_detail(url, timeout=request_timeout)
+        if ok:
+            return True
+        time.sleep(poll_interval)
+    return False
 
 
 def _run_pytest_smoke(config: ProjectConfig, *, fe_url: str, extra_pytest: list[str]) -> int:
@@ -323,8 +349,8 @@ def run_smoke(
         print("smoke: web service healthcheck timed out", file=sys.stderr)
         return 1
 
-    print(f"smoke: HTTP GET {fe_url}", file=sys.stderr)
-    if not _http_get_ok(fe_url):
+    print(f"smoke: waiting for frontend URL {fe_url}", file=sys.stderr)
+    if not _wait_for_frontend_url(fe_url):
         print(f"smoke: frontend URL did not respond: {fe_url}", file=sys.stderr)
         return 1
 
