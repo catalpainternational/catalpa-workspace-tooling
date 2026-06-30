@@ -24,7 +24,7 @@ Ordered pipeline (implemented in `smoke_cli.run_smoke`):
 6. `manage check`
 7. `makemigrations --check --dry-run`
 8. Wait for `stack.healthcheck` on the web service
-9. HTTP GET `{site_origin}/` (fallback `http://127.0.0.1:9011/`)
+9. Poll HTTP GET `{site_origin}/` until 2xx/3xx (up to 120s; webpack dev first compile can block ~60s)
 10. `uv run --group smoke pytest {paths.frontend}/smoke` with `SMOKE_FE_URL` set
 
 ```mermaid
@@ -196,7 +196,7 @@ Future v2 may add `tooling.yaml` keys: `smoke.pytest_dir`, `smoke.skip_playwrigh
 | Playwright not found after direnv | Add `smoke` to `[tool.uv] default-groups` |
 | `SMOKE_FE_URL not set` | Ran `pytest` directly instead of `uv run test smoke` |
 | Healthcheck timeout | Wrong `stack.healthcheck.url`, web not up, or **DisallowedHost** when `BERO_ORIGIN` is not `localhost` (fixed in tooling v0.8.3+: in-container probe sends `Host` from `BERO_ORIGIN`) |
-| FE URL did not respond | `site_origin` / proxy port mismatch with running stack |
+| FE URL did not respond | `site_origin` / proxy port mismatch; dev webpack still compiling (fixed in v0.8.5+: smoke polls up to 120s) |
 | `treebeard.E001` in container only | Native vs docker lock drift (bero: `bero/docs/PYTHON_LOCK_ALIGNMENT.md`) |
 | `dk build django` fails after adding smoke to bero pyproject | Smoke deps belong in consumer `pyproject.toml` only |
 
