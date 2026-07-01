@@ -14,7 +14,13 @@ from catalpa_tooling.vscode_setup import (
     plan_remove,
     plan_setup,
 )
-from catalpa_tooling.vscode_tasks import MANAGED_MARKER_KEY, WorkflowKind
+from catalpa_tooling.vscode_tasks import (
+    CURSOR_BROWSER_COMMAND,
+    DEV_CURSOR_BROWSER_INPUT,
+    FULL_CURSOR_BROWSER_INPUT,
+    MANAGED_MARKER_KEY,
+    WorkflowKind,
+)
 
 _MINIMAL_OPS = """
   pgbackrest:
@@ -167,7 +173,23 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
 
     apply_setup(plan_setup())
     data = json.loads((tmp_path / ".vscode/tasks.json").read_text(encoding="utf-8"))
-    assert data[MANAGED_MARKER_KEY] == "5"
+    assert data[MANAGED_MARKER_KEY] == "6"
     labels = [t["label"] for t in data["tasks"]]
     assert "Dev: Show LAN URLs" in labels
     assert "Dev: Open site on LAN" in labels
+    assert "Dev: Open site in Cursor browser" in labels
+    assert "Full: Open site in Cursor browser" in labels
+
+    dev_cursor_task = next(
+        t for t in data["tasks"] if t["label"] == "Dev: Open site in Cursor browser"
+    )
+    assert dev_cursor_task.get("type") != "shell"
+    assert dev_cursor_task["command"] == f"${{input:{DEV_CURSOR_BROWSER_INPUT}}}"
+
+    dev_input = next(i for i in data["inputs"] if i["id"] == DEV_CURSOR_BROWSER_INPUT)
+    assert dev_input["type"] == "command"
+    assert dev_input["command"] == CURSOR_BROWSER_COMMAND
+    assert dev_input["args"] == {"url": "http://localhost:9001"}
+
+    full_input = next(i for i in data["inputs"] if i["id"] == FULL_CURSOR_BROWSER_INPUT)
+    assert full_input["args"] == {"url": "https://bero.localhost:9011"}

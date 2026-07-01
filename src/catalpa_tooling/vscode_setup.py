@@ -116,7 +116,7 @@ def _is_managed_json(path: Path) -> bool:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return False
-    return data.get(MANAGED_MARKER_KEY) == SETUP_VSCODE_GENERATOR_VERSION
+    return bool(data.get(MANAGED_MARKER_KEY))
 
 
 def _json_matches(path: Path, expected: dict[str, Any]) -> bool:
@@ -161,6 +161,7 @@ def _build_file_contents(
     tasks = build_tasks_json(
         workflow,
         include_full=_include_full_stack(config),
+        deploy_envs_dir=config.deploy_envs_dir,
     )
     return (
         _json_dumps(tasks),
