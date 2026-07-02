@@ -75,16 +75,20 @@ def _cursor_browser_input(input_id: str, url: str) -> dict[str, Any]:
 
 
 def _open_cursor_browser_task(label: str, input_id: str) -> dict[str, Any]:
-    return {
-        "label": label,
-        "command": f"${{input:{input_id}}}",
-        "options": _task_options(),
+    # Command-type inputs must run inside a shell task (echo); using "command"
+    # alone makes VS Code/Cursor treat ${input:…} as a shell executable path.
+    return _shell_task(
+        label,
+        f"echo ${{input:{input_id}}}",
+        panel="shared",
+        focus=False,
+    ) | {
         "presentation": {
             "reveal": "never",
             "panel": "shared",
             "focus": False,
+            "echo": False,
         },
-        "problemMatcher": [],
     }
 
 

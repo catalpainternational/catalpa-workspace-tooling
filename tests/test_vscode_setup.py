@@ -183,8 +183,10 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
     dev_cursor_task = next(
         t for t in data["tasks"] if t["label"] == "Dev: Open site in Cursor browser"
     )
-    assert dev_cursor_task.get("type") != "shell"
-    assert dev_cursor_task["command"] == f"${{input:{DEV_CURSOR_BROWSER_INPUT}}}"
+    assert dev_cursor_task["type"] == "shell"
+    assert dev_cursor_task["command"] == f"echo ${{input:{DEV_CURSOR_BROWSER_INPUT}}}"
+    assert dev_cursor_task["presentation"]["reveal"] == "never"
+    assert dev_cursor_task["presentation"]["echo"] is False
 
     dev_input = next(i for i in data["inputs"] if i["id"] == DEV_CURSOR_BROWSER_INPUT)
     assert dev_input["type"] == "command"
