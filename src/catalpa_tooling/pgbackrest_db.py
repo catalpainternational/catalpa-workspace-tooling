@@ -164,6 +164,41 @@ def db_service_responds(compose_file: str, env: dict[str, str]) -> bool:
     return r.returncode == 0
 
 
+def db_postgres_tcp_ready(compose_file: str, env: dict[str, str]) -> bool:
+    """True if PostgreSQL accepts TCP on ``127.0.0.1:5432`` inside the ``db`` container."""
+    r = run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            compose_file,
+            "exec",
+            "-T",
+            "db",
+            "pg_isready",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "5432",
+            "-U",
+            "postgres",
+        ],
+        env=_merged_process_env(env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        print_cmd=False,
+    )
+    return r.returncode == 0
+
+
+def _db_start_recovery_timeout_sec(env: dict[str, str]) -> int:
+    raw = (env.get("PGBR_DB_START_RECOVERY_TIMEOUT_SEC") or "").strip()
+    if raw.isdigit():
+        return max(30, int(raw))
+    return 120
+
+
 def ensure_db_service_running(
     compose_file: str,
     env: dict[str, str],
@@ -173,7 +208,23 @@ def ensure_db_service_running(
 ) -> int:
     """Start ``db`` with ``docker compose up -d db --wait`` when it does not respond to exec."""
     if db_service_responds(compose_file, env):
-        return 0
+        if db_postgres_tcp_ready(compose_file, env):
+            return 0
+        print(
+            "bkp_db: `db` container is up but PostgreSQL is not accepting TCP connections; "
+            "waiting …",
+            file=sys.stderr,
+        )
+        deadline = time.monotonic() + _db_start_recovery_timeout_sec(env)
+        while time.monotonic() < deadline:
+            if db_postgres_tcp_ready(compose_file, env):
+                return 0
+            time.sleep(0.5)
+        print(
+            "bkp_db: PostgreSQL is not accepting TCP on 127.0.0.1:5432 inside the `db` service.",
+            file=sys.stderr,
+        )
+        return 1
     bind_kwargs: dict = {}
     if config is not None and dk_env_name:
         from catalpa_tooling.storage_config import volume_bind_kwargs
@@ -187,6 +238,7 @@ def ensure_db_service_running(
         "`docker compose up -d db --wait` …",
         file=sys.stderr,
     )
+    logs_since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     r = run_cmd(
         [
             "docker",
@@ -208,6 +260,26 @@ def ensure_db_service_running(
         return r.returncode
     if not db_service_responds(compose_file, env):
         print("bkp_db: `db` service did not become ready.", file=sys.stderr)
+        return 1
+    print(
+        "bkp_db: waiting for PostgreSQL to finish startup "
+        f"(log line: {_PG_RECOVERY_READY_LOG}) …",
+        file=sys.stderr,
+    )
+    ok, reason = wait_db_logs_for_recovery_ready(
+        compose_file,
+        env,
+        timeout_sec=_db_start_recovery_timeout_sec(env),
+        since=logs_since,
+    )
+    if not ok:
+        print(f"bkp_db: {reason}", file=sys.stderr)
+        return 1
+    if not db_postgres_tcp_ready(compose_file, env):
+        print(
+            "bkp_db: PostgreSQL reported ready but is not accepting TCP on 127.0.0.1:5432.",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

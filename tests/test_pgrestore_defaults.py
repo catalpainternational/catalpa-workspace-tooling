@@ -67,11 +67,16 @@ def test_ensure_db_skips_up_when_already_running() -> None:
             "catalpa_tooling.pgbackrest_db.db_service_responds",
             return_value=True,
         ) as responds,
+        patch(
+            "catalpa_tooling.pgbackrest_db.db_postgres_tcp_ready",
+            return_value=True,
+        ) as tcp_ready,
         patch("catalpa_tooling.pgbackrest_db.ensure_db_compose_volumes") as ensure_volumes,
         patch("catalpa_tooling.pgbackrest_db.run_cmd") as run_cmd,
     ):
         assert ensure_db_service_running("compose.yml", {}) == 0
     responds.assert_called_once()
+    tcp_ready.assert_called_once()
     ensure_volumes.assert_not_called()
     run_cmd.assert_not_called()
 
@@ -86,6 +91,14 @@ def test_ensure_db_ensures_volumes_before_up() -> None:
             "catalpa_tooling.pgbackrest_db.ensure_db_compose_volumes",
             return_value=0,
         ) as ensure_volumes,
+        patch(
+            "catalpa_tooling.pgbackrest_db.wait_db_logs_for_recovery_ready",
+            return_value=(True, ""),
+        ),
+        patch(
+            "catalpa_tooling.pgbackrest_db.db_postgres_tcp_ready",
+            return_value=True,
+        ),
         patch("catalpa_tooling.pgbackrest_db.run_cmd") as run_cmd,
     ):
         run_cmd.return_value = type("R", (), {"returncode": 0})()
@@ -109,6 +122,14 @@ def test_ensure_db_starts_service_when_down() -> None:
         patch(
             "catalpa_tooling.pgbackrest_db.ensure_db_compose_volumes",
             return_value=0,
+        ),
+        patch(
+            "catalpa_tooling.pgbackrest_db.wait_db_logs_for_recovery_ready",
+            return_value=(True, ""),
+        ),
+        patch(
+            "catalpa_tooling.pgbackrest_db.db_postgres_tcp_ready",
+            return_value=True,
         ),
         patch("catalpa_tooling.pgbackrest_db.run_cmd", side_effect=fake_run),
     ):
