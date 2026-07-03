@@ -515,20 +515,24 @@ def _route_upstream_from_config(route: dict[str, Any]) -> str:
     return ""
 
 
-def _route_context_from_id_and_host(route_id_value: str, host: str) -> str:
-    """Best-effort ``project/env`` label from a route ``@id`` and matched host."""
+def _project_env_from_id_and_host(route_id_value: str, host: str) -> tuple[str, str]:
+    """Best-effort ``(project, env)`` from a route ``@id`` and matched host.
+
+    Falls back to ``(route_id_value, "")`` when the id does not match the
+    expected ``local-proxy-<proj>-<env>[-<hostlabel>]`` scheme.
+    """
     prefix = f"{_ROUTE_ID_PREFIX}-"
     if not route_id_value.startswith(prefix):
-        return route_id_value
-    host_suffix = _sanitize_route_label(host, field="host")
+        return route_id_value, ""
+    host_suffix = _sanitize_route_label(host, field="host") if host else ""
     if host_suffix and route_id_value.endswith(f"-{host_suffix}"):
         base = route_id_value[len(prefix) :][: -(len(host_suffix) + 1)]
     else:
         base = route_id_value[len(prefix) :]
     parts = base.rsplit("-", 1)
     if len(parts) == 2 and parts[0] and parts[1]:
-        return f"{parts[0]}/{parts[1]}"
-    return base or route_id_value
+        return parts[0], parts[1]
+    return base or route_id_value, ""
 
 
 def _https_server_routes() -> list[dict[str, Any]]:
@@ -554,18 +558,25 @@ def proxy_status_lines() -> list[str]:
     lines.append(f"admin: {LOCAL_PROXY_ADMIN_URL}")
     try:
         routes = _https_server_routes()
-        live: list[str] = []
+        # Group by project, then env, preserving first-seen order at each level.
+        grouped: dict[str, dict[str, list[str]]] = {}
         for route in routes:
             rid = route.get("@id")
             if not isinstance(rid, str) or not rid.startswith(f"{_ROUTE_ID_PREFIX}-"):
                 continue
             host = _route_host_from_config(route)
             upstream = _route_upstream_from_config(route)
-            context = _route_context_from_id_and_host(rid, host)
-            live.append(f"  {host} -> {upstream}  ({context})")
-        if live:
+            project, env = _project_env_from_id_and_host(rid, host)
+            grouped.setdefault(project, {}).setdefault(env, []).append(
+                f"      {host} -> {upstream}"
+            )
+        if grouped:
             lines.append("live sites:")
-            lines.extend(live)
+            for project, envs in grouped.items():
+                lines.append(f"  {project}:")
+                for env, sites in envs.items():
+                    lines.append(f"    {env}:" if env else "    (unknown):")
+                    lines.extend(sites)
         else:
             lines.append("live sites: (none)")
     except (LocalProxyConfigError, json.JSONDecodeError) as e:

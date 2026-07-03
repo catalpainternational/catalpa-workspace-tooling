@@ -226,6 +226,16 @@ def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) ->
                         ],
                     },
                     {
+                        "@id": "local-proxy-ambulancia-full-metabase-ambulancia-full-localdev-temp-build",
+                        "match": [{"host": ["metabase.ambulancia-full.localdev.temp.build"]}],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "host.docker.internal:5557"}],
+                            }
+                        ],
+                    },
+                    {
                         "match": [{"host": ["redirect"]}],
                         "handle": [{"handler": "static_response"}],
                     },
@@ -236,10 +246,16 @@ def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
 
     lines = proxy_status_lines()
-    assert any("live sites:" in line for line in lines)
-    assert any(
-        "ambulancia-dev.localdev.temp.build -> host.docker.internal:5555  (ambulancia/dev)"
-        in line
-        for line in lines
+    # Grouped hierarchically: project -> env -> host -> upstream (no inline context).
+    assert "live sites:" in lines
+    assert "  ambulancia:" in lines
+    assert "    dev:" in lines
+    assert "    full:" in lines
+    assert "      ambulancia-dev.localdev.temp.build -> host.docker.internal:5555" in lines
+    assert (
+        "      metabase.ambulancia-full.localdev.temp.build -> host.docker.internal:5557"
+        in lines
     )
+    # Project/env context is now conveyed by indentation, not an inline suffix.
+    assert not any("(ambulancia/dev)" in line for line in lines)
     assert not any("redirect" in line for line in lines)

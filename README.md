@@ -328,8 +328,11 @@ On `dk <env> up`, tooling ensures `catalpa-local-proxy` is running and registers
 catalpa-local-proxy: running (abc123def456)
 admin: http://127.0.0.1:2019
 live sites:
-  myapp-dev.localdev.temp.build -> host.docker.internal:5555  (myapp/dev)
-  myapp-full.localdev.temp.build -> host.docker.internal:5557  (myapp/full)
+  myapp:
+    dev:
+      myapp-dev.localdev.temp.build -> host.docker.internal:5555
+    full:
+      myapp-full.localdev.temp.build -> host.docker.internal:5557
 ```
 
 Project requirements when enabled: set `site_origin` to the HTTPS hostname (for Django `ALLOWED_HOSTS` / CSRF), publish the configured upstream port(s) on the host, and allow those hosts in frontend dev config (e.g. Vite `server.allowedHosts`). Stacks with their own Caddy may run behind the proxy by serving plain HTTP internally (`CADDY_SITE_ADDRESS: http://...`) while keeping `site_origin` as `https://...`.
