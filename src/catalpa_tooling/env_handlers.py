@@ -85,6 +85,7 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
+from catalpa_tooling.local_proxy import LocalProxyConfigError, sync_local_proxy_for_compose_action
 from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
@@ -191,6 +192,7 @@ def _run_compose_path(
     storage_volumes: dict,
 ) -> int:
     repo_root = config.repo_root
+    dry_run = bool(getattr(ns, "dry_run", False))
 
     if compose_args == ["wipe"]:
         compose_args = ["down", "-v"]
@@ -237,6 +239,21 @@ def _run_compose_path(
 
     compose_args = _strip_dk_up_provision_flag(compose_args)
 
+    try:
+        if compose_args and compose_args[0] == "up":
+            rc = sync_local_proxy_for_compose_action(
+                info,
+                config,
+                env_name,
+                compose_args,
+                dry_run=dry_run,
+            )
+            if rc != 0:
+                return rc
+    except LocalProxyConfigError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
     if use_prepulled_registry:
         compose_args = _insert_up_prepulled_pull_flags(
             compose_args,
@@ -255,6 +272,20 @@ def _run_compose_path(
     )
     if proc.returncode != 0:
         return proc.returncode
+    if compose_args and compose_args[0] == "down":
+        try:
+            rc = sync_local_proxy_for_compose_action(
+                info,
+                config,
+                env_name,
+                compose_args,
+                dry_run=dry_run,
+            )
+            if rc != 0:
+                return rc
+        except LocalProxyConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
     if _is_compose_down_with_volumes(compose_args):
         return remove_wipe_data_volumes(env_add, config=config)
     return 0
@@ -403,6 +434,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             env_add,
             config,
             dry_run=dry_run,
+            info=info,
         )
 
     if env_command == "manage":

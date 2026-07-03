@@ -185,7 +185,7 @@ def _attach_env_command_parsers(
 
     p_trust = cmd_sub.add_parser(
         "trust-caddy-cert",
-        help=f"macOS: trust Caddy local CA ({config.stack_service('proxy')} service).",
+        help="Trust Caddy local CA (global local proxy or stack proxy service).",
     )
 
     p_manage = cmd_sub.add_parser("manage", help="docker compose exec web ./manage.py …")

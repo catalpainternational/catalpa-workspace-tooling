@@ -1,0 +1,27 @@
+{
+	# Bind admin to all interfaces INSIDE the container; the docker run mapping
+	# publishes it only to the host loopback (-p 127.0.0.1:2019:2019), so it is
+	# not reachable from the LAN. Binding to 127.0.0.1 here would make the
+	# published port unreachable (container loopback only).
+	admin 0.0.0.0:2019
+	local_certs
+
+	# Stable, recognizable names for the local dev CA so it is easy to find,
+	# audit, and remove in the OS trust store (Keychain / ca-certificates).
+	# The root key+cert are persisted on the host (see docker run -v mapping of
+	# /data), so this CA is minted once per machine and trusted once.
+	pki {
+		ca local {
+			name "Catalpa Local Dev CA"
+			root_cn "Catalpa Local Dev Root"
+			intermediate_cn "Catalpa Local Dev Intermediate"
+		}
+	}
+}
+
+:443 {
+}
+
+:80 {
+	redir https://{host}{uri} permanent
+}

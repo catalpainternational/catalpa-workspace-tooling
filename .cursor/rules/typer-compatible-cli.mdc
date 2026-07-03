@@ -1,0 +1,60 @@
+---
+description: Write CLI code so a future argparse -> Typer migration stays cheap
+globs: src/catalpa_tooling/**/*.py
+alwaysApply: false
+---
+
+# Typer-compatible CLI code
+
+The CLIs (`dk`, `native`, `scripts`, `test`, …) are built on argparse today, but we
+intend to migrate to [Typer](https://typer.tiangolo.com/) eventually. Typer generates a
+command call with one explicit, typed **parameter per option/argument**, so any handler
+that receives an `argparse.Namespace` cannot map 1:1 to a Typer command. Keep new and
+edited code migration-friendly by following the rules below.
+
+## Keep parsing separate from logic
+
+- Command **logic** lives in functions that take **explicit, typed keyword parameters** —
+  never an `argparse.Namespace`.
+- The argparse layer (`*_parser.py`, `*_cli.py`) stays thin: it only builds the parser,
+  extracts values off the namespace, and calls the logic function.
+- Do not reach into a namespace (`ns.x`, `getattr(ns, "x", …)`) inside logic — that read
+  belongs in the thin parsing layer.
+- Type parameters the way Typer would infer them: `str`, `bool`, `int`, `Path`,
+  `list[str]`, and `Enum`/`Literal` for `choices=`.
+
+## Example
+
+```python
+# BAD — handler bound to argparse; can't become a Typer command
+def cmd_push(compose_file: str, ns: argparse.Namespace, config: ProjectConfig) -> int:
+    registry = ns.registry
+    tag = getattr(ns, "tag", None)
+    ...
+
+# GOOD — pure, typed logic + thin argparse glue
+def push_images(
+    compose_file: str,
+    config: ProjectConfig,
+    *,
+    registry: str | None = None,
+    tag: str | None = None,
+) -> int:
+    ...
+
+# in *_cli.py: the only place that touches the namespace
+def _cmd_push(compose_file, ns, config) -> int:
+    return push_images(compose_file, config, registry=ns.registry, tag=ns.tag)
+```
+
+## Also
+
+- Prefer one function per command/subcommand over one big handler that branches on
+  `ns.<subcommand>_command`; each branch is a future Typer command.
+- Avoid reconstructing argv from a namespace (e.g. `_zabbix_argv_from_ns`) in new code;
+  pass typed values through instead.
+- Existing namespace-based handlers are fine to leave in place — refactor toward this
+  shape only when you are already editing that code.
+
+See [docs/TYPER_MIGRATION.md](../../docs/TYPER_MIGRATION.md) for an audit of handlers and
+suggested refactor order.

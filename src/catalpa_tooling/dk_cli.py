@@ -18,6 +18,7 @@ from catalpa_tooling.dk_transfer import cmd_transfer
 from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.doctl_cli import dispatch_digoc
 from catalpa_tooling.env_handlers import handle_env_command
+from catalpa_tooling.local_proxy_cli import cmd_proxy
 from catalpa_tooling.remote_deploy import list_dk_env_names, list_deploy_env_names, resolve_deploy_env_name
 
 
@@ -68,10 +69,10 @@ def _main_impl() -> None:
             raise
         envs = list_dk_env_names(config)
         first = argv[0] if argv else ""
-        if first and first not in ("build", "push", "transfer", "digoc") and first not in envs:
+        if first and first not in ("build", "push", "transfer", "digoc", "proxy") and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
-                f"Use `dk build`, `dk push`, `dk transfer`, `dk digoc`, or a name with "
+                f"Use `dk build`, `dk push`, `dk transfer`, `dk digoc`, `dk proxy`, or a name with "
                 f"{config.paths.deploy.envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
@@ -94,6 +95,8 @@ def _main_impl() -> None:
         sys.exit(cmd_transfer(ns, config))
     if cmd == "digoc":
         sys.exit(dispatch_digoc(ns))
+    if cmd == "proxy":
+        sys.exit(cmd_proxy(ns))
 
     if getattr(ns, "env_name", None):
         sys.exit(handle_env_command(ns, config))

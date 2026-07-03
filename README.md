@@ -124,7 +124,7 @@ After install, these console scripts are available:
 | `native` | Host development helpers (Django, Vite, fetch, plus `scripts/native-*.sh` extensions) |
 | `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
 | `dev` | Deprecated alias for `native` (prints warning) |
-| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). On macOS, `dk <env> trust-caddy-cert` trusts Caddy's local HTTPS CA for that env's compose stack. |
+| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), **`dk proxy`** (machine-wide local HTTPS reverse proxy), etc. See [Backup and monitoring](#backup-and-monitoring). `dk <env> trust-caddy-cert` / `dk proxy trust` trust Caddy's local HTTPS CA (macOS/Linux). |
 | `test` | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
 
@@ -292,6 +292,26 @@ Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin
 
 Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
 
+### Local dev HTTPS proxy (`local_proxy` in `info.yaml`)
+
+For local Docker environments (no `docker_host`), projects may enable a **machine-wide** Caddy reverse proxy that maps a real HTTPS hostname under `*.localdev.temp.build` to the stack's existing host port (Vite, Caddy, etc.). DNS for `*.localdev.temp.build → 127.0.0.1` is org-wide; Caddy uses an **internal CA** (`tls internal`) — trust it once per machine with `dk <env> trust-caddy-cert` or `dk proxy trust`.
+
+The CA root is **persisted on the host** at `${XDG_CONFIG_HOME:-~/.config}/catalpa/local-proxy` (bind-mounted at `/data`) and named **`Catalpa Local Dev Root`** in the OS trust store, so it is minted **once per machine** and survives `docker volume prune`, proxy re-creation, and reboots — trust once and forget it. To reset it (forces a one-time re-trust), remove that directory and recreate the proxy (`dk proxy down && dk proxy up`).
+
+Example (`docker/envs/dev/info.yaml`):
+
+```yaml
+site_origin: https://myapp-dev.localdev.temp.build
+local_proxy:
+  enabled: true
+  upstream_port: 5555   # host port the stack already publishes
+  # upstream_host: host.docker.internal   # default
+```
+
+On `dk <env> up`, tooling ensures `catalpa-local-proxy` is running and registers a route via Caddy's admin API (`127.0.0.1:2019`). On `dk <env> down`, the route is removed (the shared proxy keeps running). Manage the proxy directly: `dk proxy up|down|status|trust`.
+
+Project requirements when enabled: set `site_origin` to the HTTPS hostname, publish `upstream_port` on the host, and allow that host in frontend dev config (e.g. Vite `server.allowedHosts`). Do **not** enable `local_proxy` on environments that bind their own Caddy on `:80`/`:443` (e.g. production-like `full` stacks).
+
 ### Host storage (`storage` in `info.yaml`)
 
 Compose data volumes use stable Docker names (`name: ${COMPOSE_PROJECT_NAME}_…`). Two independent choices:
@@ -333,6 +353,7 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 |----------|----------|
 | [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `test smoke` prerequisites, authoring tests, flags |
 | [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation) |
+| [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) | Typer migration audit and low-risk refactor targets |
 | [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
 | [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |
 | [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
@@ -347,3 +368,7 @@ uv sync --group test
 uv run pytest
 uv build
 ```
+
+### CLI conventions (Typer-friendly)
+
+The CLIs use argparse today but we intend to migrate to [Typer](https://typer.tiangolo.com/). Keep new/edited command code migration-friendly: put command **logic** in functions that take explicit, typed keyword parameters and keep the argparse layer (`*_parser.py`, `*_cli.py`) as thin glue that reads the namespace and calls them — never pass `argparse.Namespace` into logic. `native_cli.py` and `test_cli.py` already follow this shape. See [`.cursor/rules/typer-compatible-cli.mdc`](.cursor/rules/typer-compatible-cli.mdc) and [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) for the audit and refactor priorities.

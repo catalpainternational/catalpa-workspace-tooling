@@ -8,6 +8,12 @@ dk
 ├── build [SERVICE …]              # build images tagged from git describe
 ├── transfer SRC DST               # transfer db and media from one environemnt to another
 │
+├── proxy [--dry-run]              # machine-wide local dev HTTPS reverse proxy
+│   ├── up                         # start catalpa-local-proxy (Caddy :80/:443); CA persisted on host
+│   ├── down                       # stop/remove catalpa-local-proxy (host-persisted CA kept)
+│   ├── status                     # container + route count
+│   └── trust                      # trust "Catalpa Local Dev Root" CA once (macOS/Linux)
+│
 ├── digoc                          # access to doctl (probably removing this for access via dk)
 │   ├── auth                        
 │   │   ├── init
@@ -36,7 +42,7 @@ dk
     │   └── logs
     ├── ensure_volumes               # utility command 
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
-    ├── trust-caddy-cert [--dry-run] # macOS: trust Caddy local CA (stack.services.proxy)
+    ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
     ├── manage <django …>            # access ./manage.py
     ├── pull_media                   # volume → host dir (tar)
     ├── wipe                         # alias: compose down -v
@@ -75,6 +81,7 @@ dk
 | `push` | Build for `linux/amd64` and push to registry |
 | `transfer` | Copy Postgres + `django_media` between two envs |
 | `digoc` | DigitalOcean helpers (wraps `doctl`) |
+| `proxy` | Machine-wide local dev HTTPS reverse proxy (`*.localdev.temp.build`) |
 
 ## `<env>` only
 

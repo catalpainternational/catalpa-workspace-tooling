@@ -112,6 +112,26 @@ def test_plan_setup_docker_tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert "uv run dk dev -y files restore" in plan.tasks_content
 
 
+def test_dev_trust_task_when_local_proxy_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_tooling_docker_repo(tmp_path)
+    (tmp_path / "docker/envs/dev/info.yaml").write_text(
+        "site_origin: https://test-dev.localdev.temp.build\n"
+        "compose_file: compose.dev.yaml\n"
+        "local_proxy:\n"
+        "  enabled: true\n"
+        "  upstream_port: 5555\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    plan = plan_setup()
+    labels = [t["label"] for t in json.loads(plan.tasks_content)["tasks"]]
+    assert "Trust Catalpa local dev CA" in labels
+    assert "uv run dk dev trust-caddy-cert" in plan.tasks_content
+
+
 def test_plan_setup_dev_only_when_no_full_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -173,12 +193,14 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
 
     apply_setup(plan_setup())
     data = json.loads((tmp_path / ".vscode/tasks.json").read_text(encoding="utf-8"))
-    assert data[MANAGED_MARKER_KEY] == "6"
+    assert data[MANAGED_MARKER_KEY] == "7"
     labels = [t["label"] for t in data["tasks"]]
     assert "Dev: Show LAN URLs" in labels
     assert "Dev: Open site on LAN" in labels
     assert "Dev: Open site in Cursor browser" in labels
     assert "Full: Open site in Cursor browser" in labels
+    # No local_proxy in the default dev info.yaml -> no local-proxy trust task.
+    assert "Trust Catalpa local dev CA" not in labels
 
     dev_cursor_task = next(
         t for t in data["tasks"] if t["label"] == "Dev: Open site in Cursor browser"
