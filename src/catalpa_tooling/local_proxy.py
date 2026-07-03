@@ -10,7 +10,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TextIO
+from typing import TYPE_CHECKING, Any, NamedTuple, TextIO
 
 from catalpa_tooling.local_proxy_assets import local_proxy_caddyfile_path
 from catalpa_tooling.run_cmd import run as run_cmd
@@ -45,6 +45,14 @@ def local_proxy_data_dir() -> Path:
     return root / "catalpa" / "local-proxy"
 
 
+class LocalProxyRoute(NamedTuple):
+    """One registered dev-proxy route (Caddy admin ``@id``, host, upstream dial)."""
+
+    route_id: str
+    host: str
+    upstream_dial: str
+
+
 class LocalProxyConfigError(ValueError):
     """Invalid ``local_proxy`` / ``site_origin`` configuration."""
 
@@ -58,9 +66,15 @@ def _local_proxy_block(info: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
+def _is_remote_docker_host(docker_host: object) -> bool:
+    """True for SSH remote daemons; local socket / unset counts as local."""
+    dh = str(docker_host or "").strip()
+    return dh.startswith("ssh://")
+
+
 def local_proxy_enabled(info: dict[str, Any]) -> bool:
     """True when this env uses the shared machine-wide HTTPS proxy (local Docker only)."""
-    if info.get("docker_host"):
+    if _is_remote_docker_host(info.get("docker_host")):
         return False
     block = _local_proxy_block(info)
     return bool(block.get("enabled", False))
@@ -80,16 +94,19 @@ def local_proxy_upstream_port(info: dict[str, Any]) -> int:
     raw = block.get("upstream_port") or block.get("upstreamPort")
     if raw is None:
         raise LocalProxyConfigError(
-            "local_proxy.upstream_port is required when local_proxy.enabled is true"
+            "local_proxy.upstream_port is required when local_proxy.enabled is true "
+            "and local_proxy.routes is not set"
         )
+    return _parse_upstream_port(raw, field="local_proxy.upstream_port")
+
+
+def _parse_upstream_port(raw: object, *, field: str) -> int:
     try:
         port = int(str(raw).strip())
     except ValueError as e:
-        raise LocalProxyConfigError(
-            f"local_proxy.upstream_port must be an integer (got {raw!r})"
-        ) from e
+        raise LocalProxyConfigError(f"{field} must be an integer (got {raw!r})") from e
     if not 1 <= port <= 65535:
-        raise LocalProxyConfigError(f"local_proxy.upstream_port out of range: {port}")
+        raise LocalProxyConfigError(f"{field} out of range: {port}")
     return port
 
 
@@ -113,6 +130,98 @@ def local_proxy_hostname(info: dict[str, Any]) -> str:
             f"got {len(hosts)}: {', '.join(hosts)}"
         )
     return hosts[0]
+
+
+def local_proxy_uses_routes_list(info: dict[str, Any]) -> bool:
+    """True when ``local_proxy.routes`` defines explicit host/upstream entries."""
+    block = _local_proxy_block(info)
+    routes = block.get("routes")
+    return isinstance(routes, list) and len(routes) > 0
+
+
+def _hostname_from_route_host(raw: object, *, field: str) -> str:
+    host = str(raw).strip()
+    if not host:
+        raise LocalProxyConfigError(f"{field} must not be empty")
+    if "://" in host:
+        parsed_hosts = hostnames_from_origins([host if host.startswith("http") else f"https://{host}"])
+        if not parsed_hosts:
+            raise LocalProxyConfigError(f"Could not derive hostname from {field}: {raw!r}")
+        return parsed_hosts[0]
+    return host.split("/")[0]
+
+
+def route_id_for_host(config: ProjectConfig, env_name: str, host: str) -> str:
+    """Stable Caddy admin ``@id`` for one host within a multi-route environment."""
+    project = _sanitize_route_label(config.meta.name, field="project name")
+    env = _sanitize_route_label(env_name, field="env name")
+    host_label = _sanitize_route_label(host, field="host")
+    rid = f"{_ROUTE_ID_PREFIX}-{project}-{env}-{host_label}"
+    if not _ROUTE_ID_RE.fullmatch(rid):
+        raise LocalProxyConfigError(
+            f"Could not build local proxy route id from {project!r}/{env_name!r}/{host!r}"
+        )
+    return rid
+
+
+def local_proxy_routes(
+    info: dict[str, Any],
+    config: ProjectConfig,
+    env_name: str,
+) -> list[LocalProxyRoute]:
+    """Return all proxy routes for this environment (legacy single-route or ``routes`` list)."""
+    if not local_proxy_enabled(info):
+        return []
+
+    if local_proxy_uses_routes_list(info):
+        block = _local_proxy_block(info)
+        default_host = local_proxy_hostname(info)
+        default_upstream_host = local_proxy_upstream_host(info)
+        entries: list[LocalProxyRoute] = []
+        for index, raw in enumerate(block["routes"]):
+            if not isinstance(raw, dict):
+                raise LocalProxyConfigError(
+                    f"local_proxy.routes[{index}] must be a mapping (got {type(raw).__name__})"
+                )
+            host_raw = raw.get("host")
+            host = (
+                _hostname_from_route_host(host_raw, field=f"local_proxy.routes[{index}].host")
+                if host_raw is not None
+                else default_host
+            )
+            port_raw = raw.get("upstream_port") or raw.get("upstreamPort")
+            if port_raw is None:
+                raise LocalProxyConfigError(
+                    f"local_proxy.routes[{index}].upstream_port is required"
+                )
+            port = _parse_upstream_port(port_raw, field=f"local_proxy.routes[{index}].upstream_port")
+            upstream_host_raw = raw.get("upstream_host") or raw.get("upstreamHost")
+            upstream_host = (
+                str(upstream_host_raw).strip()
+                if upstream_host_raw is not None
+                else default_upstream_host
+            )
+            if not upstream_host:
+                raise LocalProxyConfigError(
+                    f"local_proxy.routes[{index}].upstream_host must not be empty"
+                )
+            rid = route_id_for_host(config, env_name, host)
+            entries.append(
+                LocalProxyRoute(
+                    route_id=rid,
+                    host=host,
+                    upstream_dial=f"{upstream_host}:{port}",
+                )
+            )
+        return entries
+
+    return [
+        LocalProxyRoute(
+            route_id=route_id(config, env_name),
+            host=local_proxy_hostname(info),
+            upstream_dial=local_proxy_upstream_dial(info),
+        )
+    ]
 
 
 def _sanitize_route_label(label: str, *, field: str) -> str:
@@ -382,6 +491,59 @@ def remove_route(route_id_value: str, *, dry_run: bool = False) -> int:
     return 1
 
 
+def _route_host_from_config(route: dict[str, Any]) -> str:
+    match = route.get("match")
+    if isinstance(match, list) and match:
+        first = match[0]
+        if isinstance(first, dict):
+            hosts = first.get("host")
+            if isinstance(hosts, list) and hosts:
+                return str(hosts[0])
+    return ""
+
+
+def _route_upstream_from_config(route: dict[str, Any]) -> str:
+    handle = route.get("handle")
+    if isinstance(handle, list) and handle:
+        first = handle[0]
+        if isinstance(first, dict) and first.get("handler") == "reverse_proxy":
+            upstreams = first.get("upstreams")
+            if isinstance(upstreams, list) and upstreams:
+                dial = upstreams[0].get("dial") if isinstance(upstreams[0], dict) else None
+                if dial:
+                    return str(dial)
+    return ""
+
+
+def _route_context_from_id_and_host(route_id_value: str, host: str) -> str:
+    """Best-effort ``project/env`` label from a route ``@id`` and matched host."""
+    prefix = f"{_ROUTE_ID_PREFIX}-"
+    if not route_id_value.startswith(prefix):
+        return route_id_value
+    host_suffix = _sanitize_route_label(host, field="host")
+    if host_suffix and route_id_value.endswith(f"-{host_suffix}"):
+        base = route_id_value[len(prefix) :][: -(len(host_suffix) + 1)]
+    else:
+        base = route_id_value[len(prefix) :]
+    parts = base.rsplit("-", 1)
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return f"{parts[0]}/{parts[1]}"
+    return base or route_id_value
+
+
+def _https_server_routes() -> list[dict[str, Any]]:
+    server_name = _https_server_name()
+    status, payload = _admin_request("GET", f"/config/apps/http/servers/{server_name}/routes")
+    if status >= 400:
+        raise LocalProxyConfigError(
+            f"Caddy admin API returned HTTP {status} reading routes: {payload}"
+        )
+    data = json.loads(payload) if payload.strip() else []
+    if not isinstance(data, list):
+        return []
+    return [r for r in data if isinstance(r, dict)]
+
+
 def proxy_status_lines() -> list[str]:
     lines: list[str] = []
     cid = proxy_container_id()
@@ -391,20 +553,23 @@ def proxy_status_lines() -> list[str]:
     lines.append(f"{LOCAL_PROXY_CONTAINER}: running ({cid[:12]})")
     lines.append(f"admin: {LOCAL_PROXY_ADMIN_URL}")
     try:
-        status, payload = _admin_request("GET", "/config/apps/http/servers")
-        if status >= 400:
-            lines.append(f"routes: admin API error HTTP {status}")
-            return lines
-        data = json.loads(payload) if payload.strip() else {}
-        route_count = 0
-        for server in data.values() if isinstance(data, dict) else []:
-            if isinstance(server, dict):
-                routes = server.get("routes")
-                if isinstance(routes, list):
-                    route_count += len(routes)
-        lines.append(f"registered routes: {route_count}")
+        routes = _https_server_routes()
+        live: list[str] = []
+        for route in routes:
+            rid = route.get("@id")
+            if not isinstance(rid, str) or not rid.startswith(f"{_ROUTE_ID_PREFIX}-"):
+                continue
+            host = _route_host_from_config(route)
+            upstream = _route_upstream_from_config(route)
+            context = _route_context_from_id_and_host(rid, host)
+            live.append(f"  {host} -> {upstream}  ({context})")
+        if live:
+            lines.append("live sites:")
+            lines.extend(live)
+        else:
+            lines.append("live sites: (none)")
     except (LocalProxyConfigError, json.JSONDecodeError) as e:
-        lines.append(f"routes: {e}")
+        lines.append(f"live sites: {e}")
     return lines
 
 
@@ -421,7 +586,12 @@ def local_proxy_public_url(info: dict[str, Any]) -> str:
 
 def print_local_proxy_url(info: dict[str, Any], *, file: TextIO | None = None) -> None:
     out = sys.stderr if file is None else file
-    print(f"Local dev URL: {local_proxy_public_url(info)}", file=out)
+    origins = parse_site_origins_from_info(info)
+    if origins:
+        for origin in origins:
+            print(f"Local dev URL: {origin}", file=out)
+    elif local_proxy_enabled(info):
+        print(f"Local dev URL: https://{local_proxy_hostname(info)}", file=out)
 
 
 def ca_is_trusted() -> bool:
@@ -474,11 +644,11 @@ def sync_local_proxy_for_compose_action(
     *,
     dry_run: bool = False,
 ) -> int:
-    """Ensure proxy + route on ``up``; remove route on ``down``."""
+    """Ensure proxy + route(s) on ``up``; remove route(s) on ``down``."""
     if not local_proxy_enabled(info):
         return 0
 
-    rid = route_id(config, env_name)
+    routes = local_proxy_routes(info, config, env_name)
     if not compose_args:
         return 0
 
@@ -487,16 +657,20 @@ def sync_local_proxy_for_compose_action(
         rc = ensure_proxy_running(dry_run=dry_run)
         if rc != 0:
             return rc
-        host = local_proxy_hostname(info)
-        upstream = local_proxy_upstream_dial(info)
-        rc = upsert_route(rid, host, upstream, dry_run=dry_run)
-        if rc != 0:
-            return rc
+        for entry in routes:
+            rc = upsert_route(entry.route_id, entry.host, entry.upstream_dial, dry_run=dry_run)
+            if rc != 0:
+                return rc
         print_local_proxy_url(info)
         print_ca_trust_hint(env_name)
         return 0
 
     if verb == "down":
-        return remove_route(rid, dry_run=dry_run)
+        rc = 0
+        for entry in routes:
+            route_rc = remove_route(entry.route_id, dry_run=dry_run)
+            if route_rc != 0:
+                rc = route_rc
+        return rc
 
     return 0

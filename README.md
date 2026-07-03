@@ -308,9 +308,31 @@ local_proxy:
   # upstream_host: host.docker.internal   # default
 ```
 
-On `dk <env> up`, tooling ensures `catalpa-local-proxy` is running and registers a route via Caddy's admin API (`127.0.0.1:2019`). On `dk <env> down`, the route is removed (the shared proxy keeps running). Manage the proxy directly: `dk proxy up|down|status|trust`.
+Multiple hostnames (e.g. app + Metabase) via an explicit `routes` list — `host` defaults to `site_origin` when omitted:
 
-Project requirements when enabled: set `site_origin` to the HTTPS hostname, publish `upstream_port` on the host, and allow that host in frontend dev config (e.g. Vite `server.allowedHosts`). Do **not** enable `local_proxy` on environments that bind their own Caddy on `:80`/`:443` (e.g. production-like `full` stacks).
+```yaml
+site_origin: https://myapp-full.localdev.temp.build
+local_proxy:
+  enabled: true
+  routes:
+    - upstream_port: 5557
+    - host: metabase.myapp-full.localdev.temp.build
+      upstream_port: 5557
+```
+
+On `dk <env> up`, tooling ensures `catalpa-local-proxy` is running and registers route(s) via Caddy's admin API (`127.0.0.1:2019`). On `dk <env> down`, that env's route(s) are removed (the shared proxy keeps running for other projects). Manage the proxy directly: `dk proxy up|down|status|trust`.
+
+`dk proxy status` shows whether the proxy is running and lists live sites, for example:
+
+```
+catalpa-local-proxy: running (abc123def456)
+admin: http://127.0.0.1:2019
+live sites:
+  myapp-dev.localdev.temp.build -> host.docker.internal:5555  (myapp/dev)
+  myapp-full.localdev.temp.build -> host.docker.internal:5557  (myapp/full)
+```
+
+Project requirements when enabled: set `site_origin` to the HTTPS hostname (for Django `ALLOWED_HOSTS` / CSRF), publish the configured upstream port(s) on the host, and allow those hosts in frontend dev config (e.g. Vite `server.allowedHosts`). Stacks with their own Caddy may run behind the proxy by serving plain HTTP internally (`CADDY_SITE_ADDRESS: http://...`) while keeping `site_origin` as `https://...`.
 
 ### Host storage (`storage` in `info.yaml`)
 

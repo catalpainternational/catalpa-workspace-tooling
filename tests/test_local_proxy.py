@@ -9,11 +9,15 @@ from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.local_proxy import (
     LOCAL_PROXY_CA_COMMON_NAME,
     LocalProxyConfigError,
+    LocalProxyRoute,
     build_route_config,
     local_proxy_enabled,
     local_proxy_hostname,
+    local_proxy_routes,
     local_proxy_upstream_dial,
+    proxy_status_lines,
     route_id,
+    route_id_for_host,
     upsert_route,
 )
 from catalpa_tooling.local_proxy_assets import local_proxy_caddyfile_path
@@ -55,6 +59,13 @@ def test_local_proxy_enabled_requires_local_docker() -> None:
         {
             "docker_host": "ssh://host",
             "local_proxy": {"enabled": True, "upstream_port": 5555},
+        }
+    )
+    assert local_proxy_enabled(
+        {
+            "docker_host": "unix:///var/run/docker.sock",
+            "local_proxy": {"enabled": True, "upstream_port": 5555},
+            "site_origin": "https://app-full.localdev.temp.build",
         }
     )
     assert not local_proxy_enabled({"local_proxy": {"enabled": False}})
@@ -148,3 +159,87 @@ def test_upsert_route_dedupes_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "local-proxy-other-dev" in ids
     new_route = next(r for r in routes if r["@id"] == "local-proxy-ambulancia-dev")
     assert new_route["match"] == [{"host": ["ambulancia-dev.localdev.temp.build"]}]
+
+
+def test_local_proxy_routes_legacy_single(minimal_config: ProjectConfig) -> None:
+    info = {
+        "site_origin": "https://ambulancia-dev.localdev.temp.build",
+        "local_proxy": {"enabled": True, "upstream_port": 5555},
+    }
+    routes = local_proxy_routes(info, minimal_config, "dev")
+    assert routes == [
+        LocalProxyRoute(
+            route_id="local-proxy-minimal-dev",
+            host="ambulancia-dev.localdev.temp.build",
+            upstream_dial="host.docker.internal:5555",
+        )
+    ]
+
+
+def test_local_proxy_routes_multi(minimal_config: ProjectConfig) -> None:
+    info = {
+        "site_origin": "https://ambulancia-full.localdev.temp.build",
+        "local_proxy": {
+            "enabled": True,
+            "routes": [
+                {"upstream_port": 5557},
+                {
+                    "host": "metabase.ambulancia-full.localdev.temp.build",
+                    "upstream_port": 5557,
+                },
+            ],
+        },
+    }
+    routes = local_proxy_routes(info, minimal_config, "full")
+    assert len(routes) == 2
+    assert routes[0].host == "ambulancia-full.localdev.temp.build"
+    assert routes[0].upstream_dial == "host.docker.internal:5557"
+    assert routes[0].route_id == route_id_for_host(
+        minimal_config, "full", "ambulancia-full.localdev.temp.build"
+    )
+    assert routes[1].host == "metabase.ambulancia-full.localdev.temp.build"
+
+
+def test_route_id_for_host(minimal_config: ProjectConfig) -> None:
+    rid = route_id_for_host(minimal_config, "full", "metabase.ambulancia-full.localdev.temp.build")
+    assert rid.startswith("local-proxy-minimal-full-")
+
+
+def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123def456")
+    monkeypatch.setattr(local_proxy, "_https_server_name", lambda: "srv0")
+
+    def fake_admin_request(method, path, *, body=None, timeout=10.0):
+        if method == "GET" and path == "/config/apps/http/servers/srv0/routes":
+            return 200, json.dumps(
+                [
+                    {
+                        "@id": "local-proxy-ambulancia-dev",
+                        "match": [{"host": ["ambulancia-dev.localdev.temp.build"]}],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "host.docker.internal:5555"}],
+                            }
+                        ],
+                    },
+                    {
+                        "match": [{"host": ["redirect"]}],
+                        "handle": [{"handler": "static_response"}],
+                    },
+                ]
+            )
+        raise AssertionError(f"unexpected admin call {method} {path}")
+
+    monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
+
+    lines = proxy_status_lines()
+    assert any("live sites:" in line for line in lines)
+    assert any(
+        "ambulancia-dev.localdev.temp.build -> host.docker.internal:5555  (ambulancia/dev)"
+        in line
+        for line in lines
+    )
+    assert not any("redirect" in line for line in lines)
