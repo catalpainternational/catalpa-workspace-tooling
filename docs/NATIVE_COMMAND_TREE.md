@@ -36,7 +36,7 @@ native
 | `native.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
 | `native.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
 | `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`, optional `default: true`) |
-| `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate (default: `false`) |
+| `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate on host reset (default: `false`); for compose `pgrestore` / `dk transfer`, pre-creates PostGIS, grants catalog tables to the app user, and adds `pg_restore --no-comments` |
 | `native.reset_db.pg_restore_args` | Extra `pg_restore` flags when restoring a dump (e.g. `--clean`, `--if-exists`) |
 | `native.reset_db.post_manage_commands` | `manage.py` argv lists after reset (local host, not compose exec) |
 | `native.reset_db.db_name_env` / `host_env` / … | Env var names in `paths.env_local` for libpq tools (first set wins) |
@@ -47,6 +47,7 @@ native
 | `native.frontend.node_version` | Optional Node version for nvm (e.g. `22`); `.nvmrc` in `paths.frontend` takes precedence |
 | `native.frontend.env` | Extra env vars for the dev-server subprocess only |
 | `native.start.procfile` | Optional checked-in Procfile path (relative to repo root); omit for auto-generated bero default |
+| `native.django.port` | Host port for `native runserver` (e.g. `8005` for PEP digit 5); default Django `8000` when unset |
 | `native.start.ports` | TCP ports freed on exit when listeners remain (default: `[8000, 8080]`) |
 | `native.start.migrate` | When using auto-generated Procfile, run `native manage migrate` before `runserver` (default: `true`) |
 

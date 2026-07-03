@@ -116,7 +116,8 @@ def _setup_main() -> None:
     print("Run tasks via Terminal → Run Task (Cmd+Shift+P → “Tasks: Run Task”).")
     print(
         "Common tasks: Dev: Start stack, Dev: Open site in browser, "
-        "Dev: Run Django command (and Full: … when docker/envs/full is configured)."
+        "Dev: Open site in Cursor browser, Dev: Run Django command "
+        "(and Full: … when docker/envs/full is configured)."
     )
 
 

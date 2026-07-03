@@ -6,6 +6,7 @@ import os
 import subprocess
 import time
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.tty_restore import restore_controlling_tty
@@ -48,7 +49,32 @@ def _compose(
         restore_controlling_tty()
 
 
-def _healthcheck_python_snippet(url: str) -> str:
+def _healthcheck_host_header(env_add: dict[str, str] | None) -> str | None:
+    """Hostname for in-container HTTP probes (matches Django ALLOWED_HOSTS from BERO_ORIGIN)."""
+    if not env_add:
+        return None
+    for key in ("BERO_ORIGIN", "SITE_ORIGIN", "DJANGO_ORIGIN"):
+        raw = (env_add.get(key) or "").strip()
+        if not raw:
+            continue
+        if "://" not in raw:
+            raw = f"http://{raw}"
+        host = urlparse(raw).hostname
+        if host:
+            return host
+    return None
+
+
+def _healthcheck_python_snippet(url: str, *, host_header: str | None = None) -> str:
+    if host_header:
+        return (
+            "import sys, urllib.request\n"
+            "try:\n"
+            f"    req = urllib.request.Request({url!r}, headers={{'Host': {host_header!r}}})\n"
+            "    urllib.request.urlopen(req, timeout=2)\n"
+            "except Exception:\n"
+            "    sys.exit(1)\n"
+        )
     return (
         "import sys, urllib.request\n"
         "try:\n"
@@ -66,6 +92,7 @@ def _is_web_service_healthy(
 ) -> bool:
     """Return True if the configured web service healthcheck URL responds."""
     hc = config.stack.healthcheck
+    host_header = _healthcheck_host_header(env_add)
     r = _compose(
         compose_file,
         "exec",
@@ -73,7 +100,7 @@ def _is_web_service_healthy(
         hc.service,
         "python",
         "-c",
-        _healthcheck_python_snippet(hc.url),
+        _healthcheck_python_snippet(hc.url, host_header=host_header),
         env_add=env_add,
         check=False,
         print_cmd=False,

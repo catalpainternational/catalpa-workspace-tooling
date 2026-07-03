@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
-SETUP_VSCODE_GENERATOR_VERSION = "5"
+import yaml
+
+from catalpa_tooling.site_origin import primary_site_origin_from_info
+
+SETUP_VSCODE_GENERATOR_VERSION = "6"
 MANAGED_MARKER_KEY = "_catalpa_setup_vscode"
 
 PATH_ENV = (
@@ -25,6 +30,10 @@ DJANGO_MANAGE_OPTIONS = [
 DEV_INFO_YAML = "docker/envs/dev/info.yaml"
 FULL_INFO_YAML = "docker/envs/full/info.yaml"
 
+DEV_CURSOR_BROWSER_INPUT = "devOpenCursorBrowser"
+FULL_CURSOR_BROWSER_INPUT = "fullOpenCursorBrowser"
+CURSOR_BROWSER_COMMAND = "workbench.action.openBrowserEditor"
+
 
 def _site_origin_py(info_yaml: str) -> str:
     return (
@@ -33,15 +42,70 @@ def _site_origin_py(info_yaml: str) -> str:
     )
 
 
-def _start_stack_hint_py(info_yaml: str, open_task_label: str) -> str:
+def _start_stack_hint_py(
+    info_yaml: str,
+    os_browser_label: str,
+    cursor_browser_label: str,
+) -> str:
     return (
         "import yaml; "
         f"info=yaml.safe_load(open('{info_yaml}')) or {{}}; "
         f"o=info.get('site_origin',''); "
-        f"print(f'\\nSite: {{o}}\\nOpen with task: {open_task_label}'); "
+        f"print(f'\\nSite: {{o}}\\nOpen in OS browser: {os_browser_label}\\n"
+        f"Open in Cursor: {cursor_browser_label}'); "
         "from catalpa_tooling.dev_lan_access import dev_lan_access_enabled; "
         "dev_lan_access_enabled(info) and print('LAN testing: task Dev: Show LAN URLs')"
     )
+
+
+def _read_site_origin(info_yaml: Path) -> str:
+    if not info_yaml.is_file():
+        return ""
+    info = yaml.safe_load(info_yaml.read_text(encoding="utf-8")) or {}
+    return primary_site_origin_from_info(info) or ""
+
+
+def _cursor_browser_input(input_id: str, url: str) -> dict[str, Any]:
+    return {
+        "id": input_id,
+        "type": "command",
+        "command": CURSOR_BROWSER_COMMAND,
+        "args": {"url": url},
+    }
+
+
+def _open_cursor_browser_task(label: str, input_id: str) -> dict[str, Any]:
+    # Command-type inputs must run inside a shell task (echo); using "command"
+    # alone makes VS Code/Cursor treat ${input:…} as a shell executable path.
+    return _shell_task(
+        label,
+        f"echo ${{input:{input_id}}}",
+        panel="shared",
+        focus=False,
+    ) | {
+        "presentation": {
+            "reveal": "never",
+            "panel": "shared",
+            "focus": False,
+            "echo": False,
+        },
+    }
+
+
+def _cursor_browser_inputs(
+    deploy_envs_dir: Path,
+    *,
+    include_full: bool,
+) -> list[dict[str, Any]]:
+    inputs: list[dict[str, Any]] = []
+    dev_url = _read_site_origin(deploy_envs_dir / "dev" / "info.yaml")
+    if dev_url:
+        inputs.append(_cursor_browser_input(DEV_CURSOR_BROWSER_INPUT, dev_url))
+    if include_full:
+        full_url = _read_site_origin(deploy_envs_dir / "full" / "info.yaml")
+        if full_url:
+            inputs.append(_cursor_browser_input(FULL_CURSOR_BROWSER_INPUT, full_url))
+    return inputs
 
 
 def _dev_lan_urls_py(info_yaml: str) -> str:
@@ -159,8 +223,16 @@ def django_manage_inputs() -> list[dict[str, Any]]:
     ]
 
 
-def _dev_tasks(*, include_full: bool) -> list[dict[str, Any]]:
-    dev_hint = _start_stack_hint_py(DEV_INFO_YAML, "Dev: Open site in browser")
+def _dev_tasks(
+    *,
+    include_full: bool,
+    deploy_envs_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    dev_hint = _start_stack_hint_py(
+        DEV_INFO_YAML,
+        "Dev: Open site in browser",
+        "Dev: Open site in Cursor browser",
+    )
     tasks: list[dict[str, Any]] = [
         _shell_task(
             "Dev: Start stack",
@@ -176,6 +248,17 @@ def _dev_tasks(*, include_full: bool) -> list[dict[str, Any]]:
             focus=False,
         ),
         _open_browser_task("Dev: Open site in browser", DEV_INFO_YAML),
+        *(
+            [
+                _open_cursor_browser_task(
+                    "Dev: Open site in Cursor browser",
+                    DEV_CURSOR_BROWSER_INPUT,
+                )
+            ]
+            if deploy_envs_dir
+            and _read_site_origin(deploy_envs_dir / "dev" / "info.yaml")
+            else []
+        ),
         _shell_task(
             "Dev: Show LAN URLs",
             f'uv run python -c "{_dev_lan_urls_py(DEV_INFO_YAML)}"',
@@ -199,7 +282,11 @@ def _dev_tasks(*, include_full: bool) -> list[dict[str, Any]]:
         ),
     ]
     if include_full:
-        full_hint = _start_stack_hint_py(FULL_INFO_YAML, "Full: Open site in browser")
+        full_hint = _start_stack_hint_py(
+            FULL_INFO_YAML,
+            "Full: Open site in browser",
+            "Full: Open site in Cursor browser",
+        )
         tasks.extend(
             [
                 _shell_task(
@@ -216,6 +303,17 @@ def _dev_tasks(*, include_full: bool) -> list[dict[str, Any]]:
                     focus=False,
                 ),
                 _open_browser_task("Full: Open site in browser", FULL_INFO_YAML),
+                *(
+                    [
+                        _open_cursor_browser_task(
+                            "Full: Open site in Cursor browser",
+                            FULL_CURSOR_BROWSER_INPUT,
+                        )
+                    ]
+                    if deploy_envs_dir
+                    and _read_site_origin(deploy_envs_dir / "full" / "info.yaml")
+                    else []
+                ),
                 _shell_task(
                     "Full: Trust HTTPS certificate (macOS)",
                     "uv run dk full trust-caddy-cert",
@@ -263,14 +361,18 @@ def build_tasks_json(
     workflow: WorkflowKind,
     *,
     include_full: bool = True,
+    deploy_envs_dir: Path | None = None,
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """Return a VS Code tasks.json document."""
     del workflow  # only docker workflow is supported
-    tasks = _dev_tasks(include_full=include_full)
+    tasks = _dev_tasks(include_full=include_full, deploy_envs_dir=deploy_envs_dir)
+    inputs = django_manage_inputs()
+    if deploy_envs_dir is not None:
+        inputs.extend(_cursor_browser_inputs(deploy_envs_dir, include_full=include_full))
     return {
         "version": "2.0.0",
         MANAGED_MARKER_KEY: SETUP_VSCODE_GENERATOR_VERSION,
-        "inputs": django_manage_inputs(),
+        "inputs": inputs,
         "tasks": tasks,
     }

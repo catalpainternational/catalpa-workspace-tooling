@@ -6,17 +6,20 @@ import os
 import tempfile
 from pathlib import Path
 
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import ProjectConfig, native_runserver_bind
 from catalpa_tooling.run_cmd import run_interruptible
 from catalpa_tooling.script_assets import honcho_start_helper_path
 
 
-def render_default_procfile(*, migrate: bool) -> str:
+def render_default_procfile(*, migrate: bool, runserver_bind: str | None = None) -> str:
     """Default bero/Wagtail Procfile when ``native.start.procfile`` is unset."""
+    runserver = "uv run native runserver"
+    if runserver_bind:
+        runserver = f"{runserver} {runserver_bind}"
     if migrate:
-        web = "sh -c 'uv run native manage migrate && uv run native runserver'"
+        web = f"sh -c 'uv run native manage migrate && {runserver}'"
     else:
-        web = "uv run native runserver"
+        web = runserver
     return f"web: {web}\nfrontend: uv run native frontend\n"
 
 
@@ -33,7 +36,10 @@ def resolve_native_start_procfile(cfg: ProjectConfig) -> tuple[Path, Path | None
     os.close(fd)
     temp_path = Path(name)
     temp_path.write_text(
-        render_default_procfile(migrate=start.migrate),
+        render_default_procfile(
+            migrate=start.migrate,
+            runserver_bind=native_runserver_bind(cfg.native.django),
+        ),
         encoding="utf-8",
     )
     return temp_path, temp_path

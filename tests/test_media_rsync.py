@@ -12,6 +12,7 @@ from catalpa_tooling.config import load_project_config
 from catalpa_tooling.media_rsync import (
     mountpoint_host_rsync_writable,
     resolve_push_media_source,
+    rsync_pull_remote_to_local,
     rsync_push_local_to_dest,
     run_push_media_rsync,
     try_ssh_target_from_docker_host,
@@ -58,6 +59,22 @@ def test_resolve_push_media_source_missing(tmp_path: Path, isolated_tooling: Non
     _write_minimal_tooling(tmp_path)
     cfg = load_project_config(tmp_path)
     assert resolve_push_media_source(cfg, tmp_path, None) is None
+
+
+def test_rsync_pull_streams_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    recorded: list[dict[str, object]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        recorded.append(dict(kwargs))
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    monkeypatch.setattr("catalpa_tooling.media_rsync.run_cmd", fake_run)
+    rc = rsync_pull_remote_to_local("root@h", "/remote/media/", tmp_path / "media")
+    assert rc == 0
+    assert recorded
+    assert recorded[0].get("capture_output") is not True
 
 
 def test_rsync_push_adds_delete_and_trailing_slash(monkeypatch: pytest.MonkeyPatch) -> None:

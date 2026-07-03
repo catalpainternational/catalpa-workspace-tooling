@@ -16,6 +16,8 @@ cp /path/to/catalpa-workspace-tooling/scripts/cursorignore.template .cursorignor
 mkdir -p .cursor/rules
 cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/secrets-and-agents.mdc .cursor/rules/
 cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/remote-environments.mdc .cursor/rules/
+# Optional — smoke test hints for agents (bero / Django compose consumers):
+cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/smoke-tests.mdc .cursor/rules/
 ```
 
 | File | Purpose |
@@ -23,8 +25,9 @@ cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/remote-environments.m
 | [`.cursorignore`](../scripts/cursorignore.template) | Excludes credential and env files from agent indexing |
 | [`secrets-and-agents.mdc`](../scripts/cursor-rules/secrets-and-agents.mdc) | No decrypt/show of SOPS or env secrets |
 | [`remote-environments.mdc`](../scripts/cursor-rules/remote-environments.mdc) | No `dk staging`/`prod`, push, transfer, or fetch-from-prod without user confirmation |
+| [`smoke-tests.mdc`](../scripts/cursor-rules/smoke-tests.mdc) | Optional — `test smoke` setup and when to run after bero bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
 
-Commit all three paths to the application repository so all contributors get the same guardrails.
+Commit all three required paths (and optional `smoke-tests.mdc` for bero consumers) to the application repository so all contributors get the same guardrails.
 
 ## Local vs remote environments
 
@@ -75,4 +78,5 @@ Some projects put low-risk dev defaults in `docker/envs/dev/info.yaml`. OAuth cl
 ## Related docs
 
 - [README.md](../README.md) — install and `docker/envs/` layout
+- [SMOKE_TESTS.md](SMOKE_TESTS.md) — `test smoke` contract and authoring tests
 - Consumer `docker/envs/README.md` — per-env credentials bootstrap

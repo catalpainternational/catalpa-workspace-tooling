@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.8.5
+
+### Fixed
+
+- **`test smoke` / dev frontend** — poll `site_origin` with retries (up to 120s, 60s per request) instead of a single 10s HTTP GET. Dev stacks serve the webpack dev server on `NODE_PORT`; the first compile can take ~60s while Django is already healthy.
+
+## 0.8.4
+
+### Fixed
+
+- **`test smoke`** — before `docker compose up`, run the same preflight as `dk <env> up`: `ensure_volumes`, local image build when not using a pinned registry, and `materialize_configs`. Fixes failures after `dk dev wipe` when external volumes were missing.
+
+## 0.8.3
+
+### Fixed
+
+- **`test smoke` / stack healthcheck** — in-container HTTP probe now sends a `Host` header derived from `BERO_ORIGIN` (or `SITE_ORIGIN`), fixing timeouts when dev stacks use `*.dev.localhost` while the probe hits `http://localhost:8000/cms/`.
+- **`dev_lan_access`** — merge `bero_extra_allowed_hosts` from `info.yaml` with LAN-detected hosts instead of overwriting `BERO_EXTRA_ALLOWED_HOSTS`.
+
+## 0.8.1
+
+### Added
+
+- **`test smoke`** — layered project health checks for Django compose stacks: optional `compose up`, DB wait, in-container `migrate` / `check` / `makemigrations --check`, `stack.healthcheck` web probe, HTTP GET on `site_origin`, then pytest in `{paths.frontend}/smoke`. Flags: `--env`, `--no-up`, `--check-only`, `--fresh-db`, `--ci`. Documented in [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md).
+
 ### Added
 
 - **LAN dev access** for local `dk dev`: auto-detects the host’s LAN IP and Bonjour `.local` name, injects `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` for Django, and prints LAN URLs on stack start. Opt out with `dev_lan_access: false` in `docker/envs/dev/info.yaml`. VS Code tasks: **Dev: Show LAN URLs**, **Dev: Open site on LAN**.
