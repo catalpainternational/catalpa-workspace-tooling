@@ -2,13 +2,29 @@
 
 ## Unreleased
 
-### Added
-
-- **LAN dev access via local proxy** — with `local_proxy.lan_access` (or `dev_lan_access`), tooling registers sslip.io magic-DNS routes for each LAN IPv4, injects `DOMAIN` / `VITE_EXTRA_ALLOWED_HOSTS`, prints HTTPS LAN URLs on `dk <env> up`, serves the CA at `http://<ip-label>.sslip.io/catalpa-local-ca.crt`, and adds `dk proxy ca` (download URL, terminal QR via `segno`, per-OS install steps). Configurable `local_proxy.lan_dns_suffix` (default `sslip.io`). LAN routes rewrite the upstream `Host` header to the canonical hostname so stack Caddy site blocks and Vite `allowedHosts` match without knowing the dynamic sslip hostname (mirrors how Vite already rewrites Host to `SITE_ORIGIN`).
-
 ### Changed
 
+- **Project-agnostic defaults** — removed hardcoded consumer names (`pas_indmo`, `bero_db`, `INDMO` in Zabbix units, etc.). Tooling now derives compose project names, volume suffixes, smoke DB credentials, healthcheck origin env keys, build placeholders, and Zabbix unit labels from `tooling.yaml`. **`ProjectConfig` is required** when `COMPOSE_PROJECT_NAME` is unset (no silent cross-project fallbacks).
+
+### Added
+
+- **`stack.origin_env_keys`** — env var names probed for in-container HTTP healthcheck `Host` headers (default: `SITE_ORIGIN`, `DJANGO_ORIGIN`, `BERO_ORIGIN`).
+- **`stack.build_placeholders`** — compose build-time placeholder values when credentials are not loaded (defaults include generic `SITE_ORIGIN` / `DJANGO_ORIGIN`).
+- **`dev:`** section in `tooling.yaml` — optional `site_origin_base`, `lan_dns_suffix`, and `build_time_zone` (defaults: `localdev.temp.build`, `sslip.io`, `Asia/Dili`; `digitalocean.timezone` overrides build timezone when `dev.build_time_zone` is omitted).
+- **LAN dev access via local proxy** — with `local_proxy.lan_access` (or `dev_lan_access`), tooling registers sslip.io magic-DNS routes for each LAN IPv4, injects `DOMAIN` / `VITE_EXTRA_ALLOWED_HOSTS`, prints HTTPS LAN URLs on `dk <env> up`, serves the CA at `http://<ip-label>.sslip.io/catalpa-local-ca.crt`, and adds `dk proxy ca` (download URL, terminal QR via `segno`, per-OS install steps). Configurable `local_proxy.lan_dns_suffix` (default `sslip.io`). LAN routes rewrite the upstream `Host` header to the canonical hostname so stack Caddy site blocks and Vite `allowedHosts` match without knowing the dynamic sslip hostname (mirrors how Vite already rewrites Host to `SITE_ORIGIN`).
+
+### Migration (consumer repos)
+
+When bumping to this release, ensure `tooling.yaml` defines at least:
+
+- `stack.compose_project_default`
+- `ops.pgbackrest.default_registry` and `stack.images.components`
+- `ops.zabbix.unit_name` and `ops.zabbix.userparams_file` (Zabbix unit body now uses these paths and `project.name` in the unit description)
+
+Projects that relied on implicit `bero` / `pas_indmo` defaults must add explicit manifest entries. Re-run `dk <env> zabbix install` on deploy hosts if the unit file still references an old project label or userparams mount path.
+
 - **Local dev HTTPS proxy** — routes dial project containers over the shared Docker network `catalpa-local-proxy-net` (`{compose_project_name}-{service}:internal_port`) instead of `host.docker.internal` and published host ports. Tooling generates a compose override with `ports: !reset []` and network aliases (requires Docker Compose 2.24+). `local_proxy.service` is now required in `info.yaml`.
+
 ## 0.8.5
 
 ### Fixed

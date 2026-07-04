@@ -230,6 +230,7 @@ class TestRemoveInterruptedComposeRunDb(unittest.TestCase):
 class TestPlanRestoreOffline(unittest.TestCase):
     def test_prints_repo_path_and_command(self) -> None:
         env = {
+            "COMPOSE_PROJECT_NAME": "ligainan_dev",
             "PGBR_S3_READ_BUCKET": "backups",
             "PGBR_S3_READ_REGION": "sgp1",
             "PGBR_S3_READ_KEY": "key",

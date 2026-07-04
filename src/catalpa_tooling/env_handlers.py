@@ -477,6 +477,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             target=target,
             dry_run=dry_run,
             alpine_image=str(ns.image),
+            config=config,
         )
 
     if env_command in ("files", "bkp_files"):
@@ -568,6 +569,7 @@ def _handle_bkp_files(
             dry_run=dry_run,
             method=ns.method,
             alpine_image=str(ns.image),
+            config=config,
         )
 
     if sub and needs_restic_write(sub) and not restic_write_configured(env_add):

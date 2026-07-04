@@ -275,6 +275,8 @@ def route_id_for_host(config: ProjectConfig, env_name: str, host: str) -> str:
 def _expand_lan_proxy_routes(
     entries: list[LocalProxyRoute],
     info: dict[str, Any],
+    *,
+    config: ProjectConfig | None = None,
 ) -> list[LocalProxyRoute]:
     """Add magic-DNS LAN host routes (same upstream) for each base route and LAN IPv4."""
     if not lan_access_enabled(info):
@@ -282,11 +284,13 @@ def _expand_lan_proxy_routes(
     ips = detect_dev_lan_ipv4()
     if not ips:
         return entries
-    suffix = lan_dns_suffix_from_info(info)
+    suffix = lan_dns_suffix_from_info(info, config=config)
     out = list(entries)
     for entry in entries:
         for ip in ips:
-            lan_host = lan_hostname_for(entry.host, ip, lan_dns_suffix=suffix)
+            lan_host = lan_hostname_for(
+                entry.host, ip, lan_dns_suffix=suffix, config=config
+            )
             ip_slug = _sanitize_route_label(ip_to_dns_label(ip), field="ip")
             lan_rid = f"{entry.route_id}-lan-{ip_slug}"
             if not _ROUTE_ID_RE.fullmatch(lan_rid):
@@ -350,7 +354,7 @@ def local_proxy_routes(
                     upstream_dial=f"{upstream_host}:{port}",
                 )
             )
-        return _expand_lan_proxy_routes(entries, info)
+        return _expand_lan_proxy_routes(entries, info, config=config)
 
     return _expand_lan_proxy_routes(
         [
@@ -361,6 +365,7 @@ def local_proxy_routes(
             )
         ],
         info,
+        config=config,
     )
 
 

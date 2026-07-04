@@ -23,6 +23,12 @@ def test_provision_exits_when_s3cmd_missing(
     capsys: pytest.CaptureFixture,
 ) -> None:
     from catalpa_tooling.config import (
+        DEFAULT_BUILD_PLACEHOLDERS,
+        DEFAULT_ORIGIN_ENV_KEYS,
+        DEFAULT_BUILD_TIME_ZONE,
+        DEFAULT_DEV_LAN_DNS_SUFFIX,
+        DEFAULT_DEV_SITE_ORIGIN_BASE,
+        DevConfig,
         DeployPathsConfig,
         FetchMetabaseDbConfig,
         DjangoDevConfig,
@@ -74,6 +80,8 @@ def test_provision_exits_when_s3cmd_missing(
             services=StackServicesConfig(web="w", proxy="p", db="db"),
             images=StackImagesConfig(registry_key="r", components={"web": "w", "proxy": "p", "db": "db"}),
             healthcheck=StackHealthcheckConfig(service="w", url="http://localhost/"),
+            origin_env_keys=DEFAULT_ORIGIN_ENV_KEYS,
+            build_placeholders=dict(DEFAULT_BUILD_PLACEHOLDERS),
         ),
         ops=OpsConfig(
             install_prefix="/opt",
@@ -126,6 +134,11 @@ def test_provision_exits_when_s3cmd_missing(
                 ports=(8000, 8080),
                 migrate=True,
             ),
+        ),
+        dev=DevConfig(
+            site_origin_base=DEFAULT_DEV_SITE_ORIGIN_BASE,
+            lan_dns_suffix=DEFAULT_DEV_LAN_DNS_SUFFIX,
+            build_time_zone=DEFAULT_BUILD_TIME_ZONE,
         ),
         digitalocean=None,
         repo_root=tmp_path,

@@ -293,7 +293,7 @@ def load_managed_deploy_context(
     from catalpa_tooling.dev_lan_access import build_dev_lan_env, dev_lan_access_enabled, print_dev_lan_urls
 
     if dev_lan_access_enabled(info):
-        lan_env = build_dev_lan_env(info)
+        lan_env = build_dev_lan_env(info, config=config)
         merge_keys = (
             "BERO_EXTRA_ALLOWED_HOSTS",
             "BERO_EXTRA_ORIGINS",

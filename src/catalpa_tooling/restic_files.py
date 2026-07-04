@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
-from catalpa_tooling.config import DEFAULT_RESTIC_DATA_VOLUME, ProjectConfig
+from catalpa_tooling.config import DEFAULT_RESTIC_DATA_VOLUME, ProjectConfig, ProjectConfigError
 from catalpa_tooling.run_cmd import run as run_cmd
 
 # Like PGBR_S3_WRITE_* / PGBR_S3_READ_*: use one credential source per environment (mutually exclusive).
@@ -78,9 +78,11 @@ def restic_backup_mount_path(*, config: ProjectConfig | None = None) -> str:
     return f"/backup/{_restic_data_volume_key(config)}"
 
 def _default_compose_project(config: ProjectConfig | None) -> str:
-    if config is not None:
-        return config.stack.compose_project_default
-    return "pas_indmo"
+    if config is None:
+        raise ProjectConfigError(
+            "ProjectConfig is required when COMPOSE_PROJECT_NAME is unset"
+        )
+    return config.stack.compose_project_default
 
 
 def _sanitize_dk_env_for_compose_project_suffix(dk_env_name: str) -> str:
@@ -112,8 +114,9 @@ def django_media_volume_name(
     config: ProjectConfig | None = None,
 ) -> str:
     """Docker volume name for the restic backup target (``{project}_{ops.restic.data_volume}``)."""
-    default = _default_compose_project(config)
-    project = (compose_project_name or default).strip() or default
+    project = (compose_project_name or "").strip()
+    if not project:
+        project = _default_compose_project(config)
     vol_key = _restic_data_volume_key(config)
     return f"{project}_{vol_key}"
 
@@ -124,8 +127,9 @@ def staging_volume_name(
     config: ProjectConfig | None = None,
 ) -> str:
     """Ephemeral named volume for restic restore extract (same project prefix)."""
-    default = _default_compose_project(config)
-    project = (compose_project_name or default).strip() or default
+    project = (compose_project_name or "").strip()
+    if not project:
+        project = _default_compose_project(config)
     return f"{project}_restic_restore_staging"
 
 
@@ -616,7 +620,7 @@ def load_dotenv(repo_root: Path | str | None = None) -> None:
 def compose_project_name_from_compose_config(compose_file: str, env: dict[str, str]) -> str | None:
     """Return Compose JSON ``name`` from ``docker compose config`` (diagnostics; not used for volume prefixes).
 
-    ``compose.yml`` external volume names use ``${COMPOSE_PROJECT_NAME:-pas_indmo}_…``. The JSON
+    ``compose.yml`` external volume names use ``${COMPOSE_PROJECT_NAME:-<stack.compose_project_default>}_…``. The JSON
     project ``name`` often follows the checkout directory when ``COMPOSE_PROJECT_NAME`` is unset,
     which can differ from that volume prefix—do not treat it as ``COMPOSE_PROJECT_NAME``.
     """

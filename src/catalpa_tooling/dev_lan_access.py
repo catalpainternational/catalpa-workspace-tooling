@@ -6,13 +6,18 @@ import platform
 import re
 import subprocess
 import sys
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import urlparse
 
 from catalpa_tooling.site_origin import hostnames_from_origins, parse_site_origins_from_info
 
-DEFAULT_LAN_DNS_SUFFIX = "sslip.io"
-DEFAULT_SITE_ORIGIN_BASE = "localdev.temp.build"
+if TYPE_CHECKING:
+    from catalpa_tooling.config import ProjectConfig
+
+from catalpa_tooling.config import DEFAULT_DEV_LAN_DNS_SUFFIX, DEFAULT_DEV_SITE_ORIGIN_BASE
+
+DEFAULT_LAN_DNS_SUFFIX = DEFAULT_DEV_LAN_DNS_SUFFIX
+DEFAULT_SITE_ORIGIN_BASE = DEFAULT_DEV_SITE_ORIGIN_BASE
 LOCAL_PROXY_CA_HTTP_PATH = "/catalpa-local-ca.crt"
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
@@ -144,11 +149,23 @@ def dev_lan_access_enabled(info: dict[str, Any]) -> bool:
     return bool(info.get("dev_lan_access", False))
 
 
-def lan_dns_suffix_from_info(info: dict[str, Any]) -> str:
+def _site_origin_base(config: "ProjectConfig | None" = None) -> str:
+    if config is not None:
+        return config.dev.site_origin_base
+    return DEFAULT_SITE_ORIGIN_BASE
+
+
+def lan_dns_suffix_from_info(
+    info: dict[str, Any],
+    *,
+    config: "ProjectConfig | None" = None,
+) -> str:
     block = _local_proxy_block(info)
     raw = block.get("lan_dns_suffix") or block.get("lanDnsSuffix")
     if raw is not None and str(raw).strip():
         return str(raw).strip().rstrip(".")
+    if config is not None:
+        return config.dev.lan_dns_suffix
     return DEFAULT_LAN_DNS_SUFFIX
 
 
@@ -156,14 +173,16 @@ def lan_hostname_for(
     site_host: str,
     ip: str,
     *,
-    base: str = DEFAULT_SITE_ORIGIN_BASE,
-    lan_dns_suffix: str = DEFAULT_LAN_DNS_SUFFIX,
+    base: str | None = None,
+    lan_dns_suffix: str | None = None,
+    config: "ProjectConfig | None" = None,
 ) -> str:
     """Build a magic-DNS hostname that resolves to ``ip`` from any device."""
     host = site_host.strip().rstrip(".")
     ip_label = ip_to_dns_label(ip)
-    suffix = lan_dns_suffix.strip().rstrip(".")
-    base_suffix = f".{base}"
+    suffix = (lan_dns_suffix or lan_dns_suffix_from_info({}, config=config)).strip().rstrip(".")
+    origin_base = base if base is not None else _site_origin_base(config)
+    base_suffix = f".{origin_base}"
     if host.endswith(base_suffix):
         prefix = host[: -len(base_suffix)]
         if prefix:
@@ -207,6 +226,7 @@ def format_proxy_lan_urls(
     site_hosts: list[str] | None = None,
     *,
     ips: list[str] | None = None,
+    config: "ProjectConfig | None" = None,
 ) -> list[str]:
     """HTTPS URLs reachable from LAN devices via the dev proxy."""
     if not lan_access_enabled(info):
@@ -219,12 +239,14 @@ def format_proxy_lan_urls(
         ips = detect_dev_lan_ipv4()
     if not ips:
         return []
-    suffix = lan_dns_suffix_from_info(info)
+    suffix = lan_dns_suffix_from_info(info, config=config)
     urls: list[str] = []
     seen: set[str] = set()
     for site_host in site_hosts:
         for ip in ips:
-            lan_host = lan_hostname_for(site_host, ip, lan_dns_suffix=suffix)
+            lan_host = lan_hostname_for(
+                site_host, ip, lan_dns_suffix=suffix, config=config
+            )
             url = f"https://{lan_host}"
             if url not in seen:
                 seen.add(url)
@@ -242,20 +264,23 @@ def ca_download_url_for_ip(ip: str, info: dict[str, Any] | None = None) -> str:
 def build_proxy_lan_env(
     info: dict[str, Any],
     site_hosts: list[str] | None = None,
+    *,
+    config: "ProjectConfig | None" = None,
 ) -> dict[str, str]:
     """Env vars for Django / frontend when LAN access via the dev proxy is enabled."""
     if not lan_access_enabled(info):
         return {}
     if site_hosts is None:
         site_hosts = collect_lan_site_hosts(info)
-    urls = format_proxy_lan_urls(info, site_hosts)
+    urls = format_proxy_lan_urls(info, site_hosts, config=config)
     if not urls:
         return {}
     out: dict[str, str] = {}
     # Django settings accept https:// origins in DOMAIN for ALLOWED_HOSTS + CSRF.
     out["DOMAIN"] = ", ".join(urls)
-    suffix = lan_dns_suffix_from_info(info)
-    if not suffix.endswith(DEFAULT_SITE_ORIGIN_BASE):
+    suffix = lan_dns_suffix_from_info(info, config=config)
+    origin_base = _site_origin_base(config)
+    if not suffix.endswith(origin_base):
         out["VITE_EXTRA_ALLOWED_HOSTS"] = f".{suffix}"
     return out
 
@@ -291,9 +316,13 @@ def format_dev_lan_urls(info: dict[str, Any], hosts: list[str] | None = None) ->
     return [f"http://{host}:{port}" for host in hosts]
 
 
-def build_dev_lan_env(info: dict[str, Any]) -> dict[str, str]:
+def build_dev_lan_env(
+    info: dict[str, Any],
+    *,
+    config: "ProjectConfig | None" = None,
+) -> dict[str, str]:
     if lan_access_enabled(info):
-        return build_proxy_lan_env(info)
+        return build_proxy_lan_env(info, config=config)
     if not dev_lan_access_enabled(info):
         return {}
     hosts = detect_dev_lan_hosts()

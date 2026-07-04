@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from catalpa_tooling.config import DEFAULT_ORIGIN_ENV_KEYS
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.tty_restore import restore_controlling_tty
 
@@ -49,11 +50,15 @@ def _compose(
         restore_controlling_tty()
 
 
-def _healthcheck_host_header(env_add: dict[str, str] | None) -> str | None:
-    """Hostname for in-container HTTP probes (matches Django ALLOWED_HOSTS from BERO_ORIGIN)."""
+def _healthcheck_host_header(
+    env_add: dict[str, str] | None,
+    *,
+    origin_env_keys: tuple[str, ...] | None = None,
+) -> str | None:
+    """Hostname for in-container HTTP probes (matches Django ALLOWED_HOSTS from site origin env)."""
     if not env_add:
         return None
-    for key in ("BERO_ORIGIN", "SITE_ORIGIN", "DJANGO_ORIGIN"):
+    for key in origin_env_keys or DEFAULT_ORIGIN_ENV_KEYS:
         raw = (env_add.get(key) or "").strip()
         if not raw:
             continue
@@ -92,7 +97,9 @@ def _is_web_service_healthy(
 ) -> bool:
     """Return True if the configured web service healthcheck URL responds."""
     hc = config.stack.healthcheck
-    host_header = _healthcheck_host_header(env_add)
+    host_header = _healthcheck_host_header(
+        env_add, origin_env_keys=config.stack.origin_env_keys
+    )
     r = _compose(
         compose_file,
         "exec",

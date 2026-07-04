@@ -1,4 +1,4 @@
-"""``test smoke`` — project health checks for bero-style consumer repos."""
+"""``test smoke`` — layered project health checks for Django compose consumer repos."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import urllib.request
 import yaml
 
 from catalpa_tooling.compose import _compose, _wait_for_web_service
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import ProjectConfig, resolve_native_db_name
 from catalpa_tooling.env_handlers import _ensure_stack_volumes
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context, resolve_compose_file_from_info
 from catalpa_tooling.pgbackrest_db import db_service_responds
@@ -130,20 +130,20 @@ def _wait_for_db(compose_file: str, config: ProjectConfig, env_add: dict[str, st
     return False
 
 
-def _db_name(env_add: dict[str, str]) -> str:
-    for key in ("DJANGO_DB", "POSTGRES_DB"):
+def _db_name(env_add: dict[str, str], config: ProjectConfig) -> str:
+    for key in config.native.reset_db.db_name_env:
         val = (env_add.get(key) or "").strip()
         if val:
             return val
-    return "bero_db"
+    return resolve_native_db_name(config)
 
 
-def _db_user(env_add: dict[str, str]) -> str:
-    for key in ("DJANGO_DB_USER", "POSTGRES_USER"):
+def _db_user(env_add: dict[str, str], config: ProjectConfig) -> str:
+    for key in config.native.reset_db.user_env:
         val = (env_add.get(key) or "").strip()
         if val:
             return val
-    return "bero"
+    return config.meta.name
 
 
 def _run_psql(
@@ -177,9 +177,9 @@ def _fresh_db_smoke(
     *,
     check_only: bool,
 ) -> int:
-    primary = _db_name(env_add)
+    primary = _db_name(env_add, config)
     ephemeral = f"{primary}_smoke_empty"
-    owner = _db_user(env_add)
+    owner = _db_user(env_add, config)
     print(f"smoke: fresh-db migrate on ephemeral database {ephemeral!r}", file=sys.stderr)
 
     terminate_sql = (
@@ -261,7 +261,7 @@ def _wait_for_frontend_url(
 def _run_pytest_smoke(config: ProjectConfig, *, fe_url: str, extra_pytest: list[str]) -> int:
     smoke_dir = config.frontend_dir / "smoke"
     if not smoke_dir.is_dir():
-        print(f"smoke: missing {smoke_dir} (bero submodule smoke tests)", file=sys.stderr)
+        print(f"smoke: missing {smoke_dir} (Playwright smoke tests under paths.frontend/smoke)", file=sys.stderr)
         return 1
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)

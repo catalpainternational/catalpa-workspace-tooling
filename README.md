@@ -57,7 +57,7 @@ After `uv sync`, scaffold dev tasks once per project:
 uv run setup-vscode
 ```
 
-Then use **Terminal → Run Task** (Cmd+Shift+P → “Tasks: Run Task”). Bero projects get **dk dev** tasks (start/stop stack, logs, open site, Django manage, backup restore) and **dk full** tasks when `docker/envs/full/info.yaml` exists. SSH-backed fetch tasks are not included — run `native fetch db` / `native fetch media` from a terminal when needed.
+Then use **Terminal → Run Task** (Cmd+Shift+P → “Tasks: Run Task”). Django compose projects get **dk dev** tasks (start/stop stack, logs, open site, Django manage, backup restore) and **dk full** tasks when `docker/envs/full/info.yaml` exists. SSH-backed fetch tasks are not included — run `native fetch db` / `native fetch media` from a terminal when needed.
 
 Check status with `uv run setup-vscode --status`. Remove scaffolded files with `uv run setup-vscode --remove`.
 
@@ -73,7 +73,7 @@ Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-
 
 **4. Cursor agents (recommended for repos with SOPS credentials):**
 
-Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. For bero / Django compose consumers, optionally add [`scripts/cursor-rules/smoke-tests.mdc`](scripts/cursor-rules/smoke-tests.mdc). See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
+Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. For Django compose consumers with Playwright smoke tests, optionally add [`scripts/cursor-rules/smoke-tests.mdc`](scripts/cursor-rules/smoke-tests.mdc). See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
 
 **Single-project / bash (no direnv):**
 
@@ -135,10 +135,10 @@ Place bash scripts under `paths.scripts` in `tooling.yaml` (a single directory o
 ```yaml
 paths:
   scripts: scripts
-  # Bero + Metabase consumers:
+  # Shared postgres helpers (optional second path):
   # scripts:
   #   - scripts
-  #   - bero/docker/postgres/scripts
+  #   - vendor/postgres/scripts
 ```
 
 - **`scripts/native-<name>.sh`** → `uv run native <name>`. Deprecated `local-*.sh` / `dev-*.sh` still work with warnings.
@@ -165,7 +165,7 @@ uv run dk digoc --help
 ## Requirements
 
 - Python 3.12+
-- Consumer repo must include a valid `tooling.yaml` (see INDMO `data_import` for a reference manifest)
+- Consumer repo must include a valid `tooling.yaml` (see [tests/fixtures/indmo_reference_tooling.yaml](tests/fixtures/indmo_reference_tooling.yaml) or [tests/fixtures/minimal_project/tooling.yaml](tests/fixtures/minimal_project/tooling.yaml) for examples)
 - Host tools for deploy workflows: Docker, `uv`, `sops`, `age` (as needed by your project)
 - For DigitalOcean: install the official [doctl](https://docs.digitalocean.com/reference/doctl/) on `PATH` (or set `DOCTL_BIN`). Use **`dk digoc`** for project wrappers (auth, droplets, cloud-config). Run `dk digoc auth init` once per machine. If a stale token is stored, run `dk digoc auth remove --context default` first, or pass a new token with `dk digoc auth init -t TOKEN`
 
@@ -348,7 +348,7 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 | [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
 | [ZABBIX_README.md](ZABBIX_README.md) | `dk <env> zabbix`, UserParameters |
 
-Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (e.g. INDMO `data_import`) and that project’s `docker/envs/` layout as a template. Add [Cursor agent guardrails](docs/AGENTS_AND_SECRETS.md) when onboarding a new repo.
+Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (see bundled fixtures under `tests/fixtures/`) and that project’s `docker/envs/` layout as a template. Add [Cursor agent guardrails](docs/AGENTS_AND_SECRETS.md) when onboarding a new repo.
 
 ## Development
 

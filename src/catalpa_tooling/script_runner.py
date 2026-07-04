@@ -12,7 +12,7 @@ from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_ssh_target
 
 
 def script_process_env(config: ProjectConfig) -> dict[str, str]:
-    """Environment variables for ``scripts/*.sh`` and shared bero helpers."""
+    """Environment variables for ``scripts/*.sh`` and shared deploy helpers."""
     env = os.environ.copy()
     env["CATALPA_REPO_ROOT"] = str(config.repo_root)
     env["CATALPA_FRONTEND_DIR"] = str(config.frontend_dir.relative_to(config.repo_root))

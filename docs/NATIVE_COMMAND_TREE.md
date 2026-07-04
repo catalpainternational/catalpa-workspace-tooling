@@ -46,7 +46,7 @@ native
 | `native.frontend.install` | Run package manager install before dev script (default: `true`) |
 | `native.frontend.node_version` | Optional Node version for nvm (e.g. `22`); `.nvmrc` in `paths.frontend` takes precedence |
 | `native.frontend.env` | Extra env vars for the dev-server subprocess only |
-| `native.start.procfile` | Optional checked-in Procfile path (relative to repo root); omit for auto-generated bero default |
+| `native.start.procfile` | Optional checked-in Procfile path (relative to repo root); omit for auto-generated Django + frontend default |
 | `native.django.port` | Host port for `native runserver` (e.g. `8005` for PEP digit 5); default Django `8000` when unset |
 | `native.start.ports` | TCP ports freed on exit when listeners remain (default: `[8000, 8080]`) |
 | `native.start.migrate` | When using auto-generated Procfile, run `native manage migrate` before `runserver` (default: `true`) |
@@ -157,7 +157,7 @@ Runs in `paths.frontend`. Package manager: `native.frontend.package_manager`, or
 
 Node: when `~/.nvm/nvm.sh` exists, uses `nvm use` if `.nvmrc` is present in `paths.frontend`, else `nvm use <version>` when `native.frontend.node_version` is set.
 
-Example (bero / webpack):
+Example (webpack frontend):
 
 ```yaml
 native:
@@ -190,7 +190,7 @@ When `native.start.migrate: false`, the `web` line omits migrate.
 
 On exit (Ctrl-C or process end), configured `native.start.ports` are freed if still in use (`lsof` + SIGTERM/SIGKILL).
 
-Example (JID / bero — auto-generated Procfile):
+Example (auto-generated Procfile — Django + frontend):
 
 ```yaml
 native:

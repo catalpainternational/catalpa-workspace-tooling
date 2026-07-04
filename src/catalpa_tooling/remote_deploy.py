@@ -111,7 +111,7 @@ def _ensure_local_stack_images_built(
     # (e.g. DJANGO_SECRET_KEY / POSTGRES_PASSWORD with no compose default) do not
     # fail interpolation during the implicit pre-`up` build.
     build_env = dict(env_add)
-    _apply_build_placeholders(build_env)
+    _apply_build_placeholders(build_env, config.stack.build_placeholders)
     return compose_yml_build(config, env_add=build_env, services=None)
 
 

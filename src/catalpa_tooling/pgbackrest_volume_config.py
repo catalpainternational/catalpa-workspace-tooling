@@ -137,15 +137,25 @@ def repo_settings_match(
     )
 
 
+def _require_pgbackrest_conf_name(config: ProjectConfig | None) -> str:
+    return _require_pgbackrest_ops(config).pgbackrest_conf
+
+
+def _require_pgbackrest_ops(config: ProjectConfig | None) -> PgbackrestOpsConfig:
+    if config is None:
+        from catalpa_tooling.config import ProjectConfigError
+
+        raise ProjectConfigError("ProjectConfig is required for pgBackRest volume operations")
+    return config.ops.pgbackrest
+
+
 def read_managed_pgbackrest_repo_settings(
     env: dict[str, str], *, config: ProjectConfig | None = None
 ) -> PgbackrestRepoSettings | None:
     """Read and parse the managed pgBackRest drop-in from the ``pgbackrest_conf`` volume."""
     if not pgbackrest_managed_conf_materialized(env, config=config):
         return None
-    conf_name = (
-        config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
-    )
+    conf_name = _require_pgbackrest_conf_name(config)
     vol_pgb = volume_names(env, config=config)[1]
     image = postgres_image_from_env(env, config=config)
     docker_env = _docker_env_for_remote(env)
@@ -227,20 +237,28 @@ def _compose_project_name(env: dict[str, str], config: ProjectConfig | None) -> 
     project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
     if project:
         return project
-    if config is not None:
-        return config.stack.compose_project_default
-    return "pas_indmo"
+    if config is None:
+        from catalpa_tooling.config import ProjectConfigError
+
+        raise ProjectConfigError(
+            "COMPOSE_PROJECT_NAME is unset; pass ProjectConfig or set COMPOSE_PROJECT_NAME in env"
+        )
+    return config.stack.compose_project_default
 
 
 def postgres_image_from_env(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
     """Resolved db stack image ref (same defaults as ``compose.yml`` ``db`` service)."""
+    if config is None:
+        from catalpa_tooling.config import ProjectConfigError
+
+        raise ProjectConfigError("ProjectConfig is required for postgres_image_from_env")
     explicit = (env.get("Postgres_IMAGE") or "").strip()
     if explicit:
         return explicit
-    default_reg = config.ops.pgbackrest.default_registry if config else "ghcr.io/catalpainternational/pas_indmo"
+    default_reg = config.ops.pgbackrest.default_registry
     reg = (env.get("STACK_IMAGE_REGISTRY") or default_reg).strip().rstrip("/") or default_reg
     tag = (env.get("STACK_IMAGE_TAG") or "latest").strip() or "latest"
-    db_image = config.image_component("db") if config else "indmo-postgres"
+    db_image = config.image_component("db")
     return f"{reg}/{db_image}:{tag}"
 
 
@@ -263,9 +281,12 @@ def postgres_data_volume_name(env: dict[str, str], *, config: ProjectConfig | No
 
 
 def django_media_volume_name(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
-    """Docker volume name for ``django_media`` (same as compose.yml ``name:``)."""
+    """Docker volume name for the restic backup target (``{project}_{ops.restic.data_volume}``)."""
+    from catalpa_tooling.restic_files import restic_data_volume_key
+
     project = _compose_project_name(env, config)
-    return f"{project}_django_media"
+    vol_key = restic_data_volume_key(config)
+    return f"{project}_{vol_key}"
 
 
 def caddy_data_volume_name(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
@@ -437,7 +458,7 @@ def render_pgbackrest_ini(
     *,
     pg1_path: str | None = None,
 ) -> str:
-    """INI content for ``50-indmo-managed.conf`` (stanza + repo1 S3).
+    """INI content for the managed pgBackRest drop-in (stanza + repo1 S3).
 
     Optional process env (same dict as deploy ``env_add``) can override tuning via
     ``PGBR_REPO1_BUNDLE``, ``PGBR_REPO1_BLOCK``, ``PGBR_PROCESS_MAX``, ``PGBR_ARCHIVE_ASYNC``,
@@ -447,7 +468,7 @@ def render_pgbackrest_ini(
     """
     env = env or {}
     lines: list[str] = [
-        "# Managed by indmo deploy (PGBR_S3_*).",
+        "# Managed by deploy tooling (PGBR_S3_*).",
         "[global]",
         "repo1-type=s3",
     ]
@@ -489,7 +510,7 @@ def render_postgres_archive_conf(stanza: str) -> str:
     """Drop-in for WAL archiving (WRITE mode only)."""
     # Stanza is validated to be non-empty; shell-safe for archive_command.
     return (
-        f"# Managed by indmo deploy (PGBR_S3_WRITE_*).\n"
+        f"# Managed by deploy tooling (PGBR_S3_WRITE_*).\n"
         f"wal_level = replica\n"
         f"archive_mode = on\n"
         f"archive_command = 'pgbackrest --stanza={stanza} archive-push %p'\n"
@@ -498,7 +519,7 @@ def render_postgres_archive_conf(stanza: str) -> str:
 
 def minimal_pgbackrest_baseline() -> str:
     """Reset state when no PGBR_S3_* vars are set."""
-    return "# Managed by indmo deploy (no PGBR_S3_* — baseline).\n[global]\n"
+    return "# Managed by deploy tooling (no PGBR_S3_* — baseline).\n[global]\n"
 
 
 def conflict_error_message(env: dict[str, str]) -> str | None:
@@ -1220,9 +1241,7 @@ def pgbackrest_managed_conf_materialized(
     if mode == "none":
         return False
 
-    conf_name = (
-        config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
-    )
+    conf_name = _require_pgbackrest_conf_name(config)
     vol_pgb = volume_names(env, config=config)[1]
     image = postgres_image_from_env(env, config=config)
     docker_env = _docker_env_for_remote(env)
@@ -1297,9 +1316,7 @@ def ensure_pgbackrest_conf_before_restore(
         return 0
 
     vol_pgb = volume_names(env, config=config)[1]
-    conf_name = (
-        config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
-    )
+    conf_name = _require_pgbackrest_conf_name(config)
     if volume:
         print(
             "pgBackRest restore: volume config does not match current credentials "
@@ -1358,15 +1375,16 @@ def materialize_configs(
     """Create or update named volumes used by compose for Postgres / pgBackRest configs.
 
     Uses the same ``DOCKER_HOST`` (if any) as ``docker compose``. Idempotent.
-    One-off steps use the **indmo-postgres** image (``postgres_image``) so permissions
+    One-off steps use the stack **db** image (``postgres_image``) so permissions
     and tooling match the running database container.
     """
     def log(msg: str) -> None:
         print(msg, file=sys.stderr)
 
     image = postgres_image if postgres_image is not None else postgres_image_from_env(env, config=config)
-    postgres_conf = config.ops.pgbackrest.postgres_conf if config else "30-indmo-pgbackrest-archive.conf"
-    pgbackrest_conf = config.ops.pgbackrest.pgbackrest_conf if config else "50-indmo-managed.conf"
+    ops = _require_pgbackrest_ops(config)
+    postgres_conf = ops.postgres_conf
+    pgbackrest_conf = ops.pgbackrest_conf
 
     conflict = conflict_error_message(env)
     if conflict:

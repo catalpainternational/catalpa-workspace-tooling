@@ -23,6 +23,25 @@ from catalpa_tooling.repo_paths import TOOLING_FILENAME, repo_root_from_cwd
 DEFAULT_ROOT_MARKER = "pyproject.toml"
 DEFAULT_RESTIC_DATA_VOLUME = "django_media"
 
+DEFAULT_ORIGIN_ENV_KEYS: tuple[str, ...] = (
+    "SITE_ORIGIN",
+    "DJANGO_ORIGIN",
+    "BERO_ORIGIN",
+)
+DEFAULT_BUILD_PLACEHOLDERS: dict[str, str] = {
+    "POSTGRES_PASSWORD": "build_placeholder",
+    "DJANGO_DB_PASSWORD": "build_placeholder",
+    "METABASE_DB_PASSWORD": "build_placeholder",
+    "DJANGO_SECRET_KEY": "build-placeholder-not-for-production",
+    "SITE_ORIGIN": "https://build.example",
+    "DJANGO_ORIGIN": "https://build.example",
+    "BERO_ORIGIN": "https://build.example",
+    "METABASE_ORIGIN": "https://build.example",
+}
+DEFAULT_DEV_SITE_ORIGIN_BASE = "localdev.temp.build"
+DEFAULT_DEV_LAN_DNS_SUFFIX = "sslip.io"
+DEFAULT_BUILD_TIME_ZONE = "Asia/Dili"
+
 
 class ProjectConfigError(ValueError):
     """Invalid or missing project manifest."""
@@ -135,6 +154,8 @@ class StackConfig:
     services: StackServicesConfig
     images: StackImagesConfig
     healthcheck: StackHealthcheckConfig
+    origin_env_keys: tuple[str, ...]
+    build_placeholders: dict[str, str]
 
 
 # PG 18+ official image layout (see catalpa-postgres-entrypoint.sh); override via tooling.yaml pg1_path.
@@ -349,6 +370,15 @@ class NativeConfig:
 
 
 @dataclass(frozen=True)
+class DevConfig:
+    """Optional ``dev:`` section in tooling.yaml (local dev defaults)."""
+
+    site_origin_base: str
+    lan_dns_suffix: str
+    build_time_zone: str
+
+
+@dataclass(frozen=True)
 class ProjectMetaConfig:
     name: str
     root_marker: str
@@ -393,6 +423,7 @@ class ProjectConfig:
     stack: StackConfig
     ops: OpsConfig
     native: NativeConfig
+    dev: DevConfig
     digitalocean: DigitalOceanConfig | None
     repo_root: Path
     tooling_path: Path
@@ -728,6 +759,42 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
     )
 
 
+def _parse_build_placeholders(raw: Any) -> dict[str, str]:
+    if raw is None:
+        return dict(DEFAULT_BUILD_PLACEHOLDERS)
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("stack.build_placeholders must be a mapping")
+    out = dict(DEFAULT_BUILD_PLACEHOLDERS)
+    for key, value in raw.items():
+        k = str(key).strip()
+        if not k:
+            raise ProjectConfigError("stack.build_placeholders keys must be non-empty strings")
+        out[k] = str(value)
+    return out
+
+
+def _parse_dev(raw: Any, *, digitalocean: DigitalOceanConfig | None) -> DevConfig:
+    tz_default = DEFAULT_BUILD_TIME_ZONE
+    if digitalocean is not None and digitalocean.timezone:
+        tz_default = digitalocean.timezone
+    if raw is None:
+        return DevConfig(
+            site_origin_base=DEFAULT_DEV_SITE_ORIGIN_BASE,
+            lan_dns_suffix=DEFAULT_DEV_LAN_DNS_SUFFIX,
+            build_time_zone=tz_default,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev must be a mapping")
+    site_base = _optional_str(raw, "site_origin_base") or DEFAULT_DEV_SITE_ORIGIN_BASE
+    lan_suffix = _optional_str(raw, "lan_dns_suffix") or DEFAULT_DEV_LAN_DNS_SUFFIX
+    build_tz = _optional_str(raw, "build_time_zone") or tz_default
+    return DevConfig(
+        site_origin_base=site_base,
+        lan_dns_suffix=lan_suffix,
+        build_time_zone=build_tz,
+    )
+
+
 def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
     services_raw = _require_mapping(stack_raw.get("services"), "stack.services")
     images_raw = _require_mapping(stack_raw.get("images"), "stack.images")
@@ -736,6 +803,11 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
     components: dict[str, str] = {}
     for key, val in components_raw.items():
         components[str(key)] = _require_str({str(key): val}, str(key), section="stack.images.components")
+    origin_keys = _parse_env_key_list(
+        stack_raw.get("origin_env_keys"),
+        field="stack.origin_env_keys",
+        default=DEFAULT_ORIGIN_ENV_KEYS,
+    )
     return StackConfig(
         compose_project_default=_require_str(stack_raw, "compose_project_default", section="stack"),
         services=StackServicesConfig(
@@ -751,6 +823,8 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
             service=_require_str(health_raw, "service", section="stack.healthcheck"),
             url=_require_str(health_raw, "url", section="stack.healthcheck"),
         ),
+        origin_env_keys=origin_keys,
+        build_placeholders=_parse_build_placeholders(stack_raw.get("build_placeholders")),
     )
 
 
@@ -1136,12 +1210,14 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
             raise ProjectConfigError("digitalocean must be a mapping")
         else:
             digitalocean = _parse_digitalocean(do_raw)
+    dev = _parse_dev(data.get("dev"), digitalocean=digitalocean)
     return ProjectConfig(
         meta=meta,
         paths=_parse_paths(paths_raw),
         stack=_parse_stack(stack_raw),
         ops=_parse_ops(ops_raw, project_name=meta.name),
         native=_resolve_native_config(data),
+        dev=dev,
         digitalocean=digitalocean,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),
