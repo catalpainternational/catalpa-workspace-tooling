@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **LAN dev access via local proxy** — with `local_proxy.lan_access` (or `dev_lan_access`), tooling registers sslip.io magic-DNS routes for each LAN IPv4, injects `DOMAIN` / `VITE_EXTRA_ALLOWED_HOSTS`, prints HTTPS LAN URLs on `dk <env> up`, serves the CA at `http://<ip-label>.sslip.io/catalpa-local-ca.crt`, and adds `dk proxy ca` (download URL, terminal QR via `segno`, per-OS install steps). Configurable `local_proxy.lan_dns_suffix` (default `sslip.io`). LAN routes rewrite the upstream `Host` header to the canonical hostname so stack Caddy site blocks and Vite `allowedHosts` match without knowing the dynamic sslip hostname (mirrors how Vite already rewrites Host to `SITE_ORIGIN`).
+
+### Changed
+
+- **Local dev HTTPS proxy** — routes dial project containers over the shared Docker network `catalpa-local-proxy-net` (`{compose_project_name}-{service}:internal_port`) instead of `host.docker.internal` and published host ports. Tooling generates a compose override with `ports: !reset []` and network aliases (requires Docker Compose 2.24+). `local_proxy.service` is now required in `info.yaml`.
 ## 0.8.5
 
 ### Fixed

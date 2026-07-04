@@ -5,7 +5,9 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import platform
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -19,15 +21,31 @@ from catalpa_tooling.site_origin import hostnames_from_origins, parse_site_origi
 if TYPE_CHECKING:
     from catalpa_tooling.config import ProjectConfig
 
+from catalpa_tooling.dev_lan_access import (
+    detect_dev_lan_ipv4,
+    ip_to_dns_label,
+    lan_access_enabled,
+    lan_dns_suffix_from_info,
+    lan_hostname_for,
+)
+
 LOCAL_PROXY_CONTAINER = "catalpa-local-proxy"
+LOCAL_PROXY_NETWORK = "catalpa-local-proxy-net"
 # Legacy Docker named volume (pre host-persistence). Kept for migration/cleanup.
 LOCAL_PROXY_VOLUME = "catalpa_local_proxy_data"
 LOCAL_PROXY_ADMIN_URL = "http://127.0.0.1:2019"
 CADDY_IMAGE = "caddy:2-alpine"
-DEFAULT_UPSTREAM_HOST = "host.docker.internal"
-# Human-facing common name of the persisted local dev CA root, as it appears in
-# the OS trust store (see the shipped local_proxy/Caddyfile pki block).
+# Minimum Compose version for ``ports: !reset []`` in generated overrides.
+LOCAL_PROXY_MIN_COMPOSE_VERSION = "2.24.0"
+# Stable common-name prefix of the persisted local dev CA root, as it appears in
+# the OS trust store (see the shipped local_proxy/Caddyfile pki block). The full
+# CN is suffixed with a per-machine label, e.g. "Catalpa Local Dev Root (mymac)",
+# so distinct machines' roots are distinguishable. Trust-store lookups match on
+# this prefix (substring match), which still finds the machine-suffixed CN.
 LOCAL_PROXY_CA_COMMON_NAME = "Catalpa Local Dev Root"
+# Env var read by the bundled Caddyfile ({$CATALPA_LOCAL_DEV_MACHINE:local}) to
+# label the minted CA with the machine that created it.
+LOCAL_PROXY_CA_MACHINE_ENV = "CATALPA_LOCAL_DEV_MACHINE"
 _ROUTE_ID_PREFIX = "local-proxy"
 _ROUTE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
@@ -45,12 +63,30 @@ def local_proxy_data_dir() -> Path:
     return root / "catalpa" / "local-proxy"
 
 
+def local_dev_ca_machine_label() -> str:
+    """Short, sanitized label identifying the machine that mints the local dev CA.
+
+    Honors an explicit ``CATALPA_LOCAL_DEV_MACHINE`` override; otherwise derives
+    from the host's short hostname. Sanitized to ``[a-z0-9-]`` so it is safe to
+    embed in the CA common name and pass as an env var. Falls back to ``local``.
+    """
+    override = os.environ.get(LOCAL_PROXY_CA_MACHINE_ENV, "").strip()
+    raw = override or platform.node() or socket.gethostname() or ""
+    short = raw.split(".")[0]
+    label = re.sub(r"[^a-z0-9-]+", "-", short.strip().lower()).strip("-")
+    return label or "local"
+
+
 class LocalProxyRoute(NamedTuple):
     """One registered dev-proxy route (Caddy admin ``@id``, host, upstream dial)."""
 
     route_id: str
     host: str
     upstream_dial: str
+    # Host header to send upstream. ``None`` preserves the incoming Host. LAN
+    # routes set this to the canonical host so stack Caddy site blocks (and
+    # Vite ``allowedHosts``) match without knowing the dynamic sslip hostname.
+    upstream_host_header: str | None = None
 
 
 class LocalProxyConfigError(ValueError):
@@ -80,13 +116,82 @@ def local_proxy_enabled(info: dict[str, Any]) -> bool:
     return bool(block.get("enabled", False))
 
 
-def local_proxy_upstream_host(info: dict[str, Any]) -> str:
+def compose_project_name_from_info(info: dict[str, Any]) -> str:
+    """Return ``info.env.compose_project_name`` (required for local proxy routing)."""
+    env_block = info.get("env")
+    if isinstance(env_block, dict):
+        raw = env_block.get("compose_project_name")
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    raise LocalProxyConfigError(
+        "info.env.compose_project_name is required when local_proxy.enabled is true"
+    )
+
+
+def compose_project_name_from_env_add(
+    env_add: dict[str, str],
+    info: dict[str, Any] | None = None,
+) -> str:
+    """Resolve the Compose project name used for network aliases and overrides."""
+    name = (env_add.get("COMPOSE_PROJECT_NAME") or "").strip()
+    if name:
+        return name
+    if info is not None:
+        return compose_project_name_from_info(info)
+    raise LocalProxyConfigError("COMPOSE_PROJECT_NAME is required for local proxy routing")
+
+
+def local_proxy_service(info: dict[str, Any], *, route_index: int | None = None) -> str:
+    """Compose service name that receives traffic from the machine-wide dev proxy."""
     block = _local_proxy_block(info)
-    raw = block.get("upstream_host") or block.get("upstreamHost") or DEFAULT_UPSTREAM_HOST
-    host = str(raw).strip()
-    if not host:
-        raise LocalProxyConfigError("local_proxy.upstream_host must not be empty")
-    return host
+    if route_index is not None:
+        routes = block.get("routes")
+        if isinstance(routes, list) and 0 <= route_index < len(routes):
+            raw = routes[route_index].get("service")
+            if raw is not None and str(raw).strip():
+                return str(raw).strip()
+    raw = block.get("service")
+    if raw is None or not str(raw).strip():
+        raise LocalProxyConfigError(
+            "local_proxy.service is required when local_proxy.enabled is true "
+            "(e.g. node for Vite dev, caddy for full stack)"
+        )
+    return str(raw).strip()
+
+
+def local_proxy_upstream_alias(compose_project_name: str, service: str) -> str:
+    """Stable DNS alias on ``LOCAL_PROXY_NETWORK`` (must be unique per machine)."""
+    project = compose_project_name.strip()
+    svc = service.strip()
+    if not project or not svc:
+        raise LocalProxyConfigError(
+            "compose project name and local_proxy.service are required for upstream alias"
+        )
+    return f"{project}-{svc}"
+
+
+def local_proxy_upstream_host(
+    info: dict[str, Any],
+    compose_project_name: str,
+    *,
+    route_index: int | None = None,
+    route: dict[str, Any] | None = None,
+) -> str:
+    """Dial target hostname: explicit ``upstream_host`` or ``{project}-{service}`` alias."""
+    if route is not None:
+        raw = route.get("upstream_host") or route.get("upstreamHost")
+        if raw is not None:
+            host = str(raw).strip()
+            if host:
+                return host
+    block = _local_proxy_block(info)
+    raw = block.get("upstream_host") or block.get("upstreamHost")
+    if raw is not None:
+        host = str(raw).strip()
+        if host:
+            return host
+    service = local_proxy_service(info, route_index=route_index)
+    return local_proxy_upstream_alias(compose_project_name, service)
 
 
 def local_proxy_upstream_port(info: dict[str, Any]) -> int:
@@ -110,8 +215,11 @@ def _parse_upstream_port(raw: object, *, field: str) -> int:
     return port
 
 
-def local_proxy_upstream_dial(info: dict[str, Any]) -> str:
-    return f"{local_proxy_upstream_host(info)}:{local_proxy_upstream_port(info)}"
+def local_proxy_upstream_dial(info: dict[str, Any], compose_project_name: str) -> str:
+    return (
+        f"{local_proxy_upstream_host(info, compose_project_name)}:"
+        f"{local_proxy_upstream_port(info)}"
+    )
 
 
 def local_proxy_hostname(info: dict[str, Any]) -> str:
@@ -164,10 +272,44 @@ def route_id_for_host(config: ProjectConfig, env_name: str, host: str) -> str:
     return rid
 
 
+def _expand_lan_proxy_routes(
+    entries: list[LocalProxyRoute],
+    info: dict[str, Any],
+) -> list[LocalProxyRoute]:
+    """Add magic-DNS LAN host routes (same upstream) for each base route and LAN IPv4."""
+    if not lan_access_enabled(info):
+        return entries
+    ips = detect_dev_lan_ipv4()
+    if not ips:
+        return entries
+    suffix = lan_dns_suffix_from_info(info)
+    out = list(entries)
+    for entry in entries:
+        for ip in ips:
+            lan_host = lan_hostname_for(entry.host, ip, lan_dns_suffix=suffix)
+            ip_slug = _sanitize_route_label(ip_to_dns_label(ip), field="ip")
+            lan_rid = f"{entry.route_id}-lan-{ip_slug}"
+            if not _ROUTE_ID_RE.fullmatch(lan_rid):
+                continue
+            out.append(
+                LocalProxyRoute(
+                    route_id=lan_rid,
+                    host=lan_host,
+                    upstream_dial=entry.upstream_dial,
+                    # Send the canonical Host upstream so stack Caddy / Vite match
+                    # their existing host config (matches how Vite already rewrites
+                    # Host to SITE_ORIGIN when proxying to Django).
+                    upstream_host_header=entry.host,
+                )
+            )
+    return out
+
+
 def local_proxy_routes(
     info: dict[str, Any],
     config: ProjectConfig,
     env_name: str,
+    compose_project_name: str,
 ) -> list[LocalProxyRoute]:
     """Return all proxy routes for this environment (legacy single-route or ``routes`` list)."""
     if not local_proxy_enabled(info):
@@ -176,7 +318,6 @@ def local_proxy_routes(
     if local_proxy_uses_routes_list(info):
         block = _local_proxy_block(info)
         default_host = local_proxy_hostname(info)
-        default_upstream_host = local_proxy_upstream_host(info)
         entries: list[LocalProxyRoute] = []
         for index, raw in enumerate(block["routes"]):
             if not isinstance(raw, dict):
@@ -195,16 +336,12 @@ def local_proxy_routes(
                     f"local_proxy.routes[{index}].upstream_port is required"
                 )
             port = _parse_upstream_port(port_raw, field=f"local_proxy.routes[{index}].upstream_port")
-            upstream_host_raw = raw.get("upstream_host") or raw.get("upstreamHost")
-            upstream_host = (
-                str(upstream_host_raw).strip()
-                if upstream_host_raw is not None
-                else default_upstream_host
+            upstream_host = local_proxy_upstream_host(
+                info,
+                compose_project_name,
+                route_index=index,
+                route=raw,
             )
-            if not upstream_host:
-                raise LocalProxyConfigError(
-                    f"local_proxy.routes[{index}].upstream_host must not be empty"
-                )
             rid = route_id_for_host(config, env_name, host)
             entries.append(
                 LocalProxyRoute(
@@ -213,15 +350,18 @@ def local_proxy_routes(
                     upstream_dial=f"{upstream_host}:{port}",
                 )
             )
-        return entries
+        return _expand_lan_proxy_routes(entries, info)
 
-    return [
-        LocalProxyRoute(
-            route_id=route_id(config, env_name),
-            host=local_proxy_hostname(info),
-            upstream_dial=local_proxy_upstream_dial(info),
-        )
-    ]
+    return _expand_lan_proxy_routes(
+        [
+            LocalProxyRoute(
+                route_id=route_id(config, env_name),
+                host=local_proxy_hostname(info),
+                upstream_dial=local_proxy_upstream_dial(info, compose_project_name),
+            )
+        ],
+        info,
+    )
 
 
 def _sanitize_route_label(label: str, *, field: str) -> str:
@@ -242,17 +382,26 @@ def route_id(config: ProjectConfig, env_name: str) -> str:
     return rid
 
 
-def build_route_config(route_id_value: str, host: str, upstream_dial: str) -> dict[str, Any]:
+def build_route_config(
+    route_id_value: str,
+    host: str,
+    upstream_dial: str,
+    *,
+    upstream_host_header: str | None = None,
+) -> dict[str, Any]:
     """JSON body for ``PUT /id/<route_id>`` on the Caddy admin API."""
+    reverse_proxy: dict[str, Any] = {
+        "handler": "reverse_proxy",
+        "upstreams": [{"dial": upstream_dial}],
+    }
+    if upstream_host_header:
+        reverse_proxy["headers"] = {
+            "request": {"set": {"Host": [upstream_host_header]}}
+        }
     return {
         "@id": route_id_value,
         "match": [{"host": [host]}],
-        "handle": [
-            {
-                "handler": "reverse_proxy",
-                "upstreams": [{"dial": upstream_dial}],
-            }
-        ],
+        "handle": [reverse_proxy],
         "terminal": True,
     }
 
@@ -308,10 +457,79 @@ def proxy_container_exists() -> bool:
     return bool((result.stdout or "").strip())
 
 
+def ensure_proxy_network(*, dry_run: bool = False) -> int:
+    """Create the shared external network for project stacks and the dev proxy."""
+    inspect = run_cmd(
+        ["docker", "network", "inspect", LOCAL_PROXY_NETWORK],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    if inspect.returncode == 0:
+        return 0
+    if dry_run:
+        print(
+            f"dry-run: would create Docker network {LOCAL_PROXY_NETWORK!r}",
+            file=sys.stderr,
+        )
+        return 0
+    created = run_cmd(
+        ["docker", "network", "create", LOCAL_PROXY_NETWORK],
+        check=False,
+        print_cmd=False,
+    )
+    return created.returncode
+
+
+def _proxy_container_on_network() -> bool:
+    cid = proxy_container_id()
+    if not cid:
+        return False
+    result = run_cmd(
+        ["docker", "inspect", cid, "--format", "{{json .NetworkSettings.Networks}}"],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        networks = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    return isinstance(networks, dict) and LOCAL_PROXY_NETWORK in networks
+
+
+def ensure_proxy_on_network(*, dry_run: bool = False) -> int:
+    """Attach a running ``catalpa-local-proxy`` to ``LOCAL_PROXY_NETWORK`` if needed."""
+    if not proxy_container_id():
+        return 0
+    if _proxy_container_on_network():
+        return 0
+    if dry_run:
+        print(
+            f"dry-run: would connect {LOCAL_PROXY_CONTAINER!r} to {LOCAL_PROXY_NETWORK!r}",
+            file=sys.stderr,
+        )
+        return 0
+    connected = run_cmd(
+        ["docker", "network", "connect", LOCAL_PROXY_NETWORK, LOCAL_PROXY_CONTAINER],
+        check=False,
+        print_cmd=False,
+    )
+    return connected.returncode
+
+
 def ensure_proxy_running(*, dry_run: bool = False) -> int:
     """Start ``catalpa-local-proxy`` if it is not already running."""
+    rc = ensure_proxy_network(dry_run=dry_run)
+    if rc != 0:
+        return rc
+
     if proxy_container_id():
-        return 0
+        return ensure_proxy_on_network(dry_run=dry_run)
 
     caddyfile = local_proxy_caddyfile_path()
     if not caddyfile.is_file():
@@ -329,7 +547,9 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
     if proxy_container_exists():
         print(f"Starting existing container {LOCAL_PROXY_CONTAINER!r}...", file=sys.stderr)
         start = run_cmd(["docker", "start", LOCAL_PROXY_CONTAINER], check=False)
-        return start.returncode
+        if start.returncode != 0:
+            return start.returncode
+        return ensure_proxy_on_network(dry_run=dry_run)
 
     data_dir = local_proxy_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -339,7 +559,11 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         "-d",
         "--name",
         LOCAL_PROXY_CONTAINER,
+        "--network",
+        LOCAL_PROXY_NETWORK,
         "--add-host=host.docker.internal:host-gateway",
+        "-e",
+        f"{LOCAL_PROXY_CA_MACHINE_ENV}={local_dev_ca_machine_label()}",
         "-p",
         "80:80",
         "-p",
@@ -363,6 +587,25 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
     )
     created = run_cmd(cmd, check=False)
     return created.returncode
+
+
+def wait_for_proxy_admin(*, timeout: float = 15.0, interval: float = 0.3) -> bool:
+    """Poll the Caddy admin API until it responds (freshly-started container race)."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    last_err = ""
+    while time.monotonic() < deadline:
+        try:
+            status, _ = _admin_request("GET", "/config/", timeout=2.0)
+            if status < 500:
+                return True
+        except LocalProxyConfigError as e:
+            last_err = str(e)
+        time.sleep(interval)
+    if last_err:
+        print(f"Local proxy admin API not ready after {timeout:.0f}s: {last_err}", file=sys.stderr)
+    return False
 
 
 def wait_for_ca_root(*, timeout: float = 10.0, interval: float = 0.5) -> bool:
@@ -426,13 +669,20 @@ def upsert_route(
     host: str,
     upstream_dial: str,
     *,
+    upstream_host_header: str | None = None,
     dry_run: bool = False,
 ) -> int:
-    body = build_route_config(route_id_value, host, upstream_dial)
+    body = build_route_config(
+        route_id_value,
+        host,
+        upstream_dial,
+        upstream_host_header=upstream_host_header,
+    )
     if dry_run:
+        rewrite = f" host_header={upstream_host_header!r}" if upstream_host_header else ""
         print(
             f"dry-run: would upsert route /id/{route_id_value} "
-            f"host={host!r} upstream={upstream_dial!r}",
+            f"host={host!r} upstream={upstream_dial!r}{rewrite}",
             file=sys.stderr,
         )
         return 0
@@ -606,9 +856,12 @@ def print_local_proxy_url(info: dict[str, Any], *, file: TextIO | None = None) -
 
 
 def ca_is_trusted() -> bool:
-    """Best-effort check whether Caddy's local CA appears trusted on this machine."""
-    import platform
+    """Best-effort check whether Caddy's local CA appears trusted on this machine.
 
+    Matches the trust store on ``LOCAL_PROXY_CA_COMMON_NAME`` (the stable prefix),
+    which ``security find-certificate -c`` treats as a common-name substring, so
+    it still finds the machine-suffixed CN ``Catalpa Local Dev Root (<machine>)``.
+    """
     system = platform.system()
     if system == "Darwin":
         result = run_cmd(
@@ -647,11 +900,111 @@ def print_ca_trust_hint(env_name: str, *, file: TextIO | None = None) -> None:
     )
 
 
+def local_proxy_override_path(config: ProjectConfig, env_name: str) -> Path:
+    project = _sanitize_route_label(config.meta.name, field="project name")
+    env = _sanitize_route_label(env_name, field="env name")
+    return local_proxy_data_dir() / "overrides" / f"{project}-{env}.yaml"
+
+
+def local_proxy_front_services(
+    info: dict[str, Any],
+    compose_project_name: str,
+) -> list[tuple[str, str]]:
+    """Return unique ``(compose_service, network_alias)`` pairs for the override file."""
+    block = _local_proxy_block(info)
+    default_service = local_proxy_service(info)
+    services: dict[str, str] = {}
+
+    def add_service(service_name: str, *, route: dict[str, Any] | None = None, route_index: int | None = None) -> None:
+        alias = local_proxy_upstream_host(
+            info,
+            compose_project_name,
+            route_index=route_index,
+            route=route,
+        )
+        services[service_name] = alias
+
+    if local_proxy_uses_routes_list(info):
+        for index, raw in enumerate(block["routes"]):
+            if not isinstance(raw, dict):
+                continue
+            svc_raw = raw.get("service")
+            service_name = (
+                str(svc_raw).strip()
+                if svc_raw is not None and str(svc_raw).strip()
+                else default_service
+            )
+            add_service(service_name, route=raw, route_index=index)
+    else:
+        add_service(default_service)
+
+    return list(services.items())
+
+
+def write_local_proxy_override(
+    config: ProjectConfig,
+    env_name: str,
+    info: dict[str, Any],
+    compose_project_name: str,
+) -> Path:
+    """Write a compose override that joins front services to the shared dev proxy network.
+
+    Uses ``ports: !reset []`` to drop host port publishing from the base compose file.
+    Requires Docker Compose 2.24+.
+    """
+    path = local_proxy_override_path(config, env_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    services = local_proxy_front_services(info, compose_project_name)
+
+    lines = [
+        f"# Generated by catalpa-workspace-tooling for dk {env_name} (local dev proxy).",
+        f"# Requires Docker Compose {LOCAL_PROXY_MIN_COMPOSE_VERSION}+ for ports: !reset [].",
+        "networks:",
+        f"  {LOCAL_PROXY_NETWORK}:",
+        "    external: true",
+        f"    name: {LOCAL_PROXY_NETWORK}",
+        "services:",
+    ]
+    for service_name, alias in services:
+        lines.extend(
+            [
+                f"  {service_name}:",
+                "    ports: !reset []",
+                "    networks:",
+                "      default: null",
+                f"      {LOCAL_PROXY_NETWORK}:",
+                "        aliases:",
+                f"          - {alias}",
+            ]
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path.resolve()
+
+
+def local_proxy_extra_compose_files(
+    info: dict[str, Any],
+    config: ProjectConfig,
+    env_name: str,
+    env_add: dict[str, str],
+    compose_args: list[str],
+) -> list[str]:
+    """Return generated override path(s) when compose should attach to the dev proxy network."""
+    if not local_proxy_enabled(info) or not compose_args:
+        return []
+    verb = compose_args[0]
+    if verb not in ("up", "down", "restart"):
+        return []
+    project_name = compose_project_name_from_env_add(env_add, info)
+    override = write_local_proxy_override(config, env_name, info, project_name)
+    return [str(override)]
+
+
 def sync_local_proxy_for_compose_action(
     info: dict[str, Any],
     config: ProjectConfig,
     env_name: str,
     compose_args: list[str],
+    env_add: dict[str, str],
     *,
     dry_run: bool = False,
 ) -> int:
@@ -659,17 +1012,34 @@ def sync_local_proxy_for_compose_action(
     if not local_proxy_enabled(info):
         return 0
 
-    routes = local_proxy_routes(info, config, env_name)
+    compose_project_name = compose_project_name_from_env_add(env_add, info)
+    routes = local_proxy_routes(info, config, env_name, compose_project_name)
     if not compose_args:
         return 0
 
     verb = compose_args[0]
     if verb == "up":
+        rc = ensure_proxy_network(dry_run=dry_run)
+        if rc != 0:
+            return rc
         rc = ensure_proxy_running(dry_run=dry_run)
         if rc != 0:
             return rc
+        if not dry_run and not wait_for_proxy_admin():
+            print(
+                "Local proxy admin API did not become ready; retry `dk proxy up` "
+                "or re-run once the proxy is up.",
+                file=sys.stderr,
+            )
+            return 1
         for entry in routes:
-            rc = upsert_route(entry.route_id, entry.host, entry.upstream_dial, dry_run=dry_run)
+            rc = upsert_route(
+                entry.route_id,
+                entry.host,
+                entry.upstream_dial,
+                upstream_host_header=entry.upstream_host_header,
+                dry_run=dry_run,
+            )
             if rc != 0:
                 return rc
         print_local_proxy_url(info)

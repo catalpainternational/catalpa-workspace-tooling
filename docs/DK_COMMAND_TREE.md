@@ -12,7 +12,7 @@ dk
 │   ├── up                         # start catalpa-local-proxy (Caddy :80/:443); CA persisted on host
 │   ├── down                       # stop/remove catalpa-local-proxy (host-persisted CA kept)
 │   ├── status                     # running? live sites (host -> upstream, project/env)
-│   └── trust                      # trust "Catalpa Local Dev Root" CA once (macOS/Linux)
+│   └── trust                      # trust "Catalpa Local Dev Root (<machine>)" CA once (macOS/Linux)
 │
 ├── digoc                          # access to doctl (probably removing this for access via dk)
 │   ├── auth                        

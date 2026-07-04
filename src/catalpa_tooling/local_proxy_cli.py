@@ -11,7 +11,9 @@ from catalpa_tooling.local_proxy import (
     proxy_container_id,
     stop_proxy,
     wait_for_ca_root,
+    wait_for_proxy_admin,
 )
+from catalpa_tooling.local_proxy_ca import print_proxy_ca_instructions
 from catalpa_tooling.trust_caddy_cert import trust_caddy_ca_from_container
 
 
@@ -42,6 +44,19 @@ def cmd_proxy(ns: argparse.Namespace) -> int:
                 )
                 return 1
         return trust_caddy_ca_from_container(proxy_container_id(), dry_run=dry_run)
+
+    if sub == "ca":
+        if not dry_run:
+            rc = ensure_proxy_running(dry_run=False)
+            if rc != 0:
+                return rc
+            if not wait_for_proxy_admin():
+                print(
+                    "Timed out waiting for the proxy admin API. Check `dk proxy status`.",
+                    file=sys.stderr,
+                )
+                return 1
+        return print_proxy_ca_instructions(dry_run=dry_run)
 
     print(f"Unknown proxy subcommand: {sub!r}", file=sys.stderr)
     return 1

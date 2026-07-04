@@ -95,6 +95,10 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         "trust",
         help="Trust Caddy local CA from the global proxy (macOS/Linux; requires sudo).",
     )
+    proxy_sub.add_parser(
+        "ca",
+        help="Show LAN CA download URL + QR and device install steps.",
+    )
 
     attach_env_subparsers(sub, config)
 

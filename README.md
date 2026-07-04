@@ -124,7 +124,7 @@ After install, these console scripts are available:
 | `native` | Host development helpers (Django, Vite, fetch, plus `scripts/native-*.sh` extensions) |
 | `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
 | `dev` | Deprecated alias for `native` (prints warning) |
-| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), **`dk proxy`** (machine-wide local HTTPS reverse proxy), etc. See [Backup and monitoring](#backup-and-monitoring). `dk <env> trust-caddy-cert` / `dk proxy trust` trust Caddy's local HTTPS CA (macOS/Linux). |
+| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), **`dk proxy`** (machine-wide local HTTPS reverse proxy — see [README_DEV_PROXY.md](README_DEV_PROXY.md)), etc. See [Backup and monitoring](#backup-and-monitoring). `dk <env> trust-caddy-cert` / `dk proxy trust` trust Caddy's local HTTPS CA (macOS/Linux). |
 | `test` | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
 
@@ -294,48 +294,12 @@ Top-level **`domain`** (string or list) is still accepted but deprecated; prefer
 
 ### Local dev HTTPS proxy (`local_proxy` in `info.yaml`)
 
-For local Docker environments (no `docker_host`), projects may enable a **machine-wide** Caddy reverse proxy that maps a real HTTPS hostname under `*.localdev.temp.build` to the stack's existing host port (Vite, Caddy, etc.). DNS for `*.localdev.temp.build → 127.0.0.1` is org-wide; Caddy uses an **internal CA** (`tls internal`) — trust it once per machine with `dk <env> trust-caddy-cert` or `dk proxy trust`.
+For local Docker environments (no `docker_host`), projects may enable a **machine-wide** Caddy reverse proxy that maps a real HTTPS hostname under `*.localdev.temp.build` to the stack's front container. See the topic guides:
 
-The CA root is **persisted on the host** at `${XDG_CONFIG_HOME:-~/.config}/catalpa/local-proxy` (bind-mounted at `/data`) and named **`Catalpa Local Dev Root`** in the OS trust store, so it is minted **once per machine** and survives `docker volume prune`, proxy re-creation, and reboots — trust once and forget it. To reset it (forces a one-time re-trust), remove that directory and recreate the proxy (`dk proxy down && dk proxy up`).
-
-Example (`docker/envs/dev/info.yaml`):
-
-```yaml
-site_origin: https://myapp-dev.localdev.temp.build
-local_proxy:
-  enabled: true
-  upstream_port: 5555   # host port the stack already publishes
-  # upstream_host: host.docker.internal   # default
-```
-
-Multiple hostnames (e.g. app + Metabase) via an explicit `routes` list — `host` defaults to `site_origin` when omitted:
-
-```yaml
-site_origin: https://myapp-full.localdev.temp.build
-local_proxy:
-  enabled: true
-  routes:
-    - upstream_port: 5557
-    - host: metabase.myapp-full.localdev.temp.build
-      upstream_port: 5557
-```
-
-On `dk <env> up`, tooling ensures `catalpa-local-proxy` is running and registers route(s) via Caddy's admin API (`127.0.0.1:2019`). On `dk <env> down`, that env's route(s) are removed (the shared proxy keeps running for other projects). Manage the proxy directly: `dk proxy up|down|status|trust`.
-
-`dk proxy status` shows whether the proxy is running and lists live sites, for example:
-
-```
-catalpa-local-proxy: running (abc123def456)
-admin: http://127.0.0.1:2019
-live sites:
-  myapp:
-    dev:
-      myapp-dev.localdev.temp.build -> host.docker.internal:5555
-    full:
-      myapp-full.localdev.temp.build -> host.docker.internal:5557
-```
-
-Project requirements when enabled: set `site_origin` to the HTTPS hostname (for Django `ALLOWED_HOSTS` / CSRF), publish the configured upstream port(s) on the host, and allow those hosts in frontend dev config (e.g. Vite `server.allowedHosts`). Stacks with their own Caddy may run behind the proxy by serving plain HTTP internally (`CADDY_SITE_ADDRESS: http://...`) while keeping `site_origin` as `https://...`.
+| Topic | Guide |
+|-------|--------|
+| Local dev HTTPS proxy (`local_proxy`, CA trust, `dk proxy`) | [README_DEV_PROXY.md](README_DEV_PROXY.md) |
+| LAN access from phones/tablets (sslip.io) | [README_LAN_ACCESS.md](README_LAN_ACCESS.md) |
 
 ### Host storage (`storage` in `info.yaml`)
 

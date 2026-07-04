@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -293,21 +294,32 @@ def load_managed_deploy_context(
 
     if dev_lan_access_enabled(info):
         lan_env = build_dev_lan_env(info)
-        for key in ("BERO_EXTRA_ALLOWED_HOSTS", "BERO_EXTRA_ORIGINS"):
+        merge_keys = (
+            "BERO_EXTRA_ALLOWED_HOSTS",
+            "BERO_EXTRA_ORIGINS",
+            "DOMAIN",
+            "VITE_EXTRA_ALLOWED_HOSTS",
+        )
+        for key in merge_keys:
             if key not in lan_env:
                 continue
             existing = (env_add.get(key) or "").strip()
             if existing:
                 seen: set[str] = set()
                 merged: list[str] = []
-                for part in f"{existing},{lan_env[key]}".split(","):
+                for part in re.split(r"[, ]+", existing):
                     part = part.strip()
                     if part and part not in seen:
                         seen.add(part)
                         merged.append(part)
-                lan_env[key] = ",".join(merged)
+                for part in re.split(r"[, ]+", lan_env[key]):
+                    part = part.strip()
+                    if part and part not in seen:
+                        seen.add(part)
+                        merged.append(part)
+                lan_env[key] = ", ".join(merged)
         env_add.update(lan_env)
-        if env_add.get("BERO_EXTRA_ORIGINS"):
+        if lan_env:
             print_dev_lan_urls(info)
 
     try:

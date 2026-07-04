@@ -85,7 +85,11 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
-from catalpa_tooling.local_proxy import LocalProxyConfigError, sync_local_proxy_for_compose_action
+from catalpa_tooling.local_proxy import (
+    LocalProxyConfigError,
+    local_proxy_extra_compose_files,
+    sync_local_proxy_for_compose_action,
+)
 from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
@@ -246,6 +250,7 @@ def _run_compose_path(
                 config,
                 env_name,
                 compose_args,
+                env_add,
                 dry_run=dry_run,
             )
             if rc != 0:
@@ -264,10 +269,22 @@ def _run_compose_path(
             compose_args,
             use_prepulled_registry=use_prepulled_registry,
         )
+    try:
+        extra_compose_files = local_proxy_extra_compose_files(
+            info,
+            config,
+            env_name,
+            env_add,
+            compose_args,
+        )
+    except LocalProxyConfigError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     proc = _compose(
         compose_file,
         *compose_args,
         env_add=env_add,
+        extra_compose_files=extra_compose_files or None,
         check=False,
     )
     if proc.returncode != 0:
@@ -279,6 +296,7 @@ def _run_compose_path(
                 config,
                 env_name,
                 compose_args,
+                env_add,
                 dry_run=dry_run,
             )
             if rc != 0:
