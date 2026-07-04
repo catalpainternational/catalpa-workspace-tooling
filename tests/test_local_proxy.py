@@ -437,12 +437,17 @@ def test_proxy_status_lines_groups_lan_under_same_env(monkeypatch: pytest.Monkey
     assert "  ambulancia:" in lines
     assert "    dev:" in lines
     assert lines.count("    dev:") == 1
-    assert "      ambulancia-dev.localdev.temp.build -> ambulancia-node:5555" in lines
+    assert "      local:" in lines
+    assert "      lan:" in lines
     assert (
-        "      ambulancia-dev.192-168-1-185.lan.localdev.temp.build (LAN) -> ambulancia-node:5555"
+        "        ambulancia-dev.localdev.temp.build -> ambulancia-node:5555" in lines
+    )
+    assert (
+        "        ambulancia-dev.192-168-1-185.lan.localdev.temp.build -> ambulancia-node:5555"
         in lines
     )
     assert not any("ambulancia-dev-lan" in line for line in lines)
+    assert not any("(LAN)" in line for line in lines)
 
 
 def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -486,16 +491,108 @@ def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
 
     lines = proxy_status_lines()
-    # Grouped hierarchically: project -> env -> host -> upstream (no inline context).
+    # Grouped hierarchically: project -> env -> local|lan -> host -> upstream.
     assert "live sites:" in lines
     assert "  ambulancia:" in lines
     assert "    dev:" in lines
     assert "    full:" in lines
-    assert "      ambulancia-dev.localdev.temp.build -> ambulancia-node:5555" in lines
+    assert "      local:" in lines
     assert (
-        "      metabase.ambulancia-full.localdev.temp.build -> ambulancia-full-caddy:80"
+        "        ambulancia-dev.localdev.temp.build -> ambulancia-node:5555" in lines
+    )
+    assert (
+        "        metabase.ambulancia-full.localdev.temp.build -> ambulancia-full-caddy:80"
         in lines
     )
-    # Project/env context is now conveyed by indentation, not an inline suffix.
+    # Project/env context is conveyed by indentation, not an inline suffix.
     assert not any("(ambulancia/dev)" in line for line in lines)
     assert not any("redirect" in line for line in lines)
+
+
+def test_proxy_status_lines_groups_multi_route_lan_under_same_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-route projects (e.g. catalpa_bero) append host labels to route ids."""
+    import json
+
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123def456")
+    monkeypatch.setattr(local_proxy, "_https_server_name", lambda: "srv0")
+
+    def fake_admin_request(method, path, *, body=None, timeout=10.0):
+        if method == "GET" and path == "/config/apps/http/servers/srv0/routes":
+            return 200, json.dumps(
+                [
+                    {
+                        "@id": "local-proxy-catalpa-bero-dev-bero-dev-localdev-temp-build",
+                        "match": [{"host": ["bero-dev.localdev.temp.build"]}],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "catalpa_bero_dev-node:8080"}],
+                            }
+                        ],
+                    },
+                    {
+                        "@id": "local-proxy-catalpa-bero-dev-metabase-bero-dev-localdev-temp-build",
+                        "match": [{"host": ["metabase.bero-dev.localdev.temp.build"]}],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "catalpa_bero_dev-metabase:3000"}],
+                            }
+                        ],
+                    },
+                    {
+                        "@id": "local-proxy-catalpa-bero-dev-bero-dev-localdev-temp-build-lan-192-168-1-185",
+                        "match": [
+                            {
+                                "host": [
+                                    "bero-dev.192-168-1-185.lan.localdev.temp.build"
+                                ]
+                            }
+                        ],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "catalpa_bero_dev-node:8080"}],
+                            }
+                        ],
+                    },
+                    {
+                        "@id": "local-proxy-catalpa-bero-dev-metabase-bero-dev-localdev-temp-build-lan-192-168-1-185",
+                        "match": [
+                            {
+                                "host": [
+                                    "metabase.bero-dev.192-168-1-185.lan.localdev.temp.build"
+                                ]
+                            }
+                        ],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "catalpa_bero_dev-metabase:3000"}],
+                            }
+                        ],
+                    },
+                ]
+            )
+        raise AssertionError(f"unexpected admin call {method} {path}")
+
+    monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
+
+    lines = local_proxy.proxy_status_lines()
+    assert lines.count("  catalpa-bero:") == 1
+    assert lines.count("    dev:") == 1
+    assert "      local:" in lines
+    assert "      lan:" in lines
+    assert (
+        "        bero-dev.192-168-1-185.lan.localdev.temp.build -> catalpa_bero_dev-node:8080"
+        in lines
+    )
+    assert (
+        "        metabase.bero-dev.192-168-1-185.lan.localdev.temp.build -> catalpa_bero_dev-metabase:3000"
+        in lines
+    )
+    assert not any("catalpa-bero-dev-bero-dev-localdev-temp:" in line for line in lines)
+    assert not any("    build:" in line for line in lines)
+    assert not any("(LAN)" in line for line in lines)

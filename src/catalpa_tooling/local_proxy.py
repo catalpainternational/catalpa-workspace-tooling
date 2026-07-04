@@ -49,7 +49,6 @@ LOCAL_PROXY_CA_MACHINE_ENV = "CATALPA_LOCAL_DEV_MACHINE"
 _ROUTE_ID_PREFIX = "local-proxy"
 _ROUTE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _LAN_ROUTE_SUFFIX_RE = re.compile(r"-lan-(?P<ip>\d+(?:-\d+)*)$")
-_LAN_ROUTE_SUFFIX_RE = re.compile(r"-lan-(?P<ip>\d+(?:-\d+)*)$")
 
 
 def local_proxy_data_dir() -> Path:
@@ -801,6 +800,14 @@ def _project_env_from_id_and_host(route_id_value: str, host: str) -> tuple[str, 
     return project, env
 
 
+def _parent_route_id(route_id_value: str) -> str | None:
+    """Canonical route ``@id`` for a LAN sibling (strip ``-lan-<ip-slug>`` suffix)."""
+    lan_match = _LAN_ROUTE_SUFFIX_RE.search(route_id_value)
+    if not lan_match:
+        return None
+    return route_id_value[: lan_match.start()]
+
+
 def _https_server_routes() -> list[dict[str, Any]]:
     server_name = _https_server_name()
     status, payload = _admin_request("GET", f"/config/apps/http/servers/{server_name}/routes")
@@ -826,6 +833,8 @@ def proxy_status_lines() -> list[str]:
         routes = _https_server_routes()
         # Group by project, then env, preserving first-seen order at each level.
         grouped: dict[str, dict[str, list[tuple[bool, str, str]]]] = {}
+        pending: list[tuple[str, str, str, str, str, bool]] = []
+        canonical_project_env: dict[str, tuple[str, str]] = {}
         for route in routes:
             rid = route.get("@id")
             if not isinstance(rid, str) or not rid.startswith(f"{_ROUTE_ID_PREFIX}-"):
@@ -833,6 +842,14 @@ def proxy_status_lines() -> list[str]:
             host = _route_host_from_config(route)
             upstream = _route_upstream_from_config(route)
             project, env, is_lan = _parse_route_id_metadata(rid, host)
+            pending.append((rid, host, upstream, project, env, is_lan))
+            if not is_lan:
+                canonical_project_env[rid] = (project, env)
+        for rid, host, upstream, project, env, is_lan in pending:
+            if is_lan:
+                parent_id = _parent_route_id(rid)
+                if parent_id and parent_id in canonical_project_env:
+                    project, env = canonical_project_env[parent_id]
             grouped.setdefault(project, {}).setdefault(env, []).append(
                 (is_lan, host, upstream)
             )
@@ -842,11 +859,22 @@ def proxy_status_lines() -> list[str]:
                 lines.append(f"  {project}:")
                 for env, sites in envs.items():
                     lines.append(f"    {env}:" if env else "    (unknown):")
-                    for is_lan, host, upstream in sorted(
-                        sites, key=lambda row: (row[0], row[1].lower())
-                    ):
-                        lan_tag = " (LAN)" if is_lan else ""
-                        lines.append(f"      {host}{lan_tag} -> {upstream}")
+                    local_sites = sorted(
+                        ((host, upstream) for is_lan, host, upstream in sites if not is_lan),
+                        key=lambda row: row[0].lower(),
+                    )
+                    lan_sites = sorted(
+                        ((host, upstream) for is_lan, host, upstream in sites if is_lan),
+                        key=lambda row: row[0].lower(),
+                    )
+                    if local_sites:
+                        lines.append("      local:")
+                        for host, upstream in local_sites:
+                            lines.append(f"        {host} -> {upstream}")
+                    if lan_sites:
+                        lines.append("      lan:")
+                        for host, upstream in lan_sites:
+                            lines.append(f"        {host} -> {upstream}")
         else:
             lines.append("live sites: (none)")
     except (LocalProxyConfigError, json.JSONDecodeError) as e:
