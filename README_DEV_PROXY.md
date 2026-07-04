@@ -66,9 +66,12 @@ live sites:
   myapp:
     dev:
       myapp-dev.localdev.temp.build -> myapp-node:5555
+      myapp-dev.192-168-1-42.sslip.io (LAN) -> myapp-node:5555
     full:
       myapp-full.localdev.temp.build -> myapp-full-caddy:80
 ```
+
+LAN magic-DNS routes are grouped under the same project/env as the canonical dev hostname and tagged `(LAN)`.
 
 ## Project requirements when enabled
 

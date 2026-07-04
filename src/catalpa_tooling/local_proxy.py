@@ -48,6 +48,8 @@ LOCAL_PROXY_CA_COMMON_NAME = "Catalpa Local Dev Root"
 LOCAL_PROXY_CA_MACHINE_ENV = "CATALPA_LOCAL_DEV_MACHINE"
 _ROUTE_ID_PREFIX = "local-proxy"
 _ROUTE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_LAN_ROUTE_SUFFIX_RE = re.compile(r"-lan-(?P<ip>\d+(?:-\d+)*)$")
+_LAN_ROUTE_SUFFIX_RE = re.compile(r"-lan-(?P<ip>\d+(?:-\d+)*)$")
 
 
 def local_proxy_data_dir() -> Path:
@@ -770,24 +772,33 @@ def _route_upstream_from_config(route: dict[str, Any]) -> str:
     return ""
 
 
-def _project_env_from_id_and_host(route_id_value: str, host: str) -> tuple[str, str]:
-    """Best-effort ``(project, env)`` from a route ``@id`` and matched host.
+def _parse_route_id_metadata(route_id_value: str, host: str) -> tuple[str, str, bool]:
+    """Best-effort ``(project, env, is_lan)`` from a route ``@id`` and matched host.
 
-    Falls back to ``(route_id_value, "")`` when the id does not match the
-    expected ``local-proxy-<proj>-<env>[-<hostlabel>]`` scheme.
+    LAN routes append ``-lan-<ip-slug>`` to the base id (see ``_expand_lan_proxy_routes``).
     """
     prefix = f"{_ROUTE_ID_PREFIX}-"
     if not route_id_value.startswith(prefix):
-        return route_id_value, ""
+        return route_id_value, "", False
+    base = route_id_value[len(prefix) :]
+    is_lan = False
+    lan_match = _LAN_ROUTE_SUFFIX_RE.search(base)
+    if lan_match:
+        is_lan = True
+        base = base[: lan_match.start()]
     host_suffix = _sanitize_route_label(host, field="host") if host else ""
-    if host_suffix and route_id_value.endswith(f"-{host_suffix}"):
-        base = route_id_value[len(prefix) :][: -(len(host_suffix) + 1)]
-    else:
-        base = route_id_value[len(prefix) :]
+    if host_suffix and base.endswith(f"-{host_suffix}"):
+        base = base[: -(len(host_suffix) + 1)]
     parts = base.rsplit("-", 1)
     if len(parts) == 2 and parts[0] and parts[1]:
-        return parts[0], parts[1]
-    return base or route_id_value, ""
+        return parts[0], parts[1], is_lan
+    return base or route_id_value, "", is_lan
+
+
+def _project_env_from_id_and_host(route_id_value: str, host: str) -> tuple[str, str]:
+    """Best-effort ``(project, env)`` from a route ``@id`` and matched host."""
+    project, env, _ = _parse_route_id_metadata(route_id_value, host)
+    return project, env
 
 
 def _https_server_routes() -> list[dict[str, Any]]:
@@ -814,16 +825,16 @@ def proxy_status_lines() -> list[str]:
     try:
         routes = _https_server_routes()
         # Group by project, then env, preserving first-seen order at each level.
-        grouped: dict[str, dict[str, list[str]]] = {}
+        grouped: dict[str, dict[str, list[tuple[bool, str, str]]]] = {}
         for route in routes:
             rid = route.get("@id")
             if not isinstance(rid, str) or not rid.startswith(f"{_ROUTE_ID_PREFIX}-"):
                 continue
             host = _route_host_from_config(route)
             upstream = _route_upstream_from_config(route)
-            project, env = _project_env_from_id_and_host(rid, host)
+            project, env, is_lan = _parse_route_id_metadata(rid, host)
             grouped.setdefault(project, {}).setdefault(env, []).append(
-                f"      {host} -> {upstream}"
+                (is_lan, host, upstream)
             )
         if grouped:
             lines.append("live sites:")
@@ -831,7 +842,11 @@ def proxy_status_lines() -> list[str]:
                 lines.append(f"  {project}:")
                 for env, sites in envs.items():
                     lines.append(f"    {env}:" if env else "    (unknown):")
-                    lines.extend(sites)
+                    for is_lan, host, upstream in sorted(
+                        sites, key=lambda row: (row[0], row[1].lower())
+                    ):
+                        lan_tag = " (LAN)" if is_lan else ""
+                        lines.append(f"      {host}{lan_tag} -> {upstream}")
         else:
             lines.append("live sites: (none)")
     except (LocalProxyConfigError, json.JSONDecodeError) as e:

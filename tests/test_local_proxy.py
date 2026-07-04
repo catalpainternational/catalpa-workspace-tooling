@@ -381,6 +381,70 @@ def test_ensure_proxy_on_network_connects_when_missing(monkeypatch: pytest.Monke
     ] in calls
 
 
+def test_parse_route_id_metadata_lan_suffix() -> None:
+    project, env, is_lan = local_proxy._parse_route_id_metadata(
+        "local-proxy-ambulancia-dev-lan-192-168-1-185",
+        "ambulancia-dev.192-168-1-185.lan.localdev.temp.build",
+    )
+    assert project == "ambulancia"
+    assert env == "dev"
+    assert is_lan is True
+
+
+def test_proxy_status_lines_groups_lan_under_same_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123def456")
+    monkeypatch.setattr(local_proxy, "_https_server_name", lambda: "srv0")
+
+    def fake_admin_request(method, path, *, body=None, timeout=10.0):
+        if method == "GET" and path == "/config/apps/http/servers/srv0/routes":
+            return 200, json.dumps(
+                [
+                    {
+                        "@id": "local-proxy-ambulancia-dev",
+                        "match": [{"host": ["ambulancia-dev.localdev.temp.build"]}],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "ambulancia-node:5555"}],
+                            }
+                        ],
+                    },
+                    {
+                        "@id": "local-proxy-ambulancia-dev-lan-192-168-1-185",
+                        "match": [
+                            {
+                                "host": [
+                                    "ambulancia-dev.192-168-1-185.lan.localdev.temp.build"
+                                ]
+                            }
+                        ],
+                        "handle": [
+                            {
+                                "handler": "reverse_proxy",
+                                "upstreams": [{"dial": "ambulancia-node:5555"}],
+                            }
+                        ],
+                    },
+                ]
+            )
+        raise AssertionError(f"unexpected admin call {method} {path}")
+
+    monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
+
+    lines = local_proxy.proxy_status_lines()
+    assert "  ambulancia:" in lines
+    assert "    dev:" in lines
+    assert lines.count("    dev:") == 1
+    assert "      ambulancia-dev.localdev.temp.build -> ambulancia-node:5555" in lines
+    assert (
+        "      ambulancia-dev.192-168-1-185.lan.localdev.temp.build (LAN) -> ambulancia-node:5555"
+        in lines
+    )
+    assert not any("ambulancia-dev-lan" in line for line in lines)
+
+
 def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
