@@ -184,7 +184,7 @@ def test_build_route_config() -> None:
 def test_build_route_config_host_rewrite() -> None:
     cfg = build_route_config(
         "local-proxy-ambulancia-dev-lan-192-168-1-42",
-        "ambulancia-dev.192-168-1-42.sslip.io",
+        "ambulancia-dev.192-168-1-42.lan.localdev.temp.build",
         "ambulancia_dev-caddy:80",
         upstream_host_header="ambulancia-dev.localdev.temp.build",
     )
@@ -263,7 +263,7 @@ def test_local_proxy_routes_lan_expansion(
     monkeypatch.setattr(local_proxy, "detect_dev_lan_ipv4", lambda: ["192.168.1.42"])
     routes = local_proxy_routes(info, minimal_config, "dev", "ambulancia_dev")
     assert len(routes) == 2
-    assert routes[1].host == "ambulancia-dev.192-168-1-42.sslip.io"
+    assert routes[1].host == "ambulancia-dev.192-168-1-42.lan.localdev.temp.build"
     assert routes[1].upstream_host_header == "ambulancia-dev.localdev.temp.build"
 
 

@@ -39,7 +39,7 @@ DEFAULT_BUILD_PLACEHOLDERS: dict[str, str] = {
     "METABASE_ORIGIN": "https://build.example",
 }
 DEFAULT_DEV_SITE_ORIGIN_BASE = "localdev.temp.build"
-DEFAULT_DEV_LAN_DNS_SUFFIX = "sslip.io"
+DEFAULT_DEV_LAN_DNS_SUFFIX = "lan.localdev.temp.build"
 DEFAULT_BUILD_TIME_ZONE = "Asia/Dili"
 
 

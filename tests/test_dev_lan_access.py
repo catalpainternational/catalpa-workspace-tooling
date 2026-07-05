@@ -51,16 +51,16 @@ def test_ip_to_dns_label() -> None:
 
 def test_lan_hostname_for_site_origin() -> None:
     host = lan_hostname_for("ambulancia-dev.localdev.temp.build", "192.168.1.42")
-    assert host == "ambulancia-dev.192-168-1-42.sslip.io"
+    assert host == "ambulancia-dev.192-168-1-42.lan.localdev.temp.build"
 
 
-def test_lan_hostname_for_custom_suffix() -> None:
+def test_lan_hostname_for_sslip_override() -> None:
     host = lan_hostname_for(
         "ambulancia-dev.localdev.temp.build",
         "10.0.0.5",
-        lan_dns_suffix="lan.localdev.temp.build",
+        lan_dns_suffix="sslip.io",
     )
-    assert host == "ambulancia-dev.10-0-0-5.lan.localdev.temp.build"
+    assert host == "ambulancia-dev.10-0-0-5.sslip.io"
 
 
 def test_dev_lan_port_from_info() -> None:
@@ -85,7 +85,7 @@ def test_format_dev_lan_urls_legacy(mock_detect: object) -> None:
 @patch("catalpa_tooling.dev_lan_access.detect_dev_lan_ipv4", return_value=["192.168.1.42"])
 def test_format_proxy_lan_urls(mock_ipv4: object) -> None:
     urls = format_proxy_lan_urls(_PROXY_INFO)
-    assert urls == ["https://ambulancia-dev.192-168-1-42.sslip.io"]
+    assert urls == ["https://ambulancia-dev.192-168-1-42.lan.localdev.temp.build"]
 
 
 @patch("catalpa_tooling.dev_lan_access.detect_dev_lan_hosts", return_value=["192.168.1.42", "Mac.local"])
@@ -101,6 +101,17 @@ def test_build_dev_lan_env_legacy(mock_detect: object) -> None:
 @patch("catalpa_tooling.dev_lan_access.detect_dev_lan_ipv4", return_value=["192.168.1.42"])
 def test_build_proxy_lan_env(mock_ipv4: object) -> None:
     env = build_proxy_lan_env(_PROXY_INFO)
+    assert "https://ambulancia-dev.192-168-1-42.lan.localdev.temp.build" in env["DOMAIN"]
+    assert "VITE_EXTRA_ALLOWED_HOSTS" not in env
+
+
+@patch("catalpa_tooling.dev_lan_access.detect_dev_lan_ipv4", return_value=["192.168.1.42"])
+def test_build_proxy_lan_env_sslip_suffix(mock_ipv4: object) -> None:
+    info = {
+        **_PROXY_INFO,
+        "local_proxy": {"lan_access": True, "lan_dns_suffix": "sslip.io"},
+    }
+    env = build_proxy_lan_env(info)
     assert "https://ambulancia-dev.192-168-1-42.sslip.io" in env["DOMAIN"]
     assert env["VITE_EXTRA_ALLOWED_HOSTS"] == ".sslip.io"
 
@@ -139,7 +150,7 @@ def test_print_dev_lan_urls_proxy(
         lambda: ["10.0.0.5"],
     )
     urls = print_dev_lan_urls(_PROXY_INFO)
-    assert urls == ["https://ambulancia-dev.10-0-0-5.sslip.io"]
+    assert urls == ["https://ambulancia-dev.10-0-0-5.lan.localdev.temp.build"]
     err = capsys.readouterr().err
     assert "dk proxy ca" in err
-    assert "https://ambulancia-dev.10-0-0-5.sslip.io" in err
+    assert "https://ambulancia-dev.10-0-0-5.lan.localdev.temp.build" in err

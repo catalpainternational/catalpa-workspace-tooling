@@ -109,7 +109,7 @@ def detect_dev_lan_ipv4() -> list[str]:
 
 
 def ip_to_dns_label(ip: str) -> str:
-    """``192.168.1.42`` -> ``192-168-1-42`` for sslip.io / nip.io style names."""
+    """``192.168.1.42`` -> ``192-168-1-42`` for LAN magic-DNS hostnames."""
     return ip.strip().replace(".", "-")
 
 
