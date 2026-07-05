@@ -60,6 +60,7 @@ from catalpa_tooling.remote_deploy import (
     _confirm_deploy_wipe,
     _dry_run_exits_before_compose_env,
     _ensure_local_stack_images_built,
+    _insert_down_remove_orphans,
     _insert_up_build_if_no_registry,
     _insert_up_prepulled_pull_flags,
     _is_compose_down_with_volumes,
@@ -242,6 +243,7 @@ def _run_compose_path(
                 return 1
 
     compose_args = _strip_dk_up_provision_flag(compose_args)
+    compose_args = _insert_down_remove_orphans(compose_args)
 
     try:
         if compose_args and compose_args[0] == "up":

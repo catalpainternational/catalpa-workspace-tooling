@@ -294,6 +294,7 @@ def load_managed_deploy_context(
                 env_add.setdefault(caddy_key, f"http://{role_host}")
         if extra_allowed:
             env_add.setdefault("BERO_EXTRA_ALLOWED_HOSTS", ", ".join(extra_allowed))
+        env_add.setdefault("VITE_BEHIND_PROXY", "true")
         if "stats" in local_proxy_role_names(info):
             stats_origin = (
                 role_site_origin_from_primary(site_origin, "stats")

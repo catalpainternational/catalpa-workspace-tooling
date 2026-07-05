@@ -372,9 +372,6 @@ def build_settings_json() -> dict[str, Any]:
             "com.microsoft.visualstudio.orchestrators.dockercompose"
         ),
         "containers.containerCommand": "/usr/local/bin/docker",
-        "containers.commands.composeUp": (
-            "${composeCommand} ${configurationFile} up ${detached} ${build}"
-        ),
     }
 
 

@@ -90,6 +90,17 @@ def _strip_dk_up_provision_flag(compose_args: list[str]) -> list[str]:
     return [a for a in compose_args if a != "--provision"]
 
 
+def _insert_down_remove_orphans(compose_args: list[str]) -> list[str]:
+    """Add ``--remove-orphans`` to ``down`` so slim compose files drop full-stack leftovers (e.g. listen)."""
+    if not compose_args or compose_args[0] != "down":
+        return compose_args
+    if "--remove-orphans" in compose_args or "--no-remove-orphans" in compose_args:
+        return compose_args
+    out = list(compose_args)
+    out.insert(1, "--remove-orphans")
+    return out
+
+
 def _is_compose_down_with_volumes(compose_args: list[str]) -> bool:
     """True if args run `docker compose down` with volume removal (-v / --volumes)."""
     if len(compose_args) < 1 or compose_args[0] != "down":
