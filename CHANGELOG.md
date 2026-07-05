@@ -4,6 +4,8 @@
 
 ### Changed
 
+- **Local dev HTTPS proxy (breaking)** — enabled **by default** on local Docker envs (`local_proxy.enabled: false` to opt out). Machine-wide proxy always dials **`{compose_project}-{stack.services.proxy}:80`** (stack Caddy). Removed per-project `local_proxy.service`, `upstream_port`, and manual `routes` lists; use `local_proxy.roles: [admin, stats]` for extra subdomains. Hostnames derive from `{project-slug}-{env}.localdev.temp.build` when `site_origin` is omitted. Compose project name defaults to `{stack.compose_project_default}_{env}`. LAN access remains opt-in (`local_proxy.lan_access: true`).
+
 - **Project-agnostic defaults** — removed hardcoded consumer names (`pas_indmo`, `bero_db`, `INDMO` in Zabbix units, etc.). Tooling now derives compose project names, volume suffixes, smoke DB credentials, healthcheck origin env keys, build placeholders, and Zabbix unit labels from `tooling.yaml`. **`ProjectConfig` is required** when `COMPOSE_PROJECT_NAME` is unset (no silent cross-project fallbacks).
 
 ### Added
@@ -23,7 +25,9 @@ When bumping to this release, ensure `tooling.yaml` defines at least:
 
 Projects that relied on implicit `bero` / `pas_indmo` defaults must add explicit manifest entries. Re-run `dk <env> zabbix install` on deploy hosts if the unit file still references an old project label or userparams mount path.
 
-- **Local dev HTTPS proxy** — routes dial project containers over the shared Docker network `catalpa-local-proxy-net` (`{compose_project_name}-{service}:internal_port`) instead of `host.docker.internal` and published host ports. Tooling generates a compose override with `ports: !reset []` and network aliases (requires Docker Compose 2.24+). `local_proxy.service` is now required in `info.yaml`.
+**Local proxy:** add stack **Caddy on :80** to dev compose; drop `local_proxy.service` / `upstream_port` / `routes` from `info.yaml`; set `CADDY_*_SITE_ADDRESS` to `http://…`; use `local_proxy.roles` for admin/stats hostnames. Re-run `dk dev up` / `dk full up` and `dk proxy trust` once per machine.
+
+- **Local dev HTTPS proxy** — routes dial project containers over the shared Docker network `catalpa-local-proxy-net` (`{compose_project_name}-{service}:internal_port`) instead of `host.docker.internal` and published host ports. Tooling generates a compose override with `ports: !reset []` and network aliases (requires Docker Compose 2.24+).
 
 ## 0.8.5
 

@@ -1,6 +1,6 @@
 # Local dev HTTPS proxy (`local_proxy` in `info.yaml`)
 
-For local Docker environments (no `docker_host`), projects may enable a **machine-wide** Caddy reverse proxy that maps a real HTTPS hostname under `*.localdev.temp.build` to the stack's front container over a **shared Docker network** (`catalpa-local-proxy-net`). DNS for `*.localdev.temp.build → 127.0.0.1` is org-wide; Caddy uses an **internal CA** (`tls internal`) — trust it once per machine with `dk <env> trust-caddy-cert` or `dk proxy trust`.
+For local Docker environments (no `docker_host`), tooling enables a **machine-wide** Caddy reverse proxy that maps real HTTPS hostnames under `*.localdev.temp.build` to each stack's **Caddy front** on port 80 over a **shared Docker network** (`catalpa-local-proxy-net`). DNS for `*.localdev.temp.build → 127.0.0.1` is org-wide; Caddy uses an **internal CA** (`tls internal`) — trust it once per machine with `dk <env> trust-caddy-cert` or `dk proxy trust`.
 
 **Related docs**
 
@@ -8,9 +8,11 @@ For local Docker environments (no `docker_host`), projects may enable a **machin
 
 ## How it works
 
-On `dk <env> up`, tooling creates/joins the shared network, writes a generated compose override (attaches the front service with a project-unique alias and `ports: !reset []`), ensures `catalpa-local-proxy` is running, and registers route(s) via Caddy's admin API (`127.0.0.1:2019`). On `dk <env> down`, that env's route(s) are removed (the shared proxy keeps running for other projects). Manage the proxy directly: `dk proxy up|down|status|trust|ca`.
+On `dk <env> up`, tooling creates/joins the shared network, writes a generated compose override (attaches the stack **Caddy** service with a project-unique alias and `ports: !reset []`), ensures `catalpa-local-proxy` is running, and registers route(s) via Caddy's admin API (`127.0.0.1:2019`). On `dk <env> down`, that env's route(s) are removed (the shared proxy keeps running for other projects). Manage the proxy directly: `dk proxy up|down|status|trust|ca`.
 
 **Requires Docker Compose 2.24+** for `ports: !reset []` in the generated override.
+
+Every stack must expose **Caddy on container port 80** as the sole front door (`stack.services.proxy`, usually `caddy`). Dev backends (Vite/webpack, Django runserver) stay internal; stack Caddy routes to them.
 
 ## CA trust
 
@@ -25,35 +27,53 @@ dk proxy down && dk proxy up && dk proxy trust
 
 ## Configuration
 
-Example (`docker/envs/dev/info.yaml`):
+The proxy is **on by default** for local Docker envs. Opt out:
+
+```yaml
+local_proxy:
+  enabled: false
+```
+
+### Minimal onboarding
+
+Hostnames follow `{project-slug}-{env}.localdev.temp.build` from `tooling.yaml` `project.name` (underscores → hyphens). Compose project names default to `{stack.compose_project_default}_{env}`.
+
+```yaml
+# docker/envs/dev/info.yaml
+compose_file: compose.dev.yaml
+env:
+  CADDY_SITE_ADDRESS: http://ambulancia-dev.localdev.temp.build
+```
+
+Tooling derives `site_origin`, registers `{compose_project}_dev-caddy:80`, and injects Caddy/Django env vars on `dk up`.
+
+Explicit primary hostname (optional):
 
 ```yaml
 site_origin: https://myapp-dev.localdev.temp.build
-local_proxy:
-  enabled: true
-  service: node          # compose service that receives proxy traffic
-  upstream_port: 5555    # container-internal port (not a host publish)
-  lan_access: true       # optional: sslip.io hostnames for LAN devices (see README_LAN_ACCESS.md)
 env:
-  compose_project_name: myapp
+  CADDY_SITE_ADDRESS: http://myapp-dev.localdev.temp.build
 ```
 
-The proxy dials `{compose_project_name}-{service}` on the shared network (e.g. `myapp-node:5555`). Override with `upstream_host` if needed.
-
-Multiple hostnames (e.g. app + Metabase) via an explicit `routes` list — `host` defaults to `site_origin` when omitted; all routes share `service` unless a route sets its own:
+### Extra hostnames (admin, stats/Metabase)
 
 ```yaml
-site_origin: https://myapp-full.localdev.temp.build
 local_proxy:
-  enabled: true
-  service: caddy
-  routes:
-    - upstream_port: 80
-    - host: metabase.myapp-full.localdev.temp.build
-      upstream_port: 80
+  roles: [stats]   # registers stats.{primary-host} → same caddy:80
 env:
-  compose_project_name: myapp-full
+  CADDY_METABASE_SITE_ADDRESS: http://stats.myapp-full.localdev.temp.build
 ```
+
+Role labels: `admin`, `stats` (prefix subdomains on the primary hostname).
+
+### LAN (opt-in)
+
+```yaml
+local_proxy:
+  lan_access: true
+```
+
+See [README_LAN_ACCESS.md](README_LAN_ACCESS.md).
 
 ## Status
 
@@ -66,16 +86,20 @@ live sites:
   myapp:
     dev:
       local:
-        myapp-dev.localdev.temp.build -> myapp-node:5555
-      lan:
-        myapp-dev.192-168-1-42.sslip.io -> myapp-node:5555
+        myapp-dev.localdev.temp.build -> myapp_dev-caddy:80
     full:
       local:
-        myapp-full.localdev.temp.build -> myapp-full-caddy:80
+        myapp-full.localdev.temp.build -> myapp_full-caddy:80
+        stats.myapp-full.localdev.temp.build -> myapp_full-caddy:80
+      lan:
+        myapp-full.192-168-1-42.sslip.io -> myapp_full-caddy:80
 ```
 
 LAN magic-DNS routes are grouped under the same project/env as the canonical hostname, in a separate `lan:` section.
 
-## Project requirements when enabled
+## Project requirements
 
-Set `site_origin` to the HTTPS hostname (for Django `ALLOWED_HOSTS` / CSRF), set `local_proxy.service` to the compose front service, set `upstream_port` to that service's **internal** listen port, and allow those hosts in frontend dev config (e.g. Vite `server.allowedHosts`). Stacks with their own Caddy may run behind the proxy by serving plain HTTP internally (`CADDY_SITE_ADDRESS: http://...`) while keeping `site_origin` as `https://...`. Staging/prod are unchanged — the override is only applied when `local_proxy.enabled` is true on a local Docker host.
+- **Stack Caddy** on container port **80** (`stack.services.proxy`).
+- **`CADDY_*_SITE_ADDRESS`** env vars as plain **`http://…`** (machine proxy terminates TLS).
+- Frontend dev config must allow `.localdev.temp.build` hosts (e.g. Vite `server.allowedHosts`).
+- Staging/prod are unchanged — the override applies only on local Docker hosts without `docker_host`.

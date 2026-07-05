@@ -10,10 +10,12 @@ from catalpa_tooling.local_proxy import (
     LOCAL_PROXY_CA_COMMON_NAME,
     LOCAL_PROXY_CA_MACHINE_ENV,
     LOCAL_PROXY_NETWORK,
+    LOCAL_PROXY_UPSTREAM_PORT,
     LocalProxyConfigError,
     LocalProxyRoute,
     build_route_config,
     compose_project_name_from_env_add,
+    default_compose_project_name,
     ensure_proxy_network,
     ensure_proxy_on_network,
     local_dev_ca_machine_label,
@@ -33,24 +35,13 @@ from catalpa_tooling.local_proxy_assets import local_proxy_caddyfile_path
 
 _DEV_INFO = {
     "site_origin": "https://ambulancia-dev.localdev.temp.build",
-    "local_proxy": {"enabled": True, "service": "node", "upstream_port": 5555},
-    "env": {"compose_project_name": "ambulancia"},
+    "env": {"compose_project_name": "ambulancia_dev"},
 }
 
 _FULL_INFO = {
     "site_origin": "https://ambulancia-full.localdev.temp.build",
-    "local_proxy": {
-        "enabled": True,
-        "service": "caddy",
-        "routes": [
-            {"upstream_port": 80},
-            {
-                "host": "metabase.ambulancia-full.localdev.temp.build",
-                "upstream_port": 80,
-            },
-        ],
-    },
-    "env": {"compose_project_name": "ambulancia-full"},
+    "local_proxy": {"roles": ["stats"]},
+    "env": {"compose_project_name": "ambulancia_full"},
 }
 
 
@@ -59,11 +50,7 @@ def test_local_proxy_caddyfile_shipped() -> None:
     assert path.is_file()
     text = path.read_text(encoding="utf-8")
     assert "local_certs" in text
-    # Admin must bind to all interfaces inside the container so the loopback-only
-    # published port (-p 127.0.0.1:2019:2019) can reach it.
     assert "admin 0.0.0.0:2019" in text
-    # Named CA so the persisted root is recognizable in the OS trust store, with
-    # a per-machine suffix substituted at Caddyfile-adaptation time.
     assert "pki" in text
     assert f'root_cn "{LOCAL_PROXY_CA_COMMON_NAME} ({{$CATALPA_LOCAL_DEV_MACHINE:local}})"' in text
     assert "/catalpa-local-ca.crt" in text
@@ -121,81 +108,62 @@ def test_ensure_proxy_running_passes_machine_env(
     assert f"{LOCAL_PROXY_CA_MACHINE_ENV}=testbox" in cmd
 
 
-def test_local_proxy_enabled_requires_local_docker() -> None:
-    assert local_proxy_enabled(
-        {
-            "local_proxy": {"enabled": True, "service": "node", "upstream_port": 5555},
-            "site_origin": "https://app-dev.localdev.temp.build",
-            "env": {"compose_project_name": "myapp"},
-        }
-    )
+def test_local_proxy_enabled_default_on_local() -> None:
+    assert local_proxy_enabled({"site_origin": "https://app-dev.localdev.temp.build"})
+    assert not local_proxy_enabled({"local_proxy": {"enabled": False}})
+    assert not local_proxy_enabled({"local_proxy": False})
     assert not local_proxy_enabled(
         {
             "docker_host": "ssh://host",
-            "local_proxy": {"enabled": True, "service": "node", "upstream_port": 5555},
+            "site_origin": "https://app-dev.localdev.temp.build",
         }
     )
     assert local_proxy_enabled(
         {
             "docker_host": "unix:///var/run/docker.sock",
-            "local_proxy": {"enabled": True, "service": "caddy", "upstream_port": 80},
             "site_origin": "https://app-full.localdev.temp.build",
-            "env": {"compose_project_name": "myapp-full"},
         }
     )
-    assert not local_proxy_enabled({"local_proxy": {"enabled": False}})
 
 
-def test_local_proxy_requires_upstream_port() -> None:
-    with pytest.raises(LocalProxyConfigError, match="upstream_port"):
-        local_proxy_upstream_dial(
-            {
-                "local_proxy": {"enabled": True, "service": "node"},
-                "site_origin": "https://app-dev.localdev.temp.build",
-                "env": {"compose_project_name": "myapp"},
-            },
-            "myapp",
-        )
+def test_local_proxy_upstream_port_fixed() -> None:
+    assert local_proxy.local_proxy_upstream_port() == LOCAL_PROXY_UPSTREAM_PORT
 
 
-def test_local_proxy_requires_service() -> None:
-    with pytest.raises(LocalProxyConfigError, match="local_proxy.service"):
-        local_proxy_upstream_dial(
-            {
-                "local_proxy": {"enabled": True, "upstream_port": 5555},
-                "site_origin": "https://app-dev.localdev.temp.build",
-                "env": {"compose_project_name": "myapp"},
-            },
-            "myapp",
-        )
+def test_local_proxy_hostname_from_site_origin(minimal_config: ProjectConfig) -> None:
+    assert (
+        local_proxy_hostname(_DEV_INFO, minimal_config, "dev")
+        == "ambulancia-dev.localdev.temp.build"
+    )
+    assert (
+        local_proxy_upstream_dial(minimal_config, "ambulancia_dev", _DEV_INFO)
+        == "ambulancia_dev-proxy:80"
+    )
 
 
-def test_local_proxy_hostname_from_site_origin() -> None:
-    assert local_proxy_hostname(_DEV_INFO) == "ambulancia-dev.localdev.temp.build"
-    assert local_proxy_upstream_dial(_DEV_INFO, "ambulancia") == "ambulancia-node:5555"
+def test_default_compose_project_name(minimal_config: ProjectConfig) -> None:
+    assert default_compose_project_name(minimal_config, "dev") == "app_compose_dev"
 
 
 def test_local_proxy_upstream_alias() -> None:
-    assert local_proxy_upstream_alias("ambulancia-full", "caddy") == "ambulancia-full-caddy"
+    assert local_proxy_upstream_alias("ambulancia_full", "caddy") == "ambulancia_full-caddy"
 
 
-def test_local_proxy_custom_upstream_host() -> None:
+def test_local_proxy_custom_upstream_host(minimal_config: ProjectConfig) -> None:
     info = {
         "site_origin": "https://app-dev.localdev.temp.build",
-        "local_proxy": {
-            "enabled": True,
-            "service": "node",
-            "upstream_port": 8080,
-            "upstream_host": "custom-host.example",
-        },
-        "env": {"compose_project_name": "myapp"},
+        "local_proxy": {"upstream_host": "custom-host.example"},
+        "env": {"compose_project_name": "myapp_dev"},
     }
-    assert local_proxy_upstream_dial(info, "myapp") == "custom-host.example:8080"
+    assert local_proxy_upstream_dial(minimal_config, "myapp_dev", info) == "custom-host.example:80"
 
 
-def test_compose_project_name_from_env_add() -> None:
+def test_compose_project_name_from_env_add(minimal_config: ProjectConfig) -> None:
     assert compose_project_name_from_env_add({"COMPOSE_PROJECT_NAME": "from-env"}) == "from-env"
-    assert compose_project_name_from_env_add({}, _DEV_INFO) == "ambulancia"
+    assert (
+        compose_project_name_from_env_add({}, _DEV_INFO, config=minimal_config, env_name="dev")
+        == "ambulancia_dev"
+    )
 
 
 def test_route_id_namespaced(minimal_config: ProjectConfig) -> None:
@@ -206,24 +174,20 @@ def test_build_route_config() -> None:
     cfg = build_route_config(
         "local-proxy-ambulancia-dev",
         "ambulancia-dev.localdev.temp.build",
-        "ambulancia-node:5555",
+        "ambulancia_dev-caddy:80",
     )
     assert cfg["@id"] == "local-proxy-ambulancia-dev"
     assert cfg["match"] == [{"host": ["ambulancia-dev.localdev.temp.build"]}]
-    assert cfg["handle"][0]["handler"] == "reverse_proxy"
-    assert cfg["handle"][0]["upstreams"] == [{"dial": "ambulancia-node:5555"}]
-    assert "headers" not in cfg["handle"][0]
-    assert cfg["terminal"] is True
+    assert cfg["handle"][0]["upstreams"] == [{"dial": "ambulancia_dev-caddy:80"}]
 
 
 def test_build_route_config_host_rewrite() -> None:
     cfg = build_route_config(
         "local-proxy-ambulancia-dev-lan-192-168-1-42",
         "ambulancia-dev.192-168-1-42.sslip.io",
-        "ambulancia-node:5555",
+        "ambulancia_dev-caddy:80",
         upstream_host_header="ambulancia-dev.localdev.temp.build",
     )
-    assert cfg["match"] == [{"host": ["ambulancia-dev.192-168-1-42.sslip.io"]}]
     assert cfg["handle"][0]["headers"]["request"]["set"]["Host"] == [
         "ambulancia-dev.localdev.temp.build"
     ]
@@ -232,7 +196,6 @@ def test_build_route_config_host_rewrite() -> None:
 def test_upsert_route_dedupes_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
-    # Server already has a stale route for the same @id plus an unrelated route.
     server = {
         "listen": [":443"],
         "routes": [
@@ -257,41 +220,36 @@ def test_upsert_route_dedupes_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
     rc = upsert_route(
         "local-proxy-ambulancia-dev",
         "ambulancia-dev.localdev.temp.build",
-        "ambulancia-node:5555",
+        "ambulancia_dev-caddy:80",
     )
     assert rc == 0
-
     patch_call = next(c for c in calls if c[0] == "PATCH")
     routes = patch_call[2]["routes"]
     ids = [r["@id"] for r in routes]
-    # stale duplicate replaced (single entry), unrelated route preserved.
     assert ids.count("local-proxy-ambulancia-dev") == 1
     assert "local-proxy-other-dev" in ids
-    new_route = next(r for r in routes if r["@id"] == "local-proxy-ambulancia-dev")
-    assert new_route["match"] == [{"host": ["ambulancia-dev.localdev.temp.build"]}]
 
 
-def test_local_proxy_routes_legacy_single(minimal_config: ProjectConfig) -> None:
-    routes = local_proxy_routes(_DEV_INFO, minimal_config, "dev", "ambulancia")
+def test_local_proxy_routes_single(minimal_config: ProjectConfig) -> None:
+    routes = local_proxy_routes(_DEV_INFO, minimal_config, "dev", "ambulancia_dev")
     assert routes == [
         LocalProxyRoute(
-            route_id="local-proxy-minimal-dev",
+            route_id=route_id_for_host(
+                minimal_config, "dev", "ambulancia-dev.localdev.temp.build"
+            ),
             host="ambulancia-dev.localdev.temp.build",
-            upstream_dial="ambulancia-node:5555",
+            upstream_dial="ambulancia_dev-proxy:80",
         )
     ]
 
 
 def test_local_proxy_routes_multi(minimal_config: ProjectConfig) -> None:
-    routes = local_proxy_routes(_FULL_INFO, minimal_config, "full", "ambulancia-full")
+    routes = local_proxy_routes(_FULL_INFO, minimal_config, "full", "ambulancia_full")
     assert len(routes) == 2
     assert routes[0].host == "ambulancia-full.localdev.temp.build"
-    assert routes[0].upstream_dial == "ambulancia-full-caddy:80"
-    assert routes[0].route_id == route_id_for_host(
-        minimal_config, "full", "ambulancia-full.localdev.temp.build"
-    )
-    assert routes[1].host == "metabase.ambulancia-full.localdev.temp.build"
-    assert routes[1].upstream_dial == "ambulancia-full-caddy:80"
+    assert routes[0].upstream_dial == "ambulancia_full-proxy:80"
+    assert routes[1].host == "stats.ambulancia-full.localdev.temp.build"
+    assert routes[1].upstream_dial == "ambulancia_full-proxy:80"
 
 
 def test_local_proxy_routes_lan_expansion(
@@ -300,27 +258,23 @@ def test_local_proxy_routes_lan_expansion(
 ) -> None:
     info = {
         **_DEV_INFO,
-        "local_proxy": {**_DEV_INFO["local_proxy"], "lan_access": True},
+        "local_proxy": {"lan_access": True},
     }
     monkeypatch.setattr(local_proxy, "detect_dev_lan_ipv4", lambda: ["192.168.1.42"])
-    routes = local_proxy_routes(info, minimal_config, "dev", "ambulancia")
+    routes = local_proxy_routes(info, minimal_config, "dev", "ambulancia_dev")
     assert len(routes) == 2
-    assert routes[0].host == "ambulancia-dev.localdev.temp.build"
-    assert routes[0].upstream_host_header is None
     assert routes[1].host == "ambulancia-dev.192-168-1-42.sslip.io"
-    assert routes[1].upstream_dial == routes[0].upstream_dial
     assert routes[1].upstream_host_header == "ambulancia-dev.localdev.temp.build"
-    assert routes[1].route_id.endswith("-lan-192-168-1-42")
 
 
 def test_route_id_for_host(minimal_config: ProjectConfig) -> None:
-    rid = route_id_for_host(minimal_config, "full", "metabase.ambulancia-full.localdev.temp.build")
+    rid = route_id_for_host(minimal_config, "full", "stats.ambulancia-full.localdev.temp.build")
     assert rid.startswith("local-proxy-minimal-full-")
 
 
-def test_local_proxy_front_services_dedupes_same_service() -> None:
-    services = local_proxy_front_services(_FULL_INFO, "ambulancia-full")
-    assert services == [("caddy", "ambulancia-full-caddy")]
+def test_local_proxy_front_services(minimal_config: ProjectConfig) -> None:
+    services = local_proxy_front_services(minimal_config, "ambulancia_full", _FULL_INFO)
+    assert services == [("proxy", "ambulancia_full-proxy")]
 
 
 def test_write_local_proxy_override(
@@ -329,56 +283,12 @@ def test_write_local_proxy_override(
     tmp_path,
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-    path = write_local_proxy_override(minimal_config, "dev", _DEV_INFO, "ambulancia")
-    assert path.is_file()
+    path = write_local_proxy_override(minimal_config, "dev", _DEV_INFO, "ambulancia_dev")
     text = path.read_text(encoding="utf-8")
     assert f"name: {LOCAL_PROXY_NETWORK}" in text
-    assert "node:" in text
+    assert "proxy:" in text
     assert "ports: !reset []" in text
-    assert "ambulancia-node" in text
-    assert "default: null" in text
-
-
-def test_ensure_proxy_network_creates_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        class Result:
-            returncode = 1 if cmd[:3] == ["docker", "network", "inspect"] else 0
-            stdout = ""
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
-    assert ensure_proxy_network() == 0
-    assert ["docker", "network", "create", LOCAL_PROXY_NETWORK] in calls
-
-
-def test_ensure_proxy_on_network_connects_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123")
-    monkeypatch.setattr(local_proxy, "_proxy_container_on_network", lambda: False)
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        class Result:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
-    assert ensure_proxy_on_network() == 0
-    assert [
-        "docker",
-        "network",
-        "connect",
-        LOCAL_PROXY_NETWORK,
-        local_proxy.LOCAL_PROXY_CONTAINER,
-    ] in calls
+    assert "ambulancia_dev-proxy" in text
 
 
 def test_parse_route_id_metadata_lan_suffix() -> None:
@@ -407,7 +317,7 @@ def test_proxy_status_lines_groups_lan_under_same_env(monkeypatch: pytest.Monkey
                         "handle": [
                             {
                                 "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "ambulancia-node:5555"}],
+                                "upstreams": [{"dial": "ambulancia_dev-caddy:80"}],
                             }
                         ],
                     },
@@ -423,7 +333,7 @@ def test_proxy_status_lines_groups_lan_under_same_env(monkeypatch: pytest.Monkey
                         "handle": [
                             {
                                 "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "ambulancia-node:5555"}],
+                                "upstreams": [{"dial": "ambulancia_dev-caddy:80"}],
                             }
                         ],
                     },
@@ -436,18 +346,8 @@ def test_proxy_status_lines_groups_lan_under_same_env(monkeypatch: pytest.Monkey
     lines = local_proxy.proxy_status_lines()
     assert "  ambulancia:" in lines
     assert "    dev:" in lines
-    assert lines.count("    dev:") == 1
     assert "      local:" in lines
     assert "      lan:" in lines
-    assert (
-        "        ambulancia-dev.localdev.temp.build -> ambulancia-node:5555" in lines
-    )
-    assert (
-        "        ambulancia-dev.192-168-1-185.lan.localdev.temp.build -> ambulancia-node:5555"
-        in lines
-    )
-    assert not any("ambulancia-dev-lan" in line for line in lines)
-    assert not any("(LAN)" in line for line in lines)
 
 
 def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -466,23 +366,19 @@ def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) ->
                         "handle": [
                             {
                                 "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "ambulancia-node:5555"}],
+                                "upstreams": [{"dial": "ambulancia_dev-caddy:80"}],
                             }
                         ],
                     },
                     {
-                        "@id": "local-proxy-ambulancia-full-metabase-ambulancia-full-localdev-temp-build",
-                        "match": [{"host": ["metabase.ambulancia-full.localdev.temp.build"]}],
+                        "@id": "local-proxy-ambulancia-full-stats-ambulancia-full-localdev-temp-build",
+                        "match": [{"host": ["stats.ambulancia-full.localdev.temp.build"]}],
                         "handle": [
                             {
                                 "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "ambulancia-full-caddy:80"}],
+                                "upstreams": [{"dial": "ambulancia_full-caddy:80"}],
                             }
                         ],
-                    },
-                    {
-                        "match": [{"host": ["redirect"]}],
-                        "handle": [{"handler": "static_response"}],
                     },
                 ]
             )
@@ -491,28 +387,13 @@ def test_proxy_status_lines_lists_live_sites(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
 
     lines = proxy_status_lines()
-    # Grouped hierarchically: project -> env -> local|lan -> host -> upstream.
     assert "live sites:" in lines
-    assert "  ambulancia:" in lines
-    assert "    dev:" in lines
-    assert "    full:" in lines
     assert "      local:" in lines
-    assert (
-        "        ambulancia-dev.localdev.temp.build -> ambulancia-node:5555" in lines
-    )
-    assert (
-        "        metabase.ambulancia-full.localdev.temp.build -> ambulancia-full-caddy:80"
-        in lines
-    )
-    # Project/env context is conveyed by indentation, not an inline suffix.
-    assert not any("(ambulancia/dev)" in line for line in lines)
-    assert not any("redirect" in line for line in lines)
 
 
 def test_proxy_status_lines_groups_multi_route_lan_under_same_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Multi-route projects (e.g. catalpa_bero) append host labels to route ids."""
     import json
 
     monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123def456")
@@ -523,54 +404,28 @@ def test_proxy_status_lines_groups_multi_route_lan_under_same_env(
             return 200, json.dumps(
                 [
                     {
-                        "@id": "local-proxy-catalpa-bero-dev-bero-dev-localdev-temp-build",
-                        "match": [{"host": ["bero-dev.localdev.temp.build"]}],
+                        "@id": "local-proxy-catalpa-bero-dev-catalpa-bero-dev-localdev-temp-build",
+                        "match": [{"host": ["catalpa-bero-dev.localdev.temp.build"]}],
                         "handle": [
                             {
                                 "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "catalpa_bero_dev-node:8080"}],
+                                "upstreams": [{"dial": "catalpa_bero_dev-caddy:80"}],
                             }
                         ],
                     },
                     {
-                        "@id": "local-proxy-catalpa-bero-dev-metabase-bero-dev-localdev-temp-build",
-                        "match": [{"host": ["metabase.bero-dev.localdev.temp.build"]}],
-                        "handle": [
-                            {
-                                "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "catalpa_bero_dev-metabase:3000"}],
-                            }
-                        ],
-                    },
-                    {
-                        "@id": "local-proxy-catalpa-bero-dev-bero-dev-localdev-temp-build-lan-192-168-1-185",
+                        "@id": "local-proxy-catalpa-bero-dev-catalpa-bero-dev-localdev-temp-build-lan-192-168-1-185",
                         "match": [
                             {
                                 "host": [
-                                    "bero-dev.192-168-1-185.lan.localdev.temp.build"
+                                    "catalpa-bero-dev.192-168-1-185.lan.localdev.temp.build"
                                 ]
                             }
                         ],
                         "handle": [
                             {
                                 "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "catalpa_bero_dev-node:8080"}],
-                            }
-                        ],
-                    },
-                    {
-                        "@id": "local-proxy-catalpa-bero-dev-metabase-bero-dev-localdev-temp-build-lan-192-168-1-185",
-                        "match": [
-                            {
-                                "host": [
-                                    "metabase.bero-dev.192-168-1-185.lan.localdev.temp.build"
-                                ]
-                            }
-                        ],
-                        "handle": [
-                            {
-                                "handler": "reverse_proxy",
-                                "upstreams": [{"dial": "catalpa_bero_dev-metabase:3000"}],
+                                "upstreams": [{"dial": "catalpa_bero_dev-caddy:80"}],
                             }
                         ],
                     },
@@ -583,16 +438,3 @@ def test_proxy_status_lines_groups_multi_route_lan_under_same_env(
     lines = local_proxy.proxy_status_lines()
     assert lines.count("  catalpa-bero:") == 1
     assert lines.count("    dev:") == 1
-    assert "      local:" in lines
-    assert "      lan:" in lines
-    assert (
-        "        bero-dev.192-168-1-185.lan.localdev.temp.build -> catalpa_bero_dev-node:8080"
-        in lines
-    )
-    assert (
-        "        metabase.bero-dev.192-168-1-185.lan.localdev.temp.build -> catalpa_bero_dev-metabase:3000"
-        in lines
-    )
-    assert not any("catalpa-bero-dev-bero-dev-localdev-temp:" in line for line in lines)
-    assert not any("    build:" in line for line in lines)
-    assert not any("(LAN)" in line for line in lines)

@@ -129,7 +129,12 @@ def _local_proxy_block(info: dict[str, Any]) -> dict[str, Any]:
 def local_proxy_enabled_for_lan(info: dict[str, Any]) -> bool:
     if _is_remote_docker_host(info.get("docker_host")):
         return False
-    return bool(_local_proxy_block(info).get("enabled", False))
+    raw = info.get("local_proxy")
+    if raw is False:
+        return False
+    if isinstance(raw, dict):
+        return bool(raw.get("enabled", True))
+    return True
 
 
 def lan_access_enabled(info: dict[str, Any]) -> bool:
@@ -141,12 +146,14 @@ def lan_access_enabled(info: dict[str, Any]) -> bool:
 
 
 def dev_lan_access_enabled(info: dict[str, Any]) -> bool:
-    """Backward-compatible alias: LAN via dev proxy, or legacy flag without proxy check."""
+    """LAN via dev proxy, or legacy host-port URLs when the machine-wide proxy is off."""
     if lan_access_enabled(info):
         return True
     if _is_remote_docker_host(info.get("docker_host")):
         return False
-    return bool(info.get("dev_lan_access", False))
+    if not info.get("dev_lan_access"):
+        return False
+    return not local_proxy_enabled_for_lan(info)
 
 
 def _site_origin_base(config: "ProjectConfig | None" = None) -> str:
@@ -191,31 +198,24 @@ def lan_hostname_for(
     return f"{label}.{ip_label}.{suffix}"
 
 
-def collect_lan_site_hosts(info: dict[str, Any]) -> list[str]:
-    """Hostnames from ``site_origin`` plus explicit ``local_proxy.routes[].host`` entries."""
+def collect_lan_site_hosts(
+    info: dict[str, Any],
+    *,
+    config: "ProjectConfig | None" = None,
+    env_name: str = "",
+) -> list[str]:
+    """Hostnames registered on the machine-wide dev proxy for LAN magic DNS."""
+    from catalpa_tooling.site_origin import resolve_site_origins_for_env
+
     hosts: list[str] = []
     seen: set[str] = set()
-    for origin in parse_site_origins_from_info(info):
+    if config is not None and env_name:
+        origins = resolve_site_origins_for_env(info, config, env_name)
+    else:
+        origins = parse_site_origins_from_info(info)
+    for origin in origins:
         for host in hostnames_from_origins([origin]):
             if host not in seen:
-                seen.add(host)
-                hosts.append(host)
-    block = _local_proxy_block(info)
-    routes = block.get("routes")
-    if isinstance(routes, list):
-        for raw in routes:
-            if not isinstance(raw, dict):
-                continue
-            host_raw = raw.get("host")
-            if host_raw is None:
-                continue
-            host = str(host_raw).strip()
-            if "://" in host:
-                parsed = urlparse(host if host.startswith("http") else f"https://{host}")
-                host = parsed.hostname or host.split("/")[0]
-            else:
-                host = host.split("/")[0]
-            if host and host not in seen:
                 seen.add(host)
                 hosts.append(host)
     return hosts
@@ -227,12 +227,13 @@ def format_proxy_lan_urls(
     *,
     ips: list[str] | None = None,
     config: "ProjectConfig | None" = None,
+    env_name: str = "",
 ) -> list[str]:
     """HTTPS URLs reachable from LAN devices via the dev proxy."""
     if not lan_access_enabled(info):
         return []
     if site_hosts is None:
-        site_hosts = collect_lan_site_hosts(info)
+        site_hosts = collect_lan_site_hosts(info, config=config, env_name=env_name)
     if not site_hosts:
         return []
     if ips is None:
@@ -266,13 +267,14 @@ def build_proxy_lan_env(
     site_hosts: list[str] | None = None,
     *,
     config: "ProjectConfig | None" = None,
+    env_name: str = "",
 ) -> dict[str, str]:
     """Env vars for Django / frontend when LAN access via the dev proxy is enabled."""
     if not lan_access_enabled(info):
         return {}
     if site_hosts is None:
-        site_hosts = collect_lan_site_hosts(info)
-    urls = format_proxy_lan_urls(info, site_hosts, config=config)
+        site_hosts = collect_lan_site_hosts(info, config=config, env_name=env_name)
+    urls = format_proxy_lan_urls(info, site_hosts, config=config, env_name=env_name)
     if not urls:
         return {}
     out: dict[str, str] = {}
@@ -320,9 +322,10 @@ def build_dev_lan_env(
     info: dict[str, Any],
     *,
     config: "ProjectConfig | None" = None,
+    env_name: str = "",
 ) -> dict[str, str]:
     if lan_access_enabled(info):
-        return build_proxy_lan_env(info, config=config)
+        return build_proxy_lan_env(info, config=config, env_name=env_name)
     if not dev_lan_access_enabled(info):
         return {}
     hosts = detect_dev_lan_hosts()

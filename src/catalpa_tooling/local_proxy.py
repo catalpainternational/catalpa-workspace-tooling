@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING, Any, NamedTuple, TextIO
 
 from catalpa_tooling.local_proxy_assets import local_proxy_caddyfile_path
 from catalpa_tooling.run_cmd import run as run_cmd
-from catalpa_tooling.site_origin import hostnames_from_origins, parse_site_origins_from_info
+from catalpa_tooling.site_origin import (
+    hostnames_from_origins,
+    parse_site_origins_from_info,
+    primary_site_origin_for_env,
+    resolve_site_origins_for_env,
+)
 
 if TYPE_CHECKING:
     from catalpa_tooling.config import ProjectConfig
@@ -49,6 +54,7 @@ LOCAL_PROXY_CA_MACHINE_ENV = "CATALPA_LOCAL_DEV_MACHINE"
 _ROUTE_ID_PREFIX = "local-proxy"
 _ROUTE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _LAN_ROUTE_SUFFIX_RE = re.compile(r"-lan-(?P<ip>\d+(?:-\d+)*)$")
+LOCAL_PROXY_UPSTREAM_PORT = 80
 
 
 def local_proxy_data_dir() -> Path:
@@ -113,51 +119,69 @@ def local_proxy_enabled(info: dict[str, Any]) -> bool:
     """True when this env uses the shared machine-wide HTTPS proxy (local Docker only)."""
     if _is_remote_docker_host(info.get("docker_host")):
         return False
-    block = _local_proxy_block(info)
-    return bool(block.get("enabled", False))
+    raw = info.get("local_proxy")
+    if raw is False:
+        return False
+    if isinstance(raw, dict):
+        return bool(raw.get("enabled", True))
+    return True
 
 
-def compose_project_name_from_info(info: dict[str, Any]) -> str:
-    """Return ``info.env.compose_project_name`` (required for local proxy routing)."""
+def default_compose_project_name(config: ProjectConfig, env_name: str) -> str:
+    """Default ``{compose_project_default}_{env}`` Compose project name."""
+    from catalpa_tooling.restic_files import (
+        _default_compose_project,
+        _sanitize_dk_env_for_compose_project_suffix,
+    )
+
+    suffix = _sanitize_dk_env_for_compose_project_suffix(env_name)
+    return f"{_default_compose_project(config)}_{suffix}"
+
+
+def compose_project_name_from_info(
+    info: dict[str, Any],
+    config: ProjectConfig | None = None,
+    env_name: str = "",
+) -> str:
+    """Return explicit or default Compose project name for local proxy routing."""
     env_block = info.get("env")
     if isinstance(env_block, dict):
         raw = env_block.get("compose_project_name")
         if raw is not None and str(raw).strip():
             return str(raw).strip()
+    if config is not None and env_name:
+        return default_compose_project_name(config, env_name)
     raise LocalProxyConfigError(
-        "info.env.compose_project_name is required when local_proxy.enabled is true"
+        "info.env.compose_project_name is required when local_proxy is enabled "
+        "and compose project name cannot be derived"
     )
 
 
 def compose_project_name_from_env_add(
     env_add: dict[str, str],
     info: dict[str, Any] | None = None,
+    *,
+    config: ProjectConfig | None = None,
+    env_name: str = "",
 ) -> str:
     """Resolve the Compose project name used for network aliases and overrides."""
     name = (env_add.get("COMPOSE_PROJECT_NAME") or "").strip()
     if name:
         return name
     if info is not None:
-        return compose_project_name_from_info(info)
+        return compose_project_name_from_info(info, config, env_name)
     raise LocalProxyConfigError("COMPOSE_PROJECT_NAME is required for local proxy routing")
 
 
-def local_proxy_service(info: dict[str, Any], *, route_index: int | None = None) -> str:
-    """Compose service name that receives traffic from the machine-wide dev proxy."""
-    block = _local_proxy_block(info)
-    if route_index is not None:
-        routes = block.get("routes")
-        if isinstance(routes, list) and 0 <= route_index < len(routes):
-            raw = routes[route_index].get("service")
-            if raw is not None and str(raw).strip():
-                return str(raw).strip()
-    raw = block.get("service")
-    if raw is None or not str(raw).strip():
-        raise LocalProxyConfigError(
-            "local_proxy.service is required when local_proxy.enabled is true "
-            "(e.g. node for Vite dev, caddy for full stack)"
-        )
-    return str(raw).strip()
+def local_proxy_service(
+    config: ProjectConfig,
+    info: dict[str, Any] | None = None,
+    *,
+    route_index: int | None = None,
+) -> str:
+    """Compose front service that receives traffic from the machine-wide dev proxy."""
+    _ = info, route_index
+    return config.stack_service("proxy")
 
 
 def local_proxy_upstream_alias(compose_project_name: str, service: str) -> str:
@@ -172,8 +196,9 @@ def local_proxy_upstream_alias(compose_project_name: str, service: str) -> str:
 
 
 def local_proxy_upstream_host(
-    info: dict[str, Any],
+    config: ProjectConfig,
     compose_project_name: str,
+    info: dict[str, Any] | None = None,
     *,
     route_index: int | None = None,
     route: dict[str, Any] | None = None,
@@ -185,25 +210,20 @@ def local_proxy_upstream_host(
             host = str(raw).strip()
             if host:
                 return host
-    block = _local_proxy_block(info)
-    raw = block.get("upstream_host") or block.get("upstreamHost")
-    if raw is not None:
-        host = str(raw).strip()
-        if host:
-            return host
-    service = local_proxy_service(info, route_index=route_index)
+    if info is not None:
+        block = _local_proxy_block(info)
+        raw = block.get("upstream_host") or block.get("upstreamHost")
+        if raw is not None:
+            host = str(raw).strip()
+            if host:
+                return host
+    service = local_proxy_service(config, info, route_index=route_index)
     return local_proxy_upstream_alias(compose_project_name, service)
 
 
-def local_proxy_upstream_port(info: dict[str, Any]) -> int:
-    block = _local_proxy_block(info)
-    raw = block.get("upstream_port") or block.get("upstreamPort")
-    if raw is None:
-        raise LocalProxyConfigError(
-            "local_proxy.upstream_port is required when local_proxy.enabled is true "
-            "and local_proxy.routes is not set"
-        )
-    return _parse_upstream_port(raw, field="local_proxy.upstream_port")
+def local_proxy_upstream_port(info: dict[str, Any] | None = None) -> int:
+    _ = info
+    return LOCAL_PROXY_UPSTREAM_PORT
 
 
 def _parse_upstream_port(raw: object, *, field: str) -> int:
@@ -216,36 +236,32 @@ def _parse_upstream_port(raw: object, *, field: str) -> int:
     return port
 
 
-def local_proxy_upstream_dial(info: dict[str, Any], compose_project_name: str) -> str:
+def local_proxy_upstream_dial(
+    config: ProjectConfig,
+    compose_project_name: str,
+    info: dict[str, Any] | None = None,
+) -> str:
     return (
-        f"{local_proxy_upstream_host(info, compose_project_name)}:"
+        f"{local_proxy_upstream_host(config, compose_project_name, info)}:"
         f"{local_proxy_upstream_port(info)}"
     )
 
 
-def local_proxy_hostname(info: dict[str, Any]) -> str:
-    origins = parse_site_origins_from_info(info)
-    if not origins:
+def local_proxy_hostname(
+    info: dict[str, Any],
+    config: ProjectConfig,
+    env_name: str,
+) -> str:
+    origin = primary_site_origin_for_env(info, config, env_name)
+    if not origin:
         raise LocalProxyConfigError(
-            "site_origin is required when local_proxy.enabled is true "
-            "(e.g. https://myapp-dev.localdev.temp.build)"
+            "Could not derive site_origin for local proxy "
+            f"(set site_origin or configure project.name + env {env_name!r})"
         )
-    hosts = hostnames_from_origins(origins)
+    hosts = hostnames_from_origins([origin])
     if not hosts:
-        raise LocalProxyConfigError(f"Could not derive hostname from site_origin: {origins!r}")
-    if len(hosts) > 1:
-        raise LocalProxyConfigError(
-            "local_proxy requires a single site_origin hostname; "
-            f"got {len(hosts)}: {', '.join(hosts)}"
-        )
+        raise LocalProxyConfigError(f"Could not derive hostname from site_origin: {origin!r}")
     return hosts[0]
-
-
-def local_proxy_uses_routes_list(info: dict[str, Any]) -> bool:
-    """True when ``local_proxy.routes`` defines explicit host/upstream entries."""
-    block = _local_proxy_block(info)
-    routes = block.get("routes")
-    return isinstance(routes, list) and len(routes) > 0
 
 
 def _hostname_from_route_host(raw: object, *, field: str) -> str:
@@ -316,58 +332,22 @@ def local_proxy_routes(
     env_name: str,
     compose_project_name: str,
 ) -> list[LocalProxyRoute]:
-    """Return all proxy routes for this environment (legacy single-route or ``routes`` list)."""
+    """Return all proxy routes for this environment (derived hostnames → stack caddy:80)."""
     if not local_proxy_enabled(info):
         return []
 
-    if local_proxy_uses_routes_list(info):
-        block = _local_proxy_block(info)
-        default_host = local_proxy_hostname(info)
-        entries: list[LocalProxyRoute] = []
-        for index, raw in enumerate(block["routes"]):
-            if not isinstance(raw, dict):
-                raise LocalProxyConfigError(
-                    f"local_proxy.routes[{index}] must be a mapping (got {type(raw).__name__})"
-                )
-            host_raw = raw.get("host")
-            host = (
-                _hostname_from_route_host(host_raw, field=f"local_proxy.routes[{index}].host")
-                if host_raw is not None
-                else default_host
-            )
-            port_raw = raw.get("upstream_port") or raw.get("upstreamPort")
-            if port_raw is None:
-                raise LocalProxyConfigError(
-                    f"local_proxy.routes[{index}].upstream_port is required"
-                )
-            port = _parse_upstream_port(port_raw, field=f"local_proxy.routes[{index}].upstream_port")
-            upstream_host = local_proxy_upstream_host(
-                info,
-                compose_project_name,
-                route_index=index,
-                route=raw,
-            )
-            rid = route_id_for_host(config, env_name, host)
-            entries.append(
-                LocalProxyRoute(
-                    route_id=rid,
-                    host=host,
-                    upstream_dial=f"{upstream_host}:{port}",
-                )
-            )
-        return _expand_lan_proxy_routes(entries, info, config=config)
-
-    return _expand_lan_proxy_routes(
-        [
+    upstream_dial = local_proxy_upstream_dial(config, compose_project_name, info)
+    entries: list[LocalProxyRoute] = []
+    for origin in resolve_site_origins_for_env(info, config, env_name):
+        host = hostnames_from_origins([origin])[0]
+        entries.append(
             LocalProxyRoute(
-                route_id=route_id(config, env_name),
-                host=local_proxy_hostname(info),
-                upstream_dial=local_proxy_upstream_dial(info, compose_project_name),
+                route_id=route_id_for_host(config, env_name, host),
+                host=host,
+                upstream_dial=upstream_dial,
             )
-        ],
-        info,
-        config=config,
-    )
+        )
+    return _expand_lan_proxy_routes(entries, info, config=config)
 
 
 def _sanitize_route_label(label: str, *, field: str) -> str:
@@ -888,19 +868,24 @@ def print_proxy_status(*, file: TextIO | None = None) -> None:
         print(line, file=out)
 
 
-def local_proxy_public_url(info: dict[str, Any]) -> str:
-    origins = parse_site_origins_from_info(info)
-    return origins[0] if origins else f"https://{local_proxy_hostname(info)}"
-
-
-def print_local_proxy_url(info: dict[str, Any], *, file: TextIO | None = None) -> None:
-    out = sys.stderr if file is None else file
+def local_proxy_public_url(info: dict[str, Any], config: ProjectConfig, env_name: str) -> str:
     origins = parse_site_origins_from_info(info)
     if origins:
-        for origin in origins:
-            print(f"Local dev URL: {origin}", file=out)
-    elif local_proxy_enabled(info):
-        print(f"Local dev URL: https://{local_proxy_hostname(info)}", file=out)
+        return origins[0]
+    return primary_site_origin_for_env(info, config, env_name) or ""
+
+
+def print_local_proxy_url(
+    info: dict[str, Any],
+    config: ProjectConfig,
+    env_name: str,
+    *,
+    file: TextIO | None = None,
+) -> None:
+    out = sys.stderr if file is None else file
+    origins = resolve_site_origins_for_env(info, config, env_name)
+    for origin in origins:
+        print(f"Local dev URL: {origin}", file=out)
 
 
 def ca_is_trusted() -> bool:
@@ -955,38 +940,14 @@ def local_proxy_override_path(config: ProjectConfig, env_name: str) -> Path:
 
 
 def local_proxy_front_services(
-    info: dict[str, Any],
+    config: ProjectConfig,
     compose_project_name: str,
+    info: dict[str, Any] | None = None,
 ) -> list[tuple[str, str]]:
-    """Return unique ``(compose_service, network_alias)`` pairs for the override file."""
-    block = _local_proxy_block(info)
-    default_service = local_proxy_service(info)
-    services: dict[str, str] = {}
-
-    def add_service(service_name: str, *, route: dict[str, Any] | None = None, route_index: int | None = None) -> None:
-        alias = local_proxy_upstream_host(
-            info,
-            compose_project_name,
-            route_index=route_index,
-            route=route,
-        )
-        services[service_name] = alias
-
-    if local_proxy_uses_routes_list(info):
-        for index, raw in enumerate(block["routes"]):
-            if not isinstance(raw, dict):
-                continue
-            svc_raw = raw.get("service")
-            service_name = (
-                str(svc_raw).strip()
-                if svc_raw is not None and str(svc_raw).strip()
-                else default_service
-            )
-            add_service(service_name, route=raw, route_index=index)
-    else:
-        add_service(default_service)
-
-    return list(services.items())
+    """Return ``(compose_service, network_alias)`` for the stack front proxy service."""
+    service = local_proxy_service(config, info)
+    alias = local_proxy_upstream_host(config, compose_project_name, info)
+    return [(service, alias)]
 
 
 def write_local_proxy_override(
@@ -1002,7 +963,7 @@ def write_local_proxy_override(
     """
     path = local_proxy_override_path(config, env_name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    services = local_proxy_front_services(info, compose_project_name)
+    services = local_proxy_front_services(config, compose_project_name, info)
 
     lines = [
         f"# Generated by catalpa-workspace-tooling for dk {env_name} (local dev proxy).",
@@ -1042,7 +1003,9 @@ def local_proxy_extra_compose_files(
     verb = compose_args[0]
     if verb not in ("up", "down", "restart"):
         return []
-    project_name = compose_project_name_from_env_add(env_add, info)
+    project_name = compose_project_name_from_env_add(
+        env_add, info, config=config, env_name=env_name
+    )
     override = write_local_proxy_override(config, env_name, info, project_name)
     return [str(override)]
 
@@ -1060,7 +1023,9 @@ def sync_local_proxy_for_compose_action(
     if not local_proxy_enabled(info):
         return 0
 
-    compose_project_name = compose_project_name_from_env_add(env_add, info)
+    compose_project_name = compose_project_name_from_env_add(
+        env_add, info, config=config, env_name=env_name
+    )
     routes = local_proxy_routes(info, config, env_name, compose_project_name)
     if not compose_args:
         return 0
@@ -1090,7 +1055,7 @@ def sync_local_proxy_for_compose_action(
             )
             if rc != 0:
                 return rc
-        print_local_proxy_url(info)
+        print_local_proxy_url(info, config, env_name)
         print_ca_trust_hint(env_name)
         return 0
 

@@ -199,8 +199,8 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
     assert "Dev: Open site on LAN" in labels
     assert "Dev: Open site in Cursor browser" in labels
     assert "Full: Open site in Cursor browser" in labels
-    # No local_proxy in the default dev info.yaml -> no local-proxy trust task.
-    assert "Trust Catalpa local dev CA" not in labels
+    # Default-on local proxy for local dev envs -> trust task is included.
+    assert "Trust Catalpa local dev CA" in labels
 
     dev_cursor_task = next(
         t for t in data["tasks"] if t["label"] == "Dev: Open site in Cursor browser"

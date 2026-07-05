@@ -22,9 +22,6 @@ from catalpa_tooling.dev_lan_access import (
 _PROXY_INFO = {
     "site_origin": "https://ambulancia-dev.localdev.temp.build",
     "local_proxy": {
-        "enabled": True,
-        "service": "node",
-        "upstream_port": 5555,
         "lan_access": True,
     },
 }
@@ -36,7 +33,7 @@ def test_dev_lan_access_enabled_when_explicit() -> None:
 
 
 def test_lan_access_requires_local_proxy() -> None:
-    assert lan_access_enabled({"dev_lan_access": True}) is False
+    assert lan_access_enabled({"dev_lan_access": True, "local_proxy": False}) is False
     assert lan_access_enabled(_PROXY_INFO) is True
 
 
@@ -72,7 +69,7 @@ def test_dev_lan_port_from_info() -> None:
 
 
 def test_dev_lan_port_from_local_proxy() -> None:
-    assert dev_lan_port_from_info(_PROXY_INFO) == 5555
+    assert dev_lan_port_from_info(_PROXY_INFO) == 8080
 
 
 def test_dev_lan_port_fallback() -> None:
@@ -81,7 +78,7 @@ def test_dev_lan_port_fallback() -> None:
 
 @patch("catalpa_tooling.dev_lan_access.detect_dev_lan_hosts", return_value=["192.168.1.42"])
 def test_format_dev_lan_urls_legacy(mock_detect: object) -> None:
-    info = {"dev_lan_access": True, "env": {"node_port": "9001"}}
+    info = {"dev_lan_access": True, "local_proxy": False, "env": {"node_port": "9001"}}
     assert format_dev_lan_urls(info) == ["http://192.168.1.42:9001"]
 
 
@@ -93,7 +90,7 @@ def test_format_proxy_lan_urls(mock_ipv4: object) -> None:
 
 @patch("catalpa_tooling.dev_lan_access.detect_dev_lan_hosts", return_value=["192.168.1.42", "Mac.local"])
 def test_build_dev_lan_env_legacy(mock_detect: object) -> None:
-    info = {"dev_lan_access": True, "env": {"node_port": "9001"}}
+    info = {"dev_lan_access": True, "local_proxy": False, "env": {"node_port": "9001"}}
     env = build_dev_lan_env(info)
     assert env["BERO_EXTRA_ALLOWED_HOSTS"] == "192.168.1.42,Mac.local"
     assert env["BERO_EXTRA_ORIGINS"] == (
@@ -125,7 +122,7 @@ def test_print_dev_lan_urls_legacy(
         "catalpa_tooling.dev_lan_access.detect_dev_lan_hosts",
         lambda: ["10.0.0.5"],
     )
-    info = {"dev_lan_access": True, "env": {"node_port": "9001"}}
+    info = {"dev_lan_access": True, "local_proxy": False, "env": {"node_port": "9001"}}
     urls = print_dev_lan_urls(info)
     assert urls == ["http://10.0.0.5:9001"]
     err = capsys.readouterr().err
