@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk <env> db restore` / `db pgrestore` / `transfer`** — merge `native.reset_db.pg_restore_args` from `tooling.yaml` into compose `pg_restore` (previously only `native reset-db` / `native pg-restore` honored those flags). Fixes restores that need `--role=postgres` for extension DDL in production dumps (e.g. PostGIS, `pg_stat_statements`).
+
 ## 0.9.1
 
 ### Changed

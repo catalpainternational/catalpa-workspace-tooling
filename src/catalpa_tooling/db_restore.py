@@ -14,9 +14,8 @@ from catalpa_tooling.fetch_db import (
     run_fetch_all_dbs,
 )
 from catalpa_tooling.pgbackrest_db import (
+    compose_pg_restore_extras_for_config,
     ensure_db_service_running,
-    pg_restore_compose_extras,
-    pg_restore_extras_with_default_archive,
     plan_restore_offline,
     run_drop_create_app_database,
     run_drop_create_metabase_database,
@@ -87,12 +86,10 @@ def run_compose_app_dump_restore(
     extras = list(extra_pg_restore_args or [])
     if archive_path is not None:
         extras = ["--file", str(archive_path), *extras]
-    restore_extras = pg_restore_compose_extras(
-        pg_restore_extras_with_default_archive(
-            extras,
-            config.fetch_db_dump_path,
-        ),
-        postgis=config.native.reset_db.postgis,
+    restore_extras = compose_pg_restore_extras_for_config(
+        config,
+        extras,
+        default_archive=config.fetch_db_dump_path,
     )
     if "--file" not in restore_extras and sys.stdin.isatty():
         return 1
@@ -140,7 +137,11 @@ def run_compose_metabase_dump_restore(
         return 0
     extras = list(extra_pg_restore_args or [])
     extras = ["--file", str(dump_path), *extras]
-    restore_extras = pg_restore_compose_extras(extras, postgis=False)
+    restore_extras = compose_pg_restore_extras_for_config(
+        config,
+        extras,
+        postgis=False,
+    )
     rc = ensure_db_service_running(
         compose_file, env_add, config=config, dk_env_name=env_name
     )

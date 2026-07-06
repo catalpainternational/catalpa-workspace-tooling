@@ -327,6 +327,22 @@ def pg_restore_compose_extras(
     return xs
 
 
+def compose_pg_restore_extras_for_config(
+    config: ProjectConfig,
+    extras: Sequence[str] | None = None,
+    *,
+    default_archive: Path | None = None,
+    postgis: bool | None = None,
+) -> list[str]:
+    """Merge ``native.reset_db.pg_restore_args`` with CLI extras for compose ``pg_restore``."""
+    merged = [*config.native.reset_db.pg_restore_args, *(extras or ())]
+    use_postgis = config.native.reset_db.postgis if postgis is None else postgis
+    return pg_restore_compose_extras(
+        pg_restore_extras_with_default_archive(merged, default_archive),
+        postgis=use_postgis,
+    )
+
+
 def _pg_restore_has_role(extras: Sequence[str]) -> bool:
     for i, arg in enumerate(extras):
         if arg == "--role":
