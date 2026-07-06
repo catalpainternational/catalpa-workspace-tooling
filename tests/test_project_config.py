@@ -324,6 +324,20 @@ def test_restic_invalid_backup_path(tmp_path: Path, isolated_tooling: None) -> N
         load_project_config(tmp_path)
 
 
+def test_minimal_config_generalized_defaults(minimal_config) -> None:
+    from catalpa_tooling.config import (
+        DEFAULT_BUILD_PLACEHOLDERS,
+        DEFAULT_DEV_LAN_DNS_SUFFIX,
+        DEFAULT_DEV_SITE_ORIGIN_BASE,
+        DEFAULT_ORIGIN_ENV_KEYS,
+    )
+
+    assert minimal_config.dev.site_origin_base == DEFAULT_DEV_SITE_ORIGIN_BASE
+    assert minimal_config.dev.lan_dns_suffix == DEFAULT_DEV_LAN_DNS_SUFFIX
+    assert minimal_config.stack.origin_env_keys == DEFAULT_ORIGIN_ENV_KEYS
+    assert minimal_config.stack.build_placeholders == DEFAULT_BUILD_PLACEHOLDERS
+
+
 def test_indmo_reference_tooling_snapshot(tmp_path: Path, isolated_tooling: None) -> None:
     """Guard the bundled INDMO reference manifest (consumer parity check)."""
     ref = Path(__file__).parent / "fixtures" / "indmo_reference_tooling.yaml"

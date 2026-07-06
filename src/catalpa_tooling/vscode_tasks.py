@@ -8,9 +8,10 @@ from typing import Any
 
 import yaml
 
+from catalpa_tooling.local_proxy import local_proxy_enabled
 from catalpa_tooling.site_origin import primary_site_origin_from_info
 
-SETUP_VSCODE_GENERATOR_VERSION = "6"
+SETUP_VSCODE_GENERATOR_VERSION = "7"
 MANAGED_MARKER_KEY = "_catalpa_setup_vscode"
 
 PATH_ENV = (
@@ -63,6 +64,13 @@ def _read_site_origin(info_yaml: Path) -> str:
         return ""
     info = yaml.safe_load(info_yaml.read_text(encoding="utf-8")) or {}
     return primary_site_origin_from_info(info) or ""
+
+
+def _local_proxy_enabled(info_yaml: Path) -> bool:
+    if not info_yaml.is_file():
+        return False
+    info = yaml.safe_load(info_yaml.read_text(encoding="utf-8")) or {}
+    return local_proxy_enabled(info)
 
 
 def _cursor_browser_input(input_id: str, url: str) -> dict[str, Any]:
@@ -259,6 +267,19 @@ def _dev_tasks(
             and _read_site_origin(deploy_envs_dir / "dev" / "info.yaml")
             else []
         ),
+        *(
+            [
+                # Machine-wide CA shared by every project's local dev proxy, so
+                # this is not prefixed like the per-env "Dev:"/"Full:" tasks.
+                _shell_task(
+                    "Trust Catalpa local dev CA",
+                    "uv run dk dev trust-caddy-cert",
+                )
+            ]
+            if deploy_envs_dir
+            and _local_proxy_enabled(deploy_envs_dir / "dev" / "info.yaml")
+            else []
+        ),
         _shell_task(
             "Dev: Show LAN URLs",
             f'uv run python -c "{_dev_lan_urls_py(DEV_INFO_YAML)}"',
@@ -315,7 +336,7 @@ def _dev_tasks(
                     else []
                 ),
                 _shell_task(
-                    "Full: Trust HTTPS certificate (macOS)",
+                    "Full: Trust HTTPS certificate",
                     "uv run dk full trust-caddy-cert",
                 ),
                 _shell_task(
@@ -351,9 +372,6 @@ def build_settings_json() -> dict[str, Any]:
             "com.microsoft.visualstudio.orchestrators.dockercompose"
         ),
         "containers.containerCommand": "/usr/local/bin/docker",
-        "containers.commands.composeUp": (
-            "${composeCommand} ${configurationFile} up ${detached} ${build}"
-        ),
     }
 
 

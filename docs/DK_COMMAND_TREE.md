@@ -7,6 +7,15 @@ dk
 ├── push                           # build and push images tagged from git describe
 ├── build [SERVICE …]              # build images tagged from git describe
 ├── transfer SRC DST               # transfer db and media from one environemnt to another
+├── fetch                          # download production DB dumps and/or media
+│   ├── db [-o PATH] [--env NAME] [--only KEY]
+│   └── media [--env NAME] …       # same options as native fetch media
+│
+├── proxy [--dry-run]              # machine-wide local dev HTTPS reverse proxy
+│   ├── up                         # start catalpa-local-proxy (Caddy :80/:443); CA persisted on host
+│   ├── down                       # stop/remove catalpa-local-proxy (host-persisted CA kept)
+│   ├── status                     # running? live sites (host -> upstream, project/env)
+│   └── trust                      # trust "Catalpa Local Dev Root (<machine>)" CA once (macOS/Linux)
 │
 ├── digoc                          # access to doctl (probably removing this for access via dk)
 │   ├── auth                        
@@ -36,7 +45,7 @@ dk
     │   └── logs
     ├── ensure_volumes               # utility command 
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
-    ├── trust-caddy-cert [--dry-run] # macOS: trust Caddy local CA (stack.services.proxy)
+    ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
     ├── manage <django …>            # access ./manage.py
     ├── pull_media                   # volume → host dir (tar)
     ├── wipe                         # alias: compose down -v
@@ -61,7 +70,7 @@ dk
     │   ├── backup full|incr|diff
     │   ├── pgdump
     │   ├── pgrestore
-    │   └── restore
+    │   └── restore [--dumps] [--dry-run] [pgBackRest args…]
     │
     ├── compose …                  # explicit passthrough (tab completion); e.g. compose up -d
     └── …                          # implicit compose passthrough (legacy); e.g. up -d
@@ -75,6 +84,7 @@ dk
 | `push` | Build for `linux/amd64` and push to registry |
 | `transfer` | Copy Postgres + `django_media` between two envs |
 | `digoc` | DigitalOcean helpers (wraps `doctl`) |
+| `proxy` | Machine-wide local dev HTTPS reverse proxy (`*.localdev.temp.build`) |
 
 ## `<env>` only
 

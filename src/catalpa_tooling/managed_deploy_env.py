@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -16,9 +17,15 @@ from catalpa_tooling.env_yaml import _credentials_to_env, _yaml_mapping_to_env
 from catalpa_tooling.images import _default_image_tag, _image_registry_from_config, _load_images_config
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import (
+    derive_site_origin,
     domain_env_from_origins,
+    hostnames_from_origins,
+    local_proxy_role_names,
     parse_site_origins_from_info,
+    primary_site_origin_for_env,
     primary_site_origin_from_info,
+    resolve_site_origins_for_env,
+    role_site_origin_from_primary,
     site_origin_from_info,
 )
 from catalpa_tooling.storage_config import StorageVolumeSpec, parse_storage_volumes_from_info
@@ -140,8 +147,8 @@ def print_managed_deploy_header(
             compose_file=compose_file,
             env_add={},
             docker_host=str(info.get("docker_host", "")),
-            site_origin=primary_site_origin_from_info(info),
-            site_origins=tuple(parse_site_origins_from_info(info)),
+            site_origin=primary_site_origin_for_env(info, config, env_name),
+            site_origins=tuple(resolve_site_origins_for_env(info, config, env_name)),
             use_prepulled_registry=use_prepulled,
             image_registry=image_registry,
             info_tag=effective_tag,
@@ -182,8 +189,9 @@ def load_managed_deploy_context(
         if compose_file is None:
             return None
 
-    site_origins = tuple(parse_site_origins_from_info(info))
-    site_origin = site_origins[0] if site_origins else ""
+    site_origins_list = resolve_site_origins_for_env(info, config, env_name)
+    site_origin = site_origins_list[0] if site_origins_list else ""
+    site_origins = tuple(site_origins_list)
     docker_host = info.get("docker_host", "")
 
     from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
@@ -259,9 +267,41 @@ def load_managed_deploy_context(
     if site_origin:
         env_add["SITE_ORIGIN"] = site_origin
         env_add.setdefault("BERO_ORIGIN", site_origin)
-    domain_s = domain_env_from_origins(list(site_origins))
+    domain_s = domain_env_from_origins(site_origins_list)
     if domain_s:
         env_add["DOMAIN"] = domain_s
+
+    from catalpa_tooling.local_proxy import local_proxy_enabled
+
+    if local_proxy_enabled(info):
+        primary_host = hostnames_from_origins([site_origin])[0] if site_origin else ""
+        if primary_host:
+            env_add.setdefault("CADDY_SITE_ADDRESS", f"http://{primary_host}")
+        role_env_keys: dict[str, tuple[tuple[str, str], ...]] = {
+            "admin": (("DJANGO_ORIGIN", "CADDY_DJANGO_SITE_ADDRESS"),),
+            "stats": (("METABASE_ORIGIN", "CADDY_METABASE_SITE_ADDRESS"),),
+        }
+        extra_allowed: list[str] = []
+        for role in local_proxy_role_names(info):
+            if site_origin:
+                role_origin = role_site_origin_from_primary(site_origin, role)
+            else:
+                role_origin = derive_site_origin(config, env_name, role=role)
+            role_host = hostnames_from_origins([role_origin])[0]
+            extra_allowed.append(role_host)
+            for env_key, caddy_key in role_env_keys.get(role, ()):
+                env_add.setdefault(env_key, role_origin)
+                env_add.setdefault(caddy_key, f"http://{role_host}")
+        if extra_allowed:
+            env_add.setdefault("BERO_EXTRA_ALLOWED_HOSTS", ", ".join(extra_allowed))
+        env_add.setdefault("VITE_BEHIND_PROXY", "true")
+        if "stats" in local_proxy_role_names(info):
+            stats_origin = (
+                role_site_origin_from_primary(site_origin, "stats")
+                if site_origin
+                else derive_site_origin(config, env_name, role="stats")
+            )
+            env_add.setdefault("METABASE_SITE_ORIGIN", stats_origin)
 
     if effective_tag:
         env_add["STACK_IMAGE_TAG"] = effective_tag
@@ -292,22 +332,33 @@ def load_managed_deploy_context(
     from catalpa_tooling.dev_lan_access import build_dev_lan_env, dev_lan_access_enabled, print_dev_lan_urls
 
     if dev_lan_access_enabled(info):
-        lan_env = build_dev_lan_env(info)
-        for key in ("BERO_EXTRA_ALLOWED_HOSTS", "BERO_EXTRA_ORIGINS"):
+        lan_env = build_dev_lan_env(info, config=config, env_name=env_name)
+        merge_keys = (
+            "BERO_EXTRA_ALLOWED_HOSTS",
+            "BERO_EXTRA_ORIGINS",
+            "DOMAIN",
+            "VITE_EXTRA_ALLOWED_HOSTS",
+        )
+        for key in merge_keys:
             if key not in lan_env:
                 continue
             existing = (env_add.get(key) or "").strip()
             if existing:
                 seen: set[str] = set()
                 merged: list[str] = []
-                for part in f"{existing},{lan_env[key]}".split(","):
+                for part in re.split(r"[, ]+", existing):
                     part = part.strip()
                     if part and part not in seen:
                         seen.add(part)
                         merged.append(part)
-                lan_env[key] = ",".join(merged)
+                for part in re.split(r"[, ]+", lan_env[key]):
+                    part = part.strip()
+                    if part and part not in seen:
+                        seen.add(part)
+                        merged.append(part)
+                lan_env[key] = ", ".join(merged)
         env_add.update(lan_env)
-        if env_add.get("BERO_EXTRA_ORIGINS"):
+        if lan_env:
             print_dev_lan_urls(info)
 
     try:

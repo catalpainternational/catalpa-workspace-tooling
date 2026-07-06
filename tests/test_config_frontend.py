@@ -11,9 +11,9 @@ from catalpa_tooling.config import (
     FrontendDevConfig,
     ProjectConfigError,
     _parse_frontend,
-    _parse_native,
     resolve_frontend_package_manager,
 )
+from tests.helpers import parse_native_for_test
 
 
 def test_parse_frontend_defaults() -> None:
@@ -61,7 +61,7 @@ def test_parse_frontend_node_version() -> None:
 
 
 def test_parse_native_includes_frontend() -> None:
-    cfg = _parse_native({"frontend": {"script": "start", "package_manager": "yarn"}})
+    cfg = parse_native_for_test({"frontend": {"script": "start", "package_manager": "yarn"}})
     assert cfg.frontend.script == "start"
     assert cfg.frontend.package_manager == "yarn"
 

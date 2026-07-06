@@ -7,12 +7,17 @@ import pytest
 
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
 from catalpa_tooling.site_origin import (
+    derive_dev_hostname,
+    derive_site_origin,
     domain_env_from_origins,
     hostnames_from_origins,
     normalize_site_origin_entry,
     parse_site_origin_entries,
     parse_site_origins_from_info,
+    primary_site_origin_for_env,
     primary_site_origin_from_info,
+    project_slug_from_config,
+    resolve_site_origins_for_env,
 )
 
 
@@ -133,3 +138,29 @@ def test_load_managed_deploy_context_defaults_django_debug_off(
     ctx = load_managed_deploy_context(minimal_project, "local")
     assert ctx is not None
     assert ctx.env_add["DJANGO_DEBUG"] == "0"
+
+
+def test_derive_dev_hostname(minimal_config) -> None:
+    assert derive_dev_hostname(minimal_config, "dev") == "minimal-dev.localdev.temp.build"
+    assert (
+        derive_dev_hostname(minimal_config, "full", role="stats")
+        == "stats.minimal-full.localdev.temp.build"
+    )
+    assert project_slug_from_config(minimal_config) == "minimal"
+    assert derive_site_origin(minimal_config, "dev") == "https://minimal-dev.localdev.temp.build"
+
+
+def test_resolve_site_origins_for_env(minimal_config) -> None:
+    info = {"local_proxy": {"roles": ["admin", "stats"]}}
+    origins = resolve_site_origins_for_env(info, minimal_config, "full")
+    assert origins == [
+        "https://minimal-full.localdev.temp.build",
+        "https://admin.minimal-full.localdev.temp.build",
+        "https://stats.minimal-full.localdev.temp.build",
+    ]
+
+
+def test_primary_site_origin_for_env_derives_when_missing(minimal_config) -> None:
+    assert primary_site_origin_for_env({}, minimal_config, "dev") == (
+        "https://minimal-dev.localdev.temp.build"
+    )

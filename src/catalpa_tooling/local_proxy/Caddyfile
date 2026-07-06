@@ -1,0 +1,37 @@
+{
+	# Bind admin to all interfaces INSIDE the container; the docker run mapping
+	# publishes it only to the host loopback (-p 127.0.0.1:2019:2019), so it is
+	# not reachable from the LAN. Binding to 127.0.0.1 here would make the
+	# published port unreachable (container loopback only).
+	admin 0.0.0.0:2019
+	local_certs
+
+	# Stable, recognizable names for the local dev CA so it is easy to find,
+	# audit, and remove in the OS trust store (Keychain / ca-certificates).
+	# The root key+cert are persisted on the host (see docker run -v mapping of
+	# /data), so this CA is minted once per machine and trusted once.
+	# The {$VAR:default} form is substituted as literal text when the Caddyfile
+	# is adapted, so each machine's CA is identifiable in the trust store. The
+	# machine label is passed via -e CATALPA_LOCAL_DEV_MACHINE on `docker run`.
+	pki {
+		ca local {
+			name "Catalpa Local Dev CA ({$CATALPA_LOCAL_DEV_MACHINE:local})"
+			root_cn "Catalpa Local Dev Root ({$CATALPA_LOCAL_DEV_MACHINE:local})"
+			intermediate_cn "Catalpa Local Dev Intermediate ({$CATALPA_LOCAL_DEV_MACHINE:local})"
+		}
+	}
+}
+
+:443 {
+}
+
+:80 {
+	handle_path /catalpa-local-ca.crt {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		file_server
+	}
+	handle {
+		redir https://{host}{uri} permanent
+	}
+}

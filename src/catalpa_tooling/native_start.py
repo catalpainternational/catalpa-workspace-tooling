@@ -12,7 +12,7 @@ from catalpa_tooling.script_assets import honcho_start_helper_path
 
 
 def render_default_procfile(*, migrate: bool, runserver_bind: str | None = None) -> str:
-    """Default bero/Wagtail Procfile when ``native.start.procfile`` is unset."""
+    """Default Django + frontend Procfile when ``native.start.procfile`` is unset."""
     runserver = "uv run native runserver"
     if runserver_bind:
         runserver = f"{runserver} {runserver_bind}"

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from catalpa_tooling.config import load_project_config
+from catalpa_tooling.config import DEFAULT_BUILD_PLACEHOLDERS, load_project_config
 from catalpa_tooling.dk_stack import _apply_build_placeholders, _load_dotenv_file, env_for_stack_build
 
 
@@ -20,7 +20,7 @@ def test_load_dotenv_file_parses_comments_and_values(tmp_path: Path) -> None:
 
 def test_apply_build_placeholders_only_fills_missing() -> None:
     env = {"POSTGRES_PASSWORD": "real", "BERO_ORIGIN": ""}
-    _apply_build_placeholders(env)
+    _apply_build_placeholders(env, DEFAULT_BUILD_PLACEHOLDERS)
     assert env["POSTGRES_PASSWORD"] == "real"
     assert env["DJANGO_DB_PASSWORD"] == "build_placeholder"
     assert env["BERO_ORIGIN"] == "https://build.example"

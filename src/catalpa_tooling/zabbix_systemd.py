@@ -17,17 +17,18 @@ from urllib.parse import urlparse
 from catalpa_tooling.restic_files import RESTIC_IMAGE
 from catalpa_tooling.run_cmd import run as run_cmd
 
-UNIT_NAME = "indmo-zabbix-agent2.service"
+UNIT_NAME = "zabbix-agent2.service"
+UNIT_DESCRIPTION_LABEL = "project"
 CONTAINER_NAME = "zabbix-agent2"
 DEFAULT_IMAGE = "zabbix/zabbix-agent2:alpine-latest"
 SYSTEMD_UNIT_PATH = Path("/etc/systemd/system") / UNIT_NAME
-ENV_DIR = Path("/etc/indmo")
+ENV_DIR = Path("/etc/zabbix")
 ENV_FILE = ENV_DIR / "zabbix-agent2.docker.env"
 USERPARAMS_FILE = ENV_DIR / "zabbix-agent2-userparams.conf"
 CHROOT_BIN = "/usr/sbin/chroot"
 CHROOT_HOST_ROOT = "/host/root"
 DEFAULT_CHROOT_DOCKER_CLI = "/usr/bin/docker"
-DEFAULT_ZABBIX_COMPOSE_PROJECT = "pas_indmo"
+DEFAULT_ZABBIX_COMPOSE_PROJECT = ""
 DEFAULT_ZABBIX_COMPOSE_DB_SERVICE = "db"
 DEFAULT_ZABBIX_COMPOSE_REPLICA = 1
 DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE = str(ENV_DIR / "restic-files-backup.env")
@@ -113,8 +114,9 @@ def _unit_file_content(*, image: str, docker_group_gid: int) -> str:
     # UserParameter commands use `chroot /host/root docker …` so the host Docker CLI runs with host libc
     # (the agent image is Alpine/musl and cannot execute the host `docker` binary directly).
     # chroot(2) needs CAP_SYS_CHROOT; run the container as root (--user 0:0).
+    userparams_mount = USERPARAMS_FILE.name
     return f"""[Unit]
-Description=INDMO: Zabbix Agent 2 (Docker)
+Description={UNIT_DESCRIPTION_LABEL}: Zabbix Agent 2 (Docker)
 Documentation=https://hub.docker.com/r/zabbix/zabbix-agent2
 After=docker.service network-online.target
 Wants=network-online.target
@@ -137,7 +139,7 @@ ExecStart=/usr/bin/docker run --rm \\
     -v /proc:/host/proc:ro \\
     -v /sys:/host/sys:ro \\
     -v /:/host/root:ro \\
-    -v {USERPARAMS_FILE}:/etc/zabbix/zabbix_agent2.d/99-indmo-userparams.conf:ro \\
+    -v {USERPARAMS_FILE}:/etc/zabbix/zabbix_agent2.d/{userparams_mount}:ro \\
     {image}
 ExecStop=/usr/bin/docker stop -t 30 {CONTAINER_NAME}
 ExecStopPost=-/usr/bin/docker rm -f {CONTAINER_NAME}
@@ -903,13 +905,14 @@ def build_zabbix_argparser(*, prog: str) -> argparse.ArgumentParser:
 
 def _apply_config_globals(config: ProjectConfig) -> None:
     """Bind module paths and unit names from ``tooling.yaml`` (single-threaded CLI)."""
-    global UNIT_NAME, SYSTEMD_UNIT_PATH, ENV_DIR, ENV_FILE, USERPARAMS_FILE
+    global UNIT_NAME, UNIT_DESCRIPTION_LABEL, SYSTEMD_UNIT_PATH, ENV_DIR, ENV_FILE, USERPARAMS_FILE
     global DEFAULT_ZABBIX_COMPOSE_PROJECT, DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE
     UNIT_NAME = config.ops.zabbix.unit_name
+    UNIT_DESCRIPTION_LABEL = config.meta.name
     SYSTEMD_UNIT_PATH = Path("/etc/systemd/system") / UNIT_NAME
     ENV_DIR = Path(config.ops.config_dir)
     ENV_FILE = ENV_DIR / "zabbix-agent2.docker.env"
-    USERPARAMS_FILE = ENV_DIR / "zabbix-agent2-userparams.conf"
+    USERPARAMS_FILE = ENV_DIR / config.ops.zabbix.userparams_file
     DEFAULT_ZABBIX_COMPOSE_PROJECT = config.stack.compose_project_default
     DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE = str(ENV_DIR / "restic-files-backup.env")
 

@@ -23,6 +23,25 @@ from catalpa_tooling.repo_paths import TOOLING_FILENAME, repo_root_from_cwd
 DEFAULT_ROOT_MARKER = "pyproject.toml"
 DEFAULT_RESTIC_DATA_VOLUME = "django_media"
 
+DEFAULT_ORIGIN_ENV_KEYS: tuple[str, ...] = (
+    "SITE_ORIGIN",
+    "DJANGO_ORIGIN",
+    "BERO_ORIGIN",
+)
+DEFAULT_BUILD_PLACEHOLDERS: dict[str, str] = {
+    "POSTGRES_PASSWORD": "build_placeholder",
+    "DJANGO_DB_PASSWORD": "build_placeholder",
+    "METABASE_DB_PASSWORD": "build_placeholder",
+    "DJANGO_SECRET_KEY": "build-placeholder-not-for-production",
+    "SITE_ORIGIN": "https://build.example",
+    "DJANGO_ORIGIN": "https://build.example",
+    "BERO_ORIGIN": "https://build.example",
+    "METABASE_ORIGIN": "https://build.example",
+}
+DEFAULT_DEV_SITE_ORIGIN_BASE = "localdev.temp.build"
+DEFAULT_DEV_LAN_DNS_SUFFIX = "lan.localdev.temp.build"
+DEFAULT_BUILD_TIME_ZONE = "Asia/Dili"
+
 
 class ProjectConfigError(ValueError):
     """Invalid or missing project manifest."""
@@ -135,6 +154,8 @@ class StackConfig:
     services: StackServicesConfig
     images: StackImagesConfig
     healthcheck: StackHealthcheckConfig
+    origin_env_keys: tuple[str, ...]
+    build_placeholders: dict[str, str]
 
 
 # PG 18+ official image layout (see catalpa-postgres-entrypoint.sh); override via tooling.yaml pg1_path.
@@ -197,6 +218,20 @@ class PostDbRestoreOpsConfig:
 
 
 @dataclass(frozen=True)
+class PostMetabaseDbRestoreOpsConfig:
+    """Hooks after restoring the Metabase application database from a local dump."""
+
+    envs: tuple[str, ...] | None
+    manage_commands: tuple[tuple[str, ...], ...]
+    restart_services: tuple[str, ...]
+
+    def applies_to_env(self, env_name: str) -> bool:
+        if self.envs is None:
+            return True
+        return env_name in self.envs
+
+
+@dataclass(frozen=True)
 class OpsConfig:
     install_prefix: str
     config_dir: str
@@ -207,7 +242,34 @@ class OpsConfig:
     zabbix: ZabbixOpsConfig
     systemd_units: SystemdUnitsOpsConfig
     post_db_restore: PostDbRestoreOpsConfig
+    post_metabase_db_restore: PostMetabaseDbRestoreOpsConfig
     default_db_container: str
+
+
+VALID_FETCH_VIA = frozenset({"ssh_native", "ssh_docker", "dk", "script"})
+REQUIRED_FETCH_DATABASE_KEYS = frozenset({"app"})
+
+
+@dataclass(frozen=True)
+class FetchDatabaseEntry:
+    """One database source in ``native.fetch.databases``."""
+
+    db_name: str
+    via: str
+    ssh_host: str | None = None
+    container: str | None = None
+    pg_user: str = "postgres"
+    dk_env: str | None = None
+    dump: str | None = None
+
+
+@dataclass(frozen=True)
+class FetchConfig:
+    """``native.fetch`` in tooling.yaml (config-driven ``dk fetch db``)."""
+
+    dk_env: str
+    ssh_host: str | None
+    databases: dict[str, FetchDatabaseEntry]
 
 
 @dataclass(frozen=True)
@@ -340,12 +402,22 @@ class FrontendDevConfig:
 
 @dataclass(frozen=True)
 class NativeConfig:
+    fetch: FetchConfig
     fetch_media: FetchMediaConfig
     fetch_metabase_db: FetchMetabaseDbConfig
     reset_db: ResetDbConfig
     django: DjangoDevConfig
     frontend: FrontendDevConfig
     start: StartConfig
+
+
+@dataclass(frozen=True)
+class DevConfig:
+    """Optional ``dev:`` section in tooling.yaml (local dev defaults)."""
+
+    site_origin_base: str
+    lan_dns_suffix: str
+    build_time_zone: str
 
 
 @dataclass(frozen=True)
@@ -393,6 +465,7 @@ class ProjectConfig:
     stack: StackConfig
     ops: OpsConfig
     native: NativeConfig
+    dev: DevConfig
     digitalocean: DigitalOceanConfig | None
     repo_root: Path
     tooling_path: Path
@@ -451,8 +524,25 @@ class ProjectConfig:
 
     @property
     def default_fetch_dk_env(self) -> str:
-        """Default ``docker/envs/<name>`` for ``native fetch db`` / ``native fetch media``."""
-        return self.native.fetch_media.dk_env
+        """Default ``docker/envs/<name>`` for ``dk fetch`` / ``native fetch``."""
+        return self.native.fetch.dk_env
+
+    def fetch_database_output_path(self, key: str, entry: FetchDatabaseEntry) -> Path | None:
+        """Resolve local dump path for a configured fetch database key."""
+        if entry.dump:
+            return self.repo_root / entry.dump
+        if key == "app":
+            return self.fetch_db_dump_path
+        if key == "metabase":
+            return self.fetch_metabase_db_dump_path
+        return None
+
+    def has_metabase_fetch(self) -> bool:
+        """True when Metabase is configured for fetch and a dump output path exists."""
+        return (
+            "metabase" in self.native.fetch.databases
+            and self.fetch_metabase_db_dump_path is not None
+        )
 
     @property
     def deploy_envs_dir(self) -> Path:
@@ -544,6 +634,34 @@ def _parse_env_key_list(raw: Any, *, field: str, default: tuple[str, ...]) -> tu
     if raw is None:
         return default
     return _parse_string_list(raw, field=field)
+
+
+def _parse_post_metabase_db_restore(raw: Any) -> PostMetabaseDbRestoreOpsConfig:
+    if raw is None:
+        return PostMetabaseDbRestoreOpsConfig(
+            envs=None,
+            manage_commands=(),
+            restart_services=(),
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("ops.post_metabase_db_restore must be a mapping")
+    envs_raw = raw.get("envs")
+    envs: tuple[str, ...] | None = None
+    if envs_raw is not None:
+        envs = _parse_string_list(envs_raw, field="ops.post_metabase_db_restore.envs")
+    commands = _parse_manage_commands_list(
+        raw.get("manage_commands"),
+        field_prefix="ops.post_metabase_db_restore.manage_commands",
+    )
+    restart_services = _parse_string_list(
+        raw.get("restart_services"),
+        field="ops.post_metabase_db_restore.restart_services",
+    )
+    return PostMetabaseDbRestoreOpsConfig(
+        envs=envs,
+        manage_commands=commands,
+        restart_services=restart_services,
+    )
 
 
 def _parse_post_db_restore(raw: Any) -> PostDbRestoreOpsConfig:
@@ -658,6 +776,148 @@ def _parse_scripts_paths(raw: Any) -> tuple[str, ...]:
     raise ProjectConfigError("paths.scripts must be a string or list of strings")
 
 
+def _db_name_from_dump_path(dump_rel: str, *, project_name: str) -> str:
+    stem = Path(dump_rel).stem
+    if stem:
+        return stem
+    return local_postgres_db_name(project_name)
+
+
+def _legacy_fetch_config(
+    *,
+    paths: PathsConfig,
+    fetch_media: FetchMediaConfig,
+    fetch_metabase_db: FetchMetabaseDbConfig,
+    repo_root: Path,
+    project_name: str,
+) -> FetchConfig:
+    """Synthetic ``native.fetch`` when ``native.fetch.databases`` is omitted."""
+    ssh_host = fetch_metabase_db.ssh_host
+    if not ssh_host and fetch_media.legacy and fetch_media.legacy.ssh_host:
+        ssh_host = fetch_media.legacy.ssh_host
+    scripts_dir = repo_root / paths.scripts[0] if paths.scripts else repo_root / "scripts"
+    via = "script" if (scripts_dir / "fetch_db.sh").is_file() else "ssh_native"
+    app_db = _db_name_from_dump_path(paths.fetch_db_dump, project_name=project_name)
+    databases: dict[str, FetchDatabaseEntry] = {
+        "app": FetchDatabaseEntry(db_name=app_db, via=via, ssh_host=ssh_host),
+    }
+    if paths.fetch_metabase_db_dump and ssh_host:
+        mb_db = _db_name_from_dump_path(paths.fetch_metabase_db_dump, project_name=project_name)
+        databases["metabase"] = FetchDatabaseEntry(
+            db_name=mb_db,
+            via="ssh_native",
+            ssh_host=ssh_host,
+        )
+    return FetchConfig(
+        dk_env=fetch_media.dk_env,
+        ssh_host=ssh_host,
+        databases=databases,
+    )
+
+
+def _parse_fetch_database_entry(raw: Any, *, key: str) -> FetchDatabaseEntry:
+    if not isinstance(raw, dict):
+        raise ProjectConfigError(f"native.fetch.databases.{key} must be a mapping")
+    db_name = _require_str(raw, "db_name", section=f"native.fetch.databases.{key}")
+    via = _require_str(raw, "via", section=f"native.fetch.databases.{key}")
+    if via not in VALID_FETCH_VIA:
+        raise ProjectConfigError(
+            f"native.fetch.databases.{key}.via must be one of "
+            f"{', '.join(sorted(VALID_FETCH_VIA))} (got {via!r})"
+        )
+    container = _optional_str(raw, "container")
+    if via == "ssh_docker" and not container:
+        raise ProjectConfigError(
+            f"native.fetch.databases.{key}.container is required when via is ssh_docker"
+        )
+    ssh_host = _optional_str(raw, "ssh_host")
+    pg_user = _optional_str(raw, "pg_user") or "postgres"
+    dk_env = _optional_str(raw, "dk_env")
+    dump = (
+        _validate_rel_path(p, field=f"native.fetch.databases.{key}.dump")
+        if (p := _optional_str(raw, "dump"))
+        else None
+    )
+    return FetchDatabaseEntry(
+        db_name=db_name,
+        via=via,
+        ssh_host=ssh_host,
+        container=container,
+        pg_user=pg_user,
+        dk_env=dk_env,
+        dump=dump,
+    )
+
+
+def _parse_fetch_databases(raw: Any) -> dict[str, FetchDatabaseEntry]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.fetch.databases must be a mapping")
+    if not raw:
+        raise ProjectConfigError("native.fetch.databases must not be empty when set")
+    if "app" not in raw:
+        raise ProjectConfigError("native.fetch.databases must include an `app` entry")
+    out: dict[str, FetchDatabaseEntry] = {}
+    for key, value in raw.items():
+        k = str(key).strip()
+        if not k:
+            raise ProjectConfigError("native.fetch.databases keys must be non-empty strings")
+        if k in out:
+            raise ProjectConfigError(f"duplicate native.fetch.databases key: {k!r}")
+        out[k] = _parse_fetch_database_entry(value, key=k)
+    return out
+
+
+def _parse_fetch(
+    raw: Any,
+    *,
+    paths: PathsConfig,
+    fetch_media: FetchMediaConfig,
+    fetch_metabase_db: FetchMetabaseDbConfig,
+    repo_root: Path,
+    project_name: str,
+) -> FetchConfig:
+    if raw is None:
+        if fetch_metabase_db.ssh_host:
+            warn_deprecated(
+                "native.fetch_metabase_db",
+                "native.fetch.databases.metabase",
+                context="tooling.yaml",
+            )
+        return _legacy_fetch_config(
+            paths=paths,
+            fetch_media=fetch_media,
+            fetch_metabase_db=fetch_metabase_db,
+            repo_root=repo_root,
+            project_name=project_name,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.fetch must be a mapping")
+    if fetch_metabase_db.ssh_host:
+        warn_deprecated(
+            "native.fetch_metabase_db",
+            "native.fetch.databases.metabase",
+            context="tooling.yaml `native.fetch_metabase_db` is ignored when `native.fetch` is set",
+        )
+    dk_env = _optional_str(raw, "dk_env") or fetch_media.dk_env
+    ssh_host = _optional_str(raw, "ssh_host")
+    if not ssh_host:
+        ssh_host = fetch_metabase_db.ssh_host
+    if not ssh_host and fetch_media.legacy and fetch_media.legacy.ssh_host:
+        ssh_host = fetch_media.legacy.ssh_host
+    databases = _parse_fetch_databases(raw.get("databases"))
+    if not databases:
+        return _legacy_fetch_config(
+            paths=paths,
+            fetch_media=fetch_media,
+            fetch_metabase_db=fetch_metabase_db,
+            repo_root=repo_root,
+            project_name=project_name,
+        )
+    return FetchConfig(dk_env=dk_env, ssh_host=ssh_host, databases=databases)
+
+
 def _parse_fetch_metabase_db(raw: Any) -> FetchMetabaseDbConfig:
     if raw is None:
         return FetchMetabaseDbConfig(ssh_host=None)
@@ -728,6 +988,42 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
     )
 
 
+def _parse_build_placeholders(raw: Any) -> dict[str, str]:
+    if raw is None:
+        return dict(DEFAULT_BUILD_PLACEHOLDERS)
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("stack.build_placeholders must be a mapping")
+    out = dict(DEFAULT_BUILD_PLACEHOLDERS)
+    for key, value in raw.items():
+        k = str(key).strip()
+        if not k:
+            raise ProjectConfigError("stack.build_placeholders keys must be non-empty strings")
+        out[k] = str(value)
+    return out
+
+
+def _parse_dev(raw: Any, *, digitalocean: DigitalOceanConfig | None) -> DevConfig:
+    tz_default = DEFAULT_BUILD_TIME_ZONE
+    if digitalocean is not None and digitalocean.timezone:
+        tz_default = digitalocean.timezone
+    if raw is None:
+        return DevConfig(
+            site_origin_base=DEFAULT_DEV_SITE_ORIGIN_BASE,
+            lan_dns_suffix=DEFAULT_DEV_LAN_DNS_SUFFIX,
+            build_time_zone=tz_default,
+        )
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("dev must be a mapping")
+    site_base = _optional_str(raw, "site_origin_base") or DEFAULT_DEV_SITE_ORIGIN_BASE
+    lan_suffix = _optional_str(raw, "lan_dns_suffix") or DEFAULT_DEV_LAN_DNS_SUFFIX
+    build_tz = _optional_str(raw, "build_time_zone") or tz_default
+    return DevConfig(
+        site_origin_base=site_base,
+        lan_dns_suffix=lan_suffix,
+        build_time_zone=build_tz,
+    )
+
+
 def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
     services_raw = _require_mapping(stack_raw.get("services"), "stack.services")
     images_raw = _require_mapping(stack_raw.get("images"), "stack.images")
@@ -736,6 +1032,11 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
     components: dict[str, str] = {}
     for key, val in components_raw.items():
         components[str(key)] = _require_str({str(key): val}, str(key), section="stack.images.components")
+    origin_keys = _parse_env_key_list(
+        stack_raw.get("origin_env_keys"),
+        field="stack.origin_env_keys",
+        default=DEFAULT_ORIGIN_ENV_KEYS,
+    )
     return StackConfig(
         compose_project_default=_require_str(stack_raw, "compose_project_default", section="stack"),
         services=StackServicesConfig(
@@ -751,6 +1052,8 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
             service=_require_str(health_raw, "service", section="stack.healthcheck"),
             url=_require_str(health_raw, "url", section="stack.healthcheck"),
         ),
+        origin_env_keys=origin_keys,
+        build_placeholders=_parse_build_placeholders(stack_raw.get("build_placeholders")),
     )
 
 
@@ -926,11 +1229,28 @@ def resolve_frontend_package_manager(frontend_dir: Path, *, configured: str | No
     return "npm"
 
 
-def _parse_native(raw: Any) -> NativeConfig:
+def _parse_native(
+    raw: Any,
+    *,
+    paths: PathsConfig,
+    repo_root: Path,
+    project_name: str,
+) -> NativeConfig:
+    fetch_media = _parse_fetch_media(None if raw is None else raw.get("fetch_media"))
+    fetch_metabase_db = _parse_fetch_metabase_db(None if raw is None else raw.get("fetch_metabase_db"))
+    fetch = _parse_fetch(
+        None if raw is None else raw.get("fetch"),
+        paths=paths,
+        fetch_media=fetch_media,
+        fetch_metabase_db=fetch_metabase_db,
+        repo_root=repo_root,
+        project_name=project_name,
+    )
     if raw is None:
         return NativeConfig(
-            fetch_media=_parse_fetch_media(None),
-            fetch_metabase_db=_parse_fetch_metabase_db(None),
+            fetch=fetch,
+            fetch_media=fetch_media,
+            fetch_metabase_db=fetch_metabase_db,
             reset_db=_parse_reset_db(None),
             django=_parse_django(None),
             frontend=_parse_frontend(None),
@@ -939,6 +1259,7 @@ def _parse_native(raw: Any) -> NativeConfig:
     if not isinstance(raw, dict):
         raise ProjectConfigError("native must be a mapping")
     return NativeConfig(
+        fetch=fetch,
         fetch_media=_parse_fetch_media(raw.get("fetch_media")),
         fetch_metabase_db=_parse_fetch_metabase_db(raw.get("fetch_metabase_db")),
         reset_db=_parse_reset_db(raw.get("reset_db")),
@@ -948,7 +1269,13 @@ def _parse_native(raw: Any) -> NativeConfig:
     )
 
 
-def _resolve_native_config(data: dict[str, Any]) -> NativeConfig:
+def _resolve_native_config(
+    data: dict[str, Any],
+    *,
+    paths: PathsConfig,
+    repo_root: Path,
+    project_name: str,
+) -> NativeConfig:
     """Load ``native:`` from tooling.yaml, with deprecated ``local:`` / ``dev:`` fallbacks."""
     native_raw = data.get("native")
     local_raw = data.get("local")
@@ -966,14 +1293,34 @@ def _resolve_native_config(data: dict[str, Any]) -> NativeConfig:
                 "native:",
                 context="tooling.yaml `dev:` is ignored when `native:` is present",
             )
-        return _parse_native(native_raw)
+        return _parse_native(
+            native_raw,
+            paths=paths,
+            repo_root=repo_root,
+            project_name=project_name,
+        )
     if local_raw is not None:
         warn_deprecated("local:", "native:", context="tooling.yaml")
-        return _parse_native(local_raw)
+        return _parse_native(
+            local_raw,
+            paths=paths,
+            repo_root=repo_root,
+            project_name=project_name,
+        )
     if dev_raw is not None:
         warn_deprecated("dev:", "native:", context="tooling.yaml")
-        return _parse_native(dev_raw)
-    return _parse_native(None)
+        return _parse_native(
+            dev_raw,
+            paths=paths,
+            repo_root=repo_root,
+            project_name=project_name,
+        )
+    return _parse_native(
+        None,
+        paths=paths,
+        repo_root=repo_root,
+        project_name=project_name,
+    )
 
 
 def _parse_digitalocean(do_raw: dict[str, Any]) -> DigitalOceanConfig:
@@ -1111,6 +1458,9 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         ),
         systemd_units=systemd_units,
         post_db_restore=_parse_post_db_restore(ops_raw.get("post_db_restore")),
+        post_metabase_db_restore=_parse_post_metabase_db_restore(
+            ops_raw.get("post_metabase_db_restore")
+        ),
         default_db_container=_require_str(ops_raw, "default_db_container", section="ops"),
     )
 
@@ -1136,12 +1486,20 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
             raise ProjectConfigError("digitalocean must be a mapping")
         else:
             digitalocean = _parse_digitalocean(do_raw)
+    dev = _parse_dev(data.get("dev"), digitalocean=digitalocean)
+    paths = _parse_paths(paths_raw)
     return ProjectConfig(
         meta=meta,
-        paths=_parse_paths(paths_raw),
+        paths=paths,
         stack=_parse_stack(stack_raw),
         ops=_parse_ops(ops_raw, project_name=meta.name),
-        native=_resolve_native_config(data),
+        native=_resolve_native_config(
+            data,
+            paths=paths,
+            repo_root=repo_root,
+            project_name=meta.name,
+        ),
+        dev=dev,
         digitalocean=digitalocean,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.restic_files import _default_compose_project, django_media_volume_name
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
 from catalpa_tooling.ssh_known_hosts import (
@@ -250,6 +251,7 @@ def run_push_media_rsync(
     method: PushMediaMethod = "rsync",
     delete: bool = True,
     alpine_image: str = "alpine:3.21",
+    config: ProjectConfig | None = None,
 ) -> int:
     """Push host media into ``django_media`` via rsync (tar fallback on failure or ``method=tar``)."""
     from catalpa_tooling.media_pull import run_push_media
@@ -260,6 +262,7 @@ def run_push_media_rsync(
             source=source,
             dry_run=dry_run,
             alpine_image=alpine_image,
+            config=config,
         )
 
     if not shutil.which("rsync"):
@@ -269,8 +272,8 @@ def run_push_media_rsync(
         )
         return 1
 
-    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(None)
-    vol = django_media_volume_name(project)
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
+    vol = django_media_volume_name(project, config=config)
     docker_host = str(env.get("DOCKER_HOST") or "").strip()
 
     ssh_target = try_ssh_target_from_docker_host(docker_host)

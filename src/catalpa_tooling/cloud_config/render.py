@@ -5,7 +5,9 @@ from __future__ import annotations
 from importlib.resources import files
 from pathlib import Path
 
-DEFAULT_TIMEZONE = "Asia/Dili"
+from catalpa_tooling.config import DEFAULT_BUILD_TIME_ZONE
+
+DEFAULT_TIMEZONE = DEFAULT_BUILD_TIME_ZONE
 
 
 def bootstrap_template_path() -> Path:

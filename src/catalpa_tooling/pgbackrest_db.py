@@ -37,7 +37,10 @@ from catalpa_tooling.pgbackrest_volume_config import (
     stanza_from_env_for_pgbackrest,
 )
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
-from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
+from catalpa_tooling.post_db_restore import (
+    run_post_db_restore_manage_commands,
+    run_post_metabase_db_restore_manage_commands,
+)
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
 from catalpa_tooling.run_cmd import run_interruptible
 
@@ -52,6 +55,17 @@ _DJANGO_APP_SHELL_VARS = (
     'APP_DB="${DJANGO_APP_DB:-${DJANGO_DB:-catalpa_db}}"; '
     'APP_USER="${DJANGO_APP_DB_USER:-${DJANGO_DB_USER:-catalpa}}"; '
 )
+
+DbRestoreTarget = Literal["app", "metabase"]
+
+
+def _db_shell_vars(target: DbRestoreTarget) -> str:
+    if target == "metabase":
+        return (
+            'APP_DB="${METABASE_DB:-metabase_db}"; '
+            'APP_USER="${METABASE_DB_USER:-metabase}"; '
+        )
+    return _DJANGO_APP_SHELL_VARS
 
 # PostgreSQL startup log once crash/archive recovery has finished (English messages).
 _PG_RECOVERY_READY_LOG = "database system is ready to accept connections"
@@ -518,6 +532,7 @@ def run_drop_create_app_database(
     env: dict[str, str],
     *,
     postgis: bool = False,
+    target: DbRestoreTarget = "app",
 ) -> int:
     """Replace the Django app database with an empty one (grants match project init scripts).
 
@@ -528,8 +543,9 @@ def run_drop_create_app_database(
     """
     merged = _merged_process_env(env)
     psql_body = _drop_create_app_database_psql_block(postgis=postgis)
+    shell_vars = _db_shell_vars(target)
     script = f"""set -eu
-{_DJANGO_APP_SHELL_VARS}
+{shell_vars}
 export PGPASSWORD="$POSTGRES_PASSWORD"
 dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
 createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
@@ -558,12 +574,26 @@ EOF
     return r.returncode
 
 
+def run_drop_create_metabase_database(
+    compose_file: str,
+    env: dict[str, str],
+) -> int:
+    """Replace the Metabase application database with an empty one."""
+    return run_drop_create_app_database(
+        compose_file,
+        env,
+        postgis=False,
+        target="metabase",
+    )
+
+
 def run_pg_restore(
     compose_file: str,
     env: dict[str, str],
     extra_pg_restore_args: Sequence[str] | None = None,
     *,
     config: ProjectConfig | None = None,
+    target: DbRestoreTarget = "app",
 ) -> int:
     """Run ``pg_restore`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``).
 
@@ -700,7 +730,7 @@ def run_pg_restore(
             return 1
 
         inner = (
-            _DJANGO_APP_SHELL_VARS
+            _db_shell_vars(target)
             + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
             + 'exec pg_restore -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB"'
         )
@@ -1283,6 +1313,15 @@ def run_restore_offline(
         )
         if rc_hooks != 0:
             return rc_hooks
+        if config.has_metabase_fetch():
+            rc_mb = run_post_metabase_db_restore_manage_commands(
+                config,
+                compose_file=compose_file,
+                env_add=env,
+                env_name=env_name,
+            )
+            if rc_mb != 0:
+                return rc_mb
     return 0
 
 

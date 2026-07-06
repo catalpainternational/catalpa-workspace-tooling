@@ -28,6 +28,37 @@ def write_minimal_tooling_tree(target: Path) -> None:
     )
 
 
+def parse_native_for_test(raw: dict | None) -> "NativeConfig":
+    """Minimal ``_parse_native`` wrapper for unit tests."""
+    from catalpa_tooling.config import DeployPathsConfig, NativeConfig, PathsConfig, _parse_native
+
+    paths = PathsConfig(
+        backend="backend",
+        frontend="frontend",
+        prototype=None,
+        scripts=("scripts",),
+        env_local=".env.local",
+        email_backend_dir="email_out",
+        media_dir=None,
+        fetch_db_dump="docker/dumps/app_db.custom",
+        fetch_metabase_db_dump=None,
+        deploy=DeployPathsConfig(
+            envs_dir="docker/envs",
+            images_config="docker/images.yaml",
+            default_compose="compose.yml",
+            dev_compose="compose.dev.yaml",
+            credentials_optional_envs=(),
+            env_aliases={},
+        ),
+    )
+    return _parse_native(
+        raw,
+        paths=paths,
+        repo_root=Path("/tmp/test-repo"),
+        project_name="test",
+    )
+
+
 def patch_module_attrs(
     monkeypatch: pytest.MonkeyPatch,
     module: str,
