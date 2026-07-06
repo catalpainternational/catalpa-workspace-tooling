@@ -358,6 +358,8 @@ uv run pytest
 uv build
 ```
 
+Releases are tag-driven; see [docs/RELEASING.md](docs/RELEASING.md).
+
 ### CLI conventions (Typer-friendly)
 
 The CLIs use argparse today but we intend to migrate to [Typer](https://typer.tiangolo.com/). Keep new/edited command code migration-friendly: put command **logic** in functions that take explicit, typed keyword parameters and keep the argparse layer (`*_parser.py`, `*_cli.py`) as thin glue that reads the namespace and calls them — never pass `argparse.Namespace` into logic. `native_cli.py` and `test_cli.py` already follow this shape. See [`.cursor/rules/typer-compatible-cli.mdc`](.cursor/rules/typer-compatible-cli.mdc) and [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) for the audit and refactor priorities.

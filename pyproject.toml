@@ -1,6 +1,6 @@
 [project]
 name = "catalpa-workspace-tooling"
-version = "0.8.6"
+dynamic = ["version"]
 description = "Deploy and development CLIs driven by a repo-root tooling.yaml manifest"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,11 +23,17 @@ setup-vscode = "catalpa_tooling.setup_vscode_cli:main"
 test = ["pytest>=8.4", "argcomplete>=3.2"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/catalpa_tooling"]
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/catalpa_tooling/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
