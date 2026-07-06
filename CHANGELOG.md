@@ -2,9 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **`ops.post_db_restore.db_psql` / `ops.post_metabase_db_restore.db_psql`** — optional Postgres superuser SQL hooks run in the ``db`` container after each restore leg (`target: app` or `metabase`, `file:` repo-relative or in-container path). Runs before `manage_commands`.
+
+### Changed
+
+- **`dk <env> db restore`** — removed hardcoded `grant-cross-db-privileges.sh django-to-metabase` call; permission fixes are project opt-in via `tooling.yaml` hooks only (see bero `manage_commands` pattern).
+
 ### Fixed
 
 - **`dk <env> db restore` / `db pgrestore` / `transfer`** — merge `native.reset_db.pg_restore_args` from `tooling.yaml` into compose `pg_restore` (previously only `native reset-db` / `native pg-restore` honored those flags). Fixes restores that need `--role=postgres` for extension DDL in production dumps (e.g. PostGIS, `pg_stat_statements`).
+- **Compose `pg_restore` no longer injects `--no-comments` when `native.reset_db.postgis` is true** — PostGIS prep now runs `ALTER EXTENSION postgis OWNER TO` the app user so extension comments restore cleanly; dbsamizdat and other object comments in the dump are preserved.
 
 ## 0.9.1
 

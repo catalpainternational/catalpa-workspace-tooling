@@ -29,7 +29,6 @@ native:
     )
     cfg = load_project_config(tmp_path)
     assert compose_pg_restore_extras_for_config(cfg, []) == [
-        "--no-comments",
         "--no-acl",
         "--no-owner",
         "--role=postgres",
@@ -55,13 +54,5 @@ def test_pg_restore_compose_role_suffix_skips_when_role_provided() -> None:
     assert _pg_restore_compose_role_suffix(["--role=other"]) == ""
 
 
-def test_pg_restore_compose_extras_adds_no_comments_for_postgis() -> None:
-    assert pg_restore_compose_extras([], postgis=True) == [
-        "--no-comments",
-        "--no-acl",
-        "--no-owner",
-    ]
-
-
-def test_pg_restore_compose_extras_omits_no_comments_without_postgis() -> None:
-    assert pg_restore_compose_extras([], postgis=False) == ["--no-acl", "--no-owner"]
+def test_pg_restore_compose_extras_adds_no_owner_and_no_acl() -> None:
+    assert pg_restore_compose_extras([]) == ["--no-acl", "--no-owner"]

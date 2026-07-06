@@ -6,7 +6,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.fetch_db import (
     configured_app_dump_exists,
@@ -33,34 +32,6 @@ from catalpa_tooling.post_db_restore import (
     run_post_db_restore_manage_commands,
     run_post_metabase_db_restore_manage_commands,
 )
-
-
-def run_compose_grant_django_to_metabase(
-    compose_file: str,
-    env_add: dict[str, str],
-) -> int:
-    """Re-apply SELECT/UPDATE on metabase_db for the Django user after a metabase_db pg_restore."""
-    print(
-        "db restore: re-applying django→metabase grants (metabase_db pg_restore resets privileges) …",
-        file=sys.stderr,
-    )
-    r = _compose(
-        compose_file,
-        "exec",
-        "-T",
-        "db",
-        "grant-cross-db-privileges.sh",
-        "django-to-metabase",
-        env_add=env_add,
-        check=False,
-    )
-    if r.returncode != 0:
-        print(
-            "db restore: grant-cross-db-privileges.sh django-to-metabase failed "
-            f"(exit {r.returncode}).",
-            file=sys.stderr,
-        )
-    return r.returncode
 
 
 def pgbackrest_restore_configured(env: dict[str, str]) -> bool:
@@ -161,9 +132,6 @@ def run_compose_metabase_dump_restore(
         config=config,
         target="metabase",
     )
-    if rc != 0:
-        return rc
-    rc = run_compose_grant_django_to_metabase(compose_file, env_add)
     if rc != 0:
         return rc
     return run_post_metabase_db_restore_manage_commands(

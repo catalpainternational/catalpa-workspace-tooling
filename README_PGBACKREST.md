@@ -168,29 +168,52 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `version` | `pgbackrest version` in db container |
 | `backup full\|incr\|diff` | Online backup (db running) |
 | `pgdump [args…]` | `pg_dump` via compose |
-| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; when `native.reset_db.postgis` is true, PostGIS is pre-created, catalog tables are granted to the app user, and `pg_restore` uses `--no-comments`) |
+| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; when `native.reset_db.postgis` is true, PostGIS is pre-created, extension ownership is transferred to the app user, and catalog tables are granted so object comments — including dbsamizdat signatures — restore cleanly) |
 | `restore [pgBackRest args…]` | Offline pgBackRest restore (`--dry-run` prints stanza, repo path, and compose command) |
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
 
 Offline restore may require global `dk --yes` when not attached to a TTY.
 
-After a successful **`restore`** or **`pgrestore`**, the tooling may run project-configured Django management commands (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …`.
+After a successful **`restore`** or **`pgrestore`**, the tooling may run project-configured hooks (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …` or the relevant SQL file.
 
-## Post-restore Django commands (`ops.post_db_restore`)
+## Post-restore hooks (`ops.post_db_restore` / `ops.post_metabase_db_restore`)
 
-Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`bkp_db restore`, `bkp_db pgrestore`, `dk transfer` DB leg).
+Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`dk <env> db restore`, `bkp_db pgrestore`, `dk transfer` DB leg).
+
+**App database** (`ops.post_db_restore`) runs after the main `pg_restore`. **Metabase database** (`ops.post_metabase_db_restore`) runs only when `paths.fetch_metabase_db_dump` is configured and the metabase leg restores successfully.
+
+| Hook | Runs in | Use for |
+|------|---------|---------|
+| `db_psql` | `db` container (`psql -U postgres`) | Ownership/grants/extension fixes as superuser SQL |
+| `manage_commands` | web service (`./manage.py …`) | Django logic (migrations follow-ups, privilege commands) |
+| `restart_services` | compose restart | Metabase leg only (e.g. restart `metabase` after metabase_db restore) |
+
+`db_psql` runs **before** `manage_commands`. Each `db_psql` entry needs `target` (`app` or `metabase`) and `file` (path relative to repo root, or absolute in-container path for files baked into the db image).
 
 ```yaml
 ops:
   post_db_restore:
     envs: [local, dev, staging]   # optional; omit to run on every env
+    db_psql:
+      - target: app
+        file: docker/postgres/fix-app-db-permissions.sql
     manage_commands:
       - [sync_wagtail_sites, --profile, "{env_name}"]
       - migrate --noinput          # string form is split with shlex
+  post_metabase_db_restore:
+    envs: [dev]
+    db_psql:
+      - target: metabase
+        file: docker/postgres/fix-metabase-db-permissions.sql
+    manage_commands:
+      - [mb-metabaseuser-privileges]
+    restart_services: [metabase]
 ```
 
-Each entry is arguments after `manage.py` (same as `dk <env> manage …`). `{env_name}` is replaced with the deploy env name. Stack volumes are ensured (including host binds from `storage.volumes` when configured), then the web service is started and health-checked before commands run.
+Each `manage_commands` entry is arguments after `manage.py` (same as `dk <env> manage …`). `{env_name}` is replaced with the deploy env name. Stack volumes are ensured (including host binds from `storage.volumes` when configured), then the web service is started and health-checked before commands run.
+
+**Host-native restore** (`native reset-db`) uses `native.reset_db.post_manage_commands` instead (unchanged).
 
 ## Optional tuning (process env)
 
