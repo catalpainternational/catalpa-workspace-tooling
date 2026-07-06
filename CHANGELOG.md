@@ -13,7 +13,7 @@
 ### Fixed
 
 - **`dk <env> db restore` / `db pgrestore` / `transfer`** — merge `native.reset_db.pg_restore_args` from `tooling.yaml` into compose `pg_restore` (previously only `native reset-db` / `native pg-restore` honored those flags). Fixes restores that need `--role=postgres` for extension DDL in production dumps (e.g. PostGIS, `pg_stat_statements`).
-- **Compose `pg_restore` no longer injects `--no-comments` when `native.reset_db.postgis` is true** — PostGIS prep now runs `ALTER EXTENSION postgis OWNER TO` the app user so extension comments restore cleanly; dbsamizdat and other object comments in the dump are preserved.
+- **Compose `pg_restore` no longer injects `--no-comments` when `native.reset_db.postgis` is true** — PostGIS prep grants catalog tables to the app user and compose restore defaults to `--role postgres` (unless overridden in `pg_restore_args`) so extension and dbsamizdat object comments in the dump are preserved.
 
 ## 0.9.1
 

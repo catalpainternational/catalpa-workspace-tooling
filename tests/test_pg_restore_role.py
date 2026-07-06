@@ -49,6 +49,10 @@ def test_pg_restore_compose_role_suffix_defaults_to_app_user() -> None:
     assert _pg_restore_compose_role_suffix(["--no-owner"]) == ' --role "$APP_USER"'
 
 
+def test_pg_restore_compose_role_suffix_defaults_to_postgres_for_postgis() -> None:
+    assert _pg_restore_compose_role_suffix(["--no-owner"], postgis=True) == " --role postgres"
+
+
 def test_pg_restore_compose_role_suffix_skips_when_role_provided() -> None:
     assert _pg_restore_compose_role_suffix(["--role", "other"]) == ""
     assert _pg_restore_compose_role_suffix(["--role=other"]) == ""

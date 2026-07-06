@@ -338,10 +338,17 @@ def _pg_restore_has_role(extras: Sequence[str]) -> bool:
     return False
 
 
-def _pg_restore_compose_role_suffix(extras: Sequence[str]) -> str:
-    """Shell suffix for compose ``pg_restore`` so ``--no-owner`` objects belong to ``APP_USER``."""
+def _pg_restore_compose_role_suffix(extras: Sequence[str], *, postgis: bool = False) -> str:
+    """Shell suffix for compose ``pg_restore`` so ``--no-owner`` objects get a restore role.
+
+    When ``postgis`` is true and no ``--role`` is set, default to ``postgres`` so
+    ``COMMENT ON EXTENSION`` succeeds (PostgreSQL 18+ has no ``ALTER EXTENSION … OWNER``).
+    Otherwise default to ``APP_USER`` for normal app-owned restores.
+    """
     if _pg_restore_has_role(extras):
         return ""
+    if postgis:
+        return " --role postgres"
     return ' --role "$APP_USER"'
 
 
@@ -505,10 +512,11 @@ def run_pg_dump_to_file(
 def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
     """``psql`` heredoc run after ``createdb`` (grants; optional PostGIS prep for dump restore).
 
-    When ``postgis`` is true, create PostGIS as superuser, transfer extension ownership to
-    the app user, and grant catalog tables so ``pg_restore --role APP_USER`` can reload
-    ``spatial_ref_sys`` and apply ``COMMENT ON EXTENSION`` (dbsamizdat and other object
-    comments are preserved; do not use ``--no-comments``).
+    When ``postgis`` is true, create PostGIS as superuser and grant catalog tables to the
+    app user so ``pg_restore --role postgres`` can reload ``spatial_ref_sys`` and apply
+    ``COMMENT ON EXTENSION`` (dbsamizdat and other object comments are preserved; do not
+    use ``--no-comments``). Compose restore defaults to ``--role postgres`` when PostGIS
+    prep is enabled and no explicit ``--role`` is configured.
     """
     lines = [
         "GRANT ALL PRIVILEGES ON DATABASE ${APP_DB} TO ${APP_USER};",
@@ -517,7 +525,6 @@ def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
         lines.extend(
             [
                 "CREATE EXTENSION IF NOT EXISTS postgis;",
-                "ALTER EXTENSION postgis OWNER TO ${APP_USER};",
                 "GRANT ALL ON ALL TABLES IN SCHEMA public TO ${APP_USER};",
             ]
         )
@@ -740,7 +747,8 @@ def run_pg_restore(
         )
         if extras:
             inner = inner + " " + " ".join(shlex.quote(a) for a in extras)
-        inner = inner + _pg_restore_compose_role_suffix(extras)
+        use_postgis = config.native.reset_db.postgis if config else False
+        inner = inner + _pg_restore_compose_role_suffix(extras, postgis=use_postgis)
         inner = inner + " " + shlex.quote(container_path)
         try:
             r = run_cmd(

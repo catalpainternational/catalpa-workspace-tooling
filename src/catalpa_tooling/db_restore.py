@@ -111,7 +111,6 @@ def run_compose_metabase_dump_restore(
     restore_extras = compose_pg_restore_extras_for_config(
         config,
         extras,
-        postgis=False,
     )
     rc = ensure_db_service_running(
         compose_file, env_add, config=config, dk_env_name=env_name

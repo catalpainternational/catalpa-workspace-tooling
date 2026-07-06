@@ -168,7 +168,7 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `version` | `pgbackrest version` in db container |
 | `backup full\|incr\|diff` | Online backup (db running) |
 | `pgdump [args…]` | `pg_dump` via compose |
-| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; when `native.reset_db.postgis` is true, PostGIS is pre-created, extension ownership is transferred to the app user, and catalog tables are granted so object comments — including dbsamizdat signatures — restore cleanly) |
+| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; when `native.reset_db.postgis` is true, PostGIS is pre-created, catalog tables are granted to the app user, and compose restore defaults to `--role postgres` so object comments — including dbsamizdat signatures — restore cleanly) |
 | `restore [pgBackRest args…]` | Offline pgBackRest restore (`--dry-run` prints stanza, repo path, and compose command) |
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
