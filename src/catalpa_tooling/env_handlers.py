@@ -15,6 +15,7 @@ from catalpa_tooling.compose import _compose
 from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
+from catalpa_tooling.db_restore import run_unified_db_restore
 from catalpa_tooling.doctl_spaces_provision import (
     ensure_spaces_backup_credentials,
     needs_pgbr_write,
@@ -42,8 +43,6 @@ from catalpa_tooling.pgbackrest_db import (
     run_info,
     run_pg_dump,
     run_pg_restore,
-    plan_restore_offline,
-    run_restore_offline,
     run_version,
     pg_restore_compose_extras,
 )
@@ -60,6 +59,7 @@ from catalpa_tooling.remote_deploy import (
     _confirm_deploy_wipe,
     _dry_run_exits_before_compose_env,
     _ensure_local_stack_images_built,
+    _insert_down_remove_orphans,
     _insert_up_build_if_no_registry,
     _insert_up_prepulled_pull_flags,
     _is_compose_down_with_volumes,
@@ -85,6 +85,11 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
+from catalpa_tooling.local_proxy import (
+    LocalProxyConfigError,
+    local_proxy_extra_compose_files,
+    sync_local_proxy_for_compose_action,
+)
 from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
@@ -191,6 +196,7 @@ def _run_compose_path(
     storage_volumes: dict,
 ) -> int:
     repo_root = config.repo_root
+    dry_run = bool(getattr(ns, "dry_run", False))
 
     if compose_args == ["wipe"]:
         compose_args = ["down", "-v"]
@@ -236,6 +242,23 @@ def _run_compose_path(
                 return 1
 
     compose_args = _strip_dk_up_provision_flag(compose_args)
+    compose_args = _insert_down_remove_orphans(compose_args)
+
+    try:
+        if compose_args and compose_args[0] == "up":
+            rc = sync_local_proxy_for_compose_action(
+                info,
+                config,
+                env_name,
+                compose_args,
+                env_add,
+                dry_run=dry_run,
+            )
+            if rc != 0:
+                return rc
+    except LocalProxyConfigError as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
     if use_prepulled_registry:
         compose_args = _insert_up_prepulled_pull_flags(
@@ -247,14 +270,41 @@ def _run_compose_path(
             compose_args,
             use_prepulled_registry=use_prepulled_registry,
         )
+    try:
+        extra_compose_files = local_proxy_extra_compose_files(
+            info,
+            config,
+            env_name,
+            env_add,
+            compose_args,
+        )
+    except LocalProxyConfigError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     proc = _compose(
         compose_file,
         *compose_args,
         env_add=env_add,
+        extra_compose_files=extra_compose_files or None,
         check=False,
     )
     if proc.returncode != 0:
         return proc.returncode
+    if compose_args and compose_args[0] == "down":
+        try:
+            rc = sync_local_proxy_for_compose_action(
+                info,
+                config,
+                env_name,
+                compose_args,
+                env_add,
+                dry_run=dry_run,
+            )
+            if rc != 0:
+                return rc
+        except LocalProxyConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
     if _is_compose_down_with_volumes(compose_args):
         return remove_wipe_data_volumes(env_add, config=config)
     return 0
@@ -403,6 +453,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             env_add,
             config,
             dry_run=dry_run,
+            info=info,
         )
 
     if env_command == "manage":
@@ -427,6 +478,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             target=target,
             dry_run=dry_run,
             alpine_image=str(ns.image),
+            config=config,
         )
 
     if env_command in ("files", "bkp_files"):
@@ -518,6 +570,7 @@ def _handle_bkp_files(
             dry_run=dry_run,
             method=ns.method,
             alpine_image=str(ns.image),
+            config=config,
         )
 
     if sub and needs_restic_write(sub) and not restic_write_configured(env_add):
@@ -687,32 +740,15 @@ def _handle_bkp_db(
         )
 
     if sub == "restore":
-        restore_extra = list(getattr(ns, "pgbackrest_restore_args", None) or [])
-        while restore_extra and restore_extra[0] == "--":
-            restore_extra.pop(0)
-        restore_dry = dry_run or bool(getattr(ns, "restore_dry_run", False))
-        if restore_dry:
-            return plan_restore_offline(
-                env_add,
-                compose_file=compose_file,
-                env_name=env_name,
-                extra_pgbackrest_args=restore_extra,
-                config=config,
-                docker_host=str(docker_host),
-            )
-        if not ns.yes and not sys.stdin.isatty():
-            print(
-                "Refusing restore without a TTY. Pass --yes if you intend to run non-interactive.",
-                file=sys.stderr,
-            )
-            return 1
-        return run_restore_offline(
-            env_add,
+        return run_unified_db_restore(
+            config,
             compose_file=compose_file,
+            env_add=env_add,
             env_name=env_name,
+            force_dumps=bool(getattr(ns, "restore_from_dumps", False)),
+            dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
             skip_confirm=bool(ns.yes),
-            extra_pgbackrest_args=restore_extra,
-            config=config,
+            extra_pgbackrest_args=list(getattr(ns, "pgbackrest_restore_args", None) or []),
         )
 
     if sub == "backup":

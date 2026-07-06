@@ -1,5 +1,5 @@
 ---
-description: Run test smoke after bero bumps; smoke deps in consumer pyproject.toml only
+description: Run test smoke after tooling bumps; smoke deps in consumer pyproject.toml only
 globs: pyproject.toml, **/smoke/**, pytest.ini
 alwaysApply: false
 ---
@@ -10,13 +10,13 @@ Project health checks via **`uv run test smoke`** (catalpa-workspace-tooling v0.
 
 ## When to suggest smoke
 
-- User bumped the **bero** submodule or asks to validate a stack after changes
+- User bumped **catalpa-workspace-tooling** or asks to validate a stack after changes
 - User mentions smoke tests, PWA load check, or post-merge validation on **local dev**
 
-## Setup (bero consumers)
+## Setup (Django compose consumers)
 
-1. **`[dependency-groups].smoke`** in consumer repo root `pyproject.toml` — not `bero/pyproject.toml` (see `.cursor/rules/bero-deps.mdc` or `bero/docs/cursor-rules/bero-deps.mdc`)
-2. Tests live in **`{paths.frontend}/smoke/`** (bero: `bero/smoke/` in submodule)
+1. **`[dependency-groups].smoke`** in consumer repo root `pyproject.toml` — not in shared vendor/submodule `pyproject.toml` if that would force unrelated lock churn
+2. Tests live in **`{paths.frontend}/smoke/`** (from `tooling.yaml`)
 3. One-time: `uv run playwright install chromium`
 
 ## Safe local run
@@ -30,11 +30,10 @@ Use **`--check-only`** for migration preflight without applying. Use **`--fresh-
 
 ## Do not
 
-- Add `pytest` / `pytest-playwright` to **`bero/pyproject.toml`** — forces docker lock churn with no image benefit
+- Add `pytest` / `pytest-playwright` to shared submodule `pyproject.toml` when deps belong in the consumer repo only
 - Run **`uv run test smoke`** against **staging/prod** without explicit user confirmation (same bar as remote `dk`; see `remote-environments.mdc`)
 - Decrypt or print deploy secrets to debug smoke failures
 
 ## Related
 
-- Bero usage and E2E: `bero/README_TESTING.md`
-- Dependency placement: `bero/docs/cursor-rules/bero-deps.mdc`
+- Smoke test docs: `docs/SMOKE_TESTS.md` in catalpa-workspace-tooling

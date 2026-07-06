@@ -385,10 +385,12 @@ def test_render_userparams_conf_all_disabled() -> None:
     assert "UserParameter=" not in body
 
 
-def test_unit_file_includes_userparams_mount() -> None:
+def test_unit_file_includes_userparams_mount(minimal_config) -> None:
+    zs._apply_config_globals(minimal_config)
     unit = zs._unit_file_content(image=zs.DEFAULT_IMAGE, docker_group_gid=988)
     assert "--user 0:0" in unit
-    assert "99-indmo-userparams.conf" in unit
+    assert minimal_config.ops.zabbix.userparams_file in unit
+    assert f"Description={minimal_config.meta.name}:" in unit
 
 
 def test_run_zabbix_deploy_install_force_without_zbx(monkeypatch, minimal_config) -> None:

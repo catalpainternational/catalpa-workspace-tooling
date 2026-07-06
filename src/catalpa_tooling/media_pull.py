@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.restic_files import _default_compose_project, django_media_volume_name
 
 
@@ -27,6 +28,7 @@ def run_pull_media(
     target: Path,
     dry_run: bool,
     alpine_image: str = "alpine:3.21",
+    config: ProjectConfig | None = None,
 ) -> int:
     """Stream the named ``django_media`` volume to ``target`` using Linux ``tar`` in Docker end-to-end.
 
@@ -34,8 +36,8 @@ def run_pull_media(
     with a bind mount so archives are unpacked by the same Alpine ``tar`` family as deploy hosts,
     avoiding macOS host ``tar`` incompatibility with streamed payloads.
     """
-    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(None)
-    vol = django_media_volume_name(project)
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
+    vol = django_media_volume_name(project, config=config)
     run_env = os.environ.copy()
     for k, v in env.items():
         if v is not None:
@@ -130,6 +132,7 @@ def run_push_media(
     source: Path,
     dry_run: bool,
     alpine_image: str = "alpine:3.21",
+    config: ProjectConfig | None = None,
 ) -> int:
     """Stream a local directory into the named ``django_media`` volume (``tar`` | ``docker run``).
 
@@ -139,8 +142,8 @@ def run_push_media(
     ``DOCKER_HOST`` / ``COMPOSE_PROJECT_NAME`` resolution as ``run_pull_media`` for the destination
     volume container; packing uses the **local** Docker daemon so bind mounts refer to this machine.
     """
-    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(None)
-    vol = django_media_volume_name(project)
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
+    vol = django_media_volume_name(project, config=config)
     run_env = os.environ.copy()
     for k, v in env.items():
         if v is not None:

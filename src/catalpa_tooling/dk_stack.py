@@ -17,20 +17,6 @@ from catalpa_tooling.images import (
 )
 from catalpa_tooling.tty_restore import restore_controlling_tty
 
-_BUILD_TIME_TZ = ZoneInfo("Asia/Dili")
-
-# Compose substitution placeholders when credentials are not loaded (replaces repo build.env).
-_BUILD_PLACEHOLDERS: dict[str, str] = {
-    "POSTGRES_PASSWORD": "build_placeholder",
-    "DJANGO_DB_PASSWORD": "build_placeholder",
-    "METABASE_DB_PASSWORD": "build_placeholder",
-    "DJANGO_SECRET_KEY": "build-placeholder-not-for-production",
-    "BERO_ORIGIN": "https://build.example",
-    "DJANGO_ORIGIN": "https://build.example",
-    "METABASE_ORIGIN": "https://build.example",
-}
-
-
 def _load_dotenv_file(path: Path) -> dict[str, str]:
     """Parse a simple KEY=VALUE env file (no export prefix, # comments)."""
     if not path.is_file():
@@ -54,8 +40,8 @@ def _project_env_file(config: ProjectConfig) -> Path:
     return config.repo_root / f"{config.meta.name}.env"
 
 
-def _apply_build_placeholders(env: dict[str, str]) -> None:
-    for key, value in _BUILD_PLACEHOLDERS.items():
+def _apply_build_placeholders(env: dict[str, str], placeholders: dict[str, str]) -> None:
+    for key, value in placeholders.items():
         if not (env.get(key) or "").strip():
             env[key] = value
 
@@ -75,7 +61,7 @@ def registry_refs(config: ProjectConfig, registry: str, tag: str) -> tuple[str, 
 
 def vite_build_metadata_env(config: ProjectConfig, release_tag: str) -> dict[str, str]:
     """Public ``VITE_*`` vars baked into the SPA at image build time (see compose.yml caddy args)."""
-    built_at = datetime.now(_BUILD_TIME_TZ).isoformat(timespec="seconds")
+    built_at = datetime.now(ZoneInfo(config.dev.build_time_zone)).isoformat(timespec="seconds")
     out: dict[str, str] = {
         "VITE_RELEASE": release_tag,
         "VITE_BUILD_TIME": built_at,
@@ -247,7 +233,7 @@ def env_for_stack_build(
 ) -> dict[str, str]:
     """Env vars for compose build: project env, placeholders, ``STACK_IMAGE_*``, VITE metadata."""
     out: dict[str, str] = dict(_load_dotenv_file(_project_env_file(config)))
-    _apply_build_placeholders(out)
+    _apply_build_placeholders(out, config.stack.build_placeholders)
     gh = (github_repository or "").strip() or _github_repository(config.repo_root)
     if gh:
         out["GITHUB_REPOSITORY"] = gh

@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from catalpa_tooling.pgbackrest_db import run_bkp_db_init, run_bkp_db_stanza_create_flow
 
+_FLOW_ENV = {"COMPOSE_PROJECT_NAME": "testproj"}
+
 
 class TestRunBkpDbStanzaCreateFlow(unittest.TestCase):
     @patch("catalpa_tooling.pgbackrest_db.run_pgbackrest_stanza_create", return_value=0)
@@ -28,7 +30,7 @@ class TestRunBkpDbStanzaCreateFlow(unittest.TestCase):
     ) -> None:
         self.assertEqual(
             run_bkp_db_stanza_create_flow(
-                "compose.yml", {}, image="img:tag", config=None
+                "compose.yml", _FLOW_ENV, image="img:tag", config=None
             ),
             0,
         )
@@ -57,11 +59,11 @@ class TestRunBkpDbStanzaCreateFlow(unittest.TestCase):
         stanza_create.return_value = 0
         self.assertEqual(
             run_bkp_db_stanza_create_flow(
-                "compose.yml", {}, image="img:tag", config=None
+                "compose.yml", _FLOW_ENV, image="img:tag", config=None
             ),
             0,
         )
-        ensure_db.assert_called_once_with("compose.yml", {}, config=None)
+        ensure_db.assert_called_once_with("compose.yml", _FLOW_ENV, config=None)
         stanza_create.assert_called_once()
 
     @patch("catalpa_tooling.pgbackrest_db.run_pgbackrest_stanza_create")
@@ -81,7 +83,7 @@ class TestRunBkpDbStanzaCreateFlow(unittest.TestCase):
     ) -> None:
         self.assertEqual(
             run_bkp_db_stanza_create_flow(
-                "compose.yml", {}, image="img:tag", config=None
+                "compose.yml", _FLOW_ENV, image="img:tag", config=None
             ),
             0,
         )
@@ -108,7 +110,7 @@ class TestRunBkpDbStanzaCreateFlow(unittest.TestCase):
     ) -> None:
         self.assertEqual(
             run_bkp_db_stanza_create_flow(
-                "compose.yml", {}, image="img:tag", config=None
+                "compose.yml", _FLOW_ENV, image="img:tag", config=None
             ),
             0,
         )
@@ -137,14 +139,14 @@ class TestRunBkpDbInit(unittest.TestCase):
         stanza_flow: object,
     ) -> None:
         self.assertEqual(
-            run_bkp_db_init("compose.yml", {}, image="img:tag", config=None),
+            run_bkp_db_init("compose.yml", _FLOW_ENV, image="img:tag", config=None),
             0,
         )
         ensure_vols.assert_called_once()
         materialize.assert_called_once()
         ensure_db.assert_called_once()
         stanza_flow.assert_called_once_with(
-            "compose.yml", {}, image="img:tag", config=None
+            "compose.yml", _FLOW_ENV, image="img:tag", config=None
         )
 
 

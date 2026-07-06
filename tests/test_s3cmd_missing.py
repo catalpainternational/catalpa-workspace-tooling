@@ -23,8 +23,16 @@ def test_provision_exits_when_s3cmd_missing(
     capsys: pytest.CaptureFixture,
 ) -> None:
     from catalpa_tooling.config import (
+        DEFAULT_BUILD_PLACEHOLDERS,
+        DEFAULT_ORIGIN_ENV_KEYS,
+        DEFAULT_BUILD_TIME_ZONE,
+        DEFAULT_DEV_LAN_DNS_SUFFIX,
+        DEFAULT_DEV_SITE_ORIGIN_BASE,
+        DevConfig,
         DeployPathsConfig,
         FetchMetabaseDbConfig,
+        FetchConfig,
+        FetchDatabaseEntry,
         DjangoDevConfig,
         NativeConfig,
         FetchMediaConfig,
@@ -35,6 +43,7 @@ def test_provision_exits_when_s3cmd_missing(
         PathsConfig,
         PgbackrestOpsConfig,
         PostDbRestoreOpsConfig,
+        PostMetabaseDbRestoreOpsConfig,
         ProjectConfig,
         ProjectMetaConfig,
         ResticOpsConfig,
@@ -74,6 +83,8 @@ def test_provision_exits_when_s3cmd_missing(
             services=StackServicesConfig(web="w", proxy="p", db="db"),
             images=StackImagesConfig(registry_key="r", components={"web": "w", "proxy": "p", "db": "db"}),
             healthcheck=StackHealthcheckConfig(service="w", url="http://localhost/"),
+            origin_env_keys=DEFAULT_ORIGIN_ENV_KEYS,
+            build_placeholders=dict(DEFAULT_BUILD_PLACEHOLDERS),
         ),
         ops=OpsConfig(
             install_prefix="/opt",
@@ -97,9 +108,21 @@ def test_provision_exits_when_s3cmd_missing(
                 timers_enable_restic=(),
             ),
             post_db_restore=PostDbRestoreOpsConfig(envs=None, manage_commands=()),
+            post_metabase_db_restore=PostMetabaseDbRestoreOpsConfig(
+                envs=None,
+                manage_commands=(),
+                restart_services=(),
+            ),
             default_db_container="db1",
         ),
         native=NativeConfig(
+            fetch=FetchConfig(
+                dk_env="prod",
+                ssh_host=None,
+                databases={
+                    "app": FetchDatabaseEntry(db_name="d", via="ssh_native"),
+                },
+            ),
             fetch_media=FetchMediaConfig(dk_env="prod", dest="media", legacy=None),
             fetch_metabase_db=FetchMetabaseDbConfig(ssh_host=None),
             reset_db=ResetDbConfig(
@@ -126,6 +149,11 @@ def test_provision_exits_when_s3cmd_missing(
                 ports=(8000, 8080),
                 migrate=True,
             ),
+        ),
+        dev=DevConfig(
+            site_origin_base=DEFAULT_DEV_SITE_ORIGIN_BASE,
+            lan_dns_suffix=DEFAULT_DEV_LAN_DNS_SUFFIX,
+            build_time_zone=DEFAULT_BUILD_TIME_ZONE,
         ),
         digitalocean=None,
         repo_root=tmp_path,

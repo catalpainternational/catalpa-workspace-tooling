@@ -230,6 +230,7 @@ class TestRemoveInterruptedComposeRunDb(unittest.TestCase):
 class TestPlanRestoreOffline(unittest.TestCase):
     def test_prints_repo_path_and_command(self) -> None:
         env = {
+            "COMPOSE_PROJECT_NAME": "ligainan_dev",
             "PGBR_S3_READ_BUCKET": "backups",
             "PGBR_S3_READ_REGION": "sgp1",
             "PGBR_S3_READ_KEY": "key",
@@ -361,6 +362,7 @@ class TestRunRestoreOfflinePostHooks(unittest.TestCase):
             ok.returncode = 0
             run_int.return_value = ok
             cfg = MagicMock()
+            cfg.has_metabase_fetch.return_value = False
             rc = run_restore_offline(
                 {"PGBR_STANZA": "main"},
                 compose_file="compose.yml",
@@ -374,6 +376,54 @@ class TestRunRestoreOfflinePostHooks(unittest.TestCase):
             compose_file="compose.yml",
             env_add={"PGBR_STANZA": "main"},
             env_name="staging",
+        )
+
+    def test_successful_restore_runs_metabase_post_hooks_when_configured(self) -> None:
+        with (
+            patch(
+                "catalpa_tooling.pgbackrest_db.validate_pgbackrest_env",
+                return_value=None,
+            ),
+            patch("catalpa_tooling.pgbackrest_db.resolve_stanza", return_value="main"),
+            patch("catalpa_tooling.pgbackrest_db.ensure_postgres_data_volume", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.ensure_pgbackrest_conf_before_restore",
+                return_value=0,
+            ),
+            patch("catalpa_tooling.pgbackrest_db.db_service_responds", return_value=False),
+            patch("catalpa_tooling.pgbackrest_db.run_interruptible") as run_int,
+            patch("catalpa_tooling.pgbackrest_db._compose_up_db", return_value=0),
+            patch(
+                "catalpa_tooling.pgbackrest_db.wait_db_logs_for_recovery_ready",
+                return_value=(True, ""),
+            ),
+            patch(
+                "catalpa_tooling.pgbackrest_db.run_post_db_restore_manage_commands",
+                return_value=0,
+            ),
+            patch(
+                "catalpa_tooling.pgbackrest_db.run_post_metabase_db_restore_manage_commands",
+                return_value=0,
+            ) as mb_hooks,
+        ):
+            ok = MagicMock()
+            ok.returncode = 0
+            run_int.return_value = ok
+            cfg = MagicMock()
+            cfg.has_metabase_fetch.return_value = True
+            rc = run_restore_offline(
+                {"PGBR_STANZA": "main"},
+                compose_file="compose.yml",
+                env_name="dev",
+                skip_confirm=True,
+                config=cfg,
+            )
+        self.assertEqual(rc, 0)
+        mb_hooks.assert_called_once_with(
+            cfg,
+            compose_file="compose.yml",
+            env_add={"PGBR_STANZA": "main"},
+            env_name="dev",
         )
 
 

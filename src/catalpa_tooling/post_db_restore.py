@@ -147,6 +147,109 @@ def run_post_db_restore_manage_commands(
     return 0
 
 
+def run_post_metabase_db_restore_manage_commands(
+    config: ProjectConfig,
+    *,
+    compose_file: str,
+    env_add: dict[str, str],
+    env_name: str,
+    dry_run: bool = False,
+) -> int:
+    """Run ``ops.post_metabase_db_restore`` hooks when configured for ``env_name``."""
+    hooks = config.ops.post_metabase_db_restore
+    if not hooks.manage_commands and not hooks.restart_services:
+        return 0
+    if not hooks.applies_to_env(env_name):
+        return 0
+
+    web_svc = config.stack_service("web")
+    commands = [_expand_argv(argv, env_name=env_name) for argv in hooks.manage_commands]
+
+    if hooks.manage_commands:
+        rc = _ensure_stack_volumes(config, env_name, env_add, dry_run=dry_run)
+        if rc != 0:
+            print(
+                f"post_metabase_db_restore: ensuring stack volumes failed (exit {rc}).",
+                file=sys.stderr,
+            )
+            return rc
+
+    if dry_run:
+        if hooks.manage_commands:
+            print(
+                f"dry-run: would docker compose -f {compose_file} up -d {web_svc} --wait",
+                file=sys.stderr,
+            )
+            for argv in commands:
+                print(
+                    f"dry-run: would docker compose -f {compose_file} exec -T {web_svc} "
+                    f"./manage.py {' '.join(argv)}",
+                    file=sys.stderr,
+                )
+        for svc in hooks.restart_services:
+            print(
+                f"dry-run: would docker compose -f {compose_file} restart {svc}",
+                file=sys.stderr,
+            )
+        return 0
+
+    if hooks.manage_commands:
+        print(
+            "post_metabase_db_restore: starting web service and running "
+            f"{len(commands)} management command(s)…",
+            file=sys.stderr,
+        )
+        r = _compose(
+            compose_file,
+            "up",
+            "-d",
+            web_svc,
+            "--wait",
+            env_add=env_add,
+            check=False,
+        )
+        if r.returncode != 0:
+            print(
+                f"post_metabase_db_restore: `docker compose up -d {web_svc} --wait` failed "
+                f"(exit {r.returncode}).",
+                file=sys.stderr,
+            )
+            return r.returncode
+        for argv in commands:
+            label = " ".join(argv)
+            print(f"post_metabase_db_restore: manage.py {label}", file=sys.stderr)
+            r = _compose(
+                compose_file,
+                "exec",
+                "-T",
+                web_svc,
+                "./manage.py",
+                *argv,
+                env_add=env_add,
+                check=False,
+            )
+            if r.returncode != 0:
+                print(
+                    f"post_metabase_db_restore: `manage.py {label}` failed (exit {r.returncode}).",
+                    file=sys.stderr,
+                )
+                return r.returncode
+
+    for svc in hooks.restart_services:
+        print(f"post_metabase_db_restore: restarting {svc} …", file=sys.stderr)
+        r = _compose(compose_file, "restart", svc, env_add=env_add, check=False)
+        if r.returncode != 0:
+            print(
+                f"post_metabase_db_restore: `docker compose restart {svc}` failed "
+                f"(exit {r.returncode}).",
+                file=sys.stderr,
+            )
+            return r.returncode
+
+    print("post_metabase_db_restore: done.", file=sys.stderr)
+    return 0
+
+
 def run_reset_db_post_manage_commands(config: ProjectConfig) -> int:
     """Run ``native.reset_db.post_manage_commands`` via host ``uv run manage.py`` (Postgres on localhost)."""
     commands = config.native.reset_db.post_manage_commands

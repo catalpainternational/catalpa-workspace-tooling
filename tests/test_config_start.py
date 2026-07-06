@@ -8,9 +8,9 @@ from catalpa_tooling.config import (
     DEFAULT_NATIVE_START_PORTS,
     ProjectConfigError,
     StartConfig,
-    _parse_native,
     _parse_start,
 )
+from tests.helpers import parse_native_for_test
 
 
 def test_parse_start_defaults() -> None:
@@ -50,7 +50,7 @@ def test_parse_start_rejects_invalid_ports() -> None:
 
 
 def test_parse_native_includes_start() -> None:
-    cfg = _parse_native({"start": {"ports": [8000, 8080]}})
+    cfg = parse_native_for_test({"start": {"ports": [8000, 8080]}})
     assert cfg.start.ports == (8000, 8080)
 
 

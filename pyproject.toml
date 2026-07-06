@@ -4,7 +4,7 @@ version = "0.8.6"
 description = "Deploy and development CLIs driven by a repo-root tooling.yaml manifest"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["PyYAML>=6", "python-dotenv>=1", "honcho>=2.0,<3"]
+dependencies = ["PyYAML>=6", "python-dotenv>=1", "honcho>=2.0,<3", "segno>=1.6"]
 
 [project.optional-dependencies]
 completion = ["argcomplete>=3.2"]

@@ -8,7 +8,7 @@ from pathlib import Path
 from catalpa_tooling.cli.dk_argv import normalize_dk_env_argv as _normalize_dk_env_argv
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.dk_stack import compose_yml_build
+from catalpa_tooling.dk_stack import _apply_build_placeholders, compose_yml_build
 from catalpa_tooling.env_yaml import _yaml_mapping_to_env
 
 
@@ -90,6 +90,17 @@ def _strip_dk_up_provision_flag(compose_args: list[str]) -> list[str]:
     return [a for a in compose_args if a != "--provision"]
 
 
+def _insert_down_remove_orphans(compose_args: list[str]) -> list[str]:
+    """Add ``--remove-orphans`` to ``down`` so slim compose files drop full-stack leftovers (e.g. listen)."""
+    if not compose_args or compose_args[0] != "down":
+        return compose_args
+    if "--remove-orphans" in compose_args or "--no-remove-orphans" in compose_args:
+        return compose_args
+    out = list(compose_args)
+    out.insert(1, "--remove-orphans")
+    return out
+
+
 def _is_compose_down_with_volumes(compose_args: list[str]) -> bool:
     """True if args run `docker compose down` with volume removal (-v / --volumes)."""
     if len(compose_args) < 1 or compose_args[0] != "down":
@@ -106,7 +117,13 @@ def _ensure_local_stack_images_built(
     """When not using pinned pre-pulled images, ``docker compose build`` stack images before volume init."""
     if use_prepulled_registry:
         return 0
-    return compose_yml_build(config, env_add=env_add, services=None)
+    # Image builds interpolate the whole compose file but do not bake runtime
+    # secrets into images. Supply placeholders so required-but-unset runtime vars
+    # (e.g. DJANGO_SECRET_KEY / POSTGRES_PASSWORD with no compose default) do not
+    # fail interpolation during the implicit pre-`up` build.
+    build_env = dict(env_add)
+    _apply_build_placeholders(build_env, config.stack.build_placeholders)
+    return compose_yml_build(config, env_add=build_env, services=None)
 
 
 def _compose_up_service_index(compose_args: list[str]) -> int:

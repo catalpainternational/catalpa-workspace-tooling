@@ -303,8 +303,12 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     dst_r = resolve_env_with_compose_project(
         dst_ctx.compose_file, dst_ctx.env_add, config=config, dk_env_name=dst
     )
-    src_vol = django_media_volume_name(str(src_r.get("COMPOSE_PROJECT_NAME") or ""))
-    dst_vol = django_media_volume_name(str(dst_r.get("COMPOSE_PROJECT_NAME") or ""))
+    src_vol = django_media_volume_name(
+        str(src_r.get("COMPOSE_PROJECT_NAME") or ""), config=config
+    )
+    dst_vol = django_media_volume_name(
+        str(dst_r.get("COMPOSE_PROJECT_NAME") or ""), config=config
+    )
 
     print(
         f"  source: {src} compose={src_ctx.compose_file!r} DOCKER_HOST={src_ctx.docker_host!r} "
@@ -417,13 +421,13 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if do_media:
         print("transfer: pull_media (source) …", file=sys.stderr)
-        rc = run_pull_media(src_r, target=media_dir, dry_run=False)
+        rc = run_pull_media(src_r, target=media_dir, dry_run=False, config=config)
         if rc != 0:
             _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
             shutil.rmtree(session, ignore_errors=True)
             return rc
         print("transfer: push_media (destination) …", file=sys.stderr)
-        rc = run_push_media(dst_r, source=media_dir, dry_run=False)
+        rc = run_push_media(dst_r, source=media_dir, dry_run=False, config=config)
         if rc != 0:
             _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
             shutil.rmtree(session, ignore_errors=True)

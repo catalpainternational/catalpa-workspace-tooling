@@ -57,7 +57,7 @@ After `uv sync`, scaffold dev tasks once per project:
 uv run setup-vscode
 ```
 
-Then use **Terminal → Run Task** (Cmd+Shift+P → “Tasks: Run Task”). Bero projects get **dk dev** tasks (start/stop stack, logs, open site, Django manage, backup restore) and **dk full** tasks when `docker/envs/full/info.yaml` exists. SSH-backed fetch tasks are not included — run `native fetch db` / `native fetch media` from a terminal when needed.
+Then use **Terminal → Run Task** (Cmd+Shift+P → “Tasks: Run Task”). Django compose projects get **dk dev** tasks (start/stop stack, logs, open site, Django manage, backup restore) and **dk full** tasks when `docker/envs/full/info.yaml` exists. SSH-backed fetch tasks are not included — run `native fetch db` / `native fetch media` from a terminal when needed.
 
 Check status with `uv run setup-vscode --status`. Remove scaffolded files with `uv run setup-vscode --remove`.
 
@@ -73,7 +73,7 @@ Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-
 
 **4. Cursor agents (recommended for repos with SOPS credentials):**
 
-Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. For bero / Django compose consumers, optionally add [`scripts/cursor-rules/smoke-tests.mdc`](scripts/cursor-rules/smoke-tests.mdc). See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
+Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. For Django compose consumers with Playwright smoke tests, optionally add [`scripts/cursor-rules/smoke-tests.mdc`](scripts/cursor-rules/smoke-tests.mdc). See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
 
 **Single-project / bash (no direnv):**
 
@@ -124,7 +124,7 @@ After install, these console scripts are available:
 | `native` | Host development helpers (Django, Vite, fetch, plus `scripts/native-*.sh` extensions) |
 | `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
 | `dev` | Deprecated alias for `native` (prints warning) |
-| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), etc. See [Backup and monitoring](#backup-and-monitoring). On macOS, `dk <env> trust-caddy-cert` trusts Caddy's local HTTPS CA for that env's compose stack. |
+| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), **`dk proxy`** (machine-wide local HTTPS reverse proxy — see [README_DEV_PROXY.md](README_DEV_PROXY.md)), etc. See [Backup and monitoring](#backup-and-monitoring). `dk <env> trust-caddy-cert` / `dk proxy trust` trust Caddy's local HTTPS CA (macOS/Linux). |
 | `test` | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
 
@@ -135,10 +135,10 @@ Place bash scripts under `paths.scripts` in `tooling.yaml` (a single directory o
 ```yaml
 paths:
   scripts: scripts
-  # Bero + Metabase consumers:
+  # Shared postgres helpers (optional second path):
   # scripts:
   #   - scripts
-  #   - bero/docker/postgres/scripts
+  #   - vendor/postgres/scripts
 ```
 
 - **`scripts/native-<name>.sh`** → `uv run native <name>`. Deprecated `local-*.sh` / `dev-*.sh` still work with warnings.
@@ -165,7 +165,7 @@ uv run dk digoc --help
 ## Requirements
 
 - Python 3.12+
-- Consumer repo must include a valid `tooling.yaml` (see INDMO `data_import` for a reference manifest)
+- Consumer repo must include a valid `tooling.yaml` (see [tests/fixtures/indmo_reference_tooling.yaml](tests/fixtures/indmo_reference_tooling.yaml) or [tests/fixtures/minimal_project/tooling.yaml](tests/fixtures/minimal_project/tooling.yaml) for examples)
 - Host tools for deploy workflows: Docker, `uv`, `sops`, `age` (as needed by your project)
 - For DigitalOcean: install the official [doctl](https://docs.digitalocean.com/reference/doctl/) on `PATH` (or set `DOCTL_BIN`). Use **`dk digoc`** for project wrappers (auth, droplets, cloud-config). Run `dk digoc auth init` once per machine. If a stale token is stored, run `dk digoc auth remove --context default` first, or pass a new token with `dk digoc auth init -t TOKEN`
 
@@ -292,6 +292,15 @@ Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin
 
 Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
 
+### Local dev HTTPS proxy (`local_proxy` in `info.yaml`)
+
+For local Docker environments (no `docker_host`), projects may enable a **machine-wide** Caddy reverse proxy that maps a real HTTPS hostname under `*.localdev.temp.build` to the stack's front container. See the topic guides:
+
+| Topic | Guide |
+|-------|--------|
+| Local dev HTTPS proxy (`local_proxy`, CA trust, `dk proxy`) | [README_DEV_PROXY.md](README_DEV_PROXY.md) |
+| LAN access from phones/tablets (sslip.io) | [README_LAN_ACCESS.md](README_LAN_ACCESS.md) |
+
 ### Host storage (`storage` in `info.yaml`)
 
 Compose data volumes use stable Docker names (`name: ${COMPOSE_PROJECT_NAME}_…`). Two independent choices:
@@ -333,12 +342,13 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 |----------|----------|
 | [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `test smoke` prerequisites, authoring tests, flags |
 | [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation) |
+| [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) | Typer migration audit and low-risk refactor targets |
 | [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
 | [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |
 | [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
 | [ZABBIX_README.md](ZABBIX_README.md) | `dk <env> zabbix`, UserParameters |
 
-Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (e.g. INDMO `data_import`) and that project’s `docker/envs/` layout as a template. Add [Cursor agent guardrails](docs/AGENTS_AND_SECRETS.md) when onboarding a new repo.
+Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (see bundled fixtures under `tests/fixtures/`) and that project’s `docker/envs/` layout as a template. Add [Cursor agent guardrails](docs/AGENTS_AND_SECRETS.md) when onboarding a new repo.
 
 ## Development
 
@@ -347,3 +357,7 @@ uv sync --group test
 uv run pytest
 uv build
 ```
+
+### CLI conventions (Typer-friendly)
+
+The CLIs use argparse today but we intend to migrate to [Typer](https://typer.tiangolo.com/). Keep new/edited command code migration-friendly: put command **logic** in functions that take explicit, typed keyword parameters and keep the argparse layer (`*_parser.py`, `*_cli.py`) as thin glue that reads the namespace and calls them — never pass `argparse.Namespace` into logic. `native_cli.py` and `test_cli.py` already follow this shape. See [`.cursor/rules/typer-compatible-cli.mdc`](.cursor/rules/typer-compatible-cli.mdc) and [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) for the audit and refactor priorities.
