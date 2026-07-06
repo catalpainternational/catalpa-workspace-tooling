@@ -7,6 +7,9 @@ dk
 ├── push                           # build and push images tagged from git describe
 ├── build [SERVICE …]              # build images tagged from git describe
 ├── transfer SRC DST               # transfer db and media from one environemnt to another
+├── fetch                          # download production DB dumps and/or media
+│   ├── db [-o PATH] [--env NAME] [--only KEY]
+│   └── media [--env NAME] …       # same options as native fetch media
 │
 ├── proxy [--dry-run]              # machine-wide local dev HTTPS reverse proxy
 │   ├── up                         # start catalpa-local-proxy (Caddy :80/:443); CA persisted on host
@@ -67,7 +70,7 @@ dk
     │   ├── backup full|incr|diff
     │   ├── pgdump
     │   ├── pgrestore
-    │   └── restore
+    │   └── restore [--dumps] [--dry-run] [pgBackRest args…]
     │
     ├── compose …                  # explicit passthrough (tab completion); e.g. compose up -d
     └── …                          # implicit compose passthrough (legacy); e.g. up -d

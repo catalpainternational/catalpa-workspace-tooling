@@ -17,13 +17,13 @@ from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.native_parser import build_native_parser
 from catalpa_tooling.native_start import run_native_start
 from catalpa_tooling.fetch_media import run_fetch_media
+from catalpa_tooling.fetch_db import run_fetch_all_dbs
 from catalpa_tooling.config import (
     DEFAULT_LOCAL_PG_HOST,
     DEFAULT_LOCAL_PG_PORT,
     ProjectConfig,
     resolve_native_db_name,
 )
-from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_ssh_target
 
 # Custom-format dumps smaller than this are almost certainly stubs (fetch not run).
 _MIN_CUSTOM_DUMP_BYTES = 100_000
@@ -561,36 +561,21 @@ def _run_frontend_dev() -> int:
     )
 
 
-def _resolve_fetch_db_ssh_host(cfg: ProjectConfig, env: dict[str, str]) -> str | None:
-    """SSH target for ``fetch db`` scripts (tooling.yaml or ``FETCH_DB_SSH_HOST``)."""
-    explicit = (env.get("FETCH_DB_SSH_HOST") or "").strip()
-    if explicit:
-        return explicit
-    mb = cfg.native.fetch_metabase_db.ssh_host
-    if mb:
-        return mb.strip()
-    legacy = cfg.native.fetch_media.legacy
-    if legacy and legacy.ssh_host:
-        return legacy.ssh_host.strip()
-    return None
-
-
-def _cmd_fetch_db(*, output: Path | None, dk_env: str) -> None:
+def _cmd_fetch_db(*, output: Path | None, dk_env: str, only: str | None = None) -> None:
+    warn_deprecated("native fetch db", "dk fetch db")
     cfg = _config()
-    root = cfg.repo_root
-    out_path = output if output is not None else cfg.fetch_db_dump_path
-    out_path = out_path.resolve()
-    env = os.environ.copy()
-    env["FETCH_DK_ENV"] = dk_env
-    env["FETCH_DB_OUTPUT"] = str(out_path)
-    ssh_host = _resolve_fetch_db_ssh_host(cfg, env)
-    if ssh_host:
-        env["FETCH_DB_SSH_HOST"] = ssh_host
-        if ensure_ssh_known_host_for_ssh_target(ssh_host) != 0:
-            raise SystemExit(1)
-    script = cfg.scripts_dir / "fetch_db.sh"
-    print(f"Running {script}", file=sys.stderr)
-    subprocess.run(["bash", str(script)], cwd=root, env=env, check=True)
+    overrides: dict[str, Path] = {}
+    if output is not None:
+        overrides["app"] = output.resolve()
+    try:
+        run_fetch_all_dbs(
+            cfg,
+            dk_env=dk_env,
+            only=only,
+            output_overrides=overrides or None,
+        )
+    except SystemExit:
+        raise
 
 
 def _cmd_fetch_media(

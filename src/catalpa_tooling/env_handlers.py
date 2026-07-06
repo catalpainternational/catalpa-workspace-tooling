@@ -15,6 +15,7 @@ from catalpa_tooling.compose import _compose
 from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
+from catalpa_tooling.db_restore import run_unified_db_restore
 from catalpa_tooling.doctl_spaces_provision import (
     ensure_spaces_backup_credentials,
     needs_pgbr_write,
@@ -42,8 +43,6 @@ from catalpa_tooling.pgbackrest_db import (
     run_info,
     run_pg_dump,
     run_pg_restore,
-    plan_restore_offline,
-    run_restore_offline,
     run_version,
     pg_restore_compose_extras,
 )
@@ -741,32 +740,15 @@ def _handle_bkp_db(
         )
 
     if sub == "restore":
-        restore_extra = list(getattr(ns, "pgbackrest_restore_args", None) or [])
-        while restore_extra and restore_extra[0] == "--":
-            restore_extra.pop(0)
-        restore_dry = dry_run or bool(getattr(ns, "restore_dry_run", False))
-        if restore_dry:
-            return plan_restore_offline(
-                env_add,
-                compose_file=compose_file,
-                env_name=env_name,
-                extra_pgbackrest_args=restore_extra,
-                config=config,
-                docker_host=str(docker_host),
-            )
-        if not ns.yes and not sys.stdin.isatty():
-            print(
-                "Refusing restore without a TTY. Pass --yes if you intend to run non-interactive.",
-                file=sys.stderr,
-            )
-            return 1
-        return run_restore_offline(
-            env_add,
+        return run_unified_db_restore(
+            config,
             compose_file=compose_file,
+            env_add=env_add,
             env_name=env_name,
+            force_dumps=bool(getattr(ns, "restore_from_dumps", False)),
+            dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
             skip_confirm=bool(ns.yes),
-            extra_pgbackrest_args=restore_extra,
-            config=config,
+            extra_pgbackrest_args=list(getattr(ns, "pgbackrest_restore_args", None) or []),
         )
 
     if sub == "backup":

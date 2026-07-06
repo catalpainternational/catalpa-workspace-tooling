@@ -52,7 +52,7 @@ def test_db_restore_prints_deploy_summary_once(
         "resolve_env_with_compose_project",
         lambda _compose_file, env_add, **_kwargs: env_add,
     )
-    monkeypatch.setattr(env_handlers, "run_restore_offline", lambda *_a, **_k: 0)
+    monkeypatch.setattr(env_handlers, "run_unified_db_restore", lambda *_a, **_k: 0)
 
     ns = argparse.Namespace(
         env_name=env_name,

@@ -31,9 +31,13 @@ native
 | `paths.env_local` | Loaded for `manage`, `runserver`, `reset-db`, `pg-restore` (e.g. `.env.local`) |
 | `paths.email_backend_dir` | Default `EMAIL_BACKEND_FOLDER` for host `manage` / `runserver` when unset |
 | `paths.media_dir` | Optional host media tree for `native runserver` / `manage` (`DJANGO_MEDIA_ROOT` when unset) |
-| `paths.fetch_db_dump` | Default output for `fetch db` |
-| `paths.scripts` | Shell wrappers (`fetch_db.sh`, `native-*.sh`; deprecated `local-*.sh`, `dev-*.sh`). String or ordered list; first directory wins on name clash |
-| `native.fetch_media.dk_env` | Default `docker/envs/<name>/` for `fetch db` and `fetch media` (package default: `prod`) |
+| `native.fetch.databases` | Per-DB fetch sources (`app` required when set): `db_name`, `via` (`ssh_native` \| `ssh_docker` \| `dk`), optional `ssh_host`, `container`, `pg_user`, `dk_env`, `dump` |
+| `native.fetch.dk_env` | Default source env for `via: dk` and `dk fetch` (falls back to `native.fetch_media.dk_env`) |
+| `native.fetch.ssh_host` | Default SSH target for `via: ssh_*` methods |
+| `paths.fetch_db_dump` | Default output for `databases.app` |
+| `paths.fetch_metabase_db_dump` | Default output for `databases.metabase` |
+| `paths.scripts` | Shell wrappers (`native-*.sh`; legacy `fetch_db.sh` when `native.fetch.databases` omitted) |
+| `native.fetch_media.dk_env` | Legacy default env when `native.fetch` omitted (package default: `prod`) |
 | `native.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
 | `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`, optional `default: true`) |
 | `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate on host reset (default: `false`); for compose `pgrestore` / `dk transfer`, pre-creates PostGIS, grants catalog tables to the app user, and adds `pg_restore --no-comments` |
@@ -74,8 +78,8 @@ native:
 
 | Command | Role |
 |---------|------|
-| `fetch db` | Run `scripts/fetch_db.sh`: `uv run dk <env> bkp_db pgdump` → `paths.fetch_db_dump` (remote `db` must be up) |
-| `fetch media` | Rsync from deploy host (see below); implemented in catalpa-workspace-tooling (not a shell script) |
+| `fetch db` | Deprecated wrapper — use `dk fetch db` (config-driven via `native.fetch.databases`; legacy: `scripts/fetch_db.sh`) |
+| `fetch media` | Rsync from deploy host (see below); also available as `dk fetch media` |
 | `runserver` | `uv run ./manage.py runserver` with dev env defaults (`DJANGO_DEBUG=1`, `EMAIL_BACKEND_FOLDER`, `RQ_SYNCHRONOUS=1`) |
 | `manage` | Any `manage.py` subcommand via `uv run ./manage.py` in `paths.backend` |
 | `reset-db` | Local Postgres: see [reset-db](#reset-db) |

@@ -7,6 +7,7 @@ import argparse
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.digoc_parser import attach_digoc_subcommands
 from catalpa_tooling.dk_transfer import populate_transfer_arguments
+from catalpa_tooling.dk_fetch import populate_fetch_arguments
 from catalpa_tooling.env_parser import attach_env_subparsers
 from catalpa_tooling.local_proxy import LOCAL_PROXY_CONTAINER
 from catalpa_tooling.cli.completion import attach_choices_completer
@@ -33,7 +34,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             f"  dk prod db pgdump\n"
             f"  dk full info -e\n"
             f"\n"
-            f"Top-level commands (no env): build, push, transfer, digoc, proxy.\n"
+            f"Top-level commands (no env): build, push, transfer, fetch, digoc, proxy.\n"
             f"Environments: directories under {envs_dir}/<name>/ with info.yaml."
         ),
     )
@@ -77,6 +78,15 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     env_names = list_deploy_env_names(config.deploy_envs_dir)
     for action in p_transfer._actions:
         if action.dest in ("source_env", "dest_env") and env_names:
+            attach_choices_completer(action, env_names)
+
+    p_fetch = sub.add_parser(
+        "fetch",
+        help="Download production DB dumps and/or media into the repo.",
+    )
+    populate_fetch_arguments(p_fetch, config)
+    for action in p_fetch._actions:
+        if action.dest == "dk_env" and env_names:
             attach_choices_completer(action, env_names)
 
     p_digoc = sub.add_parser("digoc", help="DigitalOcean helpers (wraps host doctl).")
