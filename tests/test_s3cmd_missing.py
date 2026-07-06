@@ -31,6 +31,8 @@ def test_provision_exits_when_s3cmd_missing(
         DevConfig,
         DeployPathsConfig,
         FetchMetabaseDbConfig,
+        FetchConfig,
+        FetchDatabaseEntry,
         DjangoDevConfig,
         NativeConfig,
         FetchMediaConfig,
@@ -41,6 +43,7 @@ def test_provision_exits_when_s3cmd_missing(
         PathsConfig,
         PgbackrestOpsConfig,
         PostDbRestoreOpsConfig,
+        PostMetabaseDbRestoreOpsConfig,
         ProjectConfig,
         ProjectMetaConfig,
         ResticOpsConfig,
@@ -105,9 +108,21 @@ def test_provision_exits_when_s3cmd_missing(
                 timers_enable_restic=(),
             ),
             post_db_restore=PostDbRestoreOpsConfig(envs=None, manage_commands=()),
+            post_metabase_db_restore=PostMetabaseDbRestoreOpsConfig(
+                envs=None,
+                manage_commands=(),
+                restart_services=(),
+            ),
             default_db_container="db1",
         ),
         native=NativeConfig(
+            fetch=FetchConfig(
+                dk_env="prod",
+                ssh_host=None,
+                databases={
+                    "app": FetchDatabaseEntry(db_name="d", via="ssh_native"),
+                },
+            ),
             fetch_media=FetchMediaConfig(dk_env="prod", dest="media", legacy=None),
             fetch_metabase_db=FetchMetabaseDbConfig(ssh_host=None),
             reset_db=ResetDbConfig(

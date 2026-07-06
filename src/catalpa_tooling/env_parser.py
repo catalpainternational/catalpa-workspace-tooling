@@ -27,7 +27,7 @@ COMMON_COMPOSE_VERBS: tuple[str, ...] = (
     "start",
 )
 
-RESERVED_DK_TOP_COMMANDS = frozenset({"build", "push", "transfer", "digoc"})
+RESERVED_DK_TOP_COMMANDS = frozenset({"build", "push", "transfer", "digoc", "fetch"})
 
 
 def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
@@ -135,6 +135,12 @@ def _attach_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> N
         p_pgrestore.add_argument("pg_restore_args", nargs=argparse.REMAINDER)
 
         p_restore = sub.add_parser("restore", help="Offline pgBackRest restore.")
+        p_restore.add_argument(
+            "--dumps",
+            action="store_true",
+            dest="restore_from_dumps",
+            help="Restore from local custom-format dumps only (never pgBackRest; never auto-fetch).",
+        )
         p_restore.add_argument(
             "--dry-run",
             action="store_true",

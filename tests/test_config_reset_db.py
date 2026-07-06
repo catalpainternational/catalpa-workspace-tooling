@@ -7,9 +7,9 @@ import pytest
 from catalpa_tooling.config import (
     ProjectConfigError,
     ResetDbConfig,
-    _parse_native,
     _parse_reset_db,
 )
+from tests.helpers import parse_native_for_test
 
 
 def test_parse_reset_db_defaults() -> None:
@@ -38,7 +38,7 @@ def test_parse_reset_db_catalpa_style() -> None:
 
 
 def test_parse_native_includes_reset_db() -> None:
-    local_cfg = _parse_native({"fetch_media": {"dk_env": "prod"}, "reset_db": {"postgis": False}})
+    local_cfg = parse_native_for_test({"fetch_media": {"dk_env": "prod"}, "reset_db": {"postgis": False}})
     assert local_cfg.reset_db.postgis is False
     assert local_cfg.reset_db.pg_restore_args == ("--clean", "--if-exists")
     assert isinstance(local_cfg.reset_db, ResetDbConfig)
