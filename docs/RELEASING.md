@@ -10,8 +10,14 @@ catalpa-workspace-tooling = { git = "https://github.com/catalpainternational/cat
 
 ## Release checklist
 
-1. **Finalize `CHANGELOG.md`** — move items from `## Unreleased` into a new `## X.Y.Z` section.
-2. **Merge to `main`** and push.
+1. **Finalize `CHANGELOG.md`** — move items from `## Unreleased` into a new `## X.Y.Z` section:
+
+   ```bash
+   scripts/finalize-changelog.sh 0.9.1 --write
+   ```
+
+   Dry-run first with `scripts/finalize-changelog.sh 0.9.1` (no `--write`).
+2. **Commit, merge to `main`**, and push.
 3. **Tag from `main`** (on the machine that pushed):
 
    ```bash

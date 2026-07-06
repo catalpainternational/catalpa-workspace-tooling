@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.1
+
 ### Changed
 
 - **Local dev HTTPS proxy (breaking)** — enabled **by default** on local Docker envs (`local_proxy.enabled: false` to opt out). Machine-wide proxy always dials **`{compose_project}-{stack.services.proxy}:80`** (stack Caddy). Removed per-project `local_proxy.service`, `upstream_port`, and manual `routes` lists; use `local_proxy.roles: [admin, stats]` for extra subdomains. Hostnames derive from `{project-slug}-{env}.localdev.temp.build` when `site_origin` is omitted. Compose project name defaults to `{stack.compose_project_default}_{env}`. LAN access remains opt-in (`local_proxy.lan_access: true`).
