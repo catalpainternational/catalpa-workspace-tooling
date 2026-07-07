@@ -40,7 +40,8 @@ native
 | `native.fetch_media.dk_env` | Legacy default env when `native.fetch` omitted (package default: `prod`) |
 | `native.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
 | `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`, optional `default: true`) |
-| `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate on host reset (default: `false`); for compose `pgrestore` / `dk transfer`, pre-creates PostGIS, grants catalog tables to the app user, and defaults compose `pg_restore` to `--role postgres` (unless `pg_restore_args` already sets `--role`) so comments restore cleanly |
+| `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate on host reset (default: `false`); for compose `pgrestore` / `dk transfer`, pre-creates PostGIS, grants catalog tables to the app user, and defaults compose `pg_restore` to `--role postgres` (unless `restore_as_super` or `pg_restore_args` sets another role) |
+| `native.reset_db.restore_as_super` | If true (default: `false`), compose restore temporarily promotes ``APP_USER`` to superuser and reloads with ``--role APP_USER`` instead of the ``postgis`` default ``--role postgres`` — for dbsamizdat-friendly ownership while extension DDL/comments still succeed |
 | `native.reset_db.pg_restore_args` | Extra `pg_restore` flags for dump restore (`native reset-db`, `native pg-restore`, **`dk <env> db restore`**, **`dk <env> db pgrestore`**, **`dk transfer`**) — e.g. `--clean`, `--if-exists`, `--role=postgres` |
 | `native.reset_db.post_manage_commands` | `manage.py` argv lists after reset (local host, not compose exec) |
 | `native.reset_db.db_name_env` / `host_env` / … | Env var names in `paths.env_local` for libpq tools (first set wins) |

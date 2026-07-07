@@ -338,18 +338,108 @@ def _pg_restore_has_role(extras: Sequence[str]) -> bool:
     return False
 
 
-def _pg_restore_compose_role_suffix(extras: Sequence[str], *, postgis: bool = False) -> str:
+def _pg_restore_explicit_role(extras: Sequence[str]) -> str | None:
+    """Return an explicit ``--role`` value from ``pg_restore`` extras, if any."""
+    for i, arg in enumerate(extras):
+        if arg == "--role" and i + 1 < len(extras):
+            return extras[i + 1]
+        if arg.startswith("--role="):
+            return arg.partition("=")[2]
+    return None
+
+
+def _pg_restore_compose_role_suffix(
+    extras: Sequence[str],
+    *,
+    postgis: bool = False,
+    restore_as_super: bool = False,
+) -> str:
     """Shell suffix for compose ``pg_restore`` so ``--no-owner`` objects get a restore role.
 
-    When ``postgis`` is true and no ``--role`` is set, default to ``postgres`` so
-    ``COMMENT ON EXTENSION`` succeeds (PostgreSQL 18+ has no ``ALTER EXTENSION … OWNER``).
-    Otherwise default to ``APP_USER`` for normal app-owned restores.
+    When ``restore_as_super`` is true, use ``APP_USER`` (with temporary superuser promotion).
+    When ``postgis`` is true and ``restore_as_super`` is false, use ``postgres`` so
+    ``COMMENT ON EXTENSION`` and extension catalog reload succeed.
+    Otherwise default to ``APP_USER``.
     """
     if _pg_restore_has_role(extras):
         return ""
+    if restore_as_super:
+        return ' --role "$APP_USER"'
     if postgis:
         return " --role postgres"
     return ' --role "$APP_USER"'
+
+
+def _pg_restore_promote_app_superuser(
+    extras: Sequence[str],
+    *,
+    target: DbRestoreTarget,
+    restore_as_super: bool = False,
+) -> bool:
+    """Whether to temporarily grant superuser to ``APP_USER`` around compose restore.
+
+    Enabled when ``native.reset_db.restore_as_super`` is true (default: false).
+    Restoring as the app user keeps dbsamizdat-owned matviews under ``APP_USER``, while
+    short-lived superuser allows extension DDL/comments from production dumps (PostGIS,
+    pgcrypto, etc.) without ``--role postgres`` (which leaves app objects superuser-owned).
+    Skipped when ``--role postgres`` is set explicitly in ``pg_restore_args``.
+    """
+    if not restore_as_super:
+        return False
+    if target != "app":
+        return False
+    explicit = _pg_restore_explicit_role(extras)
+    return explicit is None or explicit != "postgres"
+
+
+def _pg_restore_compose_inner_script(
+    target: DbRestoreTarget,
+    extras: Sequence[str],
+    *,
+    container_path: str,
+    promote_app_superuser: bool,
+    postgis: bool = False,
+    restore_as_super: bool = False,
+) -> str:
+    """Shell script run in the ``db`` container to execute ``pg_restore``."""
+    shell_vars = _db_shell_vars(target)
+    pg_restore_cmd = 'pg_restore -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB"'
+    if extras:
+        pg_restore_cmd += " " + " ".join(shlex.quote(a) for a in extras)
+    pg_restore_cmd += _pg_restore_compose_role_suffix(
+        extras,
+        postgis=postgis,
+        restore_as_super=restore_as_super,
+    )
+    pg_restore_cmd += " " + shlex.quote(container_path)
+
+    if not promote_app_superuser:
+        return (
+            shell_vars
+            + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
+            + pg_restore_cmd
+        )
+
+    return f"""set -eu
+{shell_vars}
+export PGPASSWORD="$POSTGRES_PASSWORD"
+_promoted=0
+demote_app_user() {{
+  if [ "$_promoted" -eq 1 ]; then
+    psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=0 \\
+      -c "ALTER ROLE \\"$APP_USER\\" NOSUPERUSER;" >/dev/null 2>&1 || true
+  fi
+}}
+trap demote_app_user EXIT
+_super=$(psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atqc \\
+  "SELECT rolsuper FROM pg_roles WHERE rolname = '$APP_USER'")
+if [ "$_super" != "t" ]; then
+  psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 \\
+    -c "ALTER ROLE \\"$APP_USER\\" SUPERUSER;"
+  _promoted=1
+fi
+{pg_restore_cmd}
+"""
 
 
 def pg_restore_extras_with_default_archive(
@@ -513,10 +603,9 @@ def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
     """``psql`` heredoc run after ``createdb`` (grants; optional PostGIS prep for dump restore).
 
     When ``postgis`` is true, create PostGIS as superuser and grant catalog tables to the
-    app user so ``pg_restore --role postgres`` can reload ``spatial_ref_sys`` and apply
-    ``COMMENT ON EXTENSION`` (dbsamizdat and other object comments are preserved; do not
-    use ``--no-comments``). Compose restore defaults to ``--role postgres`` when PostGIS
-    prep is enabled and no explicit ``--role`` is configured.
+    app user before ``pg_restore``. Compose restore uses ``--role postgres`` when
+    ``postgis`` is true and ``restore_as_super`` is false; use ``restore_as_super: true``
+    for ``--role APP_USER`` with temporary superuser promotion instead.
     """
     lines = [
         "GRANT ALL PRIVILEGES ON DATABASE ${APP_DB} TO ${APP_USER};",
@@ -740,16 +829,22 @@ def run_pg_restore(
             )
             return 1
 
-        inner = (
-            _db_shell_vars(target)
-            + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
-            + 'exec pg_restore -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB"'
+        postgis = config.native.reset_db.postgis if config else False
+        restore_as_super = (
+            config.native.reset_db.restore_as_super if config else False
         )
-        if extras:
-            inner = inner + " " + " ".join(shlex.quote(a) for a in extras)
-        use_postgis = config.native.reset_db.postgis if config else False
-        inner = inner + _pg_restore_compose_role_suffix(extras, postgis=use_postgis)
-        inner = inner + " " + shlex.quote(container_path)
+        inner = _pg_restore_compose_inner_script(
+            target,
+            extras,
+            container_path=container_path,
+            promote_app_superuser=_pg_restore_promote_app_superuser(
+                extras,
+                target=target,
+                restore_as_super=restore_as_super,
+            ),
+            postgis=postgis,
+            restore_as_super=restore_as_super,
+        )
         try:
             r = run_cmd(
                 [

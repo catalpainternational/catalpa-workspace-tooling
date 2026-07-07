@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from catalpa_tooling.config import ProjectConfigError, load_project_config
+from catalpa_tooling.config import ProjectConfigError, _parse_reset_db, load_project_config
 from catalpa_tooling.config import tooling_path_for_repo
 
 
@@ -196,6 +196,27 @@ def test_tooling_config_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("TOOLING_CONFIG", str(manifest))
     cfg = load_project_config(tmp_path)
     assert cfg.repo_root == other.resolve()
+
+
+def test_restore_as_super_defaults_false_when_omitted() -> None:
+    cfg = _parse_reset_db({"postgis": True})
+    assert cfg.postgis is True
+    assert cfg.restore_as_super is False
+
+
+def test_restore_as_super_explicit_false_with_postgis() -> None:
+    cfg = _parse_reset_db({"postgis": True, "restore_as_super": False})
+    assert cfg.restore_as_super is False
+
+
+def test_restore_as_super_false_when_postgis_false_and_omitted() -> None:
+    cfg = _parse_reset_db({"postgis": False})
+    assert cfg.restore_as_super is False
+
+
+def test_restore_as_super_true_without_postgis_when_explicit() -> None:
+    cfg = _parse_reset_db({"postgis": False, "restore_as_super": True})
+    assert cfg.restore_as_super is True
 
 
 def test_digitalocean_block_optional(minimal_project) -> None:

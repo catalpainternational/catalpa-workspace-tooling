@@ -128,6 +128,7 @@ def test_provision_exits_when_s3cmd_missing(
             fetch_metabase_db=FetchMetabaseDbConfig(ssh_host=None),
             reset_db=ResetDbConfig(
                 postgis=False,
+                restore_as_super=False,
                 pg_restore_args=("--clean", "--if-exists"),
                 post_manage_commands=(),
                 db_name_env=("POSTGRES_DB",),
