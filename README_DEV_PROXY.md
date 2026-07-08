@@ -103,3 +103,18 @@ LAN magic-DNS routes are grouped under the same project/env as the canonical hos
 - **`CADDY_*_SITE_ADDRESS`** env vars as plain **`http://…`** (machine proxy terminates TLS).
 - Frontend dev config must allow `.localdev.temp.build` hosts (e.g. Vite `server.allowedHosts`).
 - Staging/prod are unchanged — the override applies only on local Docker hosts without `docker_host`.
+
+## Deployed envs (staging/prod) — `https://` addresses
+
+For remote envs (`docker_host: ssh://…`, local proxy off), tooling injects the same
+`CADDY_*_SITE_ADDRESS` vars but as **`https://` origins** so the stack Caddy provisions its
+own certificates and serves HTTPS directly (no machine proxy in front):
+
+- `CADDY_SITE_ADDRESS` ← primary `site_origin`.
+- `CADDY_DJANGO_SITE_ADDRESS` ← bero stacks only (`paths.frontend: bero`): from `DJANGO_ORIGIN`
+  if set, else derived `admin.{primary-host}`.
+- `CADDY_METABASE_SITE_ADDRESS` ← only when Metabase is routed: explicit `METABASE_ORIGIN` /
+  `METABASE_SITE_ORIGIN`, a `stats` role, a bero stack with Metabase fetch configured, or a
+  second `site_origin` entry.
+
+All values use `setdefault`, so anything set explicitly in `info.yaml` `env:` wins.
