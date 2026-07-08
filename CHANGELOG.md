@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.2
+
 ### Added
 
 - **`native.reset_db.restore_as_super`** — opt-in (default `false`) temporary superuser promotion for compose ``pg_restore`` / ``dk transfer``: reload with ``--role APP_USER`` instead of the ``postgis`` default ``--role postgres``. Skipped when ``pg_restore_args`` sets ``--role postgres``.
