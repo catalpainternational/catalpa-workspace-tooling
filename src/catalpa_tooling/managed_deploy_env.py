@@ -17,15 +17,11 @@ from catalpa_tooling.env_yaml import _credentials_to_env, _yaml_mapping_to_env
 from catalpa_tooling.images import _default_image_tag, _image_registry_from_config, _load_images_config
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import (
-    derive_site_origin,
     domain_env_from_origins,
-    hostnames_from_origins,
-    local_proxy_role_names,
     parse_site_origins_from_info,
     primary_site_origin_for_env,
     primary_site_origin_from_info,
     resolve_site_origins_for_env,
-    role_site_origin_from_primary,
     site_origin_from_info,
 )
 from catalpa_tooling.storage_config import StorageVolumeSpec, parse_storage_volumes_from_info
@@ -271,37 +267,18 @@ def load_managed_deploy_context(
     if domain_s:
         env_add["DOMAIN"] = domain_s
 
+    from catalpa_tooling.caddy_site_addresses import apply_caddy_site_addresses
     from catalpa_tooling.local_proxy import local_proxy_enabled
 
-    if local_proxy_enabled(info):
-        primary_host = hostnames_from_origins([site_origin])[0] if site_origin else ""
-        if primary_host:
-            env_add.setdefault("CADDY_SITE_ADDRESS", f"http://{primary_host}")
-        role_env_keys: dict[str, tuple[tuple[str, str], ...]] = {
-            "admin": (("DJANGO_ORIGIN", "CADDY_DJANGO_SITE_ADDRESS"),),
-            "stats": (("METABASE_ORIGIN", "CADDY_METABASE_SITE_ADDRESS"),),
-        }
-        extra_allowed: list[str] = []
-        for role in local_proxy_role_names(info):
-            if site_origin:
-                role_origin = role_site_origin_from_primary(site_origin, role)
-            else:
-                role_origin = derive_site_origin(config, env_name, role=role)
-            role_host = hostnames_from_origins([role_origin])[0]
-            extra_allowed.append(role_host)
-            for env_key, caddy_key in role_env_keys.get(role, ()):
-                env_add.setdefault(env_key, role_origin)
-                env_add.setdefault(caddy_key, f"http://{role_host}")
-        if extra_allowed:
-            env_add.setdefault("BERO_EXTRA_ALLOWED_HOSTS", ", ".join(extra_allowed))
-        env_add.setdefault("VITE_BEHIND_PROXY", "true")
-        if "stats" in local_proxy_role_names(info):
-            stats_origin = (
-                role_site_origin_from_primary(site_origin, "stats")
-                if site_origin
-                else derive_site_origin(config, env_name, role="stats")
-            )
-            env_add.setdefault("METABASE_SITE_ORIGIN", stats_origin)
+    apply_caddy_site_addresses(
+        env_add,
+        info=info,
+        config=config,
+        env_name=env_name,
+        site_origin=site_origin,
+        site_origins=site_origins_list,
+        behind_local_proxy=local_proxy_enabled(info),
+    )
 
     if effective_tag:
         env_add["STACK_IMAGE_TAG"] = effective_tag
