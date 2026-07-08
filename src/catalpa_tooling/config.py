@@ -368,6 +368,7 @@ class ResetDbConfig:
     """``native.reset_db`` in tooling.yaml (host ``native reset-db`` / ``native pg-restore``)."""
 
     postgis: bool
+    restore_as_super: bool
     pg_restore_args: tuple[str, ...]
     post_manage_commands: tuple[tuple[str, ...], ...]
     db_name_env: tuple[str, ...]
@@ -741,6 +742,7 @@ def _parse_reset_db(raw: Any) -> ResetDbConfig:
     if raw is None:
         return ResetDbConfig(
             postgis=False,
+            restore_as_super=False,
             pg_restore_args=DEFAULT_PG_RESTORE_ARGS,
             post_manage_commands=(),
             db_name_env=DEFAULT_DB_NAME_ENV_KEYS,
@@ -753,8 +755,10 @@ def _parse_reset_db(raw: Any) -> ResetDbConfig:
     if not isinstance(raw, dict):
         raise ProjectConfigError("native.reset_db must be a mapping")
     fallback = _optional_str(raw, "db_name_fallback")
+    postgis = _optional_bool(raw, "postgis", default=False)
     return ResetDbConfig(
-        postgis=_optional_bool(raw, "postgis", default=False),
+        postgis=postgis,
+        restore_as_super=_optional_bool(raw, "restore_as_super", default=False),
         pg_restore_args=(
             _parse_string_list(
                 raw.get("pg_restore_args"),

@@ -4,6 +4,7 @@
 
 ### Added
 
+- **`native.reset_db.restore_as_super`** — opt-in (default `false`) temporary superuser promotion for compose ``pg_restore`` / ``dk transfer``: reload with ``--role APP_USER`` instead of the ``postgis`` default ``--role postgres``. Skipped when ``pg_restore_args`` sets ``--role postgres``.
 - **`ops.post_db_restore.db_psql` / `ops.post_metabase_db_restore.db_psql`** — optional Postgres superuser SQL hooks run in the ``db`` container after each restore leg (`target: app` or `metabase`, `file:` repo-relative or in-container path). Runs before `manage_commands`.
 
 ### Changed
@@ -13,7 +14,7 @@
 ### Fixed
 
 - **`dk <env> db restore` / `db pgrestore` / `transfer`** — merge `native.reset_db.pg_restore_args` from `tooling.yaml` into compose `pg_restore` (previously only `native reset-db` / `native pg-restore` honored those flags). Fixes restores that need `--role=postgres` for extension DDL in production dumps (e.g. PostGIS, `pg_stat_statements`).
-- **Compose `pg_restore` no longer injects `--no-comments` when `native.reset_db.postgis` is true** — PostGIS prep grants catalog tables to the app user and compose restore defaults to `--role postgres` (unless overridden in `pg_restore_args`) so extension and dbsamizdat object comments in the dump are preserved.
+- **Compose `pg_restore` no longer injects `--no-comments` when `native.reset_db.postgis` is true** — PostGIS prep grants catalog tables to the app user. Opt in to ``native.reset_db.restore_as_super: true`` to temporarily promote ``APP_USER`` to superuser during compose restore, reload with ``--role APP_USER`` (unless ``pg_restore_args`` sets ``--role postgres``), then demote — preserving extension and dbsamizdat object comments without leaving app objects owned by ``postgres``.
 
 ## 0.9.1
 
