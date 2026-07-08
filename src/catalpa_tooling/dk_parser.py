@@ -34,7 +34,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             f"  dk prod db pgdump\n"
             f"  dk full info -e\n"
             f"\n"
-            f"Top-level commands (no env): build, push, transfer, fetch, digoc, proxy.\n"
+            f"Top-level commands (no env): build, push, clean-images, transfer, fetch, digoc, proxy.\n"
             f"Environments: directories under {envs_dir}/<name>/ with info.yaml."
         ),
     )
@@ -64,6 +64,51 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         default=None,
         metavar="OWNER/REPO",
         help="Override GitHub repo for org.opencontainers.image.source.",
+    )
+
+    p_clean = sub.add_parser(
+        "clean-images",
+        help="Remove old GHCR package versions (dry-run by default).",
+    )
+    p_clean.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete staged package versions (default is dry-run).",
+    )
+    p_clean.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation when using --apply.",
+    )
+    p_clean.add_argument(
+        "--keep-n-tagged",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Keep N newest tagged versions older than --older-than.",
+    )
+    p_clean.add_argument(
+        "--older-than",
+        default=None,
+        metavar="INTERVAL",
+        help="Retention window for tagged images (e.g. '180 days').",
+    )
+    p_clean.add_argument(
+        "--delete-untagged",
+        choices=("true", "false"),
+        default=None,
+        help="Delete untagged package versions.",
+    )
+    p_clean.add_argument(
+        "--package",
+        default=None,
+        metavar="NAME",
+        help="Clean a single GHCR package (default: all stack components).",
+    )
+    p_clean.add_argument(
+        "--token",
+        default=None,
+        help="GitHub token override (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token).",
     )
 
     p_transfer = sub.add_parser(

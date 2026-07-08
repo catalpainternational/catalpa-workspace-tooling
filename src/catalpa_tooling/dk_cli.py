@@ -14,6 +14,7 @@ from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.local_compose import _cmd_build
 from catalpa_tooling.build_push import _cmd_push
+from catalpa_tooling.clean_images import clean_images
 from catalpa_tooling.dk_transfer import cmd_transfer
 from catalpa_tooling.dk_fetch import cmd_fetch
 from catalpa_tooling.dk_parser import build_dk_parser
@@ -70,10 +71,10 @@ def _main_impl() -> None:
             raise
         envs = list_dk_env_names(config)
         first = argv[0] if argv else ""
-        if first and first not in ("build", "push", "transfer", "fetch", "digoc", "proxy") and first not in envs:
+        if first and first not in ("build", "push", "clean-images", "transfer", "fetch", "digoc", "proxy") and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
-                f"Use `dk build`, `dk push`, `dk transfer`, `dk fetch`, `dk digoc`, `dk proxy`, or a name with "
+                f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, `dk digoc`, `dk proxy`, or a name with "
                 f"{config.paths.deploy.envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
@@ -92,6 +93,22 @@ def _main_impl() -> None:
         sys.exit(_cmd_build(config.compose_prod, argparse.Namespace(services=ns.services), config))
     if cmd == "push":
         sys.exit(_cmd_push(config.compose_prod, ns, config))
+    if cmd == "clean-images":
+        delete_untagged = None
+        if ns.delete_untagged is not None:
+            delete_untagged = ns.delete_untagged == "true"
+        sys.exit(
+            clean_images(
+                config,
+                apply=ns.apply,
+                yes=ns.yes,
+                keep_n_tagged=ns.keep_n_tagged,
+                older_than=ns.older_than,
+                delete_untagged=delete_untagged,
+                package=ns.package,
+                token=ns.token,
+            )
+        )
     if cmd == "transfer":
         sys.exit(cmd_transfer(ns, config))
     if cmd == "fetch":
