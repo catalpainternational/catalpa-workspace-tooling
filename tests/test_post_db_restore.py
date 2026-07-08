@@ -11,7 +11,7 @@ from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 def _config_with_hooks(minimal_project, *, envs=None, commands=()):
     from dataclasses import replace
 
-    hooks = PostDbRestoreOpsConfig(envs=envs, manage_commands=commands)
+    hooks = PostDbRestoreOpsConfig(envs=envs, db_psql=(), manage_commands=commands)
     ops = replace(minimal_project.ops, post_db_restore=hooks)
     return replace(minimal_project, ops=ops)
 
@@ -229,5 +229,90 @@ def test_propagates_volume_ensure_failure(minimal_project) -> None:
                 env_name="local",
             )
             == 1
+        )
+        compose.assert_not_called()
+
+
+def test_db_psql_runs_before_manage_commands(minimal_project) -> None:
+    from dataclasses import replace
+
+    from catalpa_tooling.config import DbPsqlRestoreEntry, PostDbRestoreOpsConfig
+
+    hooks = PostDbRestoreOpsConfig(
+        envs=None,
+        db_psql=(DbPsqlRestoreEntry(target="app", file="fix.sql"),),
+        manage_commands=(("migrate",),),
+    )
+    cfg = replace(minimal_project, ops=replace(minimal_project.ops, post_db_restore=hooks))
+    call_order: list[str] = []
+
+    def fake_db_psql(*args: object, **kwargs: object) -> int:
+        call_order.append("db_psql")
+        return 0
+
+    def fake_compose(compose_file: str, *args: str, **kwargs: object) -> MagicMock:
+        call_order.append("compose")
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    with (
+        patch(
+            "catalpa_tooling.post_db_restore.run_db_psql_hooks",
+            side_effect=fake_db_psql,
+        ),
+        patch(
+            "catalpa_tooling.post_db_restore._ensure_stack_volumes",
+            return_value=0,
+        ),
+        patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose),
+    ):
+        assert (
+            run_post_db_restore_manage_commands(
+                cfg,
+                compose_file="compose.yml",
+                env_add={},
+                env_name="dev",
+            )
+            == 0
+        )
+
+    assert call_order[0] == "db_psql"
+    assert "compose" in call_order
+
+
+def test_db_psql_only_skips_compose(minimal_project, tmp_path) -> None:
+    from dataclasses import replace
+
+    from catalpa_tooling.config import DbPsqlRestoreEntry, PostDbRestoreOpsConfig
+
+    hooks = PostDbRestoreOpsConfig(
+        envs=None,
+        db_psql=(DbPsqlRestoreEntry(target="app", file="fix.sql"),),
+        manage_commands=(),
+    )
+    cfg = replace(minimal_project, repo_root=tmp_path)
+    cfg = replace(cfg, ops=replace(cfg.ops, post_db_restore=hooks))
+    (tmp_path / "fix.sql").write_text("SELECT 1;\n", encoding="utf-8")
+
+    with (
+        patch(
+            "catalpa_tooling.post_db_restore._resolve_db_psql_container_path",
+            return_value=(0, "/tmp/fix.sql"),
+        ),
+        patch(
+            "catalpa_tooling.post_db_restore.run_cmd",
+            return_value=MagicMock(returncode=0),
+        ),
+        patch("catalpa_tooling.post_db_restore._compose") as compose,
+    ):
+        assert (
+            run_post_db_restore_manage_commands(
+                cfg,
+                compose_file="compose.yml",
+                env_add={},
+                env_name="dev",
+            )
+            == 0
         )
         compose.assert_not_called()

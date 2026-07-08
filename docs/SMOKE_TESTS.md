@@ -154,7 +154,7 @@ For catalpa_bero, jid, ncd, tvi:
 
 No project-specific test code — reuse submodule tests. Optional wrapper: `bero/scripts/smoke.sh`.
 
-See also [bero/README_TESTING.md](https://github.com/catalpainternational/bero/blob/align_tooling/README_TESTING.md) for bero-specific notes and E2E (Behave).
+See also [bero/README_TESTING.md](https://github.com/catalpainternational/bero/blob/dev-7.4/README_TESTING.md) for bero-specific notes and E2E (Behave).
 
 ## Non-bero / custom projects
 

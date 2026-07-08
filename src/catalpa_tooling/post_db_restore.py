@@ -1,14 +1,19 @@
-"""Run project-configured Django management commands after a Compose DB restore."""
+"""Run project-configured hooks after a Compose DB restore."""
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
 import sys
+from collections.abc import Sequence
 from typing import Any
 
 from catalpa_tooling.compose import _compose
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import DbPsqlRestoreEntry, ProjectConfig
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
+from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.storage_config import (
     StorageConfigError,
     parse_storage_volumes_from_info,
@@ -59,6 +64,159 @@ def _ensure_stack_volumes(
     return ensure_external_stack_volumes(env_add, dry_run=dry_run, config=config)
 
 
+def _resolve_db_psql_container_path(
+    config: ProjectConfig,
+    entry: DbPsqlRestoreEntry,
+    *,
+    compose_file: str,
+    env_add: dict[str, str],
+    hook_label: str,
+) -> tuple[int, str | None]:
+    """Return ``(exit_code, container_path)``; copy repo-relative files into ``db`` first."""
+    from catalpa_tooling.pgbackrest_db import _merged_process_env
+
+    file_spec = entry.file
+    if file_spec.startswith("/"):
+        return 0, file_spec
+
+    host_path = (config.repo_root / file_spec).resolve()
+    if not host_path.is_file():
+        print(
+            f"{hook_label}: db_psql file not found: {host_path}",
+            file=sys.stderr,
+        )
+        return 1, None
+
+    prefix = config.ops.pgbackrest.restore_temp_prefix
+    container_path = f"/tmp/{prefix}{os.urandom(8).hex()}.sql"
+    merged = _merged_process_env(env_add)
+
+    cp = run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            compose_file,
+            "cp",
+            str(host_path),
+            f"db:{container_path}",
+        ],
+        env=merged,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        print_cmd=False,
+    )
+    if cp.returncode != 0:
+        print(
+            f"{hook_label}: `docker compose cp` failed for {host_path}.",
+            file=sys.stderr,
+        )
+        return cp.returncode, None
+
+    fix = run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            compose_file,
+            "exec",
+            "-T",
+            "-u",
+            "root",
+            "db",
+            "sh",
+            "-c",
+            f"chmod 644 {shlex.quote(container_path)} && chown postgres:postgres {shlex.quote(container_path)}",
+        ],
+        env=merged,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        print_cmd=False,
+    )
+    if fix.returncode != 0:
+        print(
+            f"{hook_label}: could not chmod SQL file in `db` container.",
+            file=sys.stderr,
+        )
+        return fix.returncode, None
+
+    return 0, container_path
+
+
+def run_db_psql_hooks(
+    config: ProjectConfig,
+    entries: Sequence[DbPsqlRestoreEntry],
+    *,
+    compose_file: str,
+    env_add: dict[str, str],
+    hook_label: str,
+    dry_run: bool = False,
+) -> int:
+    """Run ``db_psql`` entries via ``docker compose exec db psql -U postgres``."""
+    from catalpa_tooling.pgbackrest_db import DbRestoreTarget, _db_shell_vars, _merged_process_env
+
+    if not entries:
+        return 0
+
+    for entry in entries:
+        target: DbRestoreTarget = entry.target  # type: ignore[assignment]
+        if dry_run:
+            print(
+                f"dry-run: would {hook_label} db_psql target={entry.target} file={entry.file}",
+                file=sys.stderr,
+            )
+            continue
+
+        rc, container_path = _resolve_db_psql_container_path(
+            config,
+            entry,
+            compose_file=compose_file,
+            env_add=env_add,
+            hook_label=hook_label,
+        )
+        if rc != 0:
+            return rc
+        assert container_path is not None
+
+        inner = (
+            _db_shell_vars(target)
+            + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
+            + "psql -h 127.0.0.1 -p 5432 -U postgres -d "
+            + '"$APP_DB" -v ON_ERROR_STOP=1 -f '
+            + shlex.quote(container_path)
+        )
+        print(
+            f"{hook_label}: running db_psql target={entry.target} file={entry.file} …",
+            file=sys.stderr,
+        )
+        r = run_cmd(
+            [
+                "docker",
+                "compose",
+                "-f",
+                compose_file,
+                "exec",
+                "-T",
+                "db",
+                "sh",
+                "-c",
+                inner,
+            ],
+            env=_merged_process_env(env_add),
+            stdin=subprocess.DEVNULL,
+            check=False,
+            print_cmd=False,
+        )
+        if r.returncode != 0:
+            print(
+                f"{hook_label}: db_psql failed for {entry.file} (exit {r.returncode}).",
+                file=sys.stderr,
+            )
+            return r.returncode
+
+    return 0
+
+
 def run_post_db_restore_manage_commands(
     config: ProjectConfig,
     *,
@@ -67,16 +225,32 @@ def run_post_db_restore_manage_commands(
     env_name: str,
     dry_run: bool = False,
 ) -> int:
-    """Run ``ops.post_db_restore.manage_commands`` when configured for ``env_name``.
+    """Run ``ops.post_db_restore`` hooks when configured for ``env_name``.
 
-    Brings the web service up (``compose up -d --wait``, including compose dependencies),
-    then runs each command via ``docker compose exec <web> ./manage.py …``.
+    ``db_psql`` runs first (Postgres superuser SQL in the ``db`` container), then
+    ``manage_commands`` via ``docker compose exec <web> ./manage.py …``.
     Returns 0 when there is nothing to run.
     """
     hooks = config.ops.post_db_restore
-    if not hooks.manage_commands:
+    if not hooks.manage_commands and not hooks.db_psql:
         return 0
     if not hooks.applies_to_env(env_name):
+        return 0
+
+    rc = run_db_psql_hooks(
+        config,
+        hooks.db_psql,
+        compose_file=compose_file,
+        env_add=env_add,
+        hook_label="post_db_restore",
+        dry_run=dry_run,
+    )
+    if rc != 0:
+        return rc
+
+    if not hooks.manage_commands:
+        if not dry_run and hooks.db_psql:
+            print("post_db_restore: done.", file=sys.stderr)
         return 0
 
     web_svc = config.stack_service("web")
@@ -157,10 +331,21 @@ def run_post_metabase_db_restore_manage_commands(
 ) -> int:
     """Run ``ops.post_metabase_db_restore`` hooks when configured for ``env_name``."""
     hooks = config.ops.post_metabase_db_restore
-    if not hooks.manage_commands and not hooks.restart_services:
+    if not hooks.manage_commands and not hooks.restart_services and not hooks.db_psql:
         return 0
     if not hooks.applies_to_env(env_name):
         return 0
+
+    rc = run_db_psql_hooks(
+        config,
+        hooks.db_psql,
+        compose_file=compose_file,
+        env_add=env_add,
+        hook_label="post_metabase_db_restore",
+        dry_run=dry_run,
+    )
+    if rc != 0:
+        return rc
 
     web_svc = config.stack_service("web")
     commands = [_expand_argv(argv, env_name=env_name) for argv in hooks.manage_commands]
@@ -246,7 +431,8 @@ def run_post_metabase_db_restore_manage_commands(
             )
             return r.returncode
 
-    print("post_metabase_db_restore: done.", file=sys.stderr)
+    if hooks.restart_services or hooks.manage_commands or hooks.db_psql:
+        print("post_metabase_db_restore: done.", file=sys.stderr)
     return 0
 
 

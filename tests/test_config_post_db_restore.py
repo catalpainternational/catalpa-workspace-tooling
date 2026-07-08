@@ -10,6 +10,7 @@ from catalpa_tooling.config import ProjectConfigError, _parse_post_db_restore
 def test_parse_post_db_restore_defaults() -> None:
     cfg = _parse_post_db_restore(None)
     assert cfg.envs is None
+    assert cfg.db_psql == ()
     assert cfg.manage_commands == ()
 
 
@@ -40,3 +41,23 @@ def test_parse_post_db_restore_rejects_empty_command() -> None:
 def test_parse_post_db_restore_rejects_invalid_entry() -> None:
     with pytest.raises(ProjectConfigError, match="must be a string or list"):
         _parse_post_db_restore({"manage_commands": [123]})
+
+
+def test_parse_post_db_restore_db_psql() -> None:
+    cfg = _parse_post_db_restore(
+        {
+            "db_psql": [
+                {"target": "app", "file": "docker/postgres/fix.sql"},
+            ],
+        }
+    )
+    assert len(cfg.db_psql) == 1
+    assert cfg.db_psql[0].target == "app"
+    assert cfg.db_psql[0].file == "docker/postgres/fix.sql"
+
+
+def test_parse_post_db_restore_db_psql_rejects_wrong_target() -> None:
+    with pytest.raises(ProjectConfigError, match="target must be one of"):
+        _parse_post_db_restore(
+            {"db_psql": [{"target": "metabase", "file": "x.sql"}]}
+        )

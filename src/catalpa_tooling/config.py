@@ -205,10 +205,19 @@ class SystemdUnitsOpsConfig:
 
 
 @dataclass(frozen=True)
+class DbPsqlRestoreEntry:
+    """Postgres superuser SQL to run in the ``db`` container after a restore leg."""
+
+    target: str  # ``app`` or ``metabase``
+    file: str  # repo-relative path or absolute in-container path
+
+
+@dataclass(frozen=True)
 class PostDbRestoreOpsConfig:
-    """Django ``manage.py`` commands to run after a successful Compose DB restore."""
+    """Hooks after a successful Compose app-database restore."""
 
     envs: tuple[str, ...] | None
+    db_psql: tuple[DbPsqlRestoreEntry, ...]
     manage_commands: tuple[tuple[str, ...], ...]
 
     def applies_to_env(self, env_name: str) -> bool:
@@ -222,6 +231,7 @@ class PostMetabaseDbRestoreOpsConfig:
     """Hooks after restoring the Metabase application database from a local dump."""
 
     envs: tuple[str, ...] | None
+    db_psql: tuple[DbPsqlRestoreEntry, ...]
     manage_commands: tuple[tuple[str, ...], ...]
     restart_services: tuple[str, ...]
 
@@ -636,10 +646,42 @@ def _parse_env_key_list(raw: Any, *, field: str, default: tuple[str, ...]) -> tu
     return _parse_string_list(raw, field=field)
 
 
+def _parse_db_psql_list(
+    raw: Any,
+    *,
+    field_prefix: str,
+    allowed_targets: frozenset[str],
+) -> tuple[DbPsqlRestoreEntry, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProjectConfigError(f"{field_prefix} must be a list")
+    entries: list[DbPsqlRestoreEntry] = []
+    for i, item in enumerate(raw):
+        loc = f"{field_prefix}[{i}]"
+        if not isinstance(item, dict):
+            raise ProjectConfigError(f"{loc} must be a mapping")
+        target = item.get("target")
+        if not isinstance(target, str) or not target.strip():
+            raise ProjectConfigError(f"{loc}.target must be a non-empty string")
+        target = target.strip()
+        if target not in allowed_targets:
+            allowed = ", ".join(sorted(allowed_targets))
+            raise ProjectConfigError(
+                f"{loc}.target must be one of: {allowed} (got {target!r})"
+            )
+        file_raw = item.get("file")
+        if not isinstance(file_raw, str) or not file_raw.strip():
+            raise ProjectConfigError(f"{loc}.file must be a non-empty string")
+        entries.append(DbPsqlRestoreEntry(target=target, file=file_raw.strip()))
+    return tuple(entries)
+
+
 def _parse_post_metabase_db_restore(raw: Any) -> PostMetabaseDbRestoreOpsConfig:
     if raw is None:
         return PostMetabaseDbRestoreOpsConfig(
             envs=None,
+            db_psql=(),
             manage_commands=(),
             restart_services=(),
         )
@@ -649,6 +691,11 @@ def _parse_post_metabase_db_restore(raw: Any) -> PostMetabaseDbRestoreOpsConfig:
     envs: tuple[str, ...] | None = None
     if envs_raw is not None:
         envs = _parse_string_list(envs_raw, field="ops.post_metabase_db_restore.envs")
+    db_psql = _parse_db_psql_list(
+        raw.get("db_psql"),
+        field_prefix="ops.post_metabase_db_restore.db_psql",
+        allowed_targets=frozenset({"metabase"}),
+    )
     commands = _parse_manage_commands_list(
         raw.get("manage_commands"),
         field_prefix="ops.post_metabase_db_restore.manage_commands",
@@ -659,6 +706,7 @@ def _parse_post_metabase_db_restore(raw: Any) -> PostMetabaseDbRestoreOpsConfig:
     )
     return PostMetabaseDbRestoreOpsConfig(
         envs=envs,
+        db_psql=db_psql,
         manage_commands=commands,
         restart_services=restart_services,
     )
@@ -666,18 +714,27 @@ def _parse_post_metabase_db_restore(raw: Any) -> PostMetabaseDbRestoreOpsConfig:
 
 def _parse_post_db_restore(raw: Any) -> PostDbRestoreOpsConfig:
     if raw is None:
-        return PostDbRestoreOpsConfig(envs=None, manage_commands=())
+        return PostDbRestoreOpsConfig(envs=None, db_psql=(), manage_commands=())
     if not isinstance(raw, dict):
         raise ProjectConfigError("ops.post_db_restore must be a mapping")
     envs_raw = raw.get("envs")
     envs: tuple[str, ...] | None = None
     if envs_raw is not None:
         envs = _parse_string_list(envs_raw, field="ops.post_db_restore.envs")
+    db_psql = _parse_db_psql_list(
+        raw.get("db_psql"),
+        field_prefix="ops.post_db_restore.db_psql",
+        allowed_targets=frozenset({"app"}),
+    )
     commands = _parse_manage_commands_list(
         raw.get("manage_commands"),
         field_prefix="ops.post_db_restore.manage_commands",
     )
-    return PostDbRestoreOpsConfig(envs=envs, manage_commands=commands)
+    return PostDbRestoreOpsConfig(
+        envs=envs,
+        db_psql=db_psql,
+        manage_commands=commands,
+    )
 
 
 def _parse_reset_db(raw: Any) -> ResetDbConfig:

@@ -31,9 +31,9 @@ from catalpa_tooling.managed_deploy_env import (
 from catalpa_tooling.media_pull import run_pull_media
 from catalpa_tooling.media_rsync import resolve_push_media_source, run_push_media_rsync
 from catalpa_tooling.pgbackrest_db import (
+    compose_pg_restore_extras_for_config,
     db_service_responds,
     ensure_db_service_running,
-    pg_restore_extras_with_default_archive,
     run_backup as run_pgbackrest_backup_online,
     run_bkp_db_init,
     run_bkp_db_stanza_create_flow,
@@ -44,7 +44,6 @@ from catalpa_tooling.pgbackrest_db import (
     run_pg_dump,
     run_pg_restore,
     run_version,
-    pg_restore_compose_extras,
 )
 from catalpa_tooling.pgbackrest_volume_config import (
     ensure_external_stack_volumes,
@@ -788,12 +787,10 @@ def _handle_bkp_db(
         extras = list(getattr(ns, "pg_restore_args", None) or [])
         if getattr(ns, "archive_file", None):
             extras = ["--file", str(ns.archive_file), *extras]
-        restore_extras = pg_restore_compose_extras(
-            pg_restore_extras_with_default_archive(
-                extras,
-                config.fetch_db_dump_path,
-            ),
-            postgis=config.native.reset_db.postgis,
+        restore_extras = compose_pg_restore_extras_for_config(
+            config,
+            extras,
+            default_archive=config.fetch_db_dump_path,
         )
         if "--file" not in restore_extras and sys.stdin.isatty():
             return 1

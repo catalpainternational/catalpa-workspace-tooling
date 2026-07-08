@@ -203,7 +203,7 @@ def test_unified_restore_auto_fetch_invokes_fetch(
     assert called == ["fetch"]
 
 
-def test_metabase_dump_restore_runs_grants_before_hooks(
+def test_metabase_dump_restore_runs_hooks_after_pgrestore(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     isolated_tooling: None,
@@ -237,10 +237,6 @@ def test_metabase_dump_restore_runs_grants_before_hooks(
         lambda *a, **k: (order.append("pgrestore") or 0),
     )
     monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_compose_grant_django_to_metabase",
-        lambda *a, **k: (order.append("grants") or 0),
-    )
-    monkeypatch.setattr(
         "catalpa_tooling.db_restore.run_post_metabase_db_restore_manage_commands",
         lambda *a, **k: (order.append("hooks") or 0),
     )
@@ -252,4 +248,4 @@ def test_metabase_dump_restore_runs_grants_before_hooks(
         env_name="dev",
     )
     assert rc == 0
-    assert order == ["pgrestore", "grants", "hooks"]
+    assert order == ["pgrestore", "hooks"]

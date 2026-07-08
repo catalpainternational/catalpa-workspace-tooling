@@ -107,9 +107,10 @@ def test_provision_exits_when_s3cmd_missing(
                 timers_enable_pgbackrest=(),
                 timers_enable_restic=(),
             ),
-            post_db_restore=PostDbRestoreOpsConfig(envs=None, manage_commands=()),
+            post_db_restore=PostDbRestoreOpsConfig(envs=None, db_psql=(), manage_commands=()),
             post_metabase_db_restore=PostMetabaseDbRestoreOpsConfig(
                 envs=None,
+                db_psql=(),
                 manage_commands=(),
                 restart_services=(),
             ),

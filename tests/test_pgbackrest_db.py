@@ -71,6 +71,7 @@ class TestDropCreateAppDatabase(unittest.TestCase):
     def test_psql_block_preps_postgis_for_restore_when_enabled(self) -> None:
         block = _drop_create_app_database_psql_block(postgis=True)
         self.assertIn("CREATE EXTENSION IF NOT EXISTS postgis;", block)
+        self.assertNotIn("ALTER EXTENSION", block)
         self.assertIn("GRANT ALL ON ALL TABLES IN SCHEMA public TO ${APP_USER};", block)
 
     def test_psql_block_includes_grants(self) -> None:

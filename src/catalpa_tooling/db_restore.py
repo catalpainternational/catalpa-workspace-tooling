@@ -6,7 +6,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.fetch_db import (
     configured_app_dump_exists,
@@ -14,9 +13,8 @@ from catalpa_tooling.fetch_db import (
     run_fetch_all_dbs,
 )
 from catalpa_tooling.pgbackrest_db import (
+    compose_pg_restore_extras_for_config,
     ensure_db_service_running,
-    pg_restore_compose_extras,
-    pg_restore_extras_with_default_archive,
     plan_restore_offline,
     run_drop_create_app_database,
     run_drop_create_metabase_database,
@@ -34,34 +32,6 @@ from catalpa_tooling.post_db_restore import (
     run_post_db_restore_manage_commands,
     run_post_metabase_db_restore_manage_commands,
 )
-
-
-def run_compose_grant_django_to_metabase(
-    compose_file: str,
-    env_add: dict[str, str],
-) -> int:
-    """Re-apply SELECT/UPDATE on metabase_db for the Django user after a metabase_db pg_restore."""
-    print(
-        "db restore: re-applying django→metabase grants (metabase_db pg_restore resets privileges) …",
-        file=sys.stderr,
-    )
-    r = _compose(
-        compose_file,
-        "exec",
-        "-T",
-        "db",
-        "grant-cross-db-privileges.sh",
-        "django-to-metabase",
-        env_add=env_add,
-        check=False,
-    )
-    if r.returncode != 0:
-        print(
-            "db restore: grant-cross-db-privileges.sh django-to-metabase failed "
-            f"(exit {r.returncode}).",
-            file=sys.stderr,
-        )
-    return r.returncode
 
 
 def pgbackrest_restore_configured(env: dict[str, str]) -> bool:
@@ -87,12 +57,10 @@ def run_compose_app_dump_restore(
     extras = list(extra_pg_restore_args or [])
     if archive_path is not None:
         extras = ["--file", str(archive_path), *extras]
-    restore_extras = pg_restore_compose_extras(
-        pg_restore_extras_with_default_archive(
-            extras,
-            config.fetch_db_dump_path,
-        ),
-        postgis=config.native.reset_db.postgis,
+    restore_extras = compose_pg_restore_extras_for_config(
+        config,
+        extras,
+        default_archive=config.fetch_db_dump_path,
     )
     if "--file" not in restore_extras and sys.stdin.isatty():
         return 1
@@ -140,7 +108,10 @@ def run_compose_metabase_dump_restore(
         return 0
     extras = list(extra_pg_restore_args or [])
     extras = ["--file", str(dump_path), *extras]
-    restore_extras = pg_restore_compose_extras(extras, postgis=False)
+    restore_extras = compose_pg_restore_extras_for_config(
+        config,
+        extras,
+    )
     rc = ensure_db_service_running(
         compose_file, env_add, config=config, dk_env_name=env_name
     )
@@ -160,9 +131,6 @@ def run_compose_metabase_dump_restore(
         config=config,
         target="metabase",
     )
-    if rc != 0:
-        return rc
-    rc = run_compose_grant_django_to_metabase(compose_file, env_add)
     if rc != 0:
         return rc
     return run_post_metabase_db_restore_manage_commands(
