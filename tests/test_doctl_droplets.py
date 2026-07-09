@@ -265,7 +265,7 @@ def test_create_droplet_rejects_duplicate_name(
         lambda _pid, name, *, context: 4242 if name == "tempu-test" else None,
     )
     mock_run = MagicMock()
-    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", mock_run)
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", mock_run)
 
     rc = create_droplet(
         "tempu-test",
@@ -273,12 +273,52 @@ def test_create_droplet_rejects_duplicate_name(
         region="sgp1",
         project_id="proj-uuid",
         ssh_keys=("key-1",),
+        reuse_existing=False,
     )
     assert rc == 1
     mock_run.assert_not_called()
     err = capsys.readouterr().err
     assert "already exists" in err
     assert "4242" in err
+
+
+def test_create_droplet_reuses_orphan_in_default_project(
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assign_calls: list[int] = []
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.find_project_droplet_id_by_name",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_by_name",
+        lambda name, *, context: {"id": 99, "name": name},
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.ensure_droplet_in_project",
+        lambda droplet_id, *_a, **_k: assign_calls.append(droplet_id),
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.wait_for_project_droplet_by_name",
+        lambda *_a, **_k: {"id": 99, "name": "tempu-test"},
+    )
+    mock_run = MagicMock()
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", mock_run)
+
+    rc = create_droplet(
+        "tempu-test",
+        size="s-1vcpu-1gb",
+        region="sgp1",
+        project_id="proj-uuid",
+        ssh_keys=("key-1",),
+        reuse_existing=True,
+    )
+    assert rc == 0
+    mock_run.assert_not_called()
+    assert assign_calls == [99]
+    assert "outside this project" in capsys.readouterr().err
 
 
 def test_create_droplet_invokes_doctl(
@@ -288,17 +328,34 @@ def test_create_droplet_invokes_doctl(
     calls: list[list[str]] = []
     captured_user_data: list[str] = []
 
-    def fake_run_doctl(args, *, context=None):
+    def fake_run_doctl_json(args, *, context=None):
         calls.append(list(args))
         user_data_idx = args.index("--user-data-file")
         captured_user_data.append(Path(args[user_data_idx + 1]).read_text(encoding="utf-8"))
-        return MagicMock(returncode=0)
+        return [{"id": 42, "name": "prod-1", "status": "active", "networks": {"v4": []}, "region": {"slug": "sgp1"}}]
 
     def fake_ensure():
         return tmp_path / "doctl"
 
-    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", fake_run_doctl)
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", fake_run_doctl_json)
     monkeypatch.setattr("catalpa_tooling.doctl_binary.ensure_doctl_available", fake_ensure)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.find_project_droplet_id_by_name",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_by_name",
+        lambda *_a, **_k: None,
+    )
+    assign_calls: list[int] = []
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.ensure_droplet_in_project",
+        lambda droplet_id, *_a, **_k: assign_calls.append(droplet_id),
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.wait_for_project_droplet_by_name",
+        lambda *_a, **_k: {"id": 42, "name": "prod-1"},
+    )
 
     do_config = DigitalOceanConfig(
         project_name="p",
@@ -326,5 +383,6 @@ def test_create_droplet_invokes_doctl(
     assert "--ssh-keys" in argv and "manifest-key" in argv
     assert "--enable-monitoring" in argv
     assert "--wait" in argv
+    assert assign_calls == [42]
     assert len(captured_user_data) == 1
     assert captured_user_data[0].startswith("#cloud-config")

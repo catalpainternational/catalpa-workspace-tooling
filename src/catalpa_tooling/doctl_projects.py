@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -117,6 +118,67 @@ def droplet_ids_from_resource_urns(urns: Sequence[str]) -> list[int]:
         if m:
             ids.append(int(m.group(1)))
     return ids
+
+
+def droplet_urn(droplet_id: int) -> str:
+    return f"do:droplet:{droplet_id}"
+
+
+def ensure_droplet_in_project(
+    droplet_id: int,
+    project_id: str,
+    *,
+    context: str | None,
+    dry_run: bool = False,
+) -> None:
+    """Assign a droplet to a DigitalOcean project (idempotent)."""
+    from catalpa_tooling.doctl_binary import DoctlCommandError, run_doctl
+
+    urn = droplet_urn(droplet_id)
+    if not dry_run:
+        existing = list_project_resource_urns(project_id, context=context)
+        if urn in existing:
+            return
+
+    if dry_run:
+        print(
+            f"dry-run: would run doctl projects resources assign {project_id} "
+            f"--resource={urn!r}",
+            file=sys.stderr,
+        )
+        return
+
+    result = run_doctl(
+        ["projects", "resources", "assign", project_id, "--resource", urn],
+        context=context,
+    )
+    if result.returncode != 0:
+        combined = f"{result.stderr or ''}\n{result.stdout or ''}"
+        err = combined.strip() or f"doctl assign failed (exit {result.returncode})"
+        raise DoctlCommandError(
+            "Failed to assign droplet "
+            f"{droplet_id} to DigitalOcean project {project_id!r}: {err}\n"
+            "Ensure the API token includes project:update (or Full Access).",
+            returncode=result.returncode,
+        )
+
+
+def wait_for_project_droplet_by_name(
+    project_id: str,
+    name: str,
+    *,
+    context: str | None,
+    retries: int = 6,
+    delay_s: float = 5.0,
+) -> dict[str, Any] | None:
+    """Poll until ``name`` appears in ``project_id`` (DO API lag after assign)."""
+    for attempt in range(max(retries, 1)):
+        droplet = find_project_droplet_by_name(project_id, name, context=context)
+        if droplet is not None:
+            return droplet
+        if attempt + 1 < retries:
+            time.sleep(delay_s)
+    return None
 
 
 def list_project_resource_urns(

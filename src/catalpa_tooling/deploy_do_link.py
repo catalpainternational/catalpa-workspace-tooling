@@ -196,6 +196,40 @@ def find_droplet_for_link(
     return find_droplet_by_name(link.droplet_name, context=context)
 
 
+def _orphan_droplet_message(
+    config: ProjectConfig,
+    link: EnvDoLink,
+    *,
+    context: str | None,
+    env_name: str,
+) -> str | None:
+    """Return a hint when the droplet exists account-wide but not in the configured project."""
+    do_config = config.digitalocean
+    if not do_config or not (do_config.project_id or do_config.project_name):
+        return None
+
+    global_droplet = find_droplet_by_name(link.droplet_name, context=context)
+    if global_droplet is None:
+        return None
+
+    from catalpa_tooling.doctl_projects import droplet_urn, resolve_project_id
+
+    droplet_id = int(global_droplet.get("id", 0) or 0)
+    if droplet_id <= 0:
+        return None
+
+    project_id = resolve_project_id(None, do_config=do_config, context=context)
+    project_label = do_config.project_name or project_id
+    return (
+        f"Droplet {link.droplet_name!r} exists on this account (id {droplet_id}) but is "
+        f"not in project {project_label!r}.\n"
+        f"Assign it, e.g.:\n"
+        f"  doctl projects resources assign {project_id} "
+        f"--resource={droplet_urn(droplet_id)!r}\n"
+        f"Or resume provisioning: dk {env_name} host create"
+    )
+
+
 def droplet_name_to_env_map(config: ProjectConfig) -> dict[str, str]:
     """Map resolved droplet name (lower) → deploy env directory name."""
     out: dict[str, str] = {}
@@ -402,10 +436,19 @@ def _finish_host_provisioning(
     except SystemExit:
         return 1
     if droplet is None:
-        print(
-            f"No DigitalOcean droplet named {link.droplet_name!r}.",
-            file=sys.stderr,
+        orphan_hint = _orphan_droplet_message(
+            config,
+            link,
+            context=context,
+            env_name=env_name,
         )
+        if orphan_hint:
+            print(orphan_hint, file=sys.stderr)
+        else:
+            print(
+                f"No DigitalOcean droplet named {link.droplet_name!r}.",
+                file=sys.stderr,
+            )
         return 1
 
     ip = public_ipv4(droplet)
@@ -674,11 +717,20 @@ def cmd_env_host(
         return e.returncode
 
     if droplet is None:
-        print(
-            f"No DigitalOcean droplet named {link.droplet_name!r}. "
-            f"Create one, e.g.:\n  dk {env_name} host create",
-            file=sys.stderr,
+        orphan_hint = _orphan_droplet_message(
+            config,
+            link,
+            context=context,
+            env_name=env_name,
         )
+        if orphan_hint:
+            print(orphan_hint, file=sys.stderr)
+        else:
+            print(
+                f"No DigitalOcean droplet named {link.droplet_name!r}. "
+                f"Create one, e.g.:\n  dk {env_name} host create",
+                file=sys.stderr,
+            )
         return 1
 
     rc = _verify_droplet(link, droplet)

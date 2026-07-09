@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `dk <env> host create` explicitly assigns created droplets to the configured DigitalOcean project and verifies project membership before post-create steps; re-running `host create` can recover droplets orphaned in the account default project.
+
 ## 0.9.3
 
 ### Added

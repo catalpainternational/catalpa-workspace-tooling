@@ -177,7 +177,7 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 |--------------|--------|
 | `dk digoc projects list`, project resolution | `project:read` |
 | `dk digoc droplets list`, `dk <env> host` (droplet verify) | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list` |
-| `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
+| `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`project:update`** (assign droplet to project after create; doctl `--project-id` uses a second API call), **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
 | `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`) |
 | `dk <env> host` (DNS verify for `site_origin`) | above, plus `domain:read` |
 | `dk <env> host create` (DNS sync after droplet create) | above, plus `domain:write` (or granular domain record create/update) |
@@ -186,6 +186,8 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 `droplet:read`, `droplet:create`, and domain/spaces scopes require companion read scopes (`regions:read`, `sizes:read`, `actions:read`, `image:read`, etc.); the [custom scopes picker](https://cloud.digitalocean.com/account/api/tokens) adds these when you select those scopes. See [Scopes for API tokens](https://docs.digitalocean.com/reference/api/scopes/) for the full list.
 
 **403 on `doctl compute ssh-key list`:** the token is missing **`ssh_key:read`**. That call uses the account keys API (`/v2/account/keys`); [`account:read`](https://docs.digitalocean.com/reference/api/scopes/account/read) is only for profile/billing-style account metadata, not SSH keys. Fix: add `ssh_key:read` to the token, use **Full Access** (`api:write`), or avoid listing by passing explicit keys: `dk <env> host create --ssh-key ID` (repeatable) or `digitalocean.ssh_keys` in `tooling.yaml` (IDs/fingerprints from the control panel or a token that can list keys once).
+
+**Droplet created but `dk <env> host` cannot find it:** DigitalOcean always creates droplets in the account default project first; project membership is a separate assign step. If the droplet appears under the default project (e.g. Internal) instead of `digitalocean.project_name`, the token may lack **`project:update`**. Re-run `dk <env> host create` after fixing the token (it assigns and reuses the existing droplet), or assign manually: `doctl projects resources assign <project-uuid> --resource=do:droplet:<id>`.
 
 **403 on `doctl compute volume-action attach`:** the token is missing **`block_storage_action:create`**. Volume create (`block_storage:create`) and attach are separate scopes; a token that can create or list volumes may still fail on attach. See [`block_storage_action:create`](https://docs.digitalocean.com/reference/api/scopes/block_storage_action/create/).
 
@@ -287,6 +289,7 @@ After `host create` or `host --write`, the tooling registers the deploy host’s
 | DO A records only | `dk <env> host --sync-dns` |
 | Verify DNS | `dk <env> host` |
 | Resume all post-create steps | `dk <env> host create` (reuses existing droplet by default) |
+| Droplet in default DO project (e.g. Internal) | Fix token (`project:update`), then `dk <env> host create` or `doctl projects resources assign <project-uuid> --resource=do:droplet:<id>` |
 
 **Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` is set, it verifies (1) DigitalOcean DNS API — A records (or CNAMEs that chain to an apex A) on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each `site_origin` hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
 
