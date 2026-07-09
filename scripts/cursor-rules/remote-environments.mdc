@@ -22,6 +22,7 @@ Do **not** run these (or equivalent) until the user clearly confirms the **targe
 - `uv run dk staging …`, `uv run dk prod …`, or any `dk <env>` where that env’s `info.yaml` sets `docker_host`
 - Mutating remote compose: `up`, `down`, `restart`, `pull`, `build`, `rm`, `exec`, `run`, `manage`, `db`, `files`, `storage`, `host`, `secrets`, `install-systemd`, `zabbix`, `digoc`
 - `uv run dk push`, `uv run dk transfer`
+- `uv run dk clean-images --apply` (mutates GHCR; dry-run is read-only but still calls the Packages API)
 - `uv run native fetch db`, `uv run native fetch media` (SSH/rsync to production or staging hosts)
 - Direct `ssh` to deploy hosts, or `docker …` with `DOCKER_HOST=ssh://…`
 - CI/deploy scripts that push images or change remote infrastructure

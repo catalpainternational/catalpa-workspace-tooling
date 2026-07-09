@@ -6,6 +6,7 @@ Minimal tree for naming review. Environment names (`<env>`) come from `docker/en
 dk
 ├── push                           # build and push images tagged from git describe
 ├── build [SERVICE …]              # build images tagged from git describe
+├── clean-images [--apply]         # remove old GHCR package versions (dry-run default)
 ├── transfer SRC DST               # transfer db and media from one environemnt to another
 ├── fetch                          # download production DB dumps and/or media
 │   ├── db [-o PATH] [--env NAME] [--only KEY]
@@ -82,6 +83,7 @@ dk
 |---------|------|
 | `build` | Build compose stack images locally |
 | `push` | Build for `linux/amd64` and push to registry |
+| `clean-images` | Remove old GHCR package versions (dry-run default; `--apply` to delete) |
 | `transfer` | Copy Postgres + `django_media` between two envs |
 | `digoc` | DigitalOcean helpers (wraps `doctl`) |
 | `proxy` | Machine-wide local dev HTTPS reverse proxy (`*.localdev.temp.build`) |
