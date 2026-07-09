@@ -200,6 +200,30 @@ PATs are created in the [control panel](https://cloud.digitalocean.com/account/a
 
 `dk digoc cloud-config print` does not call the API (no token needed).
 
+### GitHub PAT scopes (GHCR)
+
+`dk push` and `dk clean-images` call the GitHub Container Registry and Packages API. Auth comes from `gh auth token`, or `GH_TOKEN` / `GITHUB_TOKEN`. Insufficient scopes show up as `403` errors.
+
+| What you use | Scopes |
+|--------------|--------|
+| `dk push` | `write:packages` (push images) |
+| `dk clean-images` (dry-run) | **`read:packages`** (list package versions) |
+| `dk clean-images --apply` | **`read:packages`**, **`delete:packages`** |
+
+A default `gh auth login` often does **not** include package scopes. Refresh or re-auth:
+
+```bash
+gh auth refresh -s read:packages,delete:packages,write:packages
+```
+
+For org packages on `ghcr.io/catalpainternational`, use a **classic** PAT with the scopes above (fine-grained tokens may not work for package deletion). Create at [GitHub → Settings → Developer settings → Personal access tokens (classic)](https://github.com/settings/tokens).
+
+**403 on `GET …/packages/container/…/versions`:** the token is missing **`read:packages`**. Dry-run and `--apply` both need it to list versions.
+
+**403 on delete:** add **`delete:packages`**. You also need permission to delete versions in the org (package settings or org admin).
+
+Full usage, retention config, and deploy-tag exclusion: [docs/GHCR_CLEANUP.md](docs/GHCR_CLEANUP.md).
+
 Optional `tooling.yaml` block for DigitalOcean defaults:
 
 ```yaml

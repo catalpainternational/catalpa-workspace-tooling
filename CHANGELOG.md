@@ -4,7 +4,7 @@
 
 ### Added
 
-    - **`dk clean-images`** — remove old GHCR container package versions using retention rules from `docker/images.yaml` (`ghcr_cleanup` block). Dry-run by default; `--apply` deletes after confirmation. Protects deploy pins from `info.yaml` `image_tag` and from SOPS credentials `tag` when decryption works locally. See [docs/GHCR_CLEANUP.md](docs/GHCR_CLEANUP.md).
+    - **`dk clean-images`** — remove old GHCR container package versions using retention rules from `docker/images.yaml` (`ghcr_cleanup` block). Dry-run by default; `--apply` deletes after confirmation. Protects deploy pins from `info.yaml` `image_tag` and from SOPS credentials `tag` when decryption works locally. See [docs/GHCR_CLEANUP.md](docs/GHCR_CLEANUP.md) and [README — GitHub PAT scopes (GHCR)](README.md#github-pat-scopes-ghcr).
 
 ## 0.9.2
 

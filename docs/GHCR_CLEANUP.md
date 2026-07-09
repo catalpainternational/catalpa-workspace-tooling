@@ -9,7 +9,15 @@ Authenticate with GitHub using one of:
 - `gh auth login` (classic PAT recommended for org packages)
 - `GH_TOKEN` or `GITHUB_TOKEN` in the environment
 
-The token needs **`read:packages`** and **`delete:packages`** scopes.
+The token needs **`read:packages`** and **`delete:packages`** scopes (dry-run requires at least `read:packages`). See [README.md — GitHub PAT scopes (GHCR)](../README.md#github-pat-scopes-ghcr).
+
+If `dk clean-images` fails with `403` and *You need at least read:packages scope*, your `gh` session likely lacks package scopes:
+
+```bash
+gh auth refresh -s read:packages,delete:packages,write:packages
+```
+
+Or set `GH_TOKEN` to a classic PAT that includes those scopes.
 
 ## Usage
 
