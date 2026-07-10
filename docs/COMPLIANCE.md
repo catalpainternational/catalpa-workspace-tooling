@@ -131,7 +131,9 @@ When `compliance:` is omitted, tooling infers a **JS-only** minimal config if `p
 | Warn | `GPL-2.0-only`, `GPL-3.0-only`, `UNKNOWN` | Fail in `--check-only`; pass in default write mode |
 | Allow | `MIT`, `Apache-2.0`, `BSD-*`, `ISC`, `LGPL-*`, `AGPL-3.0-or-later` | Pass |
 
-Override tiers in `tooling.yaml`. Set `allow_strong_copyleft: true` when your **platform** lockfiles may include GPL-family libraries and you accept honoring each library’s terms (notices, and sometimes source for that library).
+Override tiers in `tooling.yaml`. Set `allow_strong_copyleft: true` when your **platform** lockfiles may include GPL-family libraries and you accept honoring each library’s terms (notices, and sometimes source for that library) without automated GPL warn lines.
+
+**License normalization:** Python scanners often return verbose names (e.g. `GNU General Public License v2 (GPLv2)`) instead of SPDX ids. Tooling maps common phrases to SPDX-style identifiers before policy checks and when writing notices. Compound expressions (`;`, ` AND `) are split and normalized per token.
 
 Warn-tier packages should be tracked in project-specific docs (e.g. a flagged-dependencies register) before using `--check-only` as a merge gate.
 

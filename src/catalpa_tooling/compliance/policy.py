@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from catalpa_tooling.compliance.licenses import license_tokens, normalize_license_spdx
 from catalpa_tooling.compliance.types import CompliancePackage, ComplianceViolation
 
 
@@ -10,11 +11,14 @@ def _normalize_spdx(value: str) -> str:
 
 
 def _matches_tier(license_spdx: str, tier: tuple[str, ...]) -> bool:
-    normalized = _normalize_spdx(license_spdx)
-    if not normalized or normalized in {"UNKNOWN", "N/A"}:
-        return "UNKNOWN" in {_normalize_spdx(x) for x in tier}
-    for entry in tier:
-        if _normalize_spdx(entry) == normalized:
+    tier_keys = {_normalize_spdx(x) for x in tier}
+    for token in license_tokens(license_spdx):
+        normalized = _normalize_spdx(token)
+        if not normalized or normalized in {"UNKNOWN", "N/A"}:
+            if "UNKNOWN" in tier_keys:
+                return True
+            continue
+        if normalized in tier_keys:
             return True
     return False
 
@@ -33,7 +37,7 @@ def check_license_policy(
         effective_warn = tuple(x for x in warn_spdx if _normalize_spdx(x) not in strong)
 
     for pkg in packages:
-        spdx = pkg.license_spdx.strip()
+        spdx = normalize_license_spdx(pkg.license_spdx.strip())
         if _matches_tier(spdx, forbidden_spdx):
             violations.append(
                 ComplianceViolation(

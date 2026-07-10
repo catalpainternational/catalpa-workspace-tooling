@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from catalpa_tooling.compliance.licenses import normalize_license_spdx
 from catalpa_tooling.compliance.types import CompliancePackage, ComplianceViolation
 from catalpa_tooling.config import ComplianceJavascriptConfig, ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
@@ -67,7 +68,7 @@ def _normalize_license(value: str) -> str:
     text = value.strip()
     if not text or text.upper() in {"UNLICENSED", "UNKNOWN"}:
         return "UNKNOWN"
-    return text
+    return normalize_license_spdx(text)
 
 
 def _license_from_raw(raw: Any) -> str | None:

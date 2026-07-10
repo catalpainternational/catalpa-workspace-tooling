@@ -6,6 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 
+from catalpa_tooling.compliance.licenses import normalize_license_spdx
 from catalpa_tooling.compliance.types import CompliancePackage, ComplianceViolation
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
@@ -102,7 +103,9 @@ def _pip_licenses_from_requirements(
             continue
         name = str(row.get("Name") or row.get("name") or "").strip()
         version = str(row.get("Version") or row.get("version") or "").strip()
-        license_name = str(row.get("License") or row.get("license") or "UNKNOWN").strip() or "UNKNOWN"
+        license_name = normalize_license_spdx(
+            str(row.get("License") or row.get("license") or "UNKNOWN").strip() or "UNKNOWN"
+        )
         if name:
             packages.append(
                 CompliancePackage(
