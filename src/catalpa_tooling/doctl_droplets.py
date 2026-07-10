@@ -156,6 +156,167 @@ def _build_create_argv(
     return args
 
 
+def _created_droplets_from_json(data: object) -> list[dict[str, object]]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def _print_created_droplet_summary(droplet: dict[str, object]) -> None:
+    from catalpa_tooling.deploy_do_link import droplet_region_slug, public_ipv4
+
+    droplet_id = droplet.get("id", "")
+    name = droplet.get("name", "")
+    status = droplet.get("status", "")
+    region = droplet_region_slug(droplet)  # type: ignore[arg-type]
+    ip = public_ipv4(droplet)  # type: ignore[arg-type]
+    print(
+        f"Created droplet {name!r} (id {droplet_id}, {region}, {status}, public {ip})",
+        file=sys.stderr,
+    )
+
+
+def _ensure_created_droplets_in_project(
+    droplets: list[dict[str, object]],
+    *,
+    project_id: str,
+    droplet_name: str,
+    context: str | None,
+    dry_run: bool,
+) -> int:
+    from catalpa_tooling.doctl_binary import DoctlCommandError
+    from catalpa_tooling.doctl_projects import (
+        ensure_droplet_in_project,
+        wait_for_project_droplet_by_name,
+    )
+
+    for droplet in droplets:
+        droplet_id = int(droplet.get("id", 0) or 0)
+        if droplet_id <= 0:
+            print("Droplet create returned no id.", file=sys.stderr)
+            return 1
+        try:
+            ensure_droplet_in_project(
+                droplet_id,
+                project_id,
+                context=context,
+                dry_run=dry_run,
+            )
+        except DoctlCommandError as e:
+            print(str(e), file=sys.stderr)
+            return e.returncode
+
+    if dry_run:
+        return 0
+
+    verified = wait_for_project_droplet_by_name(
+        project_id,
+        droplet_name,
+        context=context,
+    )
+    if verified is None:
+        ids = ", ".join(str(d.get("id", "")) for d in droplets)
+        print(
+            f"Droplet {droplet_name!r} was created (id {ids}) but is not visible in "
+            f"project {project_id!r} after assign.\n"
+            "Ensure the API token includes project:update (or Full Access), then assign "
+            "manually, e.g.:\n"
+            f"  doctl projects resources assign {project_id} "
+            f"--resource=do:droplet:<id>",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def _resolve_existing_droplet_for_create(
+    droplet_name: str,
+    *,
+    project_id: str,
+    context: str | None,
+    reuse_existing: bool,
+) -> int | None:
+    """Return exit code when an existing droplet short-circuits create, else None."""
+    from catalpa_tooling.deploy_do_link import find_droplet_by_name
+    from catalpa_tooling.doctl_projects import (
+        ensure_droplet_in_project,
+        find_project_droplet_id_by_name,
+        wait_for_project_droplet_by_name,
+    )
+
+    existing_id = find_project_droplet_id_by_name(
+        project_id,
+        droplet_name,
+        context=context,
+    )
+    if existing_id is not None:
+        if reuse_existing:
+            print(
+                f"Droplet {droplet_name!r} already exists in this project "
+                f"(id {existing_id}); continuing provisioning.",
+                file=sys.stderr,
+            )
+            return 0
+        print(
+            f"Droplet {droplet_name!r} already exists in this project (id {existing_id}). "
+            "Choose another name or remove the existing droplet.",
+            file=sys.stderr,
+        )
+        return 1
+
+    global_droplet = find_droplet_by_name(droplet_name, context=context)
+    if global_droplet is None:
+        return None
+
+    global_id = int(global_droplet.get("id", 0) or 0)
+    if global_id <= 0:
+        return None
+
+    if reuse_existing:
+        from catalpa_tooling.doctl_binary import DoctlCommandError
+
+        print(
+            f"Droplet {droplet_name!r} exists outside this project (id {global_id}); "
+            "assigning to project and continuing provisioning.",
+            file=sys.stderr,
+        )
+        try:
+            ensure_droplet_in_project(
+                global_id,
+                project_id,
+                context=context,
+                dry_run=False,
+            )
+        except DoctlCommandError as e:
+            print(str(e), file=sys.stderr)
+            return e.returncode
+        if wait_for_project_droplet_by_name(
+            project_id,
+            droplet_name,
+            context=context,
+        ) is None:
+            print(
+                f"Droplet {droplet_name!r} (id {global_id}) could not be verified in "
+                f"project {project_id!r} after assign.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+
+    print(
+        f"Droplet {droplet_name!r} already exists on this account (id {global_id}) but "
+        "is not in the configured project.\n"
+        f"Assign it, e.g.:\n"
+        f"  doctl projects resources assign {project_id} "
+        f"--resource=do:droplet:{global_id}\n"
+        "Or re-run with reuse enabled (default): dk <env> host create",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def create_droplet(
     name: str,
     *,
@@ -177,7 +338,11 @@ def create_droplet(
 ) -> int:
     """Create a droplet with the standard bootstrap cloud-config user-data."""
     from catalpa_tooling.deploy_do_link import normalize_droplet_hostname
-    from catalpa_tooling.doctl_binary import ensure_doctl_available, run_doctl
+    from catalpa_tooling.doctl_binary import (
+        DoctlCommandError,
+        ensure_doctl_available,
+        run_doctl_json,
+    )
 
     droplet_name = normalize_droplet_hostname(name.strip())
     if not droplet_name:
@@ -248,40 +413,58 @@ def create_droplet(
             print(user_data, end="" if user_data.endswith("\n") else "\n")
             print("---", file=sys.stderr)
             print(f"host doctl command: doctl {' '.join(argv)}", file=sys.stderr)
+            from catalpa_tooling.doctl_projects import ensure_droplet_in_project
+
+            ensure_droplet_in_project(
+                0,
+                project_id,
+                context=context,
+                dry_run=True,
+            )
             return 0
 
-        from catalpa_tooling.doctl_projects import find_project_droplet_id_by_name
-
-        existing_id = find_project_droplet_id_by_name(
-            project_id,
+        existing_rc = _resolve_existing_droplet_for_create(
             droplet_name,
+            project_id=project_id,
             context=context,
+            reuse_existing=reuse_existing,
         )
-        if existing_id is not None:
-            if reuse_existing:
-                print(
-                    f"Droplet {droplet_name!r} already exists in this project "
-                    f"(id {existing_id}); continuing provisioning.",
-                    file=sys.stderr,
-                )
-                return 0
-            print(
-                f"Droplet {droplet_name!r} already exists in this project (id {existing_id}). "
-                "Choose another name or remove the existing droplet.",
-                file=sys.stderr,
-            )
-            return 1
+        if existing_rc is not None:
+            return existing_rc
 
         ensure_doctl_available()
-        result = run_doctl(argv, context=context)
-        if result.returncode == 0 and for_env:
+        try:
+            data = run_doctl_json(argv, context=context)
+        except DoctlCommandError as e:
+            print(str(e), file=sys.stderr)
+            return e.returncode
+
+        created = _created_droplets_from_json(data)
+        if not created:
+            print("Droplet create returned no droplets.", file=sys.stderr)
+            return 1
+
+        for droplet in created:
+            _print_created_droplet_summary(droplet)
+
+        rc = _ensure_created_droplets_in_project(
+            created,
+            project_id=project_id,
+            droplet_name=droplet_name,
+            context=context,
+            dry_run=False,
+        )
+        if rc != 0:
+            return rc
+
+        if for_env:
             from catalpa_tooling.deploy_do_link import suggest_host_write_command
 
             print(
                 f"Next: {suggest_host_write_command(for_env)}",
                 file=sys.stderr,
             )
-        return result.returncode
+        return 0
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)

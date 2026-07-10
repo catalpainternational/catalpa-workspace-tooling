@@ -533,6 +533,47 @@ def test_find_droplet_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
     assert find_droplet_by_name("missing", context=None) is None
 
 
+def test_cmd_env_host_reports_orphan_droplet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+
+    tooling_path = tmp_path / "tooling.yaml"
+    data = yaml.safe_load(tooling_path.read_text(encoding="utf-8"))
+    data["digitalocean"] = {"project_name": "Catalpa Bero"}
+    tooling_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    from catalpa_tooling.config import load_project_config
+
+    config = load_project_config(tmp_path)
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.try_resolve_doctl_binary", lambda: Path("/doctl")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_for_link",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_by_name",
+        lambda name, *, context: {"id": 583291329, "name": name},
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id",
+        lambda *_a, **_k: "ddeabc49-2ed2-458a-a7ba-3c8cf54024fd",
+    )
+
+    assert cmd_env_host(config, "staging", write=False) == 1
+    err = capsys.readouterr().err
+    assert "exists on this account" in err
+    assert "583291329" in err
+    assert "host create" in err
+
+
 def test_cmd_env_host_disabled_skips_droplet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

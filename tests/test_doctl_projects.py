@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,10 +12,13 @@ from catalpa_tooling.config import DigitalOceanConfig
 from catalpa_tooling.doctl_projects import (
     domain_names_from_resource_urns,
     droplet_ids_from_resource_urns,
+    droplet_urn,
+    ensure_droplet_in_project,
     find_project_droplet_id_by_name,
     list_project_domain_urns,
     list_project_droplets,
     resolve_project_id,
+    wait_for_project_droplet_by_name,
 )
 
 
@@ -132,3 +136,64 @@ def test_find_project_droplet_id_by_name(monkeypatch: pytest.MonkeyPatch) -> Non
     assert find_project_droplet_id_by_name("proj-id", "tempu-test", context=None) == 10
     assert find_project_droplet_id_by_name("proj-id", "TEMPu-Test", context=None) == 10
     assert find_project_droplet_id_by_name("proj-id", "missing", context=None) is None
+
+
+def test_droplet_urn() -> None:
+    assert droplet_urn(583291329) == "do:droplet:583291329"
+
+
+def test_ensure_droplet_in_project_skips_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.list_project_resource_urns",
+        lambda _pid, *, context: ["do:droplet:10"],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.run_doctl",
+        lambda args, *, context: run_calls.append(list(args)) or MagicMock(returncode=0),
+    )
+    ensure_droplet_in_project(10, "proj-id", context=None)
+    assert run_calls == []
+
+
+def test_ensure_droplet_in_project_assigns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.list_project_resource_urns",
+        lambda _pid, *, context: [],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.run_doctl",
+        lambda args, *, context: run_calls.append(list(args)) or MagicMock(returncode=0),
+    )
+    ensure_droplet_in_project(10, "proj-id", context=None)
+    assert run_calls == [
+        ["projects", "resources", "assign", "proj-id", "--resource", "do:droplet:10"]
+    ]
+
+
+def test_wait_for_project_droplet_by_name_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def fake_find(_pid, _name, *, context):
+        calls["n"] += 1
+        return {"id": 10, "name": "web-1"} if calls["n"] >= 2 else None
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.find_project_droplet_by_name",
+        fake_find,
+    )
+    monkeypatch.setattr("catalpa_tooling.doctl_projects.time.sleep", lambda _s: None)
+    found = wait_for_project_droplet_by_name(
+        "proj-id",
+        "web-1",
+        context=None,
+        retries=3,
+        delay_s=0,
+    )
+    assert found is not None
+    assert calls["n"] == 2
