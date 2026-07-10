@@ -1,0 +1,43 @@
+---
+description: Run test compliance after dep bumps; compliance packages in consumer pyproject.toml only
+globs: pyproject.toml, tooling.yaml, compliance/**
+alwaysApply: false
+---
+
+# OSS compliance
+
+License inventory and policy gate via **`uv run test compliance`** (catalpa-workspace-tooling v0.10.0+). [docs/COMPLIANCE.md](https://github.com/catalpainternational/catalpa-workspace-tooling/blob/main/docs/COMPLIANCE.md) in catalpa-workspace-tooling.
+
+## When to suggest compliance
+
+- User bumped **submodules** or other dependencies
+- User changed platform/runtime `pyproject.toml`, Python lockfile(s), or frontend `pnpm-lock.yaml` / `yarn.lock`
+- User asks about AGPL, SBOM, third-party notices, copyleft deps, or OSS policy before release
+
+## Setup (consumer repo)
+
+1. **`compliance:`** block in repo-root `tooling.yaml` (paths relative to consumer root; `javascript.cwd` usually matches `paths.frontend`)
+2. **`[dependency-groups].compliance`** in **consumer** `pyproject.toml` — not in runtime/submodule `pyproject.toml`
+3. Committed artifacts under **`compliance/`** (SBOM + `THIRD_PARTY_NOTICES.md`)
+
+## Safe local run
+
+```bash
+uv sync
+uv run test compliance              # regenerate artifacts
+uv run test compliance --check-only # CI-style gate (no writes)
+```
+
+Use **`--ci`** in GitHub Actions for non-interactive CI runs.
+
+## Do not
+
+- Add `cyclonedx-bom` / `pip-licenses` to **runtime/submodule** `pyproject.toml` — forces docker lock churn with no image benefit
+- Commit stale `compliance/` artifacts after dependency changes without re-running `test compliance`
+- Run network probes against **staging/prod** deploy hosts without explicit user confirmation
+
+## Related
+
+- Tooling reference: catalpa-workspace-tooling `docs/COMPLIANCE.md`
+- Per-project checklist: consumer `docs/OSS_COMPLIANCE.md` (if present)
+- Bero consumers: also `bero/docs/OSS_COMPLIANCE.md`, `bero/docs/FLAGGED_DEPENDENCIES.md`, `bero/docs/cursor-rules/bero-deps.mdc`

@@ -1,0 +1,30 @@
+# Optional CI gate for OSS compliance. Copy to consumer .github/workflows/compliance.yml
+name: Compliance
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      # Add your long-running release branches, e.g. dev-7.4, dev-8.0
+
+permissions:
+  contents: read
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # When platform code lives in a private submodule, use a PAT secret in this repo:
+          # token: ${{ secrets.SUBMODULE_CHECKOUT_PAT }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install workspace tooling and compliance deps
+        run: uv sync --group compliance
+
+      - name: Compliance gate
+        run: uv run test compliance --check-only --ci
