@@ -57,7 +57,7 @@ flowchart TD
 | Python production lockfile | Path(s) under `compliance.python.lockfiles` (e.g. `{frontend}/docker/uv.lock`) |
 | JS lockfile | Under `compliance.javascript.cwd` (default: `paths.frontend`) |
 | Project / platform license file(s) | `compliance.license_files` |
-| Font / bundled asset licenses | `compliance.bundled_assets` paths + `license_globs` |
+| Font / bundled asset licenses | `compliance.bundled_assets` — **list** of `{ path, license_globs }` |
 
 ### Consumer `pyproject.toml`
 
@@ -98,9 +98,11 @@ compliance:
     cwd: platform                      # usually same as paths.frontend
     lockfile: pnpm-lock.yaml
     production_only: true
-  bundled_assets:
+  bundled_assets:                    # list — one or more directories
     - path: platform/src/fonts
       license_globs: ["*OFL*", "LICENSE*", "COPYING*"]
+    # - path: platform/src/icons     # add entries as needed
+    #   license_globs: ["LICENSE*", "COPYING*"]
   forbidden_spdx:
     - LicenseRef-proprietary
     - UNLICENSED
@@ -157,7 +159,7 @@ Early adopters (catalpa_bero, jid, ncd, tvi) embed **bero** as `paths.frontend: 
 | `license_files` | `bero/LICENSE` |
 | `python.lockfiles` | `bero/docker/uv.lock` |
 | `javascript.cwd` | `bero` |
-| `bundled_assets.path` | `bero/src/fonts` |
+| `bundled_assets` | `[{ path: bero/src/fonts, license_globs: [...] }]` (list; one entry today) |
 
 Do **not** add `cyclonedx-bom` / `pip-licenses` to `bero/pyproject.toml` — use the consumer root only.
 
