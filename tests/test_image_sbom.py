@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -19,6 +20,7 @@ from catalpa_tooling.config import (
 from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.dk_stack import push_registry_images
 from catalpa_tooling.image_sbom import (
+    ORAS_IMAGE,
     merge_cyclonedx,
     prepare_and_attach_image_sbom,
     should_merge_app_bom,
@@ -314,3 +316,95 @@ def test_push_images_no_sbom_wires_flag(
     monkeypatch.setattr("catalpa_tooling.build_push.push_registry_images", fake_push)
     assert push_images(minimal_project, sbom=False) == 0
     assert seen["sbom"] is False
+
+
+def test_registry_host_from_ref() -> None:
+    from catalpa_tooling.image_sbom import registry_host_from_ref
+
+    assert (
+        registry_host_from_ref(
+            "ghcr.io/catalpainternational/catalpa_bero-django@sha256:abc"
+        )
+        == "ghcr.io"
+    )
+    assert registry_host_from_ref("nginx:latest") == "docker.io"
+
+
+def test_write_inline_docker_auth_config(tmp_path: Path) -> None:
+    from catalpa_tooling.image_sbom import write_inline_docker_auth_config
+
+    cfg = write_inline_docker_auth_config(tmp_path, "ghcr.io", "user", "token")
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+    assert "credsStore" not in data
+    assert "ghcr.io" in data["auths"]
+    decoded = base64.b64decode(data["auths"]["ghcr.io"]["auth"]).decode("utf-8")
+    assert decoded == "user:token"
+
+
+def test_lookup_registry_credentials_from_auths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catalpa_tooling.image_sbom import lookup_registry_credentials
+
+    cfg_dir = tmp_path / "docker"
+    cfg_dir.mkdir()
+    token = base64.b64encode(b"alice:s3cret").decode("ascii")
+    (cfg_dir / "config.json").write_text(
+        json.dumps({"auths": {"ghcr.io": {"auth": token}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOCKER_CONFIG", str(cfg_dir))
+    assert lookup_registry_credentials("ghcr.io") == ("alice", "s3cret")
+
+
+def test_lookup_registry_credentials_via_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catalpa_tooling import image_sbom as mod
+
+    cfg_dir = tmp_path / "docker"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(
+        json.dumps({"credsStore": "osxkeychain"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOCKER_CONFIG", str(cfg_dir))
+
+    def fake_helper_get(helper: str, server: str):
+        assert helper == "osxkeychain"
+        assert "ghcr.io" in server
+        return ("bob", "pat")
+
+    monkeypatch.setattr(mod, "_cred_helper_get", fake_helper_get)
+    assert mod.lookup_registry_credentials("ghcr.io") == ("bob", "pat")
+
+
+def test_attach_sbom_docker_uses_inline_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catalpa_tooling import image_sbom as mod
+
+    sbom = tmp_path / "merged.cdx.json"
+    sbom.write_text('{"bomFormat":"CycloneDX","components":[]}\n', encoding="utf-8")
+    monkeypatch.setattr(mod, "_which", lambda name: None)
+    monkeypatch.setattr(mod, "lookup_registry_credentials", lambda host: ("u", "p"))
+
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod, "run_cmd", fake_run)
+    rc = mod.attach_sbom_referrer(
+        "ghcr.io/example/app@sha256:deadbeef",
+        sbom,
+    )
+    assert rc == 0
+    assert seen
+    cmd = seen[0]
+    assert "docker" in cmd[0]
+    assert ORAS_IMAGE in cmd
+    # Must mount a temp auth dir, not the real ~/.docker path blindly with keychain.
+    assert any(a == "-v" and "/root/.docker:ro" in b for a, b in zip(cmd, cmd[1:]))
+    assert "DOCKER_CONFIG=/root/.docker" in cmd

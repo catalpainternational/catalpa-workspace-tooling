@@ -6,6 +6,10 @@
 
 - **`dk push` image SBOMs** — after each stack image push, Syft generates a CycloneDX SBOM and ORAS attaches it as an OCI referrer. For **web** and **proxy**, the committed app inventory (`compliance/sbom/bom.cdx.json`) is merged in (completeness-first overclaim). **db** is Syft-only. Use `--no-sbom` to skip. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md#image-sboms-dk-push).
 
+### Fixed
+
+- **`dk push` ORAS attach (dockerized)** — resolve GHCR/registry credentials on the host and mount an inline Docker auth config into the ORAS container, so macOS `credsStore: osxkeychain` no longer fails with `docker-credential-osxkeychain: executable file not found`.
+
 ## 0.9.5
 
 ### Changed

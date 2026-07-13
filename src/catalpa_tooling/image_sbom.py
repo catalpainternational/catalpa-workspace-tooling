@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -89,6 +90,121 @@ def _docker_config_dir() -> Path:
     return Path.home() / ".docker"
 
 
+def registry_host_from_ref(image_ref: str) -> str:
+    """Registry hostname for an image ref (``ghcr.io/…`` → ``ghcr.io``)."""
+    name = image_ref.split("@", 1)[0]
+    if "/" not in name:
+        return "docker.io"
+    first = name.split("/", 1)[0]
+    if "." in first or ":" in first or first == "localhost":
+        return first
+    return "docker.io"
+
+
+def _cred_helper_binary(helper: str) -> str:
+    if helper.startswith("docker-credential-"):
+        return helper
+    return f"docker-credential-{helper}"
+
+
+def _cred_helper_get(helper: str, server: str) -> tuple[str, str] | None:
+    """Query a Docker credential helper; return (username, secret) or None."""
+    exe = _which(_cred_helper_binary(helper))
+    if not exe:
+        return None
+    result = run_cmd(
+        [exe, "get"],
+        input=f"{server}\n",
+        check=False,
+        capture_output=True,
+        text=True,
+        print_cmd=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads((result.stdout or "").strip() or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    user = str(payload.get("Username") or "").strip()
+    secret = str(payload.get("Secret") or "").strip()
+    if not user or not secret:
+        return None
+    return user, secret
+
+
+def _auth_from_auths_entry(entry: object) -> tuple[str, str] | None:
+    if not isinstance(entry, dict):
+        return None
+    auth = entry.get("auth")
+    if isinstance(auth, str) and auth.strip():
+        try:
+            decoded = base64.b64decode(auth.strip()).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if ":" not in decoded:
+            return None
+        user, _, secret = decoded.partition(":")
+        if user and secret:
+            return user, secret
+    user = str(entry.get("username") or "").strip()
+    secret = str(entry.get("password") or entry.get("identitytoken") or "").strip()
+    if user and secret:
+        return user, secret
+    return None
+
+
+def lookup_registry_credentials(registry_host: str) -> tuple[str, str] | None:
+    """Resolve registry username/password from the host Docker config / cred helpers.
+
+    Used so dockerized ORAS does not depend on host-only helpers (e.g. osxkeychain).
+    """
+    cfg_path = _docker_config_dir() / "config.json"
+    data = _load_json(cfg_path) or {}
+    host = registry_host.strip().rstrip("/")
+    server_candidates = [host, f"https://{host}", f"http://{host}", f"https://{host}/v2/"]
+
+    auths = data.get("auths") if isinstance(data.get("auths"), dict) else {}
+    for server in server_candidates:
+        creds = _auth_from_auths_entry(auths.get(server))
+        if creds:
+            return creds
+
+    helpers = data.get("credHelpers") if isinstance(data.get("credHelpers"), dict) else {}
+    for server in server_candidates:
+        helper = helpers.get(server) or helpers.get(host)
+        if isinstance(helper, str) and helper.strip():
+            creds = _cred_helper_get(helper.strip(), server)
+            if creds:
+                return creds
+
+    store = data.get("credsStore")
+    if isinstance(store, str) and store.strip():
+        for server in server_candidates:
+            creds = _cred_helper_get(store.strip(), server)
+            if creds:
+                return creds
+    return None
+
+
+def write_inline_docker_auth_config(target_dir: Path, registry_host: str, username: str, secret: str) -> Path:
+    """Write a Docker config.json with inline auth (no credential helpers)."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    token = base64.b64encode(f"{username}:{secret}".encode("utf-8")).decode("ascii")
+    host = registry_host.strip().rstrip("/")
+    payload = {
+        "auths": {
+            host: {"auth": token},
+            f"https://{host}": {"auth": token},
+        }
+    }
+    cfg = target_dir / "config.json"
+    cfg.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return cfg
+
+
 def generate_image_cyclonedx(image_ref: str, output_path: Path) -> int:
     """Run Syft against a local/registry image ref; write CycloneDX JSON to ``output_path``."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,20 +276,34 @@ def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
         return result.returncode
 
     work_dir = sbom_path.parent.resolve()
-    docker_cfg = _docker_config_dir()
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        f"{work_dir}:/workspace",
-        "-w",
-        "/workspace",
-    ]
-    if docker_cfg.is_dir():
-        cmd.extend(["-v", f"{docker_cfg}:/root/.docker:ro"])
-    cmd.extend(
-        [
+    registry_host = registry_host_from_ref(image_ref_with_digest)
+    with tempfile.TemporaryDirectory(prefix="dk-oras-docker-cfg-") as auth_tmp:
+        auth_dir = Path(auth_tmp)
+        creds = lookup_registry_credentials(registry_host)
+        if creds:
+            write_inline_docker_auth_config(auth_dir, registry_host, creds[0], creds[1])
+        elif (_docker_config_dir() / "config.json").is_file():
+            # Last resort: copy config as-is (works when auths are already inline).
+            shutil.copy2(_docker_config_dir() / "config.json", auth_dir / "config.json")
+        else:
+            print(
+                f"No Docker credentials found for {registry_host}; "
+                "oras attach may fail (docker login first)",
+                flush=True,
+            )
+
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{work_dir}:/workspace",
+            "-w",
+            "/workspace",
+            "-v",
+            f"{auth_dir}:/root/.docker:ro",
+            "-e",
+            "DOCKER_CONFIG=/root/.docker",
             ORAS_IMAGE,
             "attach",
             "--artifact-type",
@@ -181,15 +311,15 @@ def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
             image_ref_with_digest,
             f"{sbom_path.name}:{CYCLONEDX_MEDIA_TYPE}",
         ]
-    )
-    result = run_cmd(cmd, check=False, capture_output=True, text=True)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        print(
-            f"oras (docker) attach failed for {image_ref_with_digest}: {detail or 'non-zero exit'}",
-            flush=True,
-        )
-    return result.returncode
+        result = run_cmd(cmd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            print(
+                f"oras (docker) attach failed for {image_ref_with_digest}: "
+                f"{detail or 'non-zero exit'}",
+                flush=True,
+            )
+        return result.returncode
 
 
 def resolve_repo_digest(image_ref: str, registry: str) -> str | None:
