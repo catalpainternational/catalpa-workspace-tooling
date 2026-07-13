@@ -1,4 +1,4 @@
-# OSS compliance (`tests compliance`)
+# OSS compliance (`test compliance`)
 
 License inventory, SBOM generation, and policy gate for **consumer repos** that use catalpa-workspace-tooling. Tooling orchestrates scans; each project holds a `compliance:` block in `tooling.yaml` and committed artifacts under `compliance/`.
 
@@ -8,9 +8,9 @@ License inventory, SBOM generation, and policy gate for **consumer repos** that 
 
 | | |
 |---|---|
-| **Command** | `uv run tests compliance` |
+| **Command** | `uv run test compliance` |
 | **Purpose** | Scan production Python/JS deps, bundled assets; write SBOM + `THIRD_PARTY_NOTICES.md` |
-| **CI gate** | `uv run tests compliance --check-only --ci` |
+| **CI gate** | `uv run test compliance --check-only --ci` |
 | **When to run** | After dependency or submodule bumps; before release tags |
 
 ## What tooling runs
@@ -19,7 +19,7 @@ Pipeline (`compliance_cli.run_compliance`):
 
 1. Load `compliance:` from `tooling.yaml` (or infer JS-only mode when `paths.frontend/` has a JS lockfile)
 2. **Python** — `uv export` from configured lockfiles, then `pip-licenses` (host `compliance` group)
-3. **JavaScript** — `pnpm-lock.yaml` with `production_only` closure (licenses from `node_modules`; fallback: `pnpm dlx license-checker`); legacy Yarn Berry `.yarn/cache` scan; npm via `npx license-checker`
+3. **JavaScript** — require installed deps (`node_modules`, or Yarn `.yarn/cache`); fail with `javascript_install_required` if missing. Then scan `pnpm-lock.yaml` production closure (licenses from `node_modules`; fallback: `pnpm dlx license-checker`); legacy Yarn Berry `.yarn/cache` scan; npm via `npx license-checker`
 4. **Metadata** — required project license files exist; warn on `package.json` / `pyproject.toml` drift
 5. **Bundled assets** — font/binary dirs must contain license files matching configured globs
 6. **Policy** — forbidden / warn SPDX tiers
@@ -27,7 +27,7 @@ Pipeline (`compliance_cli.run_compliance`):
 
 ```mermaid
 flowchart TD
-  start[uv run tests compliance] --> config[Load tooling.yaml compliance]
+  start[uv run test compliance] --> config[Load tooling.yaml compliance]
   config --> py[Python lockfile scan]
   config --> js[pnpm lockfile / Yarn cache / license-checker]
   py --> policy[License policy]
@@ -56,6 +56,7 @@ flowchart TD
 | `[dependency-groups].compliance` | **consumer repo root** `pyproject.toml` |
 | Python production lockfile | Path(s) under `compliance.python.lockfiles` (e.g. `{frontend}/docker/uv.lock`) |
 | JS lockfile | Under `compliance.javascript.cwd` (default: `paths.frontend`) |
+| **Frontend install** | `pnpm install` / `yarn install` / `npm install` in that cwd (`node_modules` present; Yarn Berry may use `.yarn/cache`). Missing install fails with `javascript_install_required` — not a flood of `UNKNOWN` licenses |
 | Project / platform license file(s) | `compliance.license_files` |
 | Font / bundled asset licenses | `compliance.bundled_assets` — **list** of `{ path, license_globs }` |
 
@@ -78,8 +79,10 @@ Then:
 
 ```bash
 uv sync
-uv run tests compliance
-uv run tests compliance --check-only
+# Install frontend deps so JS license lookup can read node_modules (cwd = paths.frontend)
+pnpm install --dir bero   # or: cd bero && pnpm install
+uv run test compliance
+uv run test compliance --check-only
 ```
 
 ## `tooling.yaml` schema
