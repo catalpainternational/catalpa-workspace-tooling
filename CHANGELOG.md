@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.5
+
 ### Changed
 
 - Renamed the ``test`` console script to **``tests``** so it no longer collides with the POSIX shell builtin. ``test`` remains as a deprecated alias that prints a warning. Update invocations to ``uv run tests …`` / ``tests …``.
