@@ -27,4 +27,4 @@ jobs:
         run: uv sync --group compliance
 
       - name: Compliance gate
-        run: uv run test compliance --check-only --ci
+        run: uv run tests compliance --check-only --ci

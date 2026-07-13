@@ -1,4 +1,4 @@
-# Smoke tests (`test smoke`)
+# Smoke tests (`tests smoke`)
 
 Fast project-health checks for Django + Docker Compose stacks. Tooling orchestrates the stack; your repo supplies tests under `{paths.frontend}/smoke/`.
 
@@ -8,7 +8,7 @@ Fast project-health checks for Django + Docker Compose stacks. Tooling orchestra
 
 | | |
 |---|---|
-| **Command** | `uv run test smoke` (or `test smoke` when the project venv is on `PATH`) |
+| **Command** | `uv run tests smoke` (or `tests smoke` when the project venv is on `PATH`) |
 | **Purpose** | Post-change gate (~2 min): stack up, migrations, Django checks, web healthcheck, frontend HTTP, Playwright tests |
 | **When to run** | After submodule bumps, before merge; locally first (CI optional later) |
 
@@ -29,7 +29,7 @@ Ordered pipeline (implemented in `smoke_cli.run_smoke`):
 
 ```mermaid
 flowchart TD
-  start[uv run test smoke] --> up{Stack running?}
+  start[uv run tests smoke] --> up{Stack running?}
   up -->|no| composeUp[compose up -d + wait db]
   up -->|yes| migrate
   composeUp --> migrate[manage.py migrate on primary DB]
@@ -52,7 +52,7 @@ Dev smoke tests use `site_origin` from `docker/envs/dev/info.yaml` (port **901N*
 
 | Requirement | Where | Notes |
 |-------------|-------|-------|
-| Valid `tooling.yaml` | repo root | Same manifest as `dk` / other `test` subcommands |
+| Valid `tooling.yaml` | repo root | Same manifest as `dk` / other `tests` subcommands |
 | `stack.services.web` + `stack.services.db` | `tooling.yaml` | Web container must expose `./manage.py` |
 | `stack.healthcheck` | `tooling.yaml` | URL when app is healthy (bero: `/cms/`; generic: `/healthz`) |
 | `site_origin` | `docker/envs/dev/info.yaml` | HTTP probe + `SMOKE_FE_URL`; string or list OK |
@@ -120,7 +120,7 @@ def browser_type_launch_args() -> dict:
 def fe_url() -> str:
     url = (os.environ.get("SMOKE_FE_URL") or "").strip()
     if not url:
-        pytest.skip("SMOKE_FE_URL not set (run via `uv run test smoke`)")
+        pytest.skip("SMOKE_FE_URL not set (run via `uv run tests smoke`)")
     return url.rstrip("/")
 ```
 
@@ -141,7 +141,7 @@ Bero shared tests (in submodule):
 - File names: `test_*.py`
 - Do not use pytest-django for migrations — tooling runs migrate in the container
 - Keep tests fast and read-only (no writes via browser)
-- Extra pytest args: `uv run test smoke -- -k pwa -vv`
+- Extra pytest args: `uv run tests smoke -- -k pwa -vv`
 
 ## Bero consumer fast path
 
@@ -150,7 +150,7 @@ For catalpa_bero, jid, ncd, tvi:
 1. Bump **bero** submodule to a commit containing `bero/smoke/`
 2. Add smoke group + `pytest.ini` + copy `.cursor/rules/bero-deps.mdc` from bero docs
 3. `uv sync && uv run playwright install chromium`
-4. `uv run dk dev up -d && uv run test smoke --no-up`
+4. `uv run dk dev up -d && uv run tests smoke --no-up`
 
 No project-specific test code — reuse submodule tests. Optional wrapper: `bero/scripts/smoke.sh`.
 
@@ -162,7 +162,7 @@ See also [bero/README_TESTING.md](https://github.com/catalpainternational/bero/b
 2. Set `stack.healthcheck.url` to a route your web container serves
 3. Set `site_origin` in dev `info.yaml` to the URL users hit (proxy port, e.g. dev `:901N` — see `bero/docs/PORTS.md`)
 4. Add smoke dependency group (above)
-5. Run `uv run test smoke`
+5. Run `uv run tests smoke`
 
 ### Known bero-leaning defaults
 
@@ -194,7 +194,7 @@ Future v2 may add `tooling.yaml` keys: `smoke.pytest_dir`, `smoke.skip_playwrigh
 |---------|----------------|
 | `missing …/smoke` | No test directory under `paths.frontend` |
 | Playwright not found after direnv | Add `smoke` to `[tool.uv] default-groups` |
-| `SMOKE_FE_URL not set` | Ran `pytest` directly instead of `uv run test smoke` |
+| `SMOKE_FE_URL not set` | Ran `pytest` directly instead of `uv run tests smoke` |
 | Healthcheck timeout | Wrong `stack.healthcheck.url`, web not up, or **DisallowedHost** when `BERO_ORIGIN` is not `localhost` (fixed in tooling v0.8.3+: in-container probe sends `Host` from `BERO_ORIGIN`) |
 | FE URL did not respond | `site_origin` / proxy port mismatch; dev webpack still compiling (fixed in v0.8.5+: smoke polls up to 120s) |
 | `treebeard.E001` in container only | Native vs docker lock drift (bero: `bero/docs/PYTHON_LOCK_ALIGNMENT.md`) |
@@ -206,7 +206,7 @@ Not wired in v1. Intended shape:
 
 ```yaml
 - run: uv run dk dev up -d
-- run: uv run test smoke --no-up --ci
+- run: uv run tests smoke --no-up --ci
 ```
 
 Use `--ci` when the job starts with an empty primary database volume.

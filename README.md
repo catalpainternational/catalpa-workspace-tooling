@@ -83,7 +83,7 @@ eval "$(uv run register-python-argcomplete -s zsh dk)"
 eval "$(uv run register-python-argcomplete -s zsh native)"
 eval "$(uv run register-python-argcomplete -s zsh local)"
 eval "$(uv run register-python-argcomplete -s zsh dev)"
-eval "$(uv run register-python-argcomplete -s zsh test)"
+eval "$(uv run register-python-argcomplete -s zsh tests)"
 eval "$(uv run register-python-argcomplete -s zsh scripts)"
 ```
 
@@ -125,7 +125,7 @@ After install, these console scripts are available:
 | `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
 | `dev` | Deprecated alias for `native` (prints warning) |
 | `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), **`dk proxy`** (machine-wide local HTTPS reverse proxy — see [README_DEV_PROXY.md](README_DEV_PROXY.md)), etc. See [Backup and monitoring](#backup-and-monitoring). `dk <env> trust-caddy-cert` / `dk proxy trust` trust Caddy's local HTTPS CA (macOS/Linux). |
-| `test` | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) |
+| `tests` | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
 
 ### Project script extensions
@@ -367,7 +367,7 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 
 | Document | Contents |
 |----------|----------|
-| [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `test smoke` prerequisites, authoring tests, flags |
+| [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `tests smoke` prerequisites, authoring tests, flags |
 | [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation) |
 | [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) | Typer migration audit and low-risk refactor targets |
 | [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |

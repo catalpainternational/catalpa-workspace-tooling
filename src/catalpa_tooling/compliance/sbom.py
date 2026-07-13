@@ -170,7 +170,7 @@ def check_file_drift(
         return [
             ComplianceViolation(
                 code="stale_compliance_artifact",
-                message=f"Committed {label} is out of date; run `uv run test compliance` to regenerate",
+                message=f"Committed {label} is out of date; run `uv run tests compliance` to regenerate",
             )
         ]
     return []

@@ -6,7 +6,7 @@ alwaysApply: false
 
 # Typer-compatible CLI code
 
-The CLIs (`dk`, `native`, `scripts`, `test`, …) are built on argparse today, but we
+The CLIs (`dk`, `native`, `scripts`, `tests`, …) are built on argparse today, but we
 intend to migrate to [Typer](https://typer.tiangolo.com/) eventually. Typer generates a
 command call with one explicit, typed **parameter per option/argument**, so any handler
 that receives an `argparse.Namespace` cannot map 1:1 to a Typer command. Keep new and

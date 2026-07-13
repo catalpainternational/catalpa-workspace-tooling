@@ -1,4 +1,4 @@
-"""Unit tests for ``test compliance`` orchestration."""
+"""Unit tests for ``tests compliance`` orchestration."""
 
 from __future__ import annotations
 

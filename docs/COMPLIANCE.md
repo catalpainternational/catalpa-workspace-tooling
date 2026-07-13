@@ -1,4 +1,4 @@
-# OSS compliance (`test compliance`)
+# OSS compliance (`tests compliance`)
 
 License inventory, SBOM generation, and policy gate for **consumer repos** that use catalpa-workspace-tooling. Tooling orchestrates scans; each project holds a `compliance:` block in `tooling.yaml` and committed artifacts under `compliance/`.
 
@@ -8,9 +8,9 @@ License inventory, SBOM generation, and policy gate for **consumer repos** that 
 
 | | |
 |---|---|
-| **Command** | `uv run test compliance` |
+| **Command** | `uv run tests compliance` |
 | **Purpose** | Scan production Python/JS deps, bundled assets; write SBOM + `THIRD_PARTY_NOTICES.md` |
-| **CI gate** | `uv run test compliance --check-only --ci` |
+| **CI gate** | `uv run tests compliance --check-only --ci` |
 | **When to run** | After dependency or submodule bumps; before release tags |
 
 ## What tooling runs
@@ -27,7 +27,7 @@ Pipeline (`compliance_cli.run_compliance`):
 
 ```mermaid
 flowchart TD
-  start[uv run test compliance] --> config[Load tooling.yaml compliance]
+  start[uv run tests compliance] --> config[Load tooling.yaml compliance]
   config --> py[Python lockfile scan]
   config --> js[pnpm lockfile / Yarn cache / license-checker]
   py --> policy[License policy]
@@ -78,8 +78,8 @@ Then:
 
 ```bash
 uv sync
-uv run test compliance
-uv run test compliance --check-only
+uv run tests compliance
+uv run tests compliance --check-only
 ```
 
 ## `tooling.yaml` schema

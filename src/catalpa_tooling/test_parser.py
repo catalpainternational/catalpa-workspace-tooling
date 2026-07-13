@@ -1,4 +1,4 @@
-"""argparse tree for ``test``."""
+"""argparse tree for ``tests``."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from catalpa_tooling.config import ProjectConfig
 def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.ArgumentParser:
     _ = config
     parser = argparse.ArgumentParser(
-        prog="test",
+        prog="tests",
         description="Run backend pytest, frontend Vitest, or repo-root workspace tests.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

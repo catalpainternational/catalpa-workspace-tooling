@@ -1,6 +1,6 @@
 # Typer migration audit
 
-The CLIs (`dk`, `native`, `scripts`, `test`, …) use **argparse** today. We intend to migrate to [Typer](https://typer.tiangolo.com/) eventually. This document records an audit of where the codebase already matches a Typer-friendly shape, and where low-risk refactors would help before a full migration.
+The CLIs (`dk`, `native`, `scripts`, `tests`, …) use **argparse** today. We intend to migrate to [Typer](https://typer.tiangolo.com/) eventually. This document records an audit of where the codebase already matches a Typer-friendly shape, and where low-risk refactors would help before a full migration.
 
 **Conventions for new code:** see [`.cursor/rules/typer-compatible-cli.mdc`](../.cursor/rules/typer-compatible-cli.mdc).
 

@@ -1,12 +1,12 @@
 ---
-description: Run test compliance after dep bumps; compliance packages in consumer pyproject.toml only
+description: Run tests compliance after dep bumps; compliance packages in consumer pyproject.toml only
 globs: pyproject.toml, tooling.yaml, compliance/**
 alwaysApply: false
 ---
 
 # OSS compliance
 
-License inventory and policy gate via **`uv run test compliance`** (catalpa-workspace-tooling v0.10.0+). [docs/COMPLIANCE.md](https://github.com/catalpainternational/catalpa-workspace-tooling/blob/main/docs/COMPLIANCE.md) in catalpa-workspace-tooling.
+License inventory and policy gate via **`uv run tests compliance`** (catalpa-workspace-tooling v0.10.0+). [docs/COMPLIANCE.md](https://github.com/catalpainternational/catalpa-workspace-tooling/blob/main/docs/COMPLIANCE.md) in catalpa-workspace-tooling.
 
 ## When to suggest compliance
 
@@ -24,8 +24,8 @@ License inventory and policy gate via **`uv run test compliance`** (catalpa-work
 
 ```bash
 uv sync
-uv run test compliance              # regenerate artifacts
-uv run test compliance --check-only # CI-style gate (no writes)
+uv run tests compliance              # regenerate artifacts
+uv run tests compliance --check-only # CI-style gate (no writes)
 ```
 
 Use **`--ci`** in GitHub Actions for non-interactive CI runs.
@@ -33,7 +33,7 @@ Use **`--ci`** in GitHub Actions for non-interactive CI runs.
 ## Do not
 
 - Add `cyclonedx-bom` / `pip-licenses` to **runtime/submodule** `pyproject.toml` — forces docker lock churn with no image benefit
-- Commit stale `compliance/` artifacts after dependency changes without re-running `test compliance`
+- Commit stale `compliance/` artifacts after dependency changes without re-running `tests compliance`
 - Run network probes against **staging/prod** deploy hosts without explicit user confirmation
 
 ## Related

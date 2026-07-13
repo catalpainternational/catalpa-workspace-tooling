@@ -1,4 +1,4 @@
-"""``test smoke`` — layered project health checks for Django compose consumer repos."""
+"""``tests smoke`` — layered project health checks for Django compose consumer repos."""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ import yaml
 from catalpa_tooling.compose import _compose, _wait_for_web_service
 from catalpa_tooling.config import ProjectConfig, resolve_native_db_name
 from catalpa_tooling.env_handlers import _ensure_stack_volumes
+from catalpa_tooling.local_proxy import (
+    LocalProxyConfigError,
+    local_proxy_extra_compose_files,
+    sync_local_proxy_for_compose_action,
+)
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context, resolve_compose_file_from_info
 from catalpa_tooling.pgbackrest_db import db_service_responds
 from catalpa_tooling.pgbackrest_volume_config import materialize_configs, postgres_image_from_env
@@ -230,9 +235,69 @@ def _http_get_ok(url: str, *, timeout: float = 10.0) -> bool:
     return ok
 
 
+def _smoke_ssl_context():
+    """SSL context that trusts the local-proxy CA when available (HTTPS site_origin)."""
+    import ssl
+
+    ctx = ssl.create_default_context()
+    ca_path = _local_proxy_ca_path()
+    if ca_path is not None:
+        ctx.load_verify_locations(cafile=str(ca_path))
+    return ctx
+
+
+def _local_proxy_ca_path():
+    """Return path to exported local-proxy CA root, exporting it if needed."""
+    try:
+        from catalpa_tooling.local_proxy import local_proxy_data_dir
+        from catalpa_tooling.local_proxy_ca import export_proxy_ca_to_data_dir
+
+        ca_path = local_proxy_data_dir() / "ca-root.crt"
+        if not ca_path.is_file():
+            exported = export_proxy_ca_to_data_dir()
+            if exported is not None:
+                ca_path = exported
+        if ca_path.is_file():
+            return ca_path
+    except Exception:
+        return None
+    return None
+
+
+def _inject_local_proxy_ca_env(env: dict[str, str]) -> None:
+    """Make urllib/requests in smoke pytest trust the local-proxy CA via SSL_CERT_FILE."""
+    from pathlib import Path
+
+    ca_path = _local_proxy_ca_path()
+    if ca_path is None:
+        return
+    import ssl
+
+    parts: list[str] = []
+    default_ca = ssl.get_default_verify_paths().openssl_cafile
+    if default_ca and Path(default_ca).is_file():
+        parts.append(Path(default_ca).read_text(encoding="utf-8"))
+    else:
+        try:
+            import certifi
+
+            parts.append(Path(certifi.where()).read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    parts.append(ca_path.read_text(encoding="utf-8"))
+    bundle = ca_path.parent / "ca-bundle-with-local.pem"
+    bundle.write_text("\n".join(parts), encoding="utf-8")
+    env["SSL_CERT_FILE"] = str(bundle)
+    env["REQUESTS_CA_BUNDLE"] = str(bundle)
+
+
 def _http_get_detail(url: str, *, timeout: float = 10.0) -> tuple[bool, str | None]:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        req = urllib.request.Request(url)
+        kwargs: dict = {"timeout": timeout}
+        if url.lower().startswith("https://"):
+            kwargs["context"] = _smoke_ssl_context()
+        with urllib.request.urlopen(req, **kwargs) as resp:
             ok = 200 <= resp.status < 400
             if not ok:
                 return False, f"status_{resp.status}"
@@ -250,11 +315,15 @@ def _wait_for_frontend_url(
 ) -> bool:
     """Poll ``site_origin`` until HTTP 2xx/3xx (webpack dev server blocks until first compile)."""
     deadline = time.monotonic() + timeout_seconds
+    last_err: str | None = None
     while time.monotonic() < deadline:
-        ok, _ = _http_get_detail(url, timeout=request_timeout)
+        ok, err = _http_get_detail(url, timeout=request_timeout)
         if ok:
             return True
+        last_err = err
         time.sleep(poll_interval)
+    if last_err:
+        print(f"smoke: last frontend probe error: {last_err}", file=sys.stderr)
     return False
 
 
@@ -266,6 +335,7 @@ def _run_pytest_smoke(config: ProjectConfig, *, fe_url: str, extra_pytest: list[
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
     env["SMOKE_FE_URL"] = fe_url
+    _inject_local_proxy_ca_env(env)
     cmd = [
         "uv",
         "run",
@@ -308,7 +378,38 @@ def run_smoke(
             ["up", "-d"],
             use_prepulled_registry=deploy_ctx.use_prepulled_registry,
         )
-        if _compose(compose_file, *compose_argv, env_add=env_add, check=False).returncode != 0:
+        # Match ``dk <env> up``: ensure shared local proxy + drop host :80/:443 publishing.
+        try:
+            proxy_rc = sync_local_proxy_for_compose_action(
+                info,
+                config,
+                env_name,
+                compose_argv,
+                env_add,
+            )
+            if proxy_rc != 0:
+                print("smoke: local proxy sync failed", file=sys.stderr)
+                return proxy_rc
+            extra_compose_files = local_proxy_extra_compose_files(
+                info,
+                config,
+                env_name,
+                env_add,
+                compose_argv,
+            )
+        except LocalProxyConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        if (
+            _compose(
+                compose_file,
+                *compose_argv,
+                env_add=env_add,
+                extra_compose_files=extra_compose_files or None,
+                check=False,
+            ).returncode
+            != 0
+        ):
             print("smoke: docker compose up failed", file=sys.stderr)
             return 1
 

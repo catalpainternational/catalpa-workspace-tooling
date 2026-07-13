@@ -1,4 +1,4 @@
-"""``test compliance`` — OSS license scan, SBOM, and policy gate for consumer repos."""
+"""``tests compliance`` — OSS license scan, SBOM, and policy gate for consumer repos."""
 
 from __future__ import annotations
 
