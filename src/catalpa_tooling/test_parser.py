@@ -54,4 +54,23 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
         nargs=argparse.REMAINDER,
         help="Extra pytest args after `--`.",
     )
+    p_compliance = subparsers.add_parser(
+        "compliance",
+        help="OSS compliance scan (licenses, SBOM, NOTICES, policy gate).",
+    )
+    p_compliance.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Fail on policy violations or stale committed artifacts (no writes).",
+    )
+    p_compliance.add_argument(
+        "--sbom-only",
+        action="store_true",
+        help="Regenerate CycloneDX SBOM files only (skip metadata and policy checks).",
+    )
+    p_compliance.add_argument(
+        "--ci",
+        action="store_true",
+        help="CI mode (non-interactive).",
+    )
     return parser

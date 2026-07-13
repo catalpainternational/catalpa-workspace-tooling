@@ -48,6 +48,15 @@ def test_test_parser_workspace_remainder() -> None:
     assert ns.pytest_args == ["tests/test_foo.py", "-k", "bar"]
 
 
+def test_test_parser_compliance_flags() -> None:
+    parser = build_test_parser()
+    ns = parser.parse_args(["compliance", "--check-only", "--ci"])
+    assert ns.command == "compliance"
+    assert ns.check_only is True
+    assert ns.ci is True
+    assert ns.sbom_only is False
+
+
 def test_dk_parser_build_services(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tooling_repo)
     config = load_project_config(tooling_repo)

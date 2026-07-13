@@ -158,6 +158,7 @@ def test_provision_exits_when_s3cmd_missing(
             build_time_zone=DEFAULT_BUILD_TIME_ZONE,
         ),
         digitalocean=None,
+        compliance=None,
         repo_root=tmp_path,
         tooling_path=tmp_path / "tooling.yaml",
     )

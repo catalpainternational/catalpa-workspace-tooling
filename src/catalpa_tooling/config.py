@@ -431,6 +431,54 @@ class DevConfig:
     build_time_zone: str
 
 
+DEFAULT_FORBIDDEN_SPDX: tuple[str, ...] = (
+    "UNLICENSED",
+    "LicenseRef-proprietary",
+)
+DEFAULT_WARN_SPDX: tuple[str, ...] = (
+    "GPL-2.0-only",
+    "GPL-3.0-only",
+    "UNKNOWN",
+)
+
+
+@dataclass(frozen=True)
+class CompliancePythonConfig:
+    lockfiles: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ComplianceJavascriptConfig:
+    cwd: str | None
+    lockfile: str
+    production_only: bool
+
+
+@dataclass(frozen=True)
+class ComplianceBundledAssetConfig:
+    path: str
+    license_globs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ComplianceOutputsConfig:
+    sbom_dir: str
+    notices: str
+
+
+@dataclass(frozen=True)
+class ComplianceConfig:
+    project_license: str
+    license_files: tuple[str, ...]
+    python: CompliancePythonConfig | None
+    javascript: ComplianceJavascriptConfig | None
+    bundled_assets: tuple[ComplianceBundledAssetConfig, ...]
+    forbidden_spdx: tuple[str, ...]
+    warn_spdx: tuple[str, ...]
+    allow_strong_copyleft: bool
+    outputs: ComplianceOutputsConfig
+
+
 @dataclass(frozen=True)
 class ProjectMetaConfig:
     name: str
@@ -478,6 +526,7 @@ class ProjectConfig:
     native: NativeConfig
     dev: DevConfig
     digitalocean: DigitalOceanConfig | None
+    compliance: ComplianceConfig | None
     repo_root: Path
     tooling_path: Path
 
@@ -1526,6 +1575,157 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     )
 
 
+def _parse_bundled_assets(raw: Any) -> tuple[ComplianceBundledAssetConfig, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProjectConfigError("compliance.bundled_assets must be a list")
+    out: list[ComplianceBundledAssetConfig] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ProjectConfigError(f"compliance.bundled_assets[{idx}] must be a mapping")
+        path = _validate_rel_path(
+            _require_str(item, "path", section=f"compliance.bundled_assets[{idx}]"),
+            field=f"compliance.bundled_assets[{idx}].path",
+        )
+        globs = _parse_string_list(
+            item.get("license_globs"),
+            field=f"compliance.bundled_assets[{idx}].license_globs",
+        )
+        if not globs:
+            raise ProjectConfigError(
+                f"compliance.bundled_assets[{idx}].license_globs must list at least one glob"
+            )
+        out.append(ComplianceBundledAssetConfig(path=path, license_globs=globs))
+    return tuple(out)
+
+
+def _parse_compliance_outputs(raw: Any) -> ComplianceOutputsConfig:
+    if raw is None or not isinstance(raw, dict):
+        raise ProjectConfigError("compliance.outputs must be a mapping")
+    return ComplianceOutputsConfig(
+        sbom_dir=_validate_rel_path(
+            _require_str(raw, "sbom_dir", section="compliance.outputs"),
+            field="compliance.outputs.sbom_dir",
+        ),
+        notices=_validate_rel_path(
+            _require_str(raw, "notices", section="compliance.outputs"),
+            field="compliance.outputs.notices",
+        ),
+    )
+
+
+def _parse_compliance_python(raw: Any) -> CompliancePythonConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("compliance.python must be a mapping")
+    lockfiles = _parse_string_list(raw.get("lockfiles"), field="compliance.python.lockfiles")
+    if not lockfiles:
+        return None
+    validated = tuple(
+        _validate_rel_path(rel, field="compliance.python.lockfiles") for rel in lockfiles
+    )
+    return CompliancePythonConfig(lockfiles=validated)
+
+
+def _parse_compliance_javascript(raw: Any, *, frontend: str) -> ComplianceJavascriptConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("compliance.javascript must be a mapping")
+    cwd = _optional_str(raw, "cwd")
+    if cwd:
+        cwd = _validate_rel_path(cwd, field="compliance.javascript.cwd")
+    lockfile = _optional_str(raw, "lockfile") or "pnpm-lock.yaml"
+    production_only = _optional_bool(raw, "production_only", default=True)
+    return ComplianceJavascriptConfig(
+        cwd=cwd or frontend,
+        lockfile=lockfile,
+        production_only=production_only,
+    )
+
+
+def _parse_compliance(raw: Any, *, paths: PathsConfig) -> ComplianceConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("compliance must be a mapping")
+    project_license = _require_str(raw, "project_license", section="compliance")
+    license_files = _parse_string_list(raw.get("license_files"), field="compliance.license_files")
+    if not license_files:
+        license_files = (f"{paths.frontend}/LICENSE",)
+    license_files = tuple(
+        _validate_rel_path(rel, field="compliance.license_files") for rel in license_files
+    )
+    forbidden = _parse_string_list(raw.get("forbidden_spdx"), field="compliance.forbidden_spdx")
+    warn = _parse_string_list(raw.get("warn_spdx"), field="compliance.warn_spdx")
+    outputs_raw = raw.get("outputs")
+    outputs = (
+        _parse_compliance_outputs(outputs_raw)
+        if outputs_raw is not None
+        else ComplianceOutputsConfig(
+            sbom_dir="compliance/sbom",
+            notices="compliance/THIRD_PARTY_NOTICES.md",
+        )
+    )
+    javascript_raw = raw.get("javascript")
+    javascript = (
+        _parse_compliance_javascript(javascript_raw, frontend=paths.frontend)
+        if "javascript" in raw
+        else None
+    )
+    return ComplianceConfig(
+        project_license=project_license,
+        license_files=license_files,
+        python=_parse_compliance_python(raw.get("python")),
+        javascript=javascript,
+        bundled_assets=_parse_bundled_assets(raw.get("bundled_assets")),
+        forbidden_spdx=forbidden or DEFAULT_FORBIDDEN_SPDX,
+        warn_spdx=warn or DEFAULT_WARN_SPDX,
+        allow_strong_copyleft=_optional_bool(raw, "allow_strong_copyleft", default=False),
+        outputs=outputs,
+    )
+
+
+def _infer_compliance_config(
+    paths: PathsConfig,
+    *,
+    lockfile: str,
+) -> ComplianceConfig | None:
+    """Minimal inferred config when ``compliance:`` is omitted (JS-only)."""
+    return ComplianceConfig(
+        project_license="UNKNOWN",
+        license_files=(),
+        python=None,
+        javascript=ComplianceJavascriptConfig(
+            cwd=paths.frontend,
+            lockfile=lockfile,
+            production_only=True,
+        ),
+        bundled_assets=(),
+        forbidden_spdx=DEFAULT_FORBIDDEN_SPDX,
+        warn_spdx=DEFAULT_WARN_SPDX,
+        allow_strong_copyleft=False,
+        outputs=ComplianceOutputsConfig(
+            sbom_dir="compliance/sbom",
+            notices="compliance/THIRD_PARTY_NOTICES.md",
+        ),
+    )
+
+
+def resolve_compliance_config(config: ProjectConfig) -> ComplianceConfig | None:
+    if config.compliance is not None:
+        return config.compliance
+    from catalpa_tooling.compliance.javascript_scan import infer_javascript_lockfile
+
+    frontend_dir = config.repo_root / config.paths.frontend
+    lockfile = infer_javascript_lockfile(frontend_dir)
+    if lockfile is not None:
+        return _infer_compliance_config(config.paths, lockfile=lockfile)
+    return None
+
+
 def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path) -> ProjectConfig:
     project_raw = _require_mapping(data.get("project"), "project")
     paths_raw = _require_mapping(data.get("paths"), "paths")
@@ -1549,6 +1749,7 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
             digitalocean = _parse_digitalocean(do_raw)
     dev = _parse_dev(data.get("dev"), digitalocean=digitalocean)
     paths = _parse_paths(paths_raw)
+    compliance = _parse_compliance(data.get("compliance"), paths=paths) if "compliance" in data else None
     return ProjectConfig(
         meta=meta,
         paths=paths,
@@ -1562,6 +1763,7 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         ),
         dev=dev,
         digitalocean=digitalocean,
+        compliance=compliance,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),
     )

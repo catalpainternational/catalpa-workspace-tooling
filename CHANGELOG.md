@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **`test compliance`** — OSS license scan, CycloneDX SBOM generation, `THIRD_PARTY_NOTICES.md`, bundled-asset license checks, and `--check-only` / `--ci` policy gate. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md), `scripts/cursor-rules/oss-compliance.mdc`, and `scripts/compliance-workflow.yml.template`.
+
 ### Fixed
 
 - `dk <env> host create` explicitly assigns created droplets to the configured DigitalOcean project and verifies project membership before post-create steps; re-running `host create` can recover droplets orphaned in the account default project.

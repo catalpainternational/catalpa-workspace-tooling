@@ -8,6 +8,7 @@ from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.smoke_cli import run_smoke
+from catalpa_tooling.compliance_cli import run_compliance
 from catalpa_tooling.test_parser import build_test_parser
 
 
@@ -76,6 +77,20 @@ def _test_main() -> None:
                 fresh_db=bool(getattr(args, "fresh_db", False)),
                 ci_mode=ci_mode,
                 pytest_args=smoke_extra,
+            )
+        )
+    if args.command == "compliance":
+        import os
+
+        ci_mode = bool(getattr(args, "ci", False)) or (
+            (os.environ.get("CI") or "").strip().lower() in {"1", "true", "yes"}
+        )
+        sys.exit(
+            run_compliance(
+                _config(),
+                check_only=bool(getattr(args, "check_only", False)),
+                sbom_only=bool(getattr(args, "sbom_only", False)),
+                ci_mode=ci_mode,
             )
         )
 
