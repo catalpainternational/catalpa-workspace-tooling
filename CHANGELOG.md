@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.4
+
 ### Added
 
 - **`test compliance`** — OSS license scan, CycloneDX SBOM generation, `THIRD_PARTY_NOTICES.md`, bundled-asset license checks, and `--check-only` / `--ci` policy gate. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md), `scripts/cursor-rules/oss-compliance.mdc`, and `scripts/compliance-workflow.yml.template`.
