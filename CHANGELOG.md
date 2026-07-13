@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **`dk push` image SBOMs** — after each stack image push, Syft generates a CycloneDX SBOM and ORAS attaches it as an OCI referrer. For **web** and **proxy**, the committed app inventory (`compliance/sbom/bom.cdx.json`) is merged in (completeness-first overclaim). **db** is Syft-only. Use `--no-sbom` to skip. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md#image-sboms-dk-push).
+
 ## 0.9.5
 
 ### Changed
