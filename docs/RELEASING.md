@@ -36,7 +36,7 @@ catalpa-workspace-tooling = { git = "https://github.com/catalpainternational/cat
    uv sync
    ```
 
-   Commit the updated `pyproject.toml` and `uv.lock`. Run `uv run test smoke` on local dev stacks after breaking changes.
+   Commit the updated `pyproject.toml` and `uv.lock`. Run `uv run tests smoke` on local dev stacks after breaking changes.
 
 ## Preview branches and pre-releases
 

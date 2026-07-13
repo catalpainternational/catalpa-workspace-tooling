@@ -26,5 +26,20 @@ jobs:
       - name: Install workspace tooling and compliance deps
         run: uv sync --group compliance
 
+      # Match paths.frontend / compliance.javascript.cwd (Bero consumers: bero).
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: bero/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: bero
+        run: pnpm install --frozen-lockfile
+
       - name: Compliance gate
         run: uv run test compliance --check-only --ci

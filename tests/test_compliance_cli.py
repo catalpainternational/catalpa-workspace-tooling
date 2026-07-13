@@ -1,13 +1,16 @@
-"""Unit tests for ``test compliance`` orchestration."""
+"""Unit tests for ``tests compliance`` orchestration."""
 
 from __future__ import annotations
 
 import json
 from unittest.mock import patch
 
+import yaml
+
 from catalpa_tooling.compliance.javascript_scan import (
     parse_pnpm_lockfile_packages,
     parse_yarn_licenses_json,
+    scan_javascript,
 )
 from catalpa_tooling.compliance.notices import render_notices
 from catalpa_tooling.compliance.policy import check_license_policy
@@ -225,6 +228,92 @@ def test_render_notices_python_source_column_when_multiple_lockfiles() -> None:
     assert "## Python" in text
     assert "| Source |" in text
     assert "python:platform/docker/uv.lock" in text
+
+
+def _pnpm_js_config() -> ComplianceJavascriptConfig:
+    return ComplianceJavascriptConfig(
+        cwd="frontend",
+        lockfile="pnpm-lock.yaml",
+        production_only=True,
+    )
+
+
+def _write_pnpm_lockfile(frontend: Path) -> None:
+    frontend.mkdir(parents=True, exist_ok=True)
+    (frontend / "pnpm-lock.yaml").write_text(
+        yaml.safe_dump(_PNPM_FIXTURE),
+        encoding="utf-8",
+    )
+
+
+def test_scan_javascript_requires_pnpm_install(minimal_project) -> None:
+    config = minimal_project
+    frontend = config.repo_root / "frontend"
+    _write_pnpm_lockfile(frontend)
+
+    packages, violations = scan_javascript(config, _pnpm_js_config())
+
+    assert packages == []
+    assert len(violations) == 1
+    assert violations[0].code == "javascript_install_required"
+    assert violations[0].severity == "error"
+    assert "pnpm install" in violations[0].message
+    assert "node_modules" in violations[0].message
+
+
+def test_scan_javascript_resolves_licenses_from_node_modules(minimal_project) -> None:
+    config = minimal_project
+    frontend = config.repo_root / "frontend"
+    _write_pnpm_lockfile(frontend)
+
+    chalk_dir = frontend / "node_modules" / "chalk"
+    chalk_dir.mkdir(parents=True, exist_ok=True)
+    (chalk_dir / "package.json").write_text(
+        json.dumps({"name": "chalk", "version": "2.4.2", "license": "MIT"}),
+        encoding="utf-8",
+    )
+    ansi_dir = frontend / "node_modules" / "ansi-styles"
+    ansi_dir.mkdir(parents=True, exist_ok=True)
+    (ansi_dir / "package.json").write_text(
+        json.dumps({"name": "ansi-styles", "version": "3.2.1", "license": "MIT"}),
+        encoding="utf-8",
+    )
+
+    packages, violations = scan_javascript(config, _pnpm_js_config())
+
+    assert violations == []
+    by_name = {pkg.name: pkg for pkg in packages}
+    assert by_name["chalk"].license_spdx == "MIT"
+    assert by_name["ansi-styles"].license_spdx == "MIT"
+    assert "typescript" not in by_name
+
+
+def test_run_compliance_fails_on_javascript_install_required(minimal_project) -> None:
+    config = minimal_project
+    _seed_repo(config)
+    (config.repo_root / "frontend" / "pnpm-lock.yaml").write_text(
+        yaml.safe_dump(_PNPM_FIXTURE),
+        encoding="utf-8",
+    )
+    compliance = _compliance_config()
+    object.__setattr__(
+        compliance,
+        "javascript",
+        ComplianceJavascriptConfig(
+            cwd="frontend",
+            lockfile="pnpm-lock.yaml",
+            production_only=True,
+        ),
+    )
+    object.__setattr__(config, "compliance", compliance)
+
+    with patch(
+        "catalpa_tooling.compliance_cli.scan_python_lockfiles",
+        return_value=([], []),
+    ):
+        rc = run_compliance(config, check_only=False, ci_mode=True)
+
+    assert rc == 1
 
 
 def test_run_compliance_check_only_missing_artifacts(minimal_project) -> None:

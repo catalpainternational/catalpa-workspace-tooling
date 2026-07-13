@@ -1,4 +1,4 @@
-"""argparse entrypoint for test: pytest (backend) and Vitest (frontend)."""
+"""argparse entrypoint for tests: pytest (backend) and Vitest (frontend)."""
 
 import sys
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 from catalpa_tooling.cli.completion import activate
 from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.smoke_cli import run_smoke
 from catalpa_tooling.compliance_cli import run_compliance
@@ -98,4 +99,7 @@ def _test_main() -> None:
 
 
 def main() -> None:
-    run_cli(_test_main, label="test")
+    entry = Path(sys.argv[0]).name
+    if entry == "test":
+        warn_deprecated("test", "tests")
+    run_cli(_test_main, label="tests")

@@ -24,7 +24,7 @@ _catalpa_direnv_completion() {
     return 0
   fi
   local cmd out
-  for cmd in dk native local dev test scripts setup-shell; do
+  for cmd in dk native local dev tests test scripts setup-shell; do
     out="$("$reg" -s zsh "$cmd" 2>/dev/null)" || continue
     [[ -n "$out" ]] && eval "$out"
   done

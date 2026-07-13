@@ -25,7 +25,7 @@ cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/smoke-tests.mdc .curs
 | [`.cursorignore`](../scripts/cursorignore.template) | Excludes credential and env files from agent indexing |
 | [`secrets-and-agents.mdc`](../scripts/cursor-rules/secrets-and-agents.mdc) | No decrypt/show of SOPS or env secrets |
 | [`remote-environments.mdc`](../scripts/cursor-rules/remote-environments.mdc) | No `dk staging`/`prod`, push, transfer, `clean-images --apply`, or fetch-from-prod without user confirmation |
-| [`smoke-tests.mdc`](../scripts/cursor-rules/smoke-tests.mdc) | Optional — `test smoke` setup and when to run after tooling bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
+| [`smoke-tests.mdc`](../scripts/cursor-rules/smoke-tests.mdc) | Optional — `tests smoke` setup and when to run after tooling bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
 
 Commit all three required paths (and optional `smoke-tests.mdc` for Django compose consumers) to the application repository so all contributors get the same guardrails.
 
@@ -80,5 +80,5 @@ Some projects put low-risk dev defaults in `docker/envs/dev/info.yaml`. OAuth cl
 
 - [README.md](../README.md) — install, `docker/envs/` layout, [GitHub PAT scopes (GHCR)](../README.md#github-pat-scopes-ghcr)
 - [GHCR_CLEANUP.md](GHCR_CLEANUP.md) — `dk clean-images` usage and retention config
-- [SMOKE_TESTS.md](SMOKE_TESTS.md) — `test smoke` contract and authoring tests
+- [SMOKE_TESTS.md](SMOKE_TESTS.md) — `tests smoke` contract and authoring tests
 - Consumer `docker/envs/README.md` — per-env credentials bootstrap

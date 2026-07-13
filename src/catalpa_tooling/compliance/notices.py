@@ -59,7 +59,7 @@ def render_notices(
     lines = [
         "# Third-party notices",
         "",
-        f"Generated for **{project_name}** by `uv run test compliance`.",
+        f"Generated for **{project_name}** by `uv run tests compliance`.",
         f"Project license: **{project_license}**.",
         "",
         "This file lists production dependencies and their declared licenses.",

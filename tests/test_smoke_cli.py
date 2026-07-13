@@ -1,4 +1,4 @@
-"""Unit tests for ``test smoke`` orchestration."""
+"""Unit tests for ``tests smoke`` orchestration."""
 
 from __future__ import annotations
 
@@ -82,6 +82,11 @@ def test_run_smoke_prepares_stack_before_up(minimal_project) -> None:
     with (
         patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
         patch("catalpa_tooling.smoke_cli._prepare_compose_up", return_value=0) as prepare,
+        patch("catalpa_tooling.smoke_cli.sync_local_proxy_for_compose_action", return_value=0) as sync_proxy,
+        patch(
+            "catalpa_tooling.smoke_cli.local_proxy_extra_compose_files",
+            return_value=["/tmp/local-proxy-override.yaml"],
+        ) as extra_files,
         patch("catalpa_tooling.smoke_cli._compose", return_value=type("R", (), {"returncode": 0})()) as compose,
         patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
         patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
@@ -92,4 +97,9 @@ def test_run_smoke_prepares_stack_before_up(minimal_project) -> None:
         rc = run_smoke(config, no_up=False)
         assert rc == 0
         prepare.assert_called_once()
+        sync_proxy.assert_called_once()
+        extra_files.assert_called_once()
         compose.assert_called_once()
+        assert compose.call_args.kwargs.get("extra_compose_files") == [
+            "/tmp/local-proxy-override.yaml"
+        ]

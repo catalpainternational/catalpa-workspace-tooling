@@ -1,4 +1,4 @@
-"""Tests for catalpa_tooling._credentials_to_env (run: ``uv run test workspace`` from repo root)."""
+"""Tests for catalpa_tooling._credentials_to_env (run: ``uv run tests workspace`` from repo root)."""
 
 import unittest
 

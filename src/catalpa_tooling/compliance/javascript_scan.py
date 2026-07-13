@@ -437,6 +437,23 @@ def _needs_license_checker_fallback(packages: list[CompliancePackage]) -> bool:
     return unknown > len(packages) // 2
 
 
+def _javascript_install_hint(kind: str) -> str:
+    if kind == "pnpm":
+        return "pnpm install"
+    if kind == "yarn":
+        return "yarn install"
+    return "npm install"
+
+
+def _javascript_install_missing(cwd: Path, *, kind: str) -> bool:
+    """True when the package manager install tree needed for license lookup is absent."""
+    if kind == "pnpm":
+        return not (cwd / "node_modules").is_dir()
+    if kind == "yarn":
+        return not (cwd / ".yarn" / "cache").is_dir() and not (cwd / "node_modules").is_dir()
+    return not (cwd / "node_modules").is_dir()
+
+
 def scan_javascript(
     config: ProjectConfig,
     js_config: ComplianceJavascriptConfig,
@@ -456,6 +473,24 @@ def scan_javascript(
         return [], violations
 
     kind = javascript_lockfile_kind(js_config.lockfile)
+    if _javascript_install_missing(cwd, kind=kind):
+        hint = _javascript_install_hint(kind)
+        detail = (
+            "missing node_modules"
+            if kind != "yarn"
+            else "missing .yarn/cache and node_modules"
+        )
+        violations.append(
+            ComplianceViolation(
+                code="javascript_install_required",
+                message=(
+                    f"JavaScript dependencies not installed in {cwd_rel} ({detail}). "
+                    f"Run: {hint}"
+                ),
+            )
+        )
+        return [], violations
+
     packages: list[CompliancePackage] = []
     err: str | None = None
 

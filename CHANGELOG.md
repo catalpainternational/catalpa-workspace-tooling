@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- Renamed the ``test`` console script to **``tests``** so it no longer collides with the POSIX shell builtin. ``test`` remains as a deprecated alias that prints a warning. Update invocations to ``uv run tests …`` / ``tests …``.
+
+### Fixed
+
+- **`tests smoke`** — when ``local_proxy`` is enabled, run the same proxy sync + ``ports: !reset []`` compose override as ``dk <env> up``, so smoke no longer fails with ``Bind for 0.0.0.0:80 failed`` while ``catalpa-local-proxy`` owns host 80/443.
+- **`tests smoke`** — HTTPS ``site_origin`` probes trust the local-proxy CA (``~/.config/catalpa/local-proxy/ca-root.crt``), and smoke pytest inherits a combined ``SSL_CERT_FILE`` so urllib checks against ``*.localdev.temp.build`` no longer fail with ``CERTIFICATE_VERIFY_FAILED``.
+
 ## 0.9.4
 
 ### Added

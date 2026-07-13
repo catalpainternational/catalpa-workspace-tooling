@@ -22,7 +22,7 @@ else
   SHELL_FLAG=(-s bash)
 fi
 
-for cmd in native local dev dk test scripts; do
+for cmd in native local dev dk tests test scripts; do
   if command -v "$cmd" >/dev/null 2>&1 || { command -v uv >/dev/null 2>&1 && uv run "$cmd" --help >/dev/null 2>&1; }; then
     eval "$("${REGISTER[@]}" "${SHELL_FLAG[@]}" "$cmd")"
     echo "Registered completion for: $cmd"
