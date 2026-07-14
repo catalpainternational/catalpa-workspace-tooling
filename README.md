@@ -2,6 +2,22 @@
 
 Deploy and development CLIs for Docker-based application stacks. Behavior is driven by a **`tooling.yaml`** manifest at the consumer project root (or via the `TOOLING_CONFIG` environment variable).
 
+## Project usage status
+
+| Project | Version | Status |
+|---------|---------|--------|
+| catalpa_bero | v0.9.5 | Staging |
+| jid | v0.9.5 | Staging |
+| tvi | v0.9.5 | Staging |
+| NCD | v0.9.5 | Staging |
+| pas_indmo | v0.9.5 | Production |
+| partisipa | v0.9.1 | Dev (align_ttoling branch)|
+| bilum | v0.9.1 | Dev (roberto working on it) |
+| ambulancia | v0.9.1 | Staging |
+| catlapa site | | Staging |
+| tempu | | Staging |
+| liga inan | | Dev |
+
 ## Install
 
 From a consumer repository with [uv](https://docs.astral.sh/uv/):
