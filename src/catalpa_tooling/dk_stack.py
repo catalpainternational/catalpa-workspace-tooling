@@ -50,13 +50,21 @@ def stack_build_services(config: ProjectConfig) -> tuple[str, ...]:
     return (config.stack_service("db"), config.stack_service("web"), config.stack_service("proxy"))
 
 
-def registry_refs(config: ProjectConfig, registry: str, tag: str) -> tuple[str, str, str]:
+def registry_role_refs(
+    config: ProjectConfig, registry: str, tag: str
+) -> tuple[tuple[str, str], ...]:
+    """Stack role → registry image ref for web, proxy, and db."""
     r = registry.rstrip("/")
     return (
-        f"{r}/{config.image_component('web')}:{tag}",
-        f"{r}/{config.image_component('proxy')}:{tag}",
-        f"{r}/{config.image_component('db')}:{tag}",
+        ("web", f"{r}/{config.image_component('web')}:{tag}"),
+        ("proxy", f"{r}/{config.image_component('proxy')}:{tag}"),
+        ("db", f"{r}/{config.image_component('db')}:{tag}"),
     )
+
+
+def registry_refs(config: ProjectConfig, registry: str, tag: str) -> tuple[str, str, str]:
+    refs = registry_role_refs(config, registry, tag)
+    return (refs[0][1], refs[1][1], refs[2][1])
 
 
 def vite_build_metadata_env(config: ProjectConfig, release_tag: str) -> dict[str, str]:
@@ -211,14 +219,31 @@ def tag_local_to_registry(
     return 0
 
 
-def push_registry_images(config: ProjectConfig, registry: str, tag: str) -> int:
-    """Push the three registry-tagged images."""
+def push_registry_images(
+    config: ProjectConfig,
+    registry: str,
+    tag: str,
+    *,
+    sbom: bool = True,
+) -> int:
+    """Push the three registry-tagged images; optionally attach CycloneDX SBOMs."""
+    from catalpa_tooling.image_sbom import prepare_and_attach_image_sbom
+
     try:
-        for ref in registry_refs(config, registry, tag):
+        for role, ref in registry_role_refs(config, registry, tag):
             r = run_cmd(["docker", "push", ref], check=False)
             if r.returncode != 0:
                 print(f"docker push failed: {ref}", file=sys.stderr)
                 return r.returncode
+            if sbom:
+                rc = prepare_and_attach_image_sbom(
+                    config,
+                    role=role,
+                    image_ref=ref,
+                    registry=registry,
+                )
+                if rc != 0:
+                    return rc
         return 0
     finally:
         restore_controlling_tty()
