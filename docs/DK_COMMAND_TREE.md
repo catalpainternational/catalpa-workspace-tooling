@@ -74,6 +74,7 @@ dk
     │   └── restore [--dumps] [--dry-run] [pgBackRest args…]
     │
     ├── compose …                  # explicit passthrough (tab completion); e.g. compose up -d
+    ├── docker …                   # passthrough to docker CLI (same DOCKER_HOST/env); e.g. docker volume ls
     └── …                          # implicit compose passthrough (legacy); e.g. up -d
 ```
 
@@ -99,3 +100,5 @@ Special verbs (not plain compose): `info`, `secrets`, `host` / `host create`, `z
 After a successful DB restore (`db restore`, `db pgrestore`, or `transfer` with `--db`), optional `ops.post_db_restore` / `ops.post_metabase_db_restore` hooks in `tooling.yaml` run project follow-ups: `db_psql` (superuser SQL in the `db` container), then `manage_commands` on the web service (default: none). See [README_PGBACKREST.md](../README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
 
 Any other first argument is passed to `docker compose` (e.g. `up`, `down`, `ps`, `logs`, `exec`).
+
+`dk <env> docker …` passes remaining args to the `docker` CLI with the same process env as compose (`DOCKER_HOST`, credentials, `COMPOSE_PROJECT_NAME`, …).
