@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from catalpa_tooling.compose import _compose
+from catalpa_tooling.compose import _compose, run_docker_passthrough
 from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
@@ -401,6 +401,13 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     env_add = resolve_env_with_compose_project(
         compose_file, env_add, config=config, dk_env_name=env_name
     )
+
+    if env_command == "docker":
+        return run_docker_passthrough(
+            list(getattr(ns, "docker_argv", None) or []),
+            env_add=env_add,
+            dry_run=dry_run,
+        )
 
     if env_command == "zabbix":
         env_defaults = _zabbix_env_defaults(info, env_add)

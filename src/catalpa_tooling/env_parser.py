@@ -27,6 +27,21 @@ COMMON_COMPOSE_VERBS: tuple[str, ...] = (
     "start",
 )
 
+COMMON_DOCKER_VERBS: tuple[str, ...] = (
+    "run",
+    "ps",
+    "images",
+    "volume",
+    "network",
+    "exec",
+    "logs",
+    "inspect",
+    "pull",
+    "rm",
+    "stop",
+    "start",
+)
+
 RESERVED_DK_TOP_COMMANDS = frozenset({"build", "push", "transfer", "digoc", "fetch"})
 
 
@@ -216,6 +231,17 @@ def _attach_env_command_parsers(
         help="Docker compose arguments (default when omitted: up -d).",
     )
     attach_choices_completer(compose_verb, COMMON_COMPOSE_VERBS)
+
+    p_docker = cmd_sub.add_parser(
+        "docker",
+        help="Passthrough to docker (same DOCKER_HOST/env as compose; e.g. dk prod docker volume ls).",
+    )
+    docker_verb = p_docker.add_argument(
+        "docker_argv",
+        nargs=argparse.REMAINDER,
+        help="Docker CLI arguments (empty runs bare docker for its own help).",
+    )
+    attach_choices_completer(docker_verb, COMMON_DOCKER_VERBS)
 
 
 def attach_env_subparsers(

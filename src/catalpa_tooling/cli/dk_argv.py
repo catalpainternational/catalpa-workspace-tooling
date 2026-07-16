@@ -22,6 +22,7 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "db",
         "bkp_db",
         "compose",
+        "docker",
     }
 )
 

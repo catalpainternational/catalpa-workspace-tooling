@@ -83,6 +83,23 @@ def test_dk_parser_explicit_compose(tooling_repo: Path, monkeypatch: pytest.Monk
     assert ns.compose_argv == ["logs", "web"]
 
 
+def test_dk_parser_explicit_docker(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    parser = build_dk_parser(config)
+    ns = parser.parse_args(["local", "docker", "volume", "ls"])
+    assert ns.env_command == "docker"
+    assert ns.docker_argv == ["volume", "ls"]
+
+
+def test_is_implicit_compose_does_not_swallow_docker() -> None:
+    from catalpa_tooling.cli.dk_argv import is_implicit_compose_argv
+
+    assert is_implicit_compose_argv(["prod", "docker", "ps"]) is False
+    assert is_implicit_compose_argv(["prod", "compose", "ps"]) is False
+    assert is_implicit_compose_argv(["prod", "ps"]) is True
+
+
 def test_dk_parser_env_flags_after_env_name(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tooling_repo)
     config = load_project_config(tooling_repo)

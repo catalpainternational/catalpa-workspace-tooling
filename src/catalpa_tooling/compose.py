@@ -1,10 +1,12 @@
-"""Low-level docker compose invocation for the dk CLI."""
+"""Low-level docker / docker compose invocation for the dk CLI."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -14,6 +16,53 @@ from catalpa_tooling.tty_restore import restore_controlling_tty
 
 if TYPE_CHECKING:
     from catalpa_tooling.config import ProjectConfig
+
+
+def _docker(
+    *args: str,
+    check: bool = True,
+    env_add: dict[str, str] | None = None,
+    print_cmd: bool = True,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run ``docker`` with args. ``env_add`` is merged into the process env (e.g. ``DOCKER_HOST``)."""
+    cmd = ["docker", *args]
+    run_env = os.environ.copy()
+    if env_add:
+        run_env.update(env_add)
+    run_kwargs: dict[str, object] = {}
+    if capture_output:
+        run_kwargs["capture_output"] = True
+        run_kwargs["text"] = True
+    try:
+        return run_cmd(
+            cmd,
+            check=check,
+            env=run_env,
+            print_cmd=print_cmd,
+            **run_kwargs,
+        )
+    finally:
+        restore_controlling_tty()
+
+
+def run_docker_passthrough(
+    docker_argv: Sequence[str],
+    *,
+    env_add: dict[str, str],
+    dry_run: bool = False,
+) -> int:
+    """Passthrough to ``docker`` with managed deploy env (``dk <env> docker …``)."""
+    args = [a for a in docker_argv if a is not None]
+    # argparse REMAINDER may leave a leading "--" when users write ``docker -- …``.
+    if args and args[0] == "--":
+        args = args[1:]
+    if dry_run:
+        dh = (env_add.get("DOCKER_HOST") or "").strip()
+        print(f"dry-run: docker {' '.join(args)}".rstrip(), file=sys.stderr)
+        print(f"  DOCKER_HOST: {dh or '(default local socket)'}", file=sys.stderr)
+        return 0
+    return _docker(*args, check=False, env_add=env_add).returncode
 
 
 def _compose(
@@ -48,7 +97,6 @@ def _compose(
         )
     finally:
         restore_controlling_tty()
-
 
 def _healthcheck_host_header(
     env_add: dict[str, str] | None,
