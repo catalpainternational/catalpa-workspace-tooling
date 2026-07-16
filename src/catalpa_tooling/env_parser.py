@@ -164,6 +164,57 @@ def _attach_env_command_parsers(
 
     cmd_sub.add_parser("secrets", help="Edit credentials.yaml with SOPS.")
 
+    p_btls = cmd_sub.add_parser(
+        "backup-tls",
+        help="Issue / install / status for private backup S3 TLS (CA + server cert).",
+    )
+    btls_sub = p_btls.add_subparsers(dest="backup_tls_command", required=True)
+    p_issue = btls_sub.add_parser(
+        "issue",
+        help="Generate CA + server cert (openssl) and write SOPS backup-tls.yaml.",
+    )
+    p_issue.add_argument(
+        "--ip",
+        dest="ips",
+        action="append",
+        default=[],
+        metavar="IP",
+        help="IPv4 SAN (repeatable; at least one required).",
+    )
+    p_issue.add_argument(
+        "--dns",
+        dest="dns_names",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="DNS SAN (repeatable).",
+    )
+    p_issue.add_argument(
+        "--days",
+        type=int,
+        default=825,
+        metavar="N",
+        help="Certificate validity in days (default: 825).",
+    )
+    p_issue.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing backup-tls.yaml.",
+    )
+    btls_sub.add_parser(
+        "install",
+        help="Install PEMs: CA+server on backup_docker_host; CA on docker_host.",
+    )
+    p_status = btls_sub.add_parser(
+        "status",
+        help="Show backup-tls.yaml presence and SANs (no secret dump).",
+    )
+    p_status.add_argument(
+        "--check-remote",
+        action="store_true",
+        help="Also probe installed paths on backup_docker_host and docker_host.",
+    )
+
     p_host = cmd_sub.add_parser("host", help="Verify droplet / print or patch docker_host.")
     host_sub = p_host.add_subparsers(dest="host_command", required=False)
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.")

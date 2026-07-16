@@ -13,6 +13,10 @@ import yaml
 from catalpa_tooling.compose import _compose, _wait_for_web_service
 from catalpa_tooling.config import ProjectConfig, resolve_native_db_name
 from catalpa_tooling.env_handlers import _ensure_stack_volumes
+from catalpa_tooling.docker_host_tls import (
+    docker_host_tls_extra_compose_files,
+    merge_extra_compose_files,
+)
 from catalpa_tooling.local_proxy import (
     LocalProxyConfigError,
     local_proxy_extra_compose_files,
@@ -390,14 +394,23 @@ def run_smoke(
             if proxy_rc != 0:
                 print("smoke: local proxy sync failed", file=sys.stderr)
                 return proxy_rc
-            extra_compose_files = local_proxy_extra_compose_files(
-                info,
-                config,
-                env_name,
-                env_add,
-                compose_argv,
+            extra_compose_files = merge_extra_compose_files(
+                local_proxy_extra_compose_files(
+                    info,
+                    config,
+                    env_name,
+                    env_add,
+                    compose_argv,
+                ),
+                docker_host_tls_extra_compose_files(
+                    info,
+                    config,
+                    env_name,
+                    env_add,
+                    compose_argv,
+                ),
             )
-        except LocalProxyConfigError as e:
+        except (LocalProxyConfigError, ValueError) as e:
             print(str(e), file=sys.stderr)
             return 1
         if (
@@ -405,7 +418,7 @@ def run_smoke(
                 compose_file,
                 *compose_argv,
                 env_add=env_add,
-                extra_compose_files=extra_compose_files or None,
+                extra_compose_files=extra_compose_files,
                 check=False,
             ).returncode
             != 0

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- **Private backup TLS** — shared `DOCKER_ADD_HOST` / `BACKUP_CA_FILE` for Compose `db`, pgBackRest S3 one-shots (`repo1-storage-ca-file`), and restic (`AWS_CA_BUNDLE`). `BACKUP_CA_FILE` is inferred as `{ops.config_dir}/tls/backup-ca.crt` when `docker/envs/<env>/backup-tls.yaml` exists (explicit env still wins). New `info.yaml` field `backup_docker_host` and `dk <env> backup-tls {issue,install,status}` (openssl CA+server cert → SOPS `backup-tls.yaml` → install on backup/app hosts). See [README_BACKUP_TLS.md](README_BACKUP_TLS.md).
+- **pgBackRest S3** — optional `pgbr_s3_{write,read}_uri_style` → `repo1-s3-uri-style` and `pgbr_s3_{write,read}_verify_tls` → `repo1-storage-verify-tls` for Garage / MinIO / private-CA endpoints (path-style URLs; TLS verify with mounted CA).
+
 ## 0.9.5
 
 ### Changed

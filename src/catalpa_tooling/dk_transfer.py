@@ -11,6 +11,11 @@ import tempfile
 from pathlib import Path
 
 from catalpa_tooling.compose import _compose
+from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.docker_host_tls import (
+    docker_host_tls_extra_compose_files,
+    merge_extra_compose_files,
+)
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context
 from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
@@ -22,7 +27,6 @@ from catalpa_tooling.pgbackrest_db import (
     run_pg_dump_to_file,
     run_pg_restore,
 )
-from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.remote_deploy import list_deploy_env_names
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.storage_config import volume_bind_kwargs
@@ -167,7 +171,25 @@ def _collect_transfer_preflight_errors(
                     f"transfer: {label} (`{env_name}`): `db` not responding, starting it …",
                     file=sys.stderr,
                 )
-                _compose(ctx.compose_file, "up", "-d", "db", env_add=env_r, check=False)
+                _compose(
+                    ctx.compose_file,
+                    "up",
+                    "-d",
+                    "db",
+                    env_add=env_r,
+                    extra_compose_files=merge_extra_compose_files(
+                        docker_host_tls_extra_compose_files(
+                            {},
+                            config,
+                            env_name,
+                            env_r,
+                            ["up"],
+                        )
+                    )
+                    if config is not None
+                    else None,
+                    check=False,
+                )
                 if not db_service_responds(ctx.compose_file, env_r):
                     errs.append(
                         f"{label} (`{env_name}`): `db` service did not become ready after "

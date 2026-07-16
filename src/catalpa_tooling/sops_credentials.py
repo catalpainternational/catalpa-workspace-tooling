@@ -58,11 +58,11 @@ def sops_set(creds_path: Path, key: str, value: str) -> None:
         raise SopsCommandError(err, returncode=result.returncode)
 
 
-def decrypt_credentials_yaml(creds_path: Path) -> dict:
-    """Decrypt ``credentials.yaml`` and return the mapping (may be empty)."""
+def decrypt_sops_yaml(path: Path) -> dict:
+    """Decrypt a SOPS YAML file and return the mapping (may be empty)."""
     ensure_sops_available()
     result = run_cmd(
-        ["sops", "-d", str(creds_path)],
+        ["sops", "-d", str(path)],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -76,6 +76,37 @@ def decrypt_credentials_yaml(creds_path: Path) -> dict:
     if not isinstance(data, dict):
         return {}
     return data
+
+
+def decrypt_credentials_yaml(creds_path: Path) -> dict:
+    """Decrypt ``credentials.yaml`` and return the mapping (may be empty)."""
+    return decrypt_sops_yaml(creds_path)
+
+
+def write_encrypted_yaml(path: Path, data: dict) -> None:
+    """Write ``data`` as SOPS-encrypted YAML at ``path`` (create or overwrite).
+
+    Writes plaintext briefly then runs ``sops -e -i``. The path must match a
+    ``.sops.yaml`` ``creation_rules`` entry (e.g. ``docker/envs/.*/backup-tls.yaml``).
+    """
+    ensure_sops_available()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plain = yaml.safe_dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    path.write_text(plain, encoding="utf-8")
+    result = run_cmd(
+        ["sops", "-e", "-i", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    if result.returncode != 0:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        err = (result.stderr or result.stdout or "").strip() or f"sops encrypt failed for {path}"
+        raise SopsCommandError(err, returncode=result.returncode)
 
 
 def apply_credential_sets(creds_path: Path, values: dict[str, str]) -> None:

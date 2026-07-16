@@ -84,6 +84,10 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
+from catalpa_tooling.docker_host_tls import (
+    docker_host_tls_extra_compose_files,
+    merge_extra_compose_files,
+)
 from catalpa_tooling.local_proxy import (
     LocalProxyConfigError,
     local_proxy_extra_compose_files,
@@ -270,7 +274,7 @@ def _run_compose_path(
             use_prepulled_registry=use_prepulled_registry,
         )
     try:
-        extra_compose_files = local_proxy_extra_compose_files(
+        proxy_files = local_proxy_extra_compose_files(
             info,
             config,
             env_name,
@@ -280,11 +284,23 @@ def _run_compose_path(
     except LocalProxyConfigError as e:
         print(str(e), file=sys.stderr)
         return 1
+    try:
+        tls_files = docker_host_tls_extra_compose_files(
+            info,
+            config,
+            env_name,
+            env_add,
+            compose_args,
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    extra_compose_files = merge_extra_compose_files(proxy_files, tls_files)
     proc = _compose(
         compose_file,
         *compose_args,
         env_add=env_add,
-        extra_compose_files=extra_compose_files or None,
+        extra_compose_files=extra_compose_files,
         check=False,
     )
     if proc.returncode != 0:
@@ -344,6 +360,11 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if env_command == "secrets":
         return _cmd_env_secrets(creds_path, repo_root, dry_run=dry_run)
+
+    if env_command == "backup-tls":
+        from catalpa_tooling.backup_tls import handle_backup_tls_command
+
+        return handle_backup_tls_command(ns, config, env_name, dry_run=dry_run)
 
     if env_command == "host":
         if getattr(ns, "host_command", None) == "create":
@@ -717,7 +738,9 @@ def _handle_bkp_db(
                 return rc
             return run_configure_verify_online_check(compose_file, env_add)
         if mode == "stanza-create":
-            return run_bkp_db_stanza_create_flow(compose_file, env_add, image=img, config=config)
+            return run_bkp_db_stanza_create_flow(
+                compose_file, env_add, image=img, config=config, dk_env_name=env_name
+            )
         print(f"Unknown bkp_db configure mode: {mode!r}", file=sys.stderr)
         return 1
 

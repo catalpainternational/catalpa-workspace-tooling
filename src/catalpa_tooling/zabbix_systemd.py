@@ -648,6 +648,21 @@ def _restic_snapshots_userparameter_command(env: dict[str, str]) -> str:
     parts: list[str] = [chroot_prefix, "run", "--rm"]
     if _env_bool(env, "ZABBIX_RESTIC_DOCKER_PLATFORM_AMD64", default=True):
         parts.extend(["--platform", "linux/amd64"])
+    from catalpa_tooling.docker_host_tls import (
+        BACKUP_CA_CONTAINER_PATH,
+        backup_ca_host_path,
+        parse_docker_add_hosts,
+    )
+
+    try:
+        for name, ip in parse_docker_add_hosts(env):
+            parts.extend(["--add-host", shlex.quote(f"{name}:{ip}")])
+        ca = backup_ca_host_path(env)
+    except ValueError:
+        ca = None
+    if ca:
+        parts.extend(["-v", shlex.quote(f"{ca}:{BACKUP_CA_CONTAINER_PATH}:ro")])
+        parts.extend(["-e", shlex.quote(f"AWS_CA_BUNDLE={BACKUP_CA_CONTAINER_PATH}")])
     parts.extend(["--env-file", shlex.quote(env_file), shlex.quote(image), "--json", "snapshots"])
     return " ".join(parts)
 

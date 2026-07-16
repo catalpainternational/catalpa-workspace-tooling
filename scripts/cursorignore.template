@@ -10,6 +10,7 @@
 
 # Secrets and local env — keep out of agent context (SOPS ciphertext still safer omitted).
 docker/envs/**/credentials.yaml
+docker/envs/**/backup-tls.yaml
 docker/envs/**/*credentials.plain.yaml
 .env
 .env.local
