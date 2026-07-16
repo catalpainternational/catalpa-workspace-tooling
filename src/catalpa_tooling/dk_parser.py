@@ -55,7 +55,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
 
     p_push = sub.add_parser(
         "push",
-        help="Build for linux/amd64 and push images to the registry.",
+        help="Build for linux/amd64, push images, and attach CycloneDX SBOMs.",
     )
     p_push.add_argument("--registry", default=None, help="Override registry base.")
     p_push.add_argument("--tag", default=None, help="Override image tag.")
@@ -64,6 +64,11 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         default=None,
         metavar="OWNER/REPO",
         help="Override GitHub repo for org.opencontainers.image.source.",
+    )
+    p_push.add_argument(
+        "--no-sbom",
+        action="store_true",
+        help="Skip Syft scan and ORAS SBOM attach after push.",
     )
 
     p_clean = sub.add_parser(

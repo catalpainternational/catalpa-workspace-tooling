@@ -6,6 +6,11 @@
 
 - **Closed-DC Garage (`dc-backup`)** — `dk <env> dc-backup tls|bootstrap|install|status|provision`: private CA TLS (`dc-backup-tls.yaml`, inferred `DC_BACKUP_CA_FILE`), Garage rpc/admin secrets (`dc-backup.yaml`), Garage+Caddy compose/mounts on `dc_backup_docker_host`, and `provision` to create bucket/key plus `pgbr_s3_write_*` / `restic_write_*` (or `--print-only`). Command next-step hints point at `provision` / backups; Spaces auto-provision notes Garage when `dc_backup_docker_host` is set. Shared `DOCKER_ADD_HOST` + CA mount for Compose `db`, pgBackRest (`repo1-storage-ca-file`), and restic (`AWS_CA_BUNDLE`). See [README_DC_BACKUP.md](README_DC_BACKUP.md).
 - **pgBackRest S3** — optional `pgbr_s3_{write,read}_uri_style` → `repo1-s3-uri-style` and `pgbr_s3_{write,read}_verify_tls` → `repo1-storage-verify-tls` for Garage / MinIO / private-CA endpoints (path-style URLs; TLS verify with mounted CA).
+- **`dk push` image SBOMs** — after each stack image push, Syft generates a CycloneDX SBOM and ORAS attaches it as an OCI referrer. For **web** and **proxy**, the committed app inventory (`compliance/sbom/bom.cdx.json`) is merged in (completeness-first overclaim). **db** is Syft-only. Use `--no-sbom` to skip. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md#image-sboms-dk-push).
+
+### Fixed
+
+- **`dk push` ORAS attach (dockerized)** — resolve GHCR/registry credentials on the host and mount an inline Docker auth config into the ORAS container, so macOS `credsStore: osxkeychain` no longer fails with `docker-credential-osxkeychain: executable file not found`.
 
 ## 0.9.5
 

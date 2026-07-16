@@ -4,7 +4,7 @@ Minimal tree for naming review. Environment names (`<env>`) come from `docker/en
 
 ```
 dk
-├── push                           # build and push images tagged from git describe
+├── push                           # build, push, attach CycloneDX SBOMs (--no-sbom to skip)
 ├── build [SERVICE …]              # build images tagged from git describe
 ├── clean-images [--apply]         # remove old GHCR package versions (dry-run default)
 ├── transfer SRC DST               # transfer db and media from one environemnt to another
@@ -83,7 +83,7 @@ dk
 | Command | Role |
 |---------|------|
 | `build` | Build compose stack images locally |
-| `push` | Build for `linux/amd64` and push to registry |
+| `push` | Build for `linux/amd64`, push to registry, attach CycloneDX SBOMs (`--no-sbom` to skip) |
 | `clean-images` | Remove old GHCR package versions (dry-run default; `--apply` to delete) |
 | `transfer` | Copy Postgres + `django_media` between two envs |
 | `digoc` | DigitalOcean helpers (wraps `doctl`) |

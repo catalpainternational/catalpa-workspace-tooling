@@ -42,4 +42,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Compliance gate
-        run: uv run test compliance --check-only --ci
+        run: uv run tests compliance --check-only --ci
+
+# Tag-release image publishes (consumer push-images.yml) should also run this gate
+# before `uv run dk push`, so web/proxy can merge compliance/sbom/bom.cdx.json.

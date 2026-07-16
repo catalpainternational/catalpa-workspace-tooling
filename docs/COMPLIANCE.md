@@ -151,6 +151,32 @@ Warn-tier packages should be tracked in project-specific docs (e.g. a flagged-de
 
 Regenerate after dependency bumps; CI `--check-only` fails if committed files drift.
 
+## Image SBOMs (`dk push`)
+
+Committed files under `compliance/sbom/` are the **app / lockfile** inventory (license gate). Separately, `uv run dk push` attaches a **per-image** CycloneDX OCI referrer to each stack digest:
+
+| Stack role | Attached document |
+|------------|-------------------|
+| **web**, **proxy** | Syft scan of the image **∪** `compliance/sbom/bom.cdx.json` |
+| **db** | Syft scan only (OS / apt packages such as `pgbackrest`; no app Python/JS claims) |
+
+**Policy:** for app-facing images, prefer completeness over precise package placement (web/proxy may overclaim JS on django and Python on caddy). Underclaiming app inventory on those digests is not acceptable. The db image deliberately omits the app bom.
+
+Requires Syft and ORAS on `PATH`, or Docker to run pinned `anchore/syft` / `ghcr.io/oras-project/oras` images. When `compliance:` is configured, `bom.cdx.json` must exist before push (run `uv run tests compliance` first). Skip with `dk push --no-sbom`.
+
+Inspect after push:
+
+```bash
+oras discover <registry>/<component>@sha256:<digest>
+```
+
+Tag-release CI should gate then publish:
+
+```bash
+uv run tests compliance --check-only --ci
+uv run dk push --tag "$TAG"
+```
+
 ## CI (optional)
 
 Copy [`scripts/compliance-workflow.yml.template`](../scripts/compliance-workflow.yml.template) to `.github/workflows/compliance.yml` in the consumer repo. Adjust branch names and submodule checkout (PAT) for private submodules.
