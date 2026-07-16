@@ -266,7 +266,7 @@ def cmd_dc_backup_tls_issue(
     )
     print(
         f"Next: `dk {env_name} dc-backup tls install`, then "
-        f"`dk {env_name} dc-backup bootstrap` / `install --up`.",
+        f"`dk {env_name} dc-backup bootstrap`, `install --up`, and `provision`.",
         flush=True,
     )
     return 0
@@ -357,7 +357,8 @@ def cmd_dc_backup_tls_install(
     print(
         f"Installed. {DC_BACKUP_CA_FILE_ENV} defaults to {ca_path} while "
         f"{DC_BACKUP_TLS_FILENAME} exists (override in info.yaml env: if needed). "
-        "Recreate the db service after install.",
+        f"Next: `dk {env_name} dc-backup bootstrap` (if needed), "
+        f"`install --up`, then `provision`. Recreate the db service after CA install.",
         flush=True,
     )
     return 0

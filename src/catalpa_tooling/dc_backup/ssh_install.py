@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from catalpa_tooling.run_cmd import run as run_cmd
+
+
+@dataclass(frozen=True)
+class RemoteResult:
+    """Captured stdout/stderr from a remote SSH command."""
+
+    returncode: int
+    stdout: str
+    stderr: str
 
 
 def install_files_via_ssh(
@@ -120,3 +130,27 @@ def remote_run(ssh_target: str, remote_cmd: str, *, dry_run: bool = False) -> in
         print_cmd=True,
     )
     return int(r.returncode or 0)
+
+
+def remote_run_capture(
+    ssh_target: str,
+    remote_cmd: str,
+    *,
+    dry_run: bool = False,
+) -> RemoteResult:
+    """Run ``remote_cmd`` on ``ssh_target`` and return stdout/stderr."""
+    if dry_run:
+        print(f"[dry-run] ssh {ssh_target} {remote_cmd!r}", flush=True)
+        return RemoteResult(0, "", "")
+    r = run_cmd(
+        ["ssh", "-o", "BatchMode=yes", ssh_target, remote_cmd],
+        check=False,
+        print_cmd=True,
+        capture_output=True,
+        text=True,
+    )
+    return RemoteResult(
+        int(r.returncode or 0),
+        r.stdout or "",
+        r.stderr or "",
+    )

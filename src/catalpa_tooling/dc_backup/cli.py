@@ -6,6 +6,7 @@ import sys
 from typing import Any
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.dc_backup.provision import cmd_dc_backup_provision
 from catalpa_tooling.dc_backup.stack import (
     cmd_dc_backup_bootstrap,
     cmd_dc_backup_install,
@@ -74,9 +75,24 @@ def handle_dc_backup_command(
             env_name,
             check_remote=bool(getattr(ns, "check_remote", False)),
         )
+    if sub == "provision":
+        return cmd_dc_backup_provision(
+            config,
+            env_name,
+            dry_run=dry_run or bool(getattr(ns, "dc_backup_provision_dry_run", False)),
+            yes=bool(getattr(ns, "yes", False)),
+            print_only=bool(getattr(ns, "print_only", False)),
+            force=bool(getattr(ns, "force", False)),
+            bucket=getattr(ns, "bucket", None),
+            key_name=getattr(ns, "key_name", None),
+            endpoint=getattr(ns, "endpoint", None),
+            pgbr_repo_path=getattr(ns, "pgbr_repo_path", None),
+            restic_prefix=getattr(ns, "restic_prefix", None),
+            capacity=getattr(ns, "capacity", None),
+        )
 
     print(
-        "usage: dk <env> dc-backup {tls,bootstrap,install,status}",
+        "usage: dk <env> dc-backup {tls,bootstrap,install,status,provision}",
         file=sys.stderr,
     )
     return 2

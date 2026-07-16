@@ -69,6 +69,9 @@ dk prod dc-backup tls status [--check-remote]
 dk prod dc-backup bootstrap [--force]
 dk prod dc-backup install [--up] [--dry-run]
 dk prod dc-backup status [--check-remote]
+dk prod dc-backup provision [--print-only] [--force] [--yes] [--dry-run]
+  [--bucket NAME] [--key-name NAME] [--endpoint HOST]
+  [--pgbr-repo-path PATH] [--restic-prefix PATH] [--capacity SIZE]
 ```
 
 ## Consumer flow
@@ -76,20 +79,11 @@ dk prod dc-backup status [--check-remote]
 1. Set `dc_backup_docker_host` + app `docker_host`.
 2. `dk <env> dc-backup tls issue --ip …` → `tls install`
 3. `dk <env> dc-backup bootstrap` → `install --up`
-4. Once on the backup host (document for ops):
+4. `dk <env> dc-backup provision` — creates layout (if needed), bucket, key, and prints a YAML fragment; by default also `sops set`s `pgbr_s3_write_*` / `restic_write_*` after confirm (or `--yes`). Use `--print-only` to skip the SOPS write and paste via `dk <env> secrets`. Use `--dry-run` to preview without Garage or SOPS changes. Re-running is a no-op when WRITE credentials already exist; `--force` overwrites (required when replacing Spaces).
+5. Recreate `db`; run `dk <env> db backup` / `files backup`.
 
-```bash
-alias garage='docker exec garage /garage'
-garage status
-# garage layout assign -z tic -c 300G <node_id_prefix>
-# garage layout apply --version 1
-garage bucket create indmo-backups
-garage key create indmo-prod-backup
-garage bucket allow --read --write --owner indmo-backups --key indmo-prod-backup
-garage key info indmo-prod-backup
-```
+Unlike DigitalOcean Spaces, **`dk … db` / `files` do not auto-call `dc-backup provision`** — create Garage bucket/key credentials explicitly with step 4.
 
-5. Put write keys in `credentials.yaml` (path-style, `verify_tls: y`, IP or hostname endpoint).
-6. Recreate `db`; run `db` / `files` backups.
+Defaults: bucket `{project}-backups`, key `{project}-{env}-backup`, path-style + `verify_tls: y`, endpoint from TLS SAN IP (or `--endpoint`).
 
 Endpoint can be a **bare IP** (IP SAN on the cert) or a **hostname** (`dc-backup tls issue --dns …` plus `DOCKER_ADD_HOST=name:ip` in `info.yaml` `env:` so containers resolve it without DC DNS). Host `/etc/hosts` alone is not enough inside Docker.

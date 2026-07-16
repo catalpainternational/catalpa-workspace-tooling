@@ -266,7 +266,9 @@ def cmd_dc_backup_install(
         )
 
     print(
-        "After first start, create bucket/key/layout once (see README_DC_BACKUP.md).",
+        f"After first start, run `dk {env_name} dc-backup provision` "
+        f"to create the Garage bucket/key and WRITE credentials "
+        f"(not done automatically by `dk {env_name} db` / `files`).",
         flush=True,
     )
     return 0
@@ -298,6 +300,13 @@ def cmd_dc_backup_status(
     info = _read_info(config, env_name)
     backup_host = str(info.get(INFO_DC_BACKUP_DOCKER_HOST, "") or "").strip()
     print(f"  {INFO_DC_BACKUP_DOCKER_HOST}: {backup_host or '(unset)'}", flush=True)
+
+    if path.is_file() and backup_host:
+        print(
+            f"Hint: bucket/key + WRITE credentials → `dk {env_name} dc-backup provision` "
+            f"(then recreate `db` and run backups; db/files do not auto-provision Garage).",
+            flush=True,
+        )
 
     if not check_remote or not backup_host:
         return 0 if tls_ok or path.is_file() else 1

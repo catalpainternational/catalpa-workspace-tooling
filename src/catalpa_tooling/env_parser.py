@@ -248,6 +248,57 @@ def _attach_env_command_parsers(
         help="Probe compose/toml/Caddy/TLS paths on dc_backup_docker_host.",
     )
 
+    p_provision = dc_sub.add_parser(
+        "provision",
+        help="Create Garage bucket/key and write pgbr_s3_write_* / restic_write_* credentials.",
+    )
+    p_provision.add_argument(
+        "--print-only",
+        action="store_true",
+        help="Create/print credentials YAML fragment; do not write SOPS credentials.yaml.",
+    )
+    p_provision.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing WRITE credentials (required to replace Spaces with Garage).",
+    )
+    p_provision.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dc_backup_provision_dry_run",
+        help="Print what would run / which keys would be set; no Garage mutations, no SOPS write.",
+    )
+    p_provision.add_argument(
+        "--bucket",
+        metavar="NAME",
+        help="Garage bucket name (default: {project}-backups).",
+    )
+    p_provision.add_argument(
+        "--key-name",
+        metavar="NAME",
+        help="Garage key name (default: {project}-{env}-backup).",
+    )
+    p_provision.add_argument(
+        "--endpoint",
+        metavar="HOST",
+        help="S3 endpoint host/IP (default: TLS SAN IP, else backup host).",
+    )
+    p_provision.add_argument(
+        "--pgbr-repo-path",
+        metavar="PATH",
+        help="pgBackRest repo path (default: /{project}/{env}/pgbackrest).",
+    )
+    p_provision.add_argument(
+        "--restic-prefix",
+        metavar="PATH",
+        help="restic path prefix inside the bucket (default: {project}-{env}-media).",
+    )
+    p_provision.add_argument(
+        "--capacity",
+        metavar="SIZE",
+        help="Garage layout capacity if no role assigned yet (default: 300G).",
+    )
+
     p_host = cmd_sub.add_parser("host", help="Verify droplet / print or patch docker_host.")
     host_sub = p_host.add_subparsers(dest="host_command", required=False)
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.")
