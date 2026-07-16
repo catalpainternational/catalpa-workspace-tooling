@@ -36,7 +36,7 @@ dk
 └── <env>  [--dry-run] [-y] [--tag TAG]  …
     ├── info [-e]                    # see or edit env info
     ├── secrets                      # edit env encrypted credentials via SOPS
-    ├── backup-tls                   # issue / install / status private backup S3 TLS
+    ├── dc-backup                    # TLS + Garage/Caddy on dc_backup_docker_host
     ├── host [--write]               # verify and show droplet info
     │   └── create [--size …] …      # create droplet
     ├── zabbix                       # devops monitoring
@@ -93,7 +93,7 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `backup-tls`, `host` / `host create`, `zabbix`, `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
+Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create`, `zabbix`, `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
 
 `db` / `files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 

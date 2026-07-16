@@ -84,8 +84,8 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
-from catalpa_tooling.docker_host_tls import (
-    docker_host_tls_extra_compose_files,
+from catalpa_tooling.dc_backup.hosts import (
+    dc_backup_tls_extra_compose_files,
     merge_extra_compose_files,
 )
 from catalpa_tooling.local_proxy import (
@@ -285,7 +285,7 @@ def _run_compose_path(
         print(str(e), file=sys.stderr)
         return 1
     try:
-        tls_files = docker_host_tls_extra_compose_files(
+        tls_files = dc_backup_tls_extra_compose_files(
             info,
             config,
             env_name,
@@ -361,10 +361,10 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if env_command == "secrets":
         return _cmd_env_secrets(creds_path, repo_root, dry_run=dry_run)
 
-    if env_command == "backup-tls":
-        from catalpa_tooling.backup_tls import handle_backup_tls_command
+    if env_command == "dc-backup":
+        from catalpa_tooling.dc_backup.cli import handle_dc_backup_command
 
-        return handle_backup_tls_command(ns, config, env_name, dry_run=dry_run)
+        return handle_dc_backup_command(ns, config, env_name, dry_run=dry_run)
 
     if env_command == "host":
         if getattr(ns, "host_command", None) == "create":

@@ -21,7 +21,7 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "bkp_files",
         "db",
         "bkp_db",
-        "backup-tls",
+        "dc-backup",
         "compose",
     }
 )

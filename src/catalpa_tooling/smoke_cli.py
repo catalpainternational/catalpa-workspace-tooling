@@ -13,8 +13,8 @@ import yaml
 from catalpa_tooling.compose import _compose, _wait_for_web_service
 from catalpa_tooling.config import ProjectConfig, resolve_native_db_name
 from catalpa_tooling.env_handlers import _ensure_stack_volumes
-from catalpa_tooling.docker_host_tls import (
-    docker_host_tls_extra_compose_files,
+from catalpa_tooling.dc_backup.hosts import (
+    dc_backup_tls_extra_compose_files,
     merge_extra_compose_files,
 )
 from catalpa_tooling.local_proxy import (
@@ -402,7 +402,7 @@ def run_smoke(
                     env_add,
                     compose_argv,
                 ),
-                docker_host_tls_extra_compose_files(
+                dc_backup_tls_extra_compose_files(
                     info,
                     config,
                     env_name,

@@ -404,7 +404,7 @@ def _docker_run_restic(
         "--platform",
         "linux/amd64",
     ]
-    from catalpa_tooling.docker_host_tls import (
+    from catalpa_tooling.dc_backup.hosts import (
         docker_add_host_args,
         docker_ca_env_flags_for_restic,
         docker_ca_volume_args,

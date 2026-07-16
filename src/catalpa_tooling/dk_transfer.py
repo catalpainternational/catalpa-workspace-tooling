@@ -12,8 +12,8 @@ from pathlib import Path
 
 from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.docker_host_tls import (
-    docker_host_tls_extra_compose_files,
+from catalpa_tooling.dc_backup.hosts import (
+    dc_backup_tls_extra_compose_files,
     merge_extra_compose_files,
 )
 from catalpa_tooling.run_cmd import run as run_cmd
@@ -178,7 +178,7 @@ def _collect_transfer_preflight_errors(
                     "db",
                     env_add=env_r,
                     extra_compose_files=merge_extra_compose_files(
-                        docker_host_tls_extra_compose_files(
+                        dc_backup_tls_extra_compose_files(
                             {},
                             config,
                             env_name,

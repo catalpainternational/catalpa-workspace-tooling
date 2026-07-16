@@ -164,14 +164,17 @@ def _attach_env_command_parsers(
 
     cmd_sub.add_parser("secrets", help="Edit credentials.yaml with SOPS.")
 
-    p_btls = cmd_sub.add_parser(
-        "backup-tls",
-        help="Issue / install / status for private backup S3 TLS (CA + server cert).",
+    p_dc = cmd_sub.add_parser(
+        "dc-backup",
+        help="Closed-DC Garage backup: TLS certs and Garage+Caddy stack.",
     )
-    btls_sub = p_btls.add_subparsers(dest="backup_tls_command", required=True)
-    p_issue = btls_sub.add_parser(
+    dc_sub = p_dc.add_subparsers(dest="dc_backup_command", required=True)
+
+    p_tls = dc_sub.add_parser("tls", help="Issue / install / status for private CA + server cert.")
+    tls_sub = p_tls.add_subparsers(dest="dc_backup_tls_command", required=True)
+    p_issue = tls_sub.add_parser(
         "issue",
-        help="Generate CA + server cert (openssl) and write SOPS backup-tls.yaml.",
+        help="Generate CA + server cert (openssl) and write SOPS dc-backup-tls.yaml.",
     )
     p_issue.add_argument(
         "--ip",
@@ -199,20 +202,50 @@ def _attach_env_command_parsers(
     p_issue.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite existing backup-tls.yaml.",
+        help="Overwrite existing dc-backup-tls.yaml.",
     )
-    btls_sub.add_parser(
+    tls_sub.add_parser(
         "install",
-        help="Install PEMs: CA+server on backup_docker_host; CA on docker_host.",
+        help="Install PEMs: CA+server on dc_backup_docker_host; CA on docker_host.",
     )
-    p_status = btls_sub.add_parser(
+    p_tls_status = tls_sub.add_parser(
         "status",
-        help="Show backup-tls.yaml presence and SANs (no secret dump).",
+        help="Show dc-backup-tls.yaml presence and SANs (no secret dump).",
     )
-    p_status.add_argument(
+    p_tls_status.add_argument(
         "--check-remote",
         action="store_true",
-        help="Also probe installed paths on backup_docker_host and docker_host.",
+        help="Also probe installed paths on dc_backup_docker_host and docker_host.",
+    )
+
+    p_boot = dc_sub.add_parser(
+        "bootstrap",
+        help="Generate Garage rpc/admin secrets into SOPS dc-backup.yaml.",
+    )
+    p_boot.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing dc-backup.yaml.",
+    )
+
+    p_install = dc_sub.add_parser(
+        "install",
+        help="Install Garage+Caddy compose, toml, and Caddyfile on dc_backup_docker_host.",
+    )
+    p_install.add_argument(
+        "--up",
+        action="store_true",
+        help="Run docker compose up -d after installing files.",
+    )
+
+    p_dc_status = dc_sub.add_parser(
+        "status",
+        help="Show dc-backup.yaml presence and optional remote stack paths.",
+    )
+    p_dc_status.add_argument(
+        "--check-remote",
+        action="store_true",
+        help="Probe compose/toml/Caddy/TLS paths on dc_backup_docker_host.",
     )
 
     p_host = cmd_sub.add_parser("host", help="Verify droplet / print or patch docker_host.")

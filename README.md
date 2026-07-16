@@ -321,7 +321,7 @@ Topic guides (run `dk <env> …` from the application repo root):
 |-------|--------|
 | pgBackRest (S3, `bkp_db`, WAL archive) | [README_PGBACKREST.md](README_PGBACKREST.md) |
 | Restic (media files, `bkp_files`) | [README_RESTIC.md](README_RESTIC.md) |
-| Private backup TLS (CA, `backup-tls`) | [README_BACKUP_TLS.md](README_BACKUP_TLS.md) |
+| Closed-DC Garage backup (`dc-backup`) | [README_DC_BACKUP.md](README_DC_BACKUP.md) |
 | Systemd timers on deploy hosts | [README_SYSTEMD.md](README_SYSTEMD.md) |
 | Zabbix Agent 2 | [ZABBIX_README.md](ZABBIX_README.md) |
 
@@ -389,7 +389,7 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 | [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) | Typer migration audit and low-risk refactor targets |
 | [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
 | [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |
-| [README_BACKUP_TLS.md](README_BACKUP_TLS.md) | `DOCKER_ADD_HOST` / `BACKUP_CA_FILE`, `backup_docker_host`, `dk backup-tls` |
+| [README_DC_BACKUP.md](README_DC_BACKUP.md) | `DOCKER_ADD_HOST` / `DC_BACKUP_CA_FILE`, `dc_backup_docker_host`, `dk dc-backup` |
 | [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
 | [ZABBIX_README.md](ZABBIX_README.md) | `dk <env> zabbix`, UserParameters |
 

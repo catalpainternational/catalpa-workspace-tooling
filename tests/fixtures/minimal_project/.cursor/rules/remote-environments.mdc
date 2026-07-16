@@ -20,7 +20,7 @@ Read-only or local-only development:
 Do **not** run these (or equivalent) until the user clearly confirms the **target env**, **host**, and **action** in the current message:
 
 - `uv run dk staging …`, `uv run dk prod …`, or any `dk <env>` where that env’s `info.yaml` sets `docker_host`
-- Mutating remote compose: `up`, `down`, `restart`, `pull`, `build`, `rm`, `exec`, `run`, `manage`, `db`, `files`, `storage`, `host`, `secrets`, `backup-tls`, `install-systemd`, `zabbix`, `digoc`
+- Mutating remote compose: `up`, `down`, `restart`, `pull`, `build`, `rm`, `exec`, `run`, `manage`, `db`, `files`, `storage`, `host`, `secrets`, `dc-backup`, `install-systemd`, `zabbix`, `digoc`
 - `uv run dk push`, `uv run dk transfer`
 - `uv run native fetch db`, `uv run native fetch media` (SSH/rsync to production or staging hosts)
 - Direct `ssh` to deploy hosts, or `docker …` with `DOCKER_HOST=ssh://…`

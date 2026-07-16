@@ -42,7 +42,8 @@ Check `docker/envs/<env>/info.yaml` for `docker_host`. Custom env names follow t
 ## Secrets: what `.cursorignore` excludes
 
 - `docker/envs/**/credentials.yaml` (including SOPS ciphertext)
-- `docker/envs/**/backup-tls.yaml` (private backup CA / server PEMs)
+- `docker/envs/**/dc-backup-tls.yaml` (private backup CA / server PEMs)
+- `docker/envs/**/dc-backup.yaml` (Garage rpc/admin secrets)
 - `docker/envs/**/*credentials.plain.yaml`
 - `.env`, `.env.local`, and other `.env.*` (except `.env.example`)
 

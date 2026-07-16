@@ -6,7 +6,7 @@ Database backups and WAL archiving via [pgBackRest](https://pgbackrest.org) with
 
 - [README_SYSTEMD.md](README_SYSTEMD.md) — install `*-pgbackrest-backup-*.timer` on the deploy host
 - [ZABBIX_README.md](ZABBIX_README.md) — `pgbackrest.info` UserParameter for monitoring
-- [README_BACKUP_TLS.md](README_BACKUP_TLS.md) — private CA mount, `DOCKER_ADD_HOST`, `dk backup-tls`
+- [README_DC_BACKUP.md](README_DC_BACKUP.md) — private CA mount, `DOCKER_ADD_HOST`, `dk dc-backup`
 - [README.md](README.md) — main tooling overview
 
 ## Credentials per environment
@@ -25,7 +25,7 @@ Edit `docker/envs/<env>/credentials.yaml` (SOPS-encrypted in production). Use **
 | `pgbr_s3_write_stanza` | `PGBR_S3_WRITE_STANZA` | Stanza name (e.g. `main`) |
 | `pgbr_s3_write_endpoint` | `PGBR_S3_WRITE_ENDPOINT` | Optional (Spaces, MinIO, Garage, etc.) |
 | `pgbr_s3_write_uri_style` | `PGBR_S3_WRITE_URI_STYLE` | Optional (`path` or `host`); use `path` for Garage / many MinIO setups |
-| `pgbr_s3_write_verify_tls` | `PGBR_S3_WRITE_VERIFY_TLS` | Optional (`y`/`n`); use `y` with a mounted private CA ([README_BACKUP_TLS.md](README_BACKUP_TLS.md)), or `n` until the CA is trusted |
+| `pgbr_s3_write_verify_tls` | `PGBR_S3_WRITE_VERIFY_TLS` | Optional (`y`/`n`); use `y` with a mounted private CA ([README_DC_BACKUP.md](README_DC_BACKUP.md)), or `n` until the CA is trusted |
 
 All keys except `endpoint`, `uri_style`, and `verify_tls` must be non-empty for WRITE mode. A partial set is treated as “no S3” (local baseline only).
 
@@ -46,7 +46,7 @@ pgbr_s3_write_stanza: main
 # pgbr_db_container: myapp_db_1
 ```
 
-Garage / path-style S3 (private endpoint; prefer IP + private CA — see [README_BACKUP_TLS.md](README_BACKUP_TLS.md)):
+Garage / path-style S3 (private endpoint; prefer IP + private CA — see [README_DC_BACKUP.md](README_DC_BACKUP.md)):
 
 ```yaml
 pgbr_s3_write_bucket: indmo-backups
@@ -60,7 +60,7 @@ pgbr_s3_write_repo_path: /indmo/prod/pgbackrest
 pgbr_s3_write_stanza: main
 ```
 
-Set optional `DOCKER_ADD_HOST` in `info.yaml` `env:` when the S3 endpoint is a hostname (not needed for bare IP). When `backup-tls.yaml` exists, `BACKUP_CA_FILE` defaults to `{ops.config_dir}/tls/backup-ca.crt` so the `db` container and stanza-create runs mount the CA and emit `repo1-storage-ca-file`. Recreate `db` after `backup-tls install`.
+Set optional `DOCKER_ADD_HOST` in `info.yaml` `env:` when the S3 endpoint is a hostname (not needed for bare IP). When `dc-backup-tls.yaml` exists, `DC_BACKUP_CA_FILE` defaults to `{ops.config_dir}/tls/dc-backup-ca.crt` so the `db` container and stanza-create runs mount the CA and emit `repo1-storage-ca-file`. Recreate `db` after `dc-backup install`.
 
 Decrypt locally with your SOPS age key, or:
 

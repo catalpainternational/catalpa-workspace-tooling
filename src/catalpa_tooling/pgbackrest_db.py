@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from catalpa_tooling.config import ProjectConfig, default_pgbackrest_restore_temp_prefix
-from catalpa_tooling.docker_host_tls import compose_dash_f_args
+from catalpa_tooling.dc_backup.hosts import compose_dash_f_args
 from catalpa_tooling.pgbackrest_volume_config import (
     _docker_env_for_remote,
     _pgdata_has_control_file,

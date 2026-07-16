@@ -1,4 +1,4 @@
-"""DOCKER_ADD_HOST / BACKUP_CA_FILE helpers for Compose db and backup docker runs."""
+"""DOCKER_ADD_HOST / DC_BACKUP_CA_FILE helpers for Compose db and backup docker runs."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.local_proxy import local_proxy_data_dir
 
 DOCKER_ADD_HOST_ENV = "DOCKER_ADD_HOST"
-BACKUP_CA_FILE_ENV = "BACKUP_CA_FILE"
+DC_BACKUP_CA_FILE_ENV = "DC_BACKUP_CA_FILE"
 
-# Fixed path inside containers (ro bind-mount from BACKUP_CA_FILE on the host).
-BACKUP_CA_CONTAINER_PATH = "/etc/ssl/backup-ca/ca.crt"
+# Fixed path inside containers (ro bind-mount from DC_BACKUP_CA_FILE on the host).
+DC_BACKUP_CA_CONTAINER_PATH = "/etc/ssl/dc-backup-ca/ca.crt"
 
 _HOST_IP_RE = re.compile(
     r"^(?P<name>[^:\s]+):(?P<ip>(?:\d{1,3}\.){3}\d{1,3})$"
@@ -22,10 +22,7 @@ _HOST_IP_RE = re.compile(
 
 
 def parse_docker_add_hosts(env: dict[str, str]) -> list[tuple[str, str]]:
-    """Parse ``DOCKER_ADD_HOST`` into ``(hostname, ipv4)`` pairs.
-
-    Values are comma- and/or whitespace-separated ``name:ip`` entries.
-    """
+    """Parse ``DOCKER_ADD_HOST`` into ``(hostname, ipv4)`` pairs."""
     raw = (env.get(DOCKER_ADD_HOST_ENV) or "").strip()
     if not raw:
         return []
@@ -53,81 +50,74 @@ def docker_add_host_args(env: dict[str, str]) -> list[str]:
     return args
 
 
-def backup_ca_host_path(env: dict[str, str]) -> str | None:
-    """Absolute host path to the backup CA PEM, or ``None`` if unset."""
-    raw = (env.get(BACKUP_CA_FILE_ENV) or "").strip()
+def dc_backup_ca_host_path(env: dict[str, str]) -> str | None:
+    """Absolute host path to the DC backup CA PEM, or ``None`` if unset."""
+    raw = (env.get(DC_BACKUP_CA_FILE_ENV) or "").strip()
     if not raw:
         return None
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise ValueError(
-            f"{BACKUP_CA_FILE_ENV} must be an absolute path on the deploy host, got {raw!r}"
+            f"{DC_BACKUP_CA_FILE_ENV} must be an absolute path on the deploy host, got {raw!r}"
         )
     return str(path)
 
 
-def apply_inferred_backup_ca_file(
+def apply_inferred_dc_backup_ca_file(
     env: dict[str, str],
     config: ProjectConfig,
     env_name: str,
 ) -> None:
-    """If ``BACKUP_CA_FILE`` is unset and ``backup-tls.yaml`` exists, set the install path.
-
-    Default host path: ``{ops.config_dir}/tls/backup-ca.crt``. Explicit ``BACKUP_CA_FILE`` wins.
-    Mutates ``env`` in place.
-    """
-    if (env.get(BACKUP_CA_FILE_ENV) or "").strip():
+    """If ``DC_BACKUP_CA_FILE`` unset and ``dc-backup-tls.yaml`` exists, set install path."""
+    if (env.get(DC_BACKUP_CA_FILE_ENV) or "").strip():
         return
-    from catalpa_tooling.backup_tls import backup_tls_path, default_backup_ca_file
+    from catalpa_tooling.dc_backup.tls import default_dc_backup_ca_file, dc_backup_tls_path
 
-    if backup_tls_path(config, env_name).is_file():
-        env[BACKUP_CA_FILE_ENV] = default_backup_ca_file(config)
+    if dc_backup_tls_path(config, env_name).is_file():
+        env[DC_BACKUP_CA_FILE_ENV] = default_dc_backup_ca_file(config)
 
 
 def docker_ca_volume_args(env: dict[str, str]) -> list[str]:
-    """``-v host_ca:BACKUP_CA_CONTAINER_PATH:ro`` when ``BACKUP_CA_FILE`` is set."""
-    host = backup_ca_host_path(env)
+    """``-v host_ca:DC_BACKUP_CA_CONTAINER_PATH:ro`` when CA is set."""
+    host = dc_backup_ca_host_path(env)
     if not host:
         return []
-    return ["-v", f"{host}:{BACKUP_CA_CONTAINER_PATH}:ro"]
+    return ["-v", f"{host}:{DC_BACKUP_CA_CONTAINER_PATH}:ro"]
 
 
 def docker_ca_env_flags_for_restic(env: dict[str, str]) -> list[str]:
-    """``-e AWS_CA_BUNDLE=…`` when a backup CA is mounted."""
-    if not backup_ca_host_path(env):
+    """``-e AWS_CA_BUNDLE=…`` when a DC backup CA is mounted."""
+    if not dc_backup_ca_host_path(env):
         return []
-    return ["-e", f"AWS_CA_BUNDLE={BACKUP_CA_CONTAINER_PATH}"]
+    return ["-e", f"AWS_CA_BUNDLE={DC_BACKUP_CA_CONTAINER_PATH}"]
 
 
-def docker_host_tls_override_path(config: ProjectConfig, env_name: str) -> Path:
+def dc_backup_tls_override_path(config: ProjectConfig, env_name: str) -> Path:
     """Path for the ephemeral compose override (alongside local-proxy overrides)."""
     project = re.sub(r"[^a-zA-Z0-9._-]+", "-", config.meta.name.strip()) or "project"
     env = re.sub(r"[^a-zA-Z0-9._-]+", "-", env_name.strip()) or "env"
-    return local_proxy_data_dir() / "overrides" / f"{project}-{env}-backup-tls.yaml"
+    return local_proxy_data_dir() / "overrides" / f"{project}-{env}-dc-backup-tls.yaml"
 
 
-def write_docker_host_tls_override(
+def write_dc_backup_tls_override(
     config: ProjectConfig,
     env_name: str,
     env: dict[str, str],
 ) -> Path | None:
     """Write compose override for ``db`` extra_hosts + CA volume; return path or ``None``."""
-    try:
-        hosts = parse_docker_add_hosts(env)
-        ca_host = backup_ca_host_path(env)
-    except ValueError:
-        raise
+    hosts = parse_docker_add_hosts(env)
+    ca_host = dc_backup_ca_host_path(env)
 
     if not hosts and not ca_host:
         return None
 
     db_service = config.stack.services.db
-    path = docker_host_tls_override_path(config, env_name)
+    path = dc_backup_tls_override_path(config, env_name)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [
         f"# Generated by catalpa-workspace-tooling for dk {env_name} "
-        f"(DOCKER_ADD_HOST / BACKUP_CA_FILE).",
+        f"(DOCKER_ADD_HOST / DC_BACKUP_CA_FILE).",
         "services:",
         f"  {db_service}:",
     ]
@@ -137,31 +127,29 @@ def write_docker_host_tls_override(
             lines.append(f'      - "{name}:{ip}"')
     if ca_host:
         lines.append("    volumes:")
-        lines.append(f'      - "{ca_host}:{BACKUP_CA_CONTAINER_PATH}:ro"')
+        lines.append(f'      - "{ca_host}:{DC_BACKUP_CA_CONTAINER_PATH}:ro"')
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path.resolve()
 
 
-def docker_host_tls_extra_compose_files(
+def dc_backup_tls_extra_compose_files(
     info: dict[str, Any],
     config: ProjectConfig,
     env_name: str,
     env_add: dict[str, str],
     compose_args: list[str],
 ) -> list[str]:
-    """Return override path when compose should inject backup TLS hosts/CA on ``db``."""
-    _ = info  # reserved for future verb/env gating using info.yaml
+    """Return override path when compose should inject DC backup TLS hosts/CA on ``db``."""
+    _ = info
     if not compose_args:
         return []
     verb = compose_args[0]
-    # Match local-proxy verbs; also cover ``run`` / ``exec`` / ``create`` when they
-    # recreate or start ``db`` with overrides (Compose merges -f on these).
     if verb not in ("up", "down", "restart", "run", "create", "start"):
         return []
     merged = {**os.environ, **env_add}
-    apply_inferred_backup_ca_file(merged, config, env_name)
-    override = write_docker_host_tls_override(config, env_name, merged)
+    apply_inferred_dc_backup_ca_file(merged, config, env_name)
+    override = write_dc_backup_tls_override(config, env_name, merged)
     if override is None:
         return []
     return [str(override)]
@@ -183,20 +171,17 @@ def compose_dash_f_args(
     env_name: str | None = None,
     compose_verb: str = "up",
 ) -> list[str]:
-    """Build ``-f`` args including backup-tls override when knobs are set."""
+    """Build ``-f`` args including dc-backup-tls override when knobs are set."""
     args = ["-f", compose_file]
     if config is None or not env_name:
         return args
-    try:
-        extras = docker_host_tls_extra_compose_files(
-            {},
-            config,
-            env_name,
-            env,
-            [compose_verb],
-        )
-    except ValueError:
-        raise
+    extras = dc_backup_tls_extra_compose_files(
+        {},
+        config,
+        env_name,
+        env,
+        [compose_verb],
+    )
     for path in extras:
         args.extend(["-f", path])
     return args

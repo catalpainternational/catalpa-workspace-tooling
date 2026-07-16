@@ -19,7 +19,7 @@ def _minimal_ctx(env_name: str, compose_file: str, minimal_project) -> ManagedDe
         compose_file=compose_file,
         env_add={},
         docker_host="",
-        backup_docker_host="",
+        dc_backup_docker_host="",
         site_origin="",
         site_origins=(),
         use_prepulled_registry=False,

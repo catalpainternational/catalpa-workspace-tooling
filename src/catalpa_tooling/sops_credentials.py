@@ -87,7 +87,7 @@ def write_encrypted_yaml(path: Path, data: dict) -> None:
     """Write ``data`` as SOPS-encrypted YAML at ``path`` (create or overwrite).
 
     Writes plaintext briefly then runs ``sops -e -i``. The path must match a
-    ``.sops.yaml`` ``creation_rules`` entry (e.g. ``docker/envs/.*/backup-tls.yaml``).
+    ``.sops.yaml`` ``creation_rules`` entry (e.g. ``docker/envs/.*/dc-backup-tls.yaml``).
     """
     ensure_sops_available()
     path.parent.mkdir(parents=True, exist_ok=True)
