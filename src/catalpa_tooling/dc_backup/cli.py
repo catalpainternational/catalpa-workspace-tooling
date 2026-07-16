@@ -6,6 +6,11 @@ import sys
 from typing import Any
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.dc_backup.offsite import (
+    cmd_dc_backup_offsite_install,
+    cmd_dc_backup_offsite_run,
+    cmd_dc_backup_offsite_status,
+)
 from catalpa_tooling.dc_backup.provision import cmd_dc_backup_provision
 from catalpa_tooling.dc_backup.stack import (
     cmd_dc_backup_bootstrap,
@@ -90,9 +95,32 @@ def handle_dc_backup_command(
             restic_prefix=getattr(ns, "restic_prefix", None),
             capacity=getattr(ns, "capacity", None),
         )
+    if sub == "offsite":
+        offsite_sub = getattr(ns, "dc_backup_offsite_command", None)
+        if offsite_sub == "install":
+            return cmd_dc_backup_offsite_install(
+                config,
+                env_name,
+                enable=bool(getattr(ns, "enable", False)),
+                yes=bool(getattr(ns, "yes", False)),
+                dry_run=dry_run or bool(getattr(ns, "dc_backup_offsite_dry_run", False)),
+            )
+        if offsite_sub == "run":
+            return cmd_dc_backup_offsite_run(
+                config,
+                env_name,
+                dry_run=dry_run or bool(getattr(ns, "dc_backup_offsite_dry_run", False)),
+            )
+        if offsite_sub == "status":
+            return cmd_dc_backup_offsite_status(config, env_name)
+        print(
+            "usage: dk <env> dc-backup offsite {install,run,status}",
+            file=sys.stderr,
+        )
+        return 2
 
     print(
-        "usage: dk <env> dc-backup {tls,bootstrap,install,status,provision}",
+        "usage: dk <env> dc-backup {tls,bootstrap,install,status,provision,offsite}",
         file=sys.stderr,
     )
     return 2

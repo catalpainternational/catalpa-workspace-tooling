@@ -80,6 +80,7 @@ def install_in_memory_sops_mocks(
         "catalpa_tooling.sops_credentials",
         "catalpa_tooling.doctl_spaces_provision",
         "catalpa_tooling.dc_backup.provision",
+        "catalpa_tooling.dc_backup.offsite",
     ),
     apply_credential_sets: Callable[[Path, dict[str, str]], None] | None = None,
     refresh_env_credentials: Callable[[dict[str, str], Path], None] | None = None,

@@ -408,6 +408,7 @@ def _docker_run_restic(
         docker_add_host_args,
         docker_ca_env_flags_for_restic,
         docker_ca_volume_args,
+        restic_cacert_argv,
     )
 
     cmd.extend(docker_add_host_args(merged))
@@ -420,6 +421,7 @@ def _docker_run_restic(
             spec += ":ro"
         cmd.extend(["-v", spec])
     cmd.append(_restic_image(merged))
+    cmd.extend(restic_cacert_argv(merged))
     cmd.extend(_restic_verbose_flags(merged))
     cmd.extend(restic_argv)
     r = run_cmd(cmd, env=merged, check=False)

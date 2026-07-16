@@ -14,6 +14,7 @@ from catalpa_tooling.dc_backup.hosts import (
     docker_ca_env_flags_for_restic,
     docker_ca_volume_args,
     parse_docker_add_hosts,
+    restic_cacert_argv,
     write_dc_backup_tls_override,
 )
 from catalpa_tooling.dc_backup.paths import APP_CA_FILENAME, DC_BACKUP_TLS_FILENAME
@@ -60,6 +61,8 @@ def test_docker_add_host_and_ca_args() -> None:
         "-e",
         f"AWS_CA_BUNDLE={DC_BACKUP_CA_CONTAINER_PATH}",
     ]
+    assert restic_cacert_argv(env) == ["--cacert", DC_BACKUP_CA_CONTAINER_PATH]
+    assert restic_cacert_argv({}) == []
 
 
 def test_dc_backup_ca_file_requires_absolute() -> None:
@@ -206,6 +209,7 @@ def test_restic_snapshots_userparameter_includes_add_host_and_ca() -> None:
     assert "s3.backup.internal:203.0.113.28" in cmd
     assert DC_BACKUP_CA_CONTAINER_PATH in cmd
     assert "AWS_CA_BUNDLE=" in cmd
+    assert "--cacert" in cmd
 
 
 def test_cmd_dc_backup_bootstrap_writes_sops(minimal_project) -> None:

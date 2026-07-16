@@ -299,6 +299,41 @@ def _attach_env_command_parsers(
         help="Garage layout capacity if no role assigned yet (default: 300G).",
     )
 
+    p_offsite = dc_sub.add_parser(
+        "offsite",
+        help="rclone copy Garage bucket → external S3 (daily OOH on dc_backup_docker_host).",
+    )
+    offsite_sub = p_offsite.add_subparsers(dest="dc_backup_offsite_command", required=True)
+    p_off_install = offsite_sub.add_parser(
+        "install",
+        help="Install rclone script, env file, and systemd timer on dc_backup_docker_host.",
+    )
+    p_off_install.add_argument(
+        "--enable",
+        action="store_true",
+        help="systemctl enable --now the offsite timer after install.",
+    )
+    p_off_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dc_backup_offsite_dry_run",
+        help="Print what would be installed; no remote mutations.",
+    )
+    p_off_run = offsite_sub.add_parser(
+        "run",
+        help="One-shot: refresh env and systemctl start the offsite oneshot service.",
+    )
+    p_off_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dc_backup_offsite_dry_run",
+        help="Print what would run; no remote mutations.",
+    )
+    offsite_sub.add_parser(
+        "status",
+        help="Show timer/service ActiveState on dc_backup_docker_host.",
+    )
+
     p_host = cmd_sub.add_parser("host", help="Verify droplet / print or patch docker_host.")
     host_sub = p_host.add_subparsers(dest="host_command", required=False)
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.")
@@ -308,6 +343,11 @@ def _attach_env_command_parsers(
         "--sync-dns",
         action="store_true",
         help="Create or update DigitalOcean A records for site_origin hostnames.",
+    )
+    p_host.add_argument(
+        "--check-remote",
+        action="store_true",
+        help="SSH probe docker_host (and dc_backup_docker_host): reachability + timedatectl.",
     )
 
     _attach_zabbix_commands(cmd_sub, env_name)

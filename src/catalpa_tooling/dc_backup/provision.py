@@ -20,7 +20,7 @@ from catalpa_tooling.dc_backup.paths import (
     INFO_DC_BACKUP_DOCKER_HOST,
 )
 from catalpa_tooling.dc_backup.ssh_install import remote_run_capture
-from catalpa_tooling.dc_backup.stack import KEY_REGION, dc_backup_path
+from catalpa_tooling.dc_backup.stack import KEY_ADMIN, KEY_REGION, dc_backup_path
 from catalpa_tooling.dc_backup.tls import (
     KEY_SERVER_DNS,
     KEY_SERVER_IPS,
@@ -53,6 +53,7 @@ _BUCKET_EXISTS_RE = re.compile(
     re.IGNORECASE,
 )
 _KEY_EXISTS_RE = re.compile(r"already\s+exists|duplicate|KeyAlreadyExists", re.IGNORECASE)
+_MATCHING_KEYS_RE = re.compile(r"(\d+)\s+matching keys", re.IGNORECASE)
 _NO_ROLE_RE = re.compile(r"NO ROLE ASSIGNED", re.IGNORECASE)
 _NODE_ID_RE = re.compile(r"^([0-9a-f]{8,})\s+\S+", re.IGNORECASE | re.MULTILINE)
 _KEY_ID_RE = re.compile(
@@ -62,6 +63,11 @@ _KEY_ID_RE = re.compile(
 _SECRET_KEY_RE = re.compile(
     r"^(?:Secret key|Secret Access Key)\s*:\s*(\S+)\s*$",
     re.IGNORECASE | re.MULTILINE,
+)
+# ``garage key list`` table rows: Key ID then Name (format_table may pad columns).
+_KEY_LIST_ROW_RE = re.compile(
+    r"^(GK[0-9a-fA-F]+)\s+(\S.*?)\s*$",
+    re.MULTILINE,
 )
 _SPACES_ENDPOINT_RE = re.compile(r"digitaloceanspaces\.com", re.IGNORECASE)
 
@@ -202,6 +208,25 @@ def parse_garage_key_info(text: str) -> GarageAccessKey:
     return GarageAccessKey(access_key_id=key_m.group(1), secret_access_key=sec_m.group(1))
 
 
+def parse_garage_key_list(text: str) -> list[tuple[str, str]]:
+    """Parse ``(key_id, name)`` rows from ``garage key list`` output."""
+    rows: list[tuple[str, str]] = []
+    for m in _KEY_LIST_ROW_RE.finditer(text or ""):
+        key_id = m.group(1)
+        name = m.group(2).strip()
+        # Skip header-ish leftovers if a Key ID ever appeared in a title line.
+        if name.lower() in {"name", "created", "expiration"}:
+            continue
+        rows.append((key_id, name))
+    return rows
+
+
+def find_garage_keys_by_name(text: str, key_name: str) -> list[tuple[str, str]]:
+    """Exact (case-insensitive) friendly-name matches from ``key list`` text."""
+    want = key_name.strip().lower()
+    return [(kid, name) for kid, name in parse_garage_key_list(text) if name.lower() == want]
+
+
 def parse_garage_node_id(status_text: str) -> str | None:
     """First healthy-node ID from ``garage status`` (full or prefix-usable)."""
     m = _NODE_ID_RE.search(status_text or "")
@@ -340,11 +365,84 @@ def ensure_garage_bucket(ssh: str, bucket: str, *, dry_run: bool) -> None:
     )
 
 
+def _ambiguous_key_name_error(key_name: str, matches: list[tuple[str, str]]) -> GarageProvisionError:
+    ids = ", ".join(kid for kid, _ in matches)
+    return GarageProvisionError(
+        f"Garage has {len(matches)} keys named {key_name!r} ({ids}). "
+        "Friendly names are not unique; resolve with Key ID, e.g. on the backup host:\n"
+        f"  sudo docker exec garage /garage key list\n"
+        f"  sudo docker exec garage /garage key info <KeyID> --show-secret\n"
+        f"  sudo docker exec garage /garage key delete <KeyID>   # keep one, delete extras\n"
+        f"Then re-run: dk <env> dc-backup provision --force"
+    )
+
+
+def _key_info_show_secret(ssh: str, key_ref: str) -> GarageAccessKey | None:
+    """Return access key from ``key info`` when secret is printable; else None."""
+    for show_secret_flag in (("--show-secret",), ()):
+        info = remote_run_capture(
+            ssh,
+            _garage_remote_cmd("key", "info", key_ref, *show_secret_flag),
+            dry_run=False,
+        )
+        combined = _combined_output(info)
+        if info.returncode != 0:
+            if _MATCHING_KEYS_RE.search(combined):
+                raise GarageProvisionError(
+                    f"Garage key lookup for {key_ref!r} is ambiguous "
+                    f"({_MATCHING_KEYS_RE.search(combined).group(0)}). "
+                    "List keys and delete duplicates, or pass a unique Key ID."
+                )
+            continue
+        try:
+            return parse_garage_key_info(combined)
+        except GarageProvisionError:
+            continue
+    return None
+
+
+def list_garage_keys(ssh: str) -> list[tuple[str, str]]:
+    listed = remote_run_capture(ssh, _garage_remote_cmd("key", "list"), dry_run=False)
+    if listed.returncode != 0:
+        raise GarageProvisionError(
+            f"garage key list failed: {_combined_output(listed).strip()}"
+        )
+    return parse_garage_key_list(_combined_output(listed))
+
+
 def ensure_garage_key(ssh: str, key_name: str, *, dry_run: bool) -> GarageAccessKey:
-    """Create key or reuse via ``key info --show-secret`` when already present."""
+    """Create key or reuse an existing unique friendly name (allow by Key ID later).
+
+    Garage permits multiple keys with the same friendly name; ``key create`` does not
+    fail on collision. Look up first so ``--force`` does not keep minting duplicates.
+    """
     if dry_run:
         print(f"[dry-run] would create/reuse Garage key {key_name!r}", flush=True)
         return GarageAccessKey("GK_DRY_RUN", "dry-run-secret")
+
+    all_keys = list_garage_keys(ssh)
+    existing = [
+        (kid, name)
+        for kid, name in all_keys
+        if name.lower() == key_name.strip().lower()
+    ]
+
+    if len(existing) > 1:
+        raise _ambiguous_key_name_error(key_name, existing)
+
+    if len(existing) == 1:
+        key_id, _name = existing[0]
+        print(
+            f"Garage key {key_name!r} already exists ({key_id}); reusing.",
+            flush=True,
+        )
+        access = _key_info_show_secret(ssh, key_id)
+        if access is not None:
+            return access
+        raise GarageProvisionError(
+            f"Garage key {key_name!r} ({key_id}) exists but the secret is not printable. "
+            "Pass a new --key-name to rotate, or delete the key on the backup host."
+        )
 
     created = remote_run_capture(
         ssh,
@@ -357,18 +455,10 @@ def ensure_garage_key(ssh: str, key_name: str, *, dry_run: bool) -> GarageAccess
     combined = _combined_output(created)
     already = bool(_KEY_EXISTS_RE.search(combined)) or "already" in combined.lower()
 
-    for show_secret_flag in (("--show-secret",), ()):
-        info = remote_run_capture(
-            ssh,
-            _garage_remote_cmd("key", "info", key_name, *show_secret_flag),
-            dry_run=False,
-        )
-        if info.returncode != 0:
-            continue
-        try:
-            return parse_garage_key_info(_combined_output(info))
-        except GarageProvisionError:
-            continue
+    # Race / older Garage: create refused — try name lookup once more.
+    access = _key_info_show_secret(ssh, key_name)
+    if access is not None:
+        return access
 
     if already:
         raise GarageProvisionError(
@@ -383,10 +473,11 @@ def ensure_garage_key(ssh: str, key_name: str, *, dry_run: bool) -> GarageAccess
 def allow_garage_bucket_key(
     ssh: str,
     bucket: str,
-    key_name: str,
+    key_ref: str,
     *,
     dry_run: bool,
 ) -> None:
+    """Grant bucket rights. Prefer Key ID (``GK…``); names can be ambiguous."""
     result = remote_run_capture(
         ssh,
         _garage_remote_cmd(
@@ -397,15 +488,19 @@ def allow_garage_bucket_key(
             "--owner",
             bucket,
             "--key",
-            key_name,
+            key_ref,
         ),
         dry_run=dry_run,
     )
     if dry_run or result.returncode == 0:
         return
-    raise GarageProvisionError(
-        f"garage bucket allow failed: {_combined_output(result).strip()}"
-    )
+    combined = _combined_output(result)
+    if _MATCHING_KEYS_RE.search(combined):
+        raise GarageProvisionError(
+            f"garage bucket allow failed ({_MATCHING_KEYS_RE.search(combined).group(0)} "
+            f"for --key {key_ref!r}). Use a unique Key ID, or delete duplicate friendly names."
+        )
+    raise GarageProvisionError(f"garage bucket allow failed: {combined.strip()}")
 
 
 def provision_garage_access(
@@ -417,7 +512,12 @@ def provision_garage_access(
     ensure_garage_layout(ssh, capacity=defaults.capacity, dry_run=dry_run)
     ensure_garage_bucket(ssh, defaults.bucket, dry_run=dry_run)
     access = ensure_garage_key(ssh, defaults.key_name, dry_run=dry_run)
-    allow_garage_bucket_key(ssh, defaults.bucket, defaults.key_name, dry_run=dry_run)
+    allow_garage_bucket_key(
+        ssh,
+        defaults.bucket,
+        access.access_key_id,
+        dry_run=dry_run,
+    )
     return access
 
 
@@ -505,6 +605,63 @@ def _print_already_configured_summary(env: dict[str, str], *, env_name: str) -> 
         f"`dk {env_name} db backup` / `dk {env_name} files backup`.",
         flush=True,
     )
+
+
+def _admin_token_from_dc(dc_data: dict[str, Any]) -> str:
+    return str(dc_data.get(KEY_ADMIN) or "").strip()
+
+
+def _try_install_garage_s3_cli(
+    config: ProjectConfig,
+    *,
+    backup_host: str,
+    access: GarageAccessKey,
+    defaults: GarageBackupDefaults,
+    admin_token: str,
+    dry_run: bool,
+) -> None:
+    """Best-effort install of host ``garage-s3`` helpers (never fails provision)."""
+    from catalpa_tooling.dc_backup.s3_cli import install_garage_s3_cli
+
+    try:
+        ssh = parse_docker_host_to_ssh_target(backup_host)
+    except ValueError as e:
+        print(f"warning: cannot install garage-s3 ({e})", file=sys.stderr)
+        return
+    if not dry_run:
+        kh = ensure_ssh_known_host_for_docker_host(
+            backup_host if "://" in backup_host else f"ssh://{backup_host}"
+        )
+        if kh != 0:
+            print(
+                f"warning: could not register SSH host key for {backup_host!r}; "
+                "skipping garage-s3 install.",
+                file=sys.stderr,
+            )
+            return
+    install_garage_s3_cli(
+        ssh,
+        config,
+        access_key_id=access.access_key_id,
+        secret_access_key=access.secret_access_key,
+        bucket=defaults.bucket,
+        region=defaults.region,
+        admin_token=admin_token,
+        dry_run=dry_run,
+    )
+
+
+def _access_and_defaults_from_existing_env(
+    defaults: GarageBackupDefaults,
+    env: dict[str, str],
+) -> tuple[GarageAccessKey, GarageBackupDefaults] | None:
+    """Build access + defaults from existing WRITE credentials (noop refresh)."""
+    access = _access_from_pgbr_env(env) or _access_from_restic_env(env)
+    if access is None:
+        return None
+    if (env.get("PGBR_S3_WRITE_KEY") or "").strip():
+        return access, _defaults_from_existing_pgbr(defaults, env)
+    return access, _defaults_from_existing_restic(defaults, env)
 
 
 def _provision_confirm(
@@ -625,6 +782,23 @@ def cmd_dc_backup_provision(
 
     if pgbr_ok and restic_ok and not force and not print_only:
         _print_already_configured_summary(env, env_name=env_name)
+        existing = _access_and_defaults_from_existing_env(defaults, env)
+        if existing is None:
+            print(
+                "warning: WRITE credentials present but key/secret incomplete; "
+                "skipping garage-s3 install.",
+                file=sys.stderr,
+            )
+            return 0
+        access, cli_defaults = existing
+        _try_install_garage_s3_cli(
+            config,
+            backup_host=backup_host,
+            access=access,
+            defaults=cli_defaults,
+            admin_token=_admin_token_from_dc(dc_data),
+            dry_run=dry_run,
+        )
         return 0
 
     if spaces_like and not force and not print_only:
@@ -692,6 +866,16 @@ def cmd_dc_backup_provision(
         else:
             which = "all WRITE keys" if sops_keys is None else ", ".join(sorted(sops_keys))
             print(f"dry-run: would sops set {which} in {creds_path}", flush=True)
+        # Preview CLI install with placeholder access when we would mint keys.
+        preview = reuse_access or GarageAccessKey("GK_DRY_RUN", "dry-run-secret")
+        _try_install_garage_s3_cli(
+            config,
+            backup_host=backup_host,
+            access=preview,
+            defaults=defaults,
+            admin_token=_admin_token_from_dc(dc_data),
+            dry_run=True,
+        )
         return 0
 
     try:
@@ -730,6 +914,15 @@ def cmd_dc_backup_provision(
         restic_password=existing_restic_pw,
     )
     print(format_credential_yaml(values), end="", flush=True)
+
+    _try_install_garage_s3_cli(
+        config,
+        backup_host=backup_host,
+        access=access,
+        defaults=defaults,
+        admin_token=_admin_token_from_dc(dc_data),
+        dry_run=False,
+    )
 
     if print_only:
         print(
@@ -774,7 +967,9 @@ def cmd_dc_backup_provision(
     print(
         f"Next: recreate the `db` service so CA/env mounts apply, then "
         f"`dk {env_name} db backup` / `dk {env_name} files backup` "
-        f"(db/files do not call `dc-backup provision` automatically).",
+        f"(db/files do not call `dc-backup provision` automatically). "
+        f"Optional offsite: set offsite_s3_* in credentials, then "
+        f"`dk {env_name} dc-backup offsite install --enable`.",
         flush=True,
     )
     return 0

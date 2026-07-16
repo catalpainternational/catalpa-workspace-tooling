@@ -38,6 +38,9 @@ EXTRA_CA=()
 if [[ -n "${DC_BACKUP_CA_FILE:-}" ]]; then
   EXTRA_CA+=(-v "${DC_BACKUP_CA_FILE}:${DC_BACKUP_CA_CONTAINER_PATH}:ro")
   EXTRA_ENV+=(-e "AWS_CA_BUNDLE=${DC_BACKUP_CA_CONTAINER_PATH}")
+  RESTIC_CACERT=(--cacert "${DC_BACKUP_CA_CONTAINER_PATH}")
+else
+  RESTIC_CACERT=()
 fi
 
 exec docker run --rm --platform linux/amd64 \
@@ -47,4 +50,5 @@ exec docker run --rm --platform linux/amd64 \
   "${EXTRA_CA[@]}" \
   -v "${VOL}:${MOUNT}:ro" \
   "${IMAGE}" \
+  "${RESTIC_CACERT[@]}" \
   backup "${MOUNT}"

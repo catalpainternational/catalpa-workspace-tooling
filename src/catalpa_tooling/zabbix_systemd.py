@@ -663,7 +663,10 @@ def _restic_snapshots_userparameter_command(env: dict[str, str]) -> str:
     if ca:
         parts.extend(["-v", shlex.quote(f"{ca}:{DC_BACKUP_CA_CONTAINER_PATH}:ro")])
         parts.extend(["-e", shlex.quote(f"AWS_CA_BUNDLE={DC_BACKUP_CA_CONTAINER_PATH}")])
-    parts.extend(["--env-file", shlex.quote(env_file), shlex.quote(image), "--json", "snapshots"])
+    parts.extend(["--env-file", shlex.quote(env_file), shlex.quote(image)])
+    if ca:
+        parts.extend(["--cacert", shlex.quote(DC_BACKUP_CA_CONTAINER_PATH)])
+    parts.extend(["--json", "snapshots"])
     return " ".join(parts)
 
 

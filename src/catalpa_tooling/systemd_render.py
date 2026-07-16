@@ -17,6 +17,8 @@ KNOWN_UNIT_SUFFIXES: tuple[str, ...] = (
     "pgbackrest-backup-diff.timer",
     "restic-files-backup.service",
     "restic-files-backup.timer",
+    "rclone-garage-offsite.service",
+    "rclone-garage-offsite.timer",
 )
 
 _SERVICE_SUFFIXES = frozenset(

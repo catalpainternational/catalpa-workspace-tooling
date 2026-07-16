@@ -13,9 +13,12 @@ from catalpa_tooling.dc_backup.provision import (
     GarageProvisionError,
     build_credential_values,
     cmd_dc_backup_provision,
+    ensure_garage_key,
+    find_garage_keys_by_name,
     garage_backup_defaults,
     looks_like_spaces_endpoint,
     parse_garage_key_info,
+    parse_garage_key_list,
     parse_garage_node_id,
     parse_restic_s3_repository,
     write_credentials_look_like_spaces,
@@ -62,10 +65,87 @@ def _seed_env(tmp_path: Path) -> tuple[object, Path, Path, Path]:
     return cfg, creds, tls, stack
 
 
+def _stub_s3_cli_install(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Avoid SSH during provision tests; record install kwargs."""
+    calls: list[dict] = []
+
+    def fake(*_a, **kwargs):
+        calls.append(dict(kwargs))
+
+    monkeypatch.setattr(
+        "catalpa_tooling.dc_backup.provision._try_install_garage_s3_cli",
+        fake,
+    )
+    return calls
+
+
 def test_parse_garage_key_info() -> None:
     key = parse_garage_key_info(_KEY_INFO)
     assert key.access_key_id.startswith("GK")
     assert len(key.secret_access_key) == 64
+
+
+def test_parse_garage_key_list_and_find() -> None:
+    text = (
+        "ID                          Name\n"
+        "GK111111111111111111111111  other-key\n"
+        "GK3515373e4c851ebaad366558  minimal-prod-backup\n"
+        "GK222222222222222222222222  minimal-prod-backup\n"
+    )
+    rows = parse_garage_key_list(text)
+    assert ("GK3515373e4c851ebaad366558", "minimal-prod-backup") in rows
+    matches = find_garage_keys_by_name(text, "minimal-prod-backup")
+    assert len(matches) == 2
+
+
+def test_ensure_garage_key_reuses_unique(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fake_capture(ssh: str, cmd: str, *, dry_run: bool = False):
+        if "key list" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ID\tName\n"
+                    "GK3515373e4c851ebaad366558\tminimal-prod-backup\n"
+                ),
+                stderr="",
+            )
+        if "key info" in cmd and "GK3515373e4c851ebaad366558" in cmd:
+            return SimpleNamespace(returncode=0, stdout=_KEY_INFO, stderr="")
+        if "key create" in cmd:
+            return SimpleNamespace(returncode=1, stdout="", stderr="should not create")
+        return SimpleNamespace(returncode=1, stdout="", stderr=cmd)
+
+    monkeypatch.setattr(
+        "catalpa_tooling.dc_backup.provision.remote_run_capture",
+        fake_capture,
+    )
+    access = ensure_garage_key("root@host", "minimal-prod-backup", dry_run=False)
+    assert access.access_key_id == "GK3515373e4c851ebaad366558"
+    assert "already exists" in capsys.readouterr().out
+
+
+def test_ensure_garage_key_rejects_ambiguous(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_capture(ssh: str, cmd: str, *, dry_run: bool = False):
+        if "key list" in cmd:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ID\tName\n"
+                    "GK111111111111111111111111\tindmo-prod-backup\n"
+                    "GK222222222222222222222222\tindmo-prod-backup\n"
+                ),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=1, stdout="", stderr=cmd)
+
+    monkeypatch.setattr(
+        "catalpa_tooling.dc_backup.provision.remote_run_capture",
+        fake_capture,
+    )
+    with pytest.raises(GarageProvisionError, match="2 keys named"):
+        ensure_garage_key("root@host", "indmo-prod-backup", dry_run=False)
 
 
 def test_parse_garage_key_info_missing_secret() -> None:
@@ -159,6 +239,7 @@ def test_provision_dry_run(
     assert "dry-run" in out
     assert "minimal-backups" in out
     assert "would sops set" in out
+    assert "garage-s3" in out
 
 
 def test_provision_cli_accepts_trailing_dry_run() -> None:
@@ -216,12 +297,15 @@ def test_provision_print_only_skips_sops(
         "catalpa_tooling.dc_backup.provision.ensure_ssh_known_host_for_docker_host",
         lambda *_a, **_k: 0,
     )
+    s3_calls = _stub_s3_cli_install(monkeypatch)
 
     def fake_capture(ssh: str, cmd: str, *, dry_run: bool = False):
         if "status" in cmd:
             return SimpleNamespace(returncode=0, stdout=_STATUS_OK, stderr="")
         if "bucket create" in cmd:
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        if "key list" in cmd:
+            return SimpleNamespace(returncode=0, stdout="ID\tName\n", stderr="")
         if "key create" in cmd:
             return SimpleNamespace(returncode=0, stdout=_KEY_INFO, stderr="")
         if "bucket allow" in cmd:
@@ -236,6 +320,8 @@ def test_provision_print_only_skips_sops(
     rc = cmd_dc_backup_provision(cfg, "prod", print_only=True, yes=True)
     assert rc == 0
     assert applied == []
+    assert len(s3_calls) == 1
+    assert s3_calls[0]["access"].access_key_id == "GK3515373e4c851ebaad366558"
     out = capsys.readouterr().out
     assert "pgbr_s3_write_key" in out
     assert "GK3515373e4c851ebaad366558" in out
@@ -256,15 +342,19 @@ def test_provision_writes_sops_with_yes(
         "catalpa_tooling.dc_backup.provision.ensure_ssh_known_host_for_docker_host",
         lambda *_a, **_k: 0,
     )
+    _stub_s3_cli_install(monkeypatch)
 
     def fake_capture(ssh: str, cmd: str, *, dry_run: bool = False):
         if "status" in cmd:
             return SimpleNamespace(returncode=0, stdout=_STATUS_OK, stderr="")
         if "bucket create" in cmd:
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        if "key list" in cmd:
+            return SimpleNamespace(returncode=0, stdout="ID\tName\n", stderr="")
         if "key create" in cmd:
             return SimpleNamespace(returncode=0, stdout=_KEY_INFO, stderr="")
         if "bucket allow" in cmd:
+            assert "GK3515373e4c851ebaad366558" in cmd
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr=cmd)
 
@@ -311,10 +401,14 @@ def test_provision_noop_when_already_configured(
         raise AssertionError("should not call Garage")
 
     monkeypatch.setattr("catalpa_tooling.dc_backup.provision.remote_run_capture", boom)
+    s3_calls = _stub_s3_cli_install(monkeypatch)
 
     rc = cmd_dc_backup_provision(cfg, "prod", yes=True)
     assert rc == 0
     assert called["n"] == 0
+    assert len(s3_calls) == 1
+    assert s3_calls[0]["access"].access_key_id == "GKold"
+    assert s3_calls[0]["admin_token"] == "tok"
     assert "already configured" in capsys.readouterr().out
 
 
@@ -371,6 +465,7 @@ def test_provision_partial_fill_restic_from_pgbr(
         "catalpa_tooling.dc_backup.provision.ensure_ssh_known_host_for_docker_host",
         boom_ssh,
     )
+    _stub_s3_cli_install(monkeypatch)
 
     rc = cmd_dc_backup_provision(cfg, "prod", yes=True)
     assert rc == 0

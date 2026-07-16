@@ -86,10 +86,17 @@ def docker_ca_volume_args(env: dict[str, str]) -> list[str]:
 
 
 def docker_ca_env_flags_for_restic(env: dict[str, str]) -> list[str]:
-    """``-e AWS_CA_BUNDLE=…`` when a DC backup CA is mounted."""
+    """``-e AWS_CA_BUNDLE=…`` when a DC backup CA is mounted (AWS SDK / minio clients)."""
     if not dc_backup_ca_host_path(env):
         return []
     return ["-e", f"AWS_CA_BUNDLE={DC_BACKUP_CA_CONTAINER_PATH}"]
+
+
+def restic_cacert_argv(env: dict[str, str]) -> list[str]:
+    """Global ``--cacert`` for restic (Go TLS ignores ``AWS_CA_BUNDLE``)."""
+    if not dc_backup_ca_host_path(env):
+        return []
+    return ["--cacert", DC_BACKUP_CA_CONTAINER_PATH]
 
 
 def dc_backup_tls_override_path(config: ProjectConfig, env_name: str) -> Path:

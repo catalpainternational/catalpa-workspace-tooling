@@ -309,7 +309,11 @@ After `host create` or `host --write`, the tooling registers the deploy host’s
 
 **Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` is set, it verifies (1) DigitalOcean DNS API — A records (or CNAMEs that chain to an apex A) on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each `site_origin` hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
 
-**Non-DO or manual host:** Set `digitalocean.disabled: true` in `docker/envs/<env>/info.yaml` and maintain `docker_host` + `site_origin`. `dk <env> host` skips droplet lookup and DO API DNS; it checks public DNS only. `host create` and `host --write` are not available in this mode. Without doctl but with `docker_host` set, behavior matches the disabled path (public DNS when `site_origin` is set).
+**Non-DO or manual host:** Prefer `digitalocean.disabled: true` in `docker/envs/<env>/info.yaml` for permanent datacenter / TIC hosts, and maintain `docker_host` (+ optional `dc_backup_docker_host`) and `site_origin`. `dk <env> host` then skips droplet lookup and DO API DNS; it prints configured hosts and checks public DNS only. `host create` and `host --write` are not available in this mode.
+
+If doctl is available but no matching droplet exists and `docker_host` is already set, `dk <env> host` falls back to the same manual status path (no `host create` hint) and notes that `digitalocean.disabled: true` opts out of doctl permanently. Without doctl but with `docker_host` set, behavior matches the disabled path.
+
+Optional `--check-remote` SSHes to `docker_host` and `dc_backup_docker_host` (when set): BatchMode reachability plus `timedatectl` (timezone and NTP sync flags). Timezone mismatch between app and backup hosts, or NTP not synchronized, prints a soft warning; exit stays 0 unless SSH itself fails hard.
 
 **Caveats:** Public DNS uses the machine’s resolver (VPN, `/etc/hosts`, caching). A CDN or proxy in front of the origin can make the public check fail while DO API records are correct.
 

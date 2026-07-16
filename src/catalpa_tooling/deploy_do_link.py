@@ -576,20 +576,38 @@ def _cmd_env_host_manual(
     configured_host: str,
     write: bool = False,
     verify_dns: bool = True,
+    check_remote: bool = False,
+    do_lookup_missed: bool = False,
 ) -> int:
     """Verify manual ``docker_host`` and optional public DNS (no droplet / doctl DNS API)."""
+    from catalpa_tooling.dc_backup.paths import INFO_DC_BACKUP_DOCKER_HOST
+
     if write:
-        print(
-            f"dk {env_name} host --write is not available when digitalocean.disabled is set; "
-            "edit docker_host in info.yaml manually.",
-            file=sys.stderr,
-        )
+        if is_digitalocean_host_disabled(info):
+            print(
+                f"dk {env_name} host --write is not available when digitalocean.disabled is set; "
+                "edit docker_host in info.yaml manually.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"dk {env_name} host --write requires a DigitalOcean droplet; "
+                "edit docker_host in info.yaml manually, or create a droplet with "
+                f"`dk {env_name} host create`.",
+                file=sys.stderr,
+            )
         return 1
 
     if is_digitalocean_host_disabled(info):
         print(
             "DigitalOcean host integration disabled for this environment "
             "(digitalocean.disabled).",
+            file=sys.stderr,
+        )
+    elif do_lookup_missed:
+        print(
+            "No matching DigitalOcean droplet; using configured docker_host from info.yaml. "
+            "Set digitalocean.disabled: true to skip doctl permanently.",
             file=sys.stderr,
         )
 
@@ -610,9 +628,16 @@ def _cmd_env_host_manual(
         return 1
 
     print(f"docker_host: {value}")
+    backup_host = str(info.get(INFO_DC_BACKUP_DOCKER_HOST, "") or "").strip()
+    if backup_host:
+        print(f"{INFO_DC_BACKUP_DOCKER_HOST}: {backup_host}")
+    site_origin = info.get("site_origin")
+    if site_origin is not None and site_origin != "" and site_origin != []:
+        print(f"site_origin: {site_origin}")
 
+    dns_rc = 0
     if verify_dns:
-        return _run_host_dns_checks(
+        dns_rc = _run_host_dns_checks(
             config,
             info,
             expected_ip=expected_ip,
@@ -620,6 +645,154 @@ def _cmd_env_host_manual(
             include_do_api=False,
             env_name=env_name,
         )
+
+    remote_rc = 0
+    if check_remote:
+        remote_rc = _probe_manual_hosts_remote(
+            docker_host=value,
+            dc_backup_docker_host=backup_host or None,
+        )
+
+    if dns_rc != 0:
+        return dns_rc
+    return remote_rc
+
+
+@dataclass(frozen=True)
+class TimedatectlInfo:
+    timezone: str | None
+    ntp_synchronized: bool | None
+    system_clock_synchronized: bool | None
+
+
+def parse_timedatectl_show(text: str) -> TimedatectlInfo:
+    """Parse ``timedatectl show -p Timezone -p NTPSynchronized -p SystemClockSynchronized``."""
+    tz: str | None = None
+    ntp: bool | None = None
+    sys_clock: bool | None = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if key == "Timezone":
+            tz = val or None
+        elif key == "NTPSynchronized":
+            ntp = val.lower() in ("yes", "true", "1")
+        elif key == "SystemClockSynchronized":
+            sys_clock = val.lower() in ("yes", "true", "1")
+    return TimedatectlInfo(timezone=tz, ntp_synchronized=ntp, system_clock_synchronized=sys_clock)
+
+
+def parse_timedatectl_status(text: str) -> TimedatectlInfo:
+    """Fallback parse of ``timedatectl status`` human output."""
+    tz: str | None = None
+    ntp: bool | None = None
+    sys_clock: bool | None = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        lower = line.lower()
+        if "time zone:" in lower or "timezone:" in lower:
+            # e.g. "Time zone: Asia/Dili (…)"
+            _, _, rest = line.partition(":")
+            tz = rest.strip().split()[0] if rest.strip() else None
+        elif "system clock synchronized:" in lower:
+            sys_clock = "yes" in lower.split(":", 1)[-1].lower()
+        elif lower.startswith("ntp service:") or "ntp enabled:" in lower:
+            pass
+        elif "ntp synchronized:" in lower or "synchronized to ntp" in lower:
+            ntp = "yes" in lower.split(":", 1)[-1].lower()
+    return TimedatectlInfo(timezone=tz, ntp_synchronized=ntp, system_clock_synchronized=sys_clock)
+
+
+def _probe_one_host_remote(label: str, docker_host_url: str) -> TimedatectlInfo | None:
+    """SSH reachability + timedatectl; return clock info or None if unreachable."""
+    from catalpa_tooling.dc_backup.ssh_install import remote_run_capture
+    from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
+    from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
+
+    try:
+        ssh = parse_docker_host_to_ssh_target(docker_host_url)
+    except ValueError as e:
+        print(f"remote {label}: invalid host ({e})", file=sys.stderr)
+        return None
+
+    kh = ensure_ssh_known_host_for_docker_host(
+        docker_host_url if "://" in docker_host_url else f"ssh://{docker_host_url}"
+    )
+    if kh != 0:
+        print(f"remote {label}: could not register SSH host key", file=sys.stderr)
+        return None
+
+    ping = remote_run_capture(ssh, "true", dry_run=False)
+    if ping.returncode != 0:
+        print(f"remote {label}: unreachable", file=sys.stderr)
+        return None
+
+    show = remote_run_capture(
+        ssh,
+        "timedatectl show -p Timezone -p NTPSynchronized -p SystemClockSynchronized",
+        dry_run=False,
+    )
+    info = parse_timedatectl_show(show.stdout or "")
+    if show.returncode != 0 or info.timezone is None:
+        status = remote_run_capture(ssh, "timedatectl status", dry_run=False)
+        if status.returncode == 0:
+            info = parse_timedatectl_status(status.stdout or "")
+
+    tz = info.timezone or "?"
+    ntp_s = (
+        "yes"
+        if info.ntp_synchronized is True
+        else ("no" if info.ntp_synchronized is False else "?")
+    )
+    sys_s = (
+        "yes"
+        if info.system_clock_synchronized is True
+        else ("no" if info.system_clock_synchronized is False else "?")
+    )
+    print(
+        f"remote {label}: reachable; timezone={tz}; "
+        f"NTPSynchronized={ntp_s}; SystemClockSynchronized={sys_s}",
+        flush=True,
+    )
+    if info.ntp_synchronized is False or info.system_clock_synchronized is False:
+        print(
+            f"warning: remote {label} clock may not be NTP-synchronized "
+            f"(check timedatectl on the host).",
+            file=sys.stderr,
+        )
+    return info
+
+
+def _probe_manual_hosts_remote(
+    *,
+    docker_host: str,
+    dc_backup_docker_host: str | None,
+) -> int:
+    """Probe app (+ optional backup) hosts; advisory clock warnings; 0 unless SSH hard-fail."""
+    app_info = _probe_one_host_remote("app", docker_host)
+    backup_info: TimedatectlInfo | None = None
+    if dc_backup_docker_host:
+        backup_info = _probe_one_host_remote("dc_backup", dc_backup_docker_host)
+
+    if (
+        app_info
+        and backup_info
+        and app_info.timezone
+        and backup_info.timezone
+        and app_info.timezone != backup_info.timezone
+    ):
+        print(
+            f"warning: app timezone {app_info.timezone!r} differs from "
+            f"dc_backup timezone {backup_info.timezone!r} "
+            "(offsite OnCalendar uses each host's local time).",
+            file=sys.stderr,
+        )
+
+    # Unreachable backup/app is advisory for v1 (status still useful offline).
     return 0
 
 
@@ -631,6 +804,7 @@ def cmd_env_host(
     dry_run: bool = False,
     verify_dns: bool = True,
     sync_dns: bool = False,
+    check_remote: bool = False,
     recovery_env_name: str | None = None,
 ) -> int:
     """Resolve droplet IP for ``env_name`` and print or patch ``docker_host`` in info.yaml."""
@@ -657,6 +831,7 @@ def cmd_env_host(
             configured_host=configured_host,
             write=write,
             verify_dns=verify_dns,
+            check_remote=check_remote,
         )
 
     if write and not dry_run and try_resolve_doctl_binary() is None:
@@ -679,6 +854,7 @@ def cmd_env_host(
                 configured_host=configured_host,
                 write=write,
                 verify_dns=verify_dns,
+                check_remote=check_remote,
             )
         _print_no_doctl_hints(env_name=env_name, link=link, info_path=info_path)
         return 1
@@ -705,6 +881,7 @@ def cmd_env_host(
                 configured_host=configured_host,
                 write=False,
                 verify_dns=verify_dns,
+                check_remote=check_remote,
             )
         print(
             f"dk {env_name} host requires the official doctl binary on PATH (or DOCTL_BIN).",
@@ -717,6 +894,25 @@ def cmd_env_host(
         return e.returncode
 
     if droplet is None:
+        if configured_host:
+            orphan_hint = _orphan_droplet_message(
+                config,
+                link,
+                context=context,
+                env_name=env_name,
+            )
+            if orphan_hint:
+                print(orphan_hint, file=sys.stderr)
+            return _cmd_env_host_manual(
+                config,
+                env_name,
+                info,
+                configured_host=configured_host,
+                write=write,
+                verify_dns=verify_dns,
+                check_remote=check_remote,
+                do_lookup_missed=True,
+            )
         orphan_hint = _orphan_droplet_message(
             config,
             link,
@@ -779,6 +975,15 @@ def cmd_env_host(
             docker_host,
             dry_run=dry_run,
             recovery_env_name=recovery_env_name or env_name,
+        )
+
+    if check_remote:
+        from catalpa_tooling.dc_backup.paths import INFO_DC_BACKUP_DOCKER_HOST
+
+        backup = str(info.get(INFO_DC_BACKUP_DOCKER_HOST, "") or "").strip()
+        return _probe_manual_hosts_remote(
+            docker_host=configured_host or docker_host,
+            dc_backup_docker_host=backup or None,
         )
     return 0
 

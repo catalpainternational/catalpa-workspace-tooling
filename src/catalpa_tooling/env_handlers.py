@@ -384,6 +384,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             write=bool(ns.write),
             sync_dns=bool(ns.sync_dns),
             dry_run=dry_run,
+            check_remote=bool(getattr(ns, "check_remote", False)),
         )
 
     compose_file = resolve_compose_file_from_info(info, config)

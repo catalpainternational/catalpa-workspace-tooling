@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Garage admin CLI inside the garage container (reads /etc/garage.toml).
+# Installed on dc_backup_docker_host via `dk <env> dc-backup provision`.
+set -euo pipefail
+exec sudo docker exec garage /garage "$@"
