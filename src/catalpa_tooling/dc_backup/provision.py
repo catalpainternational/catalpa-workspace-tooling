@@ -695,20 +695,21 @@ def cmd_dc_backup_provision(
         return 0
 
     try:
-        ssh = parse_docker_host_to_ssh_target(backup_host)
-    except ValueError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-
-    kh = ensure_ssh_known_host_for_docker_host(
-        backup_host if "://" in backup_host else f"ssh://{backup_host}"
-    )
-    if kh != 0:
-        print(f"Could not register SSH host key for {backup_host!r}.", file=sys.stderr)
-        return 1
-
-    try:
         if need_garage:
+            try:
+                ssh = parse_docker_host_to_ssh_target(backup_host)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                return 1
+            kh = ensure_ssh_known_host_for_docker_host(
+                backup_host if "://" in backup_host else f"ssh://{backup_host}"
+            )
+            if kh != 0:
+                print(
+                    f"Could not register SSH host key for {backup_host!r}.",
+                    file=sys.stderr,
+                )
+                return 1
             access = provision_garage_access(ssh, defaults, dry_run=False)
         else:
             assert reuse_access is not None

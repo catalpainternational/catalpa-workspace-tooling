@@ -31,9 +31,9 @@ from catalpa_tooling.pgbackrest_volume_config import render_pgbackrest_ini
 
 
 def test_parse_docker_add_hosts_comma_and_space() -> None:
-    env = {"DOCKER_ADD_HOST": "s3.backup.internal:172.16.92.28, other:10.0.0.1"}
+    env = {"DOCKER_ADD_HOST": "s3.backup.internal:203.0.113.28, other:10.0.0.1"}
     assert parse_docker_add_hosts(env) == [
-        ("s3.backup.internal", "172.16.92.28"),
+        ("s3.backup.internal", "203.0.113.28"),
         ("other", "10.0.0.1"),
     ]
 
@@ -45,12 +45,12 @@ def test_parse_docker_add_hosts_rejects_bad_entry() -> None:
 
 def test_docker_add_host_and_ca_args() -> None:
     env = {
-        "DOCKER_ADD_HOST": "s3.backup.internal:172.16.92.28",
+        "DOCKER_ADD_HOST": "s3.backup.internal:203.0.113.28",
         "DC_BACKUP_CA_FILE": "/etc/indmo/tls/dc-backup-ca.crt",
     }
     assert docker_add_host_args(env) == [
         "--add-host",
-        "s3.backup.internal:172.16.92.28",
+        "s3.backup.internal:203.0.113.28",
     ]
     assert docker_ca_volume_args(env) == [
         "-v",
@@ -72,14 +72,14 @@ def test_compose_override_extra_hosts_and_ca(minimal_project, tmp_path, monkeypa
 
     monkeypatch.setattr(dht, "local_proxy_data_dir", lambda: tmp_path)
     env = {
-        "DOCKER_ADD_HOST": "s3.backup.internal:172.16.92.28",
+        "DOCKER_ADD_HOST": "s3.backup.internal:203.0.113.28",
         "DC_BACKUP_CA_FILE": "/etc/indmo/tls/dc-backup-ca.crt",
     }
     path = write_dc_backup_tls_override(minimal_project, "prod", env)
     assert path is not None
     text = path.read_text(encoding="utf-8")
     assert "extra_hosts:" in text
-    assert '"s3.backup.internal:172.16.92.28"' in text
+    assert '"s3.backup.internal:203.0.113.28"' in text
     assert f"{DC_BACKUP_CA_CONTAINER_PATH}:ro" in text
     assert "dc-backup-tls.yaml" in path.name
 
@@ -87,7 +87,7 @@ def test_compose_override_extra_hosts_and_ca(minimal_project, tmp_path, monkeypa
 def test_pgbackrest_ini_emits_storage_ca_file() -> None:
     vars_map = {
         "BUCKET": "b",
-        "ENDPOINT": "172.16.92.28",
+        "ENDPOINT": "203.0.113.28",
         "REGION": "garage",
         "KEY": "k",
         "SECRET": "s",
@@ -102,7 +102,7 @@ def test_pgbackrest_ini_emits_storage_ca_file() -> None:
 def test_pgbackrest_ini_omits_ca_when_unset() -> None:
     vars_map = {
         "BUCKET": "b",
-        "ENDPOINT": "172.16.92.28",
+        "ENDPOINT": "203.0.113.28",
         "REGION": "garage",
         "KEY": "k",
         "SECRET": "s",
@@ -115,14 +115,14 @@ def test_pgbackrest_ini_omits_ca_when_unset() -> None:
 
 def test_generate_dc_backup_tls_material_openssl() -> None:
     material = generate_dc_backup_tls_material(
-        ips=["172.16.92.28"],
+        ips=["203.0.113.28"],
         dns_names=["s3.backup.internal"],
         days=30,
     )
     assert "BEGIN CERTIFICATE" in material[KEY_CA_CRT]
     assert "BEGIN CERTIFICATE" in material[KEY_SERVER_CRT]
     assert "PRIVATE KEY" in material[KEY_SERVER_KEY]
-    assert material[KEY_SERVER_IPS] == ["172.16.92.28"]
+    assert material[KEY_SERVER_IPS] == ["203.0.113.28"]
     assert material[KEY_SERVER_DNS] == ["s3.backup.internal"]
 
 
@@ -197,13 +197,13 @@ def test_restic_snapshots_userparameter_includes_add_host_and_ca() -> None:
     from catalpa_tooling.zabbix_systemd import _restic_snapshots_userparameter_command
 
     env = {
-        "DOCKER_ADD_HOST": "s3.backup.internal:172.16.92.28",
+        "DOCKER_ADD_HOST": "s3.backup.internal:203.0.113.28",
         "DC_BACKUP_CA_FILE": "/etc/indmo/tls/dc-backup-ca.crt",
         "ZABBIX_RESTIC_DOCKER_ENV_FILE": "/etc/indmo/restic-files-backup.env",
     }
     cmd = _restic_snapshots_userparameter_command(env)
     assert "--add-host" in cmd
-    assert "s3.backup.internal:172.16.92.28" in cmd
+    assert "s3.backup.internal:203.0.113.28" in cmd
     assert DC_BACKUP_CA_CONTAINER_PATH in cmd
     assert "AWS_CA_BUNDLE=" in cmd
 

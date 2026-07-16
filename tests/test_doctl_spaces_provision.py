@@ -256,7 +256,7 @@ def test_spaces_decline_hints_dc_backup_provision(
     env_dir = repo / "docker/envs/prod"
     env_dir.mkdir(parents=True)
     (env_dir / "info.yaml").write_text(
-        "dc_backup_docker_host: ssh://root@172.16.92.28\n",
+        "dc_backup_docker_host: ssh://root@203.0.113.28\n",
         encoding="utf-8",
     )
     creds = env_dir / "credentials.yaml"

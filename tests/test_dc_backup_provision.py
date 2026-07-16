@@ -49,8 +49,8 @@ def _seed_env(tmp_path: Path) -> tuple[object, Path, Path, Path]:
     env_dir = tmp_path / "docker" / "envs" / "prod"
     env_dir.mkdir(parents=True, exist_ok=True)
     (env_dir / "info.yaml").write_text(
-        "docker_host: ssh://root@172.16.92.27\n"
-        "dc_backup_docker_host: ssh://root@172.16.92.28\n",
+        "docker_host: ssh://root@203.0.113.27\n"
+        "dc_backup_docker_host: ssh://root@203.0.113.28\n",
         encoding="utf-8",
     )
     creds = env_dir / "credentials.yaml"
@@ -79,8 +79,8 @@ def test_parse_garage_node_id() -> None:
 
 
 def test_parse_restic_s3_repository() -> None:
-    assert parse_restic_s3_repository("s3:172.16.92.28/indmo-backups/indmo-prod-media") == (
-        "172.16.92.28",
+    assert parse_restic_s3_repository("s3:203.0.113.28/indmo-backups/indmo-prod-media") == (
+        "203.0.113.28",
         "indmo-backups",
         "indmo-prod-media",
     )
@@ -88,7 +88,7 @@ def test_parse_restic_s3_repository() -> None:
 
 def test_looks_like_spaces_endpoint() -> None:
     assert looks_like_spaces_endpoint("sgp1.digitaloceanspaces.com")
-    assert not looks_like_spaces_endpoint("172.16.92.28")
+    assert not looks_like_spaces_endpoint("203.0.113.28")
     assert write_credentials_look_like_spaces(
         {"PGBR_S3_WRITE_ENDPOINT": "nyc3.digitaloceanspaces.com"}
     )
@@ -98,12 +98,12 @@ def test_garage_backup_defaults(minimal_project) -> None:
     d = garage_backup_defaults(
         minimal_project,
         "prod",
-        info={"dc_backup_docker_host": "ssh://root@172.16.92.28"},
-        tls_data={KEY_SERVER_IPS: ["172.16.92.28"]},
+        info={"dc_backup_docker_host": "ssh://root@203.0.113.28"},
+        tls_data={KEY_SERVER_IPS: ["203.0.113.28"]},
     )
     assert d.bucket == "minimal-backups"
     assert d.key_name == "minimal-prod-backup"
-    assert d.endpoint == "172.16.92.28"
+    assert d.endpoint == "203.0.113.28"
     assert d.pgbackrest_repo_path == "/minimal/prod/pgbackrest"
     assert d.restic_path == "minimal-prod-media"
 
@@ -112,7 +112,7 @@ def test_build_credential_values_shape() -> None:
     from catalpa_tooling.dc_backup.provision import GarageBackupDefaults
 
     defaults = GarageBackupDefaults(
-        endpoint="172.16.92.28",
+        endpoint="203.0.113.28",
         region="garage",
         bucket="minimal-backups",
         key_name="minimal-prod-backup",
@@ -130,7 +130,7 @@ def test_build_credential_values_shape() -> None:
     assert values["pgbr_s3_write_verify_tls"] == "y"
     assert values["restic_write_password"] == "keep-me"
     assert values["restic_write_repository"] == (
-        "s3:172.16.92.28/minimal-backups/minimal-prod-media"
+        "s3:203.0.113.28/minimal-backups/minimal-prod-media"
     )
 
 
@@ -141,7 +141,7 @@ def test_provision_dry_run(
 ) -> None:
     cfg, _creds, tls, stack = _seed_env(tmp_path)
     store = install_in_memory_sops_mocks(monkeypatch)
-    store[str(tls)] = {KEY_SERVER_IPS: ["172.16.92.28"]}
+    store[str(tls)] = {KEY_SERVER_IPS: ["203.0.113.28"]}
     store[str(stack)] = {"garage_admin_token": "tok", "garage_s3_region": "garage"}
 
     called = {"n": 0}
@@ -176,7 +176,7 @@ def test_provision_cli_accepts_trailing_dry_run() -> None:
         write_minimal_tooling_tree(root)
         (root / "docker" / "envs" / "prod").mkdir(parents=True, exist_ok=True)
         (root / "docker" / "envs" / "prod" / "info.yaml").write_text(
-            "dc_backup_docker_host: ssh://root@172.16.92.28\n",
+            "dc_backup_docker_host: ssh://root@203.0.113.28\n",
             encoding="utf-8",
         )
         cfg = load_project_config(root)
@@ -201,7 +201,7 @@ def test_provision_print_only_skips_sops(
 ) -> None:
     cfg, creds, tls, stack = _seed_env(tmp_path)
     store = install_in_memory_sops_mocks(monkeypatch)
-    store[str(tls)] = {KEY_SERVER_IPS: ["172.16.92.28"]}
+    store[str(tls)] = {KEY_SERVER_IPS: ["203.0.113.28"]}
     store[str(stack)] = {"garage_admin_token": "tok", "garage_s3_region": "garage"}
     applied: list[dict[str, str]] = []
 
@@ -249,7 +249,7 @@ def test_provision_writes_sops_with_yes(
 ) -> None:
     cfg, creds, tls, stack = _seed_env(tmp_path)
     store = install_in_memory_sops_mocks(monkeypatch)
-    store[str(tls)] = {KEY_SERVER_IPS: ["172.16.92.28"]}
+    store[str(tls)] = {KEY_SERVER_IPS: ["203.0.113.28"]}
     store[str(stack)] = {"garage_admin_token": "tok", "garage_s3_region": "garage"}
 
     monkeypatch.setattr(
@@ -289,17 +289,17 @@ def test_provision_noop_when_already_configured(
 ) -> None:
     cfg, creds, tls, stack = _seed_env(tmp_path)
     store = install_in_memory_sops_mocks(monkeypatch)
-    store[str(tls)] = {KEY_SERVER_IPS: ["172.16.92.28"]}
+    store[str(tls)] = {KEY_SERVER_IPS: ["203.0.113.28"]}
     store[str(stack)] = {"garage_admin_token": "tok"}
     store[str(creds)] = {
         "pgbr_s3_write_bucket": "minimal-backups",
         "pgbr_s3_write_region": "garage",
-        "pgbr_s3_write_endpoint": "172.16.92.28",
+        "pgbr_s3_write_endpoint": "203.0.113.28",
         "pgbr_s3_write_key": "GKold",
         "pgbr_s3_write_secret": "oldsecret",
         "pgbr_s3_write_repo_path": "/minimal/prod/pgbackrest",
         "pgbr_s3_write_stanza": "main",
-        "restic_write_repository": "s3:172.16.92.28/minimal-backups/minimal-prod-media",
+        "restic_write_repository": "s3:203.0.113.28/minimal-backups/minimal-prod-media",
         "restic_write_password": "pw",
         "restic_write_s3_access_key_id": "GKold",
         "restic_write_s3_secret_access_key": "oldsecret",
@@ -325,7 +325,7 @@ def test_provision_refuses_spaces_without_force(
 ) -> None:
     cfg, creds, tls, stack = _seed_env(tmp_path)
     store = install_in_memory_sops_mocks(monkeypatch)
-    store[str(tls)] = {KEY_SERVER_IPS: ["172.16.92.28"]}
+    store[str(tls)] = {KEY_SERVER_IPS: ["203.0.113.28"]}
     store[str(stack)] = {"garage_admin_token": "tok"}
     store[str(creds)] = {
         "pgbr_s3_write_bucket": "spaces-b",
@@ -348,12 +348,12 @@ def test_provision_partial_fill_restic_from_pgbr(
 ) -> None:
     cfg, creds, tls, stack = _seed_env(tmp_path)
     store = install_in_memory_sops_mocks(monkeypatch)
-    store[str(tls)] = {KEY_SERVER_IPS: ["172.16.92.28"]}
+    store[str(tls)] = {KEY_SERVER_IPS: ["203.0.113.28"]}
     store[str(stack)] = {"garage_admin_token": "tok"}
     store[str(creds)] = {
         "pgbr_s3_write_bucket": "minimal-backups",
         "pgbr_s3_write_region": "garage",
-        "pgbr_s3_write_endpoint": "172.16.92.28",
+        "pgbr_s3_write_endpoint": "203.0.113.28",
         "pgbr_s3_write_key": "GKreuse",
         "pgbr_s3_write_secret": "secretreuse",
         "pgbr_s3_write_repo_path": "/minimal/prod/pgbackrest",
@@ -363,7 +363,14 @@ def test_provision_partial_fill_restic_from_pgbr(
     def boom(*_a, **_k):
         raise AssertionError("should not call Garage")
 
+    def boom_ssh(*_a, **_k):
+        raise AssertionError("should not ssh-keyscan when reusing keys")
+
     monkeypatch.setattr("catalpa_tooling.dc_backup.provision.remote_run_capture", boom)
+    monkeypatch.setattr(
+        "catalpa_tooling.dc_backup.provision.ensure_ssh_known_host_for_docker_host",
+        boom_ssh,
+    )
 
     rc = cmd_dc_backup_provision(cfg, "prod", yes=True)
     assert rc == 0
@@ -371,4 +378,4 @@ def test_provision_partial_fill_restic_from_pgbr(
     assert written["restic_write_s3_access_key_id"] == "GKreuse"
     assert written["restic_write_s3_secret_access_key"] == "secretreuse"
     assert written["pgbr_s3_write_key"] == "GKreuse"
-    assert written["restic_write_repository"].startswith("s3:172.16.92.28/")
+    assert written["restic_write_repository"].startswith("s3:203.0.113.28/")
