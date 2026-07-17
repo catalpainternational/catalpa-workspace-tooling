@@ -33,6 +33,15 @@ RESERVED_DK_TOP_COMMANDS = frozenset({"build", "push", "transfer", "digoc", "fet
 def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
     prog = f"dk {env_name} zabbix"
     p_zabbix = cmd_sub.add_parser("zabbix", help="Install or control Zabbix Agent 2 via systemd.")
+    p_zabbix.add_argument(
+        "--target",
+        choices=("app", "backup"),
+        default="app",
+        help=(
+            "Where to install/manage the agent: app docker_host (default) or "
+            "dc_backup_docker_host (Garage/backup machine)."
+        ),
+    )
     zabbix_sub = p_zabbix.add_subparsers(dest="zabbix_command", required=True)
 
     p_install = zabbix_sub.add_parser(
@@ -41,7 +50,15 @@ def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) 
     )
     p_install.add_argument("--image", default=DEFAULT_IMAGE, help="Agent image for pull/run.")
     p_install.add_argument("--server", metavar="HOST", default=None, help="Set ZBX_SERVER_HOST.")
-    p_install.add_argument("--hostname", metavar="NAME", default=None, help="Set ZBX_HOSTNAME.")
+    p_install.add_argument(
+        "--hostname",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Set ZBX_HOSTNAME (must match the host in Zabbix). "
+            "For --target backup: required via flag or zbx_hostname_backup (not site_origin)."
+        ),
+    )
     p_install.add_argument(
         "--active-allow",
         default=None,

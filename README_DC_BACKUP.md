@@ -93,6 +93,7 @@ dk prod dc-backup offsite status
 4. `dk <env> dc-backup provision` — creates layout (if needed), bucket, key, and prints a YAML fragment; by default also `sops set`s `pgbr_s3_write_*` / `restic_write_*` after confirm (or `--yes`). Use `--print-only` to skip the SOPS write and paste via `dk <env> secrets`. Use `--dry-run` to preview without Garage or SOPS changes. Re-running is a no-op when WRITE credentials already exist (still refreshes host `garage-s3` / `garage-admin`); `--force` overwrites (required when replacing Spaces). Provision looks up keys by friendly name first and grants bucket rights by **Key ID** (Garage allows duplicate names; a prior bug could mint extras — delete duplicates with `garage key list` / `key delete <KeyID>` if provision reports matching keys).
 5. Recreate `db`; run `dk <env> db backup` / `files backup`.
 6. Optional offsite: set `offsite_s3_*` → `dk <env> dc-backup offsite install --enable`.
+7. Optional Zabbix on the backup host: set `zbx_hostname_backup` (or pass `--hostname`) → `dk <env> zabbix --target backup install` → `enable` / `restart`. See [ZABBIX_README.md](ZABBIX_README.md).
 
 Unlike DigitalOcean Spaces, **`dk … db` / `files` do not auto-call `dc-backup provision`** — create Garage bucket/key credentials explicitly with step 4.
 

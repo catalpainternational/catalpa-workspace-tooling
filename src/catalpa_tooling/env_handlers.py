@@ -426,15 +426,33 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if env_command == "zabbix":
         env_defaults = _zabbix_env_defaults(info, env_add)
+        zabbix_target = getattr(ns, "target", "app") or "app"
         ssh_target: str | None
-        try:
-            ssh_target = parse_docker_host_to_ssh_target(str(docker_host))
-        except ValueError:
-            ssh_target = None
-            print(
-                "zabbix: docker_host is not SSH-formatted; running against this local machine.",
-                file=sys.stderr,
-            )
+        if zabbix_target == "backup":
+            from catalpa_tooling.dc_backup.paths import INFO_DC_BACKUP_DOCKER_HOST
+
+            backup_host = str(info.get(INFO_DC_BACKUP_DOCKER_HOST, "") or "").strip()
+            if not backup_host:
+                print(
+                    f"zabbix --target backup requires {INFO_DC_BACKUP_DOCKER_HOST} "
+                    f"in docker/envs/{env_name}/info.yaml.",
+                    file=sys.stderr,
+                )
+                return 1
+            try:
+                ssh_target = parse_docker_host_to_ssh_target(backup_host)
+            except ValueError as e:
+                print(f"zabbix --target backup: {e}", file=sys.stderr)
+                return 1
+        else:
+            try:
+                ssh_target = parse_docker_host_to_ssh_target(str(docker_host))
+            except ValueError:
+                ssh_target = None
+                print(
+                    "zabbix: docker_host is not SSH-formatted; running against this local machine.",
+                    file=sys.stderr,
+                )
         return run_zabbix_deploy(
             _zabbix_argv_from_ns(ns),
             config=config,
@@ -443,6 +461,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dry_run=dry_run,
             env_defaults=env_defaults,
             site_origin=str(site_origin) if site_origin else None,
+            target=zabbix_target,
         )
 
     if env_command == "ensure_volumes":
