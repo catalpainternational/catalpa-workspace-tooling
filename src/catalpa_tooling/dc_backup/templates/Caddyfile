@@ -1,0 +1,9 @@
+:443 {
+	tls /etc/garage/tls/server.crt /etc/garage/tls/server.key
+	reverse_proxy 127.0.0.1:3900 {
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}

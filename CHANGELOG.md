@@ -4,7 +4,17 @@
 
 ### Added
 
+- **`dk <env> zabbix --target backup`** — install/manage Agent 2 on `dc_backup_docker_host` with UserParameters `garage.status` and `dc-backup.offsite.timer` (hostname via `--hostname` or `zbx_hostname_backup`).
+- **`dk <env> files` / restic** — pass restic `--cacert` when `DC_BACKUP_CA_FILE` is set (Go TLS ignores `AWS_CA_BUNDLE` alone), so Garage private-CA endpoints work for `files init` / backup.
+- **`dk <env> dc-backup provision`** — installs host `garage-s3` / `garage-admin` (+ `garage-s3.env`) on `dc_backup_docker_host` (S3 WRITE keys; optional `GARAGE_ADMIN_TOKEN`). Also look up Garage keys by name before `key create` (friendly names are not unique); grant `bucket allow` by Key ID; clear error when duplicates exist.
+- **`dk <env> host` for datacenter hosts** — when no DO droplet matches but `docker_host` is set, print manual host status (including `dc_backup_docker_host`) instead of suggesting `host create`. Optional `--check-remote` probes SSH reachability and `timedatectl` (timezone / NTP). Prefer `digitalocean.disabled: true` for permanent non-DO envs. See README non-DO section.
+- **Closed-DC Garage (`dc-backup`)** — `dk <env> dc-backup tls|bootstrap|install|status|provision|offsite`: private CA TLS (`dc-backup-tls.yaml`, inferred `DC_BACKUP_CA_FILE`), Garage rpc/admin secrets (`dc-backup.yaml`), Garage+Caddy compose/mounts on `dc_backup_docker_host`, `provision` for bucket/key + WRITE credentials, and **`offsite`** for daily 05:00 (host local time) `rclone copy` of the Garage bucket to external S3 (`offsite_s3_*`). Shared `DOCKER_ADD_HOST` + CA mount for Compose `db`, pgBackRest (`repo1-storage-ca-file`), and restic (`AWS_CA_BUNDLE`). See [README_DC_BACKUP.md](README_DC_BACKUP.md).
+- **pgBackRest S3** — optional `pgbr_s3_{write,read}_uri_style` → `repo1-s3-uri-style` and `pgbr_s3_{write,read}_verify_tls` → `repo1-storage-verify-tls` for Garage / MinIO / private-CA endpoints (path-style URLs; TLS verify with mounted CA).
 - **`dk push` image SBOMs** — after each stack image push, Syft generates a CycloneDX SBOM and ORAS attaches it as an OCI referrer. For **web** and **proxy**, the committed app inventory (`compliance/sbom/bom.cdx.json`) is merged in (completeness-first overclaim). **db** is Syft-only. Use `--no-sbom` to skip. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md#image-sboms-dk-push).
+
+### Changed
+
+- **`dk <env> zabbix install`** — always ensures `ZBX_METADATA` includes `docker` plus `app` or `backup` from `--target` (appended to any existing metadata from `info.yaml` / credentials).
 
 ### Fixed
 

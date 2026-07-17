@@ -192,6 +192,8 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
         self.assertIn("repo1-type=s3", text)
         self.assertIn("repo1-s3-bucket=mybucket", text)
         self.assertIn("repo1-s3-endpoint=https://s3.example.com", text)
+        self.assertNotIn("repo1-s3-uri-style", text)
+        self.assertNotIn("repo1-storage-verify-tls", text)
         self.assertIn("repo1-bundle=y", text)
         self.assertIn("repo1-block=y", text)
         self.assertIn("process-max=2", text)
@@ -202,6 +204,23 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
         self.assertIn("compress-level=3", text)
         self.assertIn("[main]", text)
         self.assertIn("pg1-path=/var/lib/postgresql/18/docker", text)
+
+    def test_render_pgbackrest_write_uri_style_and_verify_tls(self) -> None:
+        vm = {
+            "BUCKET": "indmo-backups",
+            "REGION": "garage",
+            "KEY": "k",
+            "SECRET": "s",
+            "REPO_PATH": "/indmo/prod/pgbackrest",
+            "STANZA": "main",
+            "ENDPOINT": "s3.backup.internal",
+            "URI_STYLE": "path",
+            "VERIFY_TLS": "n",
+        }
+        text = render_pgbackrest_ini("write", vm, {})
+        self.assertIn("repo1-s3-endpoint=s3.backup.internal", text)
+        self.assertIn("repo1-s3-uri-style=path", text)
+        self.assertIn("repo1-storage-verify-tls=n", text)
 
     def test_render_pgbackrest_write_retention_override(self) -> None:
         vm = {

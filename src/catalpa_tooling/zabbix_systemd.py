@@ -34,14 +34,21 @@ DEFAULT_ZABBIX_COMPOSE_REPLICA = 1
 DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE = str(ENV_DIR / "restic-files-backup.env")
 ZABBIX_ITEM_KEY_PGBACKREST_INFO = "pgbackrest.info"
 ZABBIX_ITEM_KEY_RESTIC_SNAPSHOTS = "restic.snapshots"
+ZABBIX_ITEM_KEY_GARAGE_STATUS = "garage.status"
+ZABBIX_ITEM_KEY_OFFSITE_TIMER = "dc-backup.offsite.timer"
+GARAGE_DOCKER_CONTAINER = "garage"
 DOCKER_GROUP_FALLBACK_GID = 988
 DOCKER_SOCK_PATH = Path("/var/run/docker.sock")
 DEFAULT_ZBX_SERVER_HOST = "zabbix.catalpa.build"
+# Always present in ZBX_METADATA (HostMetadata) for auto-registration.
+ZBX_METADATA_DOCKER_TOKEN = "docker"
+ZBX_METADATA_APP_TOKEN = "app"
+ZBX_METADATA_BACKUP_TOKEN = "backup"
 
 # ``info.yaml`` ``env:`` keys mapped with ``_yaml_mapping_to_env`` use these for server/hostname/active;
 # any other ``ZBX_*`` keys from that block are merged into the agent env file as-is (e.g. ``ZBX_METADATA``).
 ZBX_ENV_RESERVED_FOR_MERGE = frozenset(
-    {"ZBX_SERVER_HOST", "ZBX_HOSTNAME", "ZBX_ACTIVE_ALLOW"}
+    {"ZBX_SERVER_HOST", "ZBX_HOSTNAME", "ZBX_ACTIVE_ALLOW", "ZBX_HOSTNAME_BACKUP"}
 )
 
 ENV_TEMPLATE = (
@@ -50,6 +57,7 @@ ENV_TEMPLATE = (
     f"ZBX_SERVER_HOST={DEFAULT_ZBX_SERVER_HOST}\n"
     "# ZBX_HOSTNAME defaults from info.yaml site_origin (host) unless overridden.\n"
     "ZBX_HOSTNAME=your-docker-host-name\n"
+    f"ZBX_METADATA={ZBX_METADATA_DOCKER_TOKEN}\n"
     "ZBX_ACTIVE_ALLOW=true\n"
 )
 
@@ -224,6 +232,33 @@ def _apply_zbx_tls_psk_defaults(keys: dict[str, str]) -> None:
         keys["ZBX_TLSCONNECT"] = "psk"
 
 
+def ensure_zbx_metadata_tokens(keys: dict[str, str], *, target: str = "app") -> bool:
+    """Ensure ``ZBX_METADATA`` includes ``docker`` plus ``app`` or ``backup``.
+
+    Removes the opposite role token if present. Returns True if keys changed.
+    """
+    role = (
+        ZBX_METADATA_BACKUP_TOKEN if target == "backup" else ZBX_METADATA_APP_TOKEN
+    )
+    opposite = (
+        ZBX_METADATA_APP_TOKEN
+        if role == ZBX_METADATA_BACKUP_TOKEN
+        else ZBX_METADATA_BACKUP_TOKEN
+    )
+    raw = (keys.get("ZBX_METADATA") or "").strip()
+    tokens = raw.split() if raw else []
+    filtered = [t for t in tokens if t != opposite]
+    changed = filtered != tokens
+    tokens = filtered
+    for required in (ZBX_METADATA_DOCKER_TOKEN, role):
+        if required not in tokens:
+            tokens.append(required)
+            changed = True
+    if changed:
+        keys["ZBX_METADATA"] = " ".join(tokens)
+    return changed
+
+
 def _merge_env_keys(
     existing: str | None,
     *,
@@ -231,6 +266,7 @@ def _merge_env_keys(
     hostname: str | None,
     active_allow: bool | None,
     env_defaults: dict[str, str] | None = None,
+    target: str = "app",
 ) -> tuple[str | None, str]:
     """Merge CLI/env overrides into env content."""
     extras = _extra_zbx_from_info_yaml(env_defaults)
@@ -251,9 +287,11 @@ def _merge_env_keys(
             keys["ZBX_ACTIVE_ALLOW"] = "true" if active_allow else "false"
         _apply_extra_zbx_keys(keys, env_defaults)
         _apply_zbx_tls_psk_defaults(keys)
+        ensure_zbx_metadata_tokens(keys, target=target)
         return _format_env_body(keys), "created"
+
+    keys = _parse_env_lines(existing)
     if overrides:
-        keys = _parse_env_lines(existing)
         if server is not None:
             keys["ZBX_SERVER_HOST"] = server
         if hostname is not None:
@@ -262,8 +300,10 @@ def _merge_env_keys(
             keys["ZBX_ACTIVE_ALLOW"] = "true" if active_allow else "false"
         _apply_extra_zbx_keys(keys, env_defaults)
         _apply_zbx_tls_psk_defaults(keys)
-        return _format_env_body(keys), "updated"
-    return None, "unchanged"
+    meta_changed = ensure_zbx_metadata_tokens(keys, target=target)
+    if not overrides and not meta_changed:
+        return None, "unchanged"
+    return _format_env_body(keys), "updated"
 
 
 def _print_install_dry_run_env_preview(
@@ -295,6 +335,7 @@ def _ensure_env_file(
     active_allow: bool | None,
     dry_run: bool,
     env_defaults: dict[str, str] | None = None,
+    target: str = "app",
 ) -> None:
     if dry_run:
         print(f"[dry-run] would mkdir -p {ENV_DIR} and ensure {ENV_FILE}", flush=True)
@@ -305,6 +346,7 @@ def _ensure_env_file(
             hostname=hostname,
             active_allow=active_allow,
             env_defaults=env_defaults,
+            target=target,
         )
         _print_install_dry_run_env_preview(
             existing=existing, new_body=new_body, reason=reason, remote=False
@@ -318,6 +360,7 @@ def _ensure_env_file(
         hostname=hostname,
         active_allow=active_allow,
         env_defaults=env_defaults,
+        target=target,
     )
     if new_body is not None:
         _write_text_root(ENV_FILE, new_body, mode=0o600)
@@ -336,6 +379,7 @@ def cmd_install(
     dry_run: bool,
     docker_group_gid: int | None = None,
     env_defaults: dict[str, str] | None = None,
+    target: str = "app",
 ) -> int:
     _require_systemd_host()
     dgid = resolve_docker_group_gid_local(explicit=docker_group_gid)
@@ -346,6 +390,7 @@ def cmd_install(
         active_allow=active_allow,
         dry_run=dry_run,
         env_defaults=env_defaults,
+        target=target,
     )
     unit_body = _unit_file_content(image=image, docker_group_gid=dgid)
     if dry_run:
@@ -491,10 +536,14 @@ def cmd_install_remote(
     dry_run: bool,
     docker_group_gid: int | None = None,
     env_defaults: dict[str, str] | None = None,
+    target: str = "app",
+    offsite_timer_unit: str | None = None,
 ) -> int:
     dgid = resolve_docker_group_gid_remote(ssh_target, explicit=docker_group_gid)
+    where = "backup host" if target == "backup" else "deploy host"
     print(
-        f"zabbix: remote install via {ssh_target!r} (--group-add {dgid} on deploy host).",
+        f"zabbix: remote install via {ssh_target!r} "
+        f"(--target {target}, --group-add {dgid} on {where}).",
         flush=True,
     )
     if dry_run:
@@ -505,8 +554,13 @@ def cmd_install_remote(
             hostname=hostname,
             active_allow=active_allow,
             env_defaults=env_defaults,
+            target=target,
         )
-        userparams_body = render_userparams_conf(env_defaults or {})
+        userparams_body = render_userparams_conf(
+            env_defaults or {},
+            target=target,
+            offsite_timer_unit=offsite_timer_unit,
+        )
         unit_body = _unit_file_content(image=image, docker_group_gid=dgid)
         print("[dry-run] would write env + unit on remote and run daemon-reload", flush=True)
         _print_install_dry_run_env_preview(
@@ -524,8 +578,13 @@ def cmd_install_remote(
         hostname=hostname,
         active_allow=active_allow,
         env_defaults=env_defaults,
+        target=target,
     )
-    userparams_body = render_userparams_conf(env_defaults or {})
+    userparams_body = render_userparams_conf(
+        env_defaults or {},
+        target=target,
+        offsite_timer_unit=offsite_timer_unit,
+    )
     unit_body = _unit_file_content(image=image, docker_group_gid=dgid)
     script = _remote_install_script(
         env_body=new_env,
@@ -648,25 +707,86 @@ def _restic_snapshots_userparameter_command(env: dict[str, str]) -> str:
     parts: list[str] = [chroot_prefix, "run", "--rm"]
     if _env_bool(env, "ZABBIX_RESTIC_DOCKER_PLATFORM_AMD64", default=True):
         parts.extend(["--platform", "linux/amd64"])
-    parts.extend(["--env-file", shlex.quote(env_file), shlex.quote(image), "--json", "snapshots"])
+    from catalpa_tooling.dc_backup.hosts import (
+        DC_BACKUP_CA_CONTAINER_PATH,
+        dc_backup_ca_host_path,
+        parse_docker_add_hosts,
+    )
+
+    try:
+        for name, ip in parse_docker_add_hosts(env):
+            parts.extend(["--add-host", shlex.quote(f"{name}:{ip}")])
+        ca = dc_backup_ca_host_path(env)
+    except ValueError:
+        ca = None
+    if ca:
+        parts.extend(["-v", shlex.quote(f"{ca}:{DC_BACKUP_CA_CONTAINER_PATH}:ro")])
+        parts.extend(["-e", shlex.quote(f"AWS_CA_BUNDLE={DC_BACKUP_CA_CONTAINER_PATH}")])
+    parts.extend(["--env-file", shlex.quote(env_file), shlex.quote(image)])
+    if ca:
+        parts.extend(["--cacert", shlex.quote(DC_BACKUP_CA_CONTAINER_PATH)])
+    parts.extend(["--json", "snapshots"])
     return " ".join(parts)
 
 
-def render_userparams_conf(env: dict[str, str]) -> str:
-    """Fragment for ``zabbix_agent2.d`` with ``UserParameter`` lines."""
+def render_userparams_conf(
+    env: dict[str, str],
+    *,
+    target: str = "app",
+    offsite_timer_unit: str | None = None,
+) -> str:
+    """Fragment for ``zabbix_agent2.d`` with ``UserParameter`` lines.
+
+    ``target=app``: pgBackRest + restic (deploy host).
+    ``target=backup``: Garage status + offsite timer (dc_backup_docker_host).
+    """
     lines: list[str] = [
         "# Managed by `uv run dk <env> zabbix install`.",
         "# Regenerate after changing docker/envs/<env>/info.yaml (compose_project_name, zabbix_*).",
         "#",
-        "# Test on host (no chroot):",
-        "#   docker exec -i -u postgres <db-container> pgbackrest info --output=json",
-        f"#   docker run --rm --platform linux/amd64 --env-file {DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE} \\",
-        f"#     {RESTIC_IMAGE} --json snapshots",
-        "",
     ]
     docker_bin = shlex.quote(_chroot_host_docker_bin(env))
     chroot_prefix = f"{CHROOT_BIN} {CHROOT_HOST_ROOT} {docker_bin}"
 
+    if target == "backup":
+        lines.extend(
+            [
+                "# Backup host (--target backup): Garage + offsite timer.",
+                "# Test on host (no chroot):",
+                f"#   docker exec {GARAGE_DOCKER_CONTAINER} /garage status",
+                f"#   systemctl show -p ActiveState --value {offsite_timer_unit or '<offsite.timer>'}",
+                "",
+            ]
+        )
+        lines.append(
+            f"UserParameter={ZABBIX_ITEM_KEY_GARAGE_STATUS},"
+            f"{chroot_prefix} exec {shlex.quote(GARAGE_DOCKER_CONTAINER)} /garage status"
+        )
+        timer = (offsite_timer_unit or "").strip()
+        if timer:
+            # systemctl on the host via chroot (not docker).
+            lines.append(
+                f"UserParameter={ZABBIX_ITEM_KEY_OFFSITE_TIMER},"
+                f"{CHROOT_BIN} {CHROOT_HOST_ROOT} /bin/systemctl show "
+                f"-p ActiveState --value {shlex.quote(timer)}"
+            )
+        else:
+            lines.append(
+                "# Offsite timer UserParameter omitted: ops.systemd_unit_prefix / "
+                "offsite unit name unavailable."
+            )
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.extend(
+        [
+            "# Test on host (no chroot):",
+            "#   docker exec -i -u postgres <db-container> pgbackrest info --output=json",
+            f"#   docker run --rm --platform linux/amd64 --env-file {DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE} \\",
+            f"#     {RESTIC_IMAGE} --json snapshots",
+            "",
+        ]
+    )
     show_pg = _env_bool(env, "ZABBIX_USERPARAMETER_PGBACKREST", default=True)
     show_restic = _env_bool(env, "ZABBIX_USERPARAMETER_RESTIC", default=True)
 
@@ -809,15 +929,25 @@ def _install_options_from_env_and_cli(
     args_active_allow: bool | None,
     env_defaults: dict[str, str] | None,
     site_origin: str | None,
+    target: str = "app",
 ) -> tuple[str | None, str | None, bool]:
-    """CLI wins; then info.yaml ``env:``; hostname falls back to ``site_origin`` host."""
+    """CLI wins; then info.yaml ``env:``; hostname falls back to ``site_origin`` host (app only)."""
     env = env_defaults or {}
     server = (
         args_server if args_server is not None else _nonempty_env_str(env, "ZBX_SERVER_HOST")
     )
-    hostname = args_hostname if args_hostname is not None else _nonempty_env_str(env, "ZBX_HOSTNAME")
-    if hostname is None:
-        hostname = hostname_from_site_origin(site_origin)
+    if target == "backup":
+        hostname = (
+            args_hostname
+            if args_hostname is not None
+            else _nonempty_env_str(env, "ZBX_HOSTNAME_BACKUP")
+        )
+    else:
+        hostname = (
+            args_hostname if args_hostname is not None else _nonempty_env_str(env, "ZBX_HOSTNAME")
+        )
+        if hostname is None:
+            hostname = hostname_from_site_origin(site_origin)
     active_allow = (
         args_active_allow if args_active_allow is not None else _active_allow_from_env(env)
     )
@@ -926,6 +1056,7 @@ def run_zabbix_deploy(
     dry_run: bool,
     env_defaults: dict[str, str] | None = None,
     site_origin: str | None = None,
+    target: str = "app",
 ) -> int:
     """Parse argv and dispatch zabbix subcommands locally or via ssh target."""
     from catalpa_tooling.config import ProjectConfig
@@ -933,6 +1064,10 @@ def run_zabbix_deploy(
     if config is None:
         config = ProjectConfig.from_cwd()
     _apply_config_globals(config)
+
+    if target not in ("app", "backup"):
+        print(f"zabbix: invalid target {target!r} (expected app or backup).", file=sys.stderr)
+        return 2
 
     args = build_zabbix_argparser(prog=prog).parse_args(argv)
     eff_dry = dry_run or bool(getattr(args, "dry_run", False))
@@ -962,8 +1097,25 @@ def run_zabbix_deploy(
         args_hostname=args.hostname if args.command == "install" else None,
         args_active_allow=args.active_allow if args.command == "install" else None,
         env_defaults=env_defaults,
-        site_origin=site_origin,
+        site_origin=site_origin if target == "app" else None,
+        target=target,
     )
+
+    if args.command == "install" and target == "backup" and not (install_hostname or "").strip():
+        print(
+            "zabbix install --target backup: ZBX_HOSTNAME is required.\n"
+            "  Pass --hostname NAME, or set zbx_hostname_backup in info.yaml "
+            "(under env: or top-level).\n"
+            "  Do not reuse the app host zbx_hostname / site_origin.",
+            file=sys.stderr,
+        )
+        return 1
+
+    offsite_timer: str | None = None
+    if target == "backup":
+        from catalpa_tooling.dc_backup.offsite import offsite_unit_names
+
+        _svc, offsite_timer = offsite_unit_names(config)
 
     if ssh_target:
         if args.command == "install":
@@ -976,6 +1128,8 @@ def run_zabbix_deploy(
                 dry_run=eff_dry,
                 docker_group_gid=args.docker_group_gid,
                 env_defaults=env_defaults,
+                target=target,
+                offsite_timer_unit=offsite_timer,
             )
         if args.command == "enable":
             return cmd_enable_remote(ssh_target, dry_run=eff_dry)
@@ -987,6 +1141,14 @@ def run_zabbix_deploy(
             return cmd_logs_remote(ssh_target, lines=args.lines, follow=bool(args.follow))
         return 2
 
+    if target == "backup":
+        print(
+            "zabbix --target backup requires an SSH dc_backup_docker_host "
+            "(local install is not supported).",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.command == "install":
         return cmd_install(
             image=args.image,
@@ -996,6 +1158,7 @@ def run_zabbix_deploy(
             dry_run=eff_dry,
             docker_group_gid=args.docker_group_gid,
             env_defaults=env_defaults,
+            target=target,
         )
     if args.command == "enable":
         return cmd_enable(dry_run=eff_dry)

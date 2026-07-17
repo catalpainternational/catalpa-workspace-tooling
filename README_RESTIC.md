@@ -6,6 +6,7 @@ Back up the stack’s **`django_media`** Docker volume with [restic](https://res
 
 - [README_SYSTEMD.md](README_SYSTEMD.md) — install `*-restic-files-backup.timer` on the deploy host
 - [ZABBIX_README.md](ZABBIX_README.md) — `restic.snapshots` UserParameter (reads `restic-files-backup.env`)
+- [README_DC_BACKUP.md](README_DC_BACKUP.md) — private CA mount, `DOCKER_ADD_HOST`, `dk dc-backup`
 - [README.md](README.md) — main tooling overview
 
 ## What gets backed up
@@ -115,6 +116,8 @@ dk prod bkp_files install-systemd --enable
 ## S3 and AWS env
 
 Restic’s S3 backend reads `AWS_*` inside the container. Host env files may store only `RESTIC_S3_*`; install-systemd and the backup script map them to `AWS_ACCESS_KEY_ID`, etc.
+
+For private-CA S3 endpoints, issue/install via [README_DC_BACKUP.md](README_DC_BACKUP.md). When `dc-backup-tls.yaml` exists, `DC_BACKUP_CA_FILE` is inferred (`{ops.config_dir}/tls/dc-backup-ca.crt`) and copied into the systemd env file; optional `DOCKER_ADD_HOST` still comes from `info.yaml` `env:`. The backup script, `dk <env> files …`, and Zabbix `restic.snapshots` mount the CA, set `AWS_CA_BUNDLE`, and pass restic global `--cacert` (restic’s Go TLS does not use `AWS_CA_BUNDLE` alone).
 
 ## Troubleshooting
 

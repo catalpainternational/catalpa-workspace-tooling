@@ -15,6 +15,7 @@ def test_merge_env_keys_serializes_expected_order() -> None:
     assert "ZBX_SERVER_HOST=zabbix.example.test" in body
     assert "ZBX_HOSTNAME=host-a" in body
     assert "ZBX_ACTIVE_ALLOW=false" in body
+    assert "ZBX_METADATA=docker app" in body
 
 
 def test_merge_env_keys_merges_extra_zbx_keys_from_info_yaml() -> None:
@@ -27,8 +28,28 @@ def test_merge_env_keys_merges_extra_zbx_keys_from_info_yaml() -> None:
     )
     assert reason == "created"
     assert body is not None
-    assert "ZBX_METADATA=role=web" in body
+    assert "ZBX_METADATA=role=web docker app" in body
     assert "ZBX_METADATAITEM=system.uname" in body
+
+
+def test_ensure_zbx_metadata_tokens_app_target() -> None:
+    keys = {"ZBX_METADATA": "kafemalirin"}
+    assert zs.ensure_zbx_metadata_tokens(keys, target="app") is True
+    assert keys["ZBX_METADATA"] == "kafemalirin docker app"
+    assert zs.ensure_zbx_metadata_tokens(keys, target="app") is False
+
+
+def test_ensure_zbx_metadata_tokens_backup_target() -> None:
+    keys: dict[str, str] = {}
+    assert zs.ensure_zbx_metadata_tokens(keys, target="backup") is True
+    assert keys["ZBX_METADATA"] == "docker backup"
+    assert zs.ensure_zbx_metadata_tokens(keys, target="backup") is False
+
+
+def test_ensure_zbx_metadata_tokens_swaps_role() -> None:
+    keys = {"ZBX_METADATA": "kafemalirin docker app"}
+    assert zs.ensure_zbx_metadata_tokens(keys, target="backup") is True
+    assert keys["ZBX_METADATA"] == "kafemalirin docker backup"
 
 
 def test_merge_env_keys_sets_tls_connect_psk_when_psk_pair_present() -> None:
@@ -76,7 +97,7 @@ def test_merge_env_keys_core_triple_wins_over_reserved_yaml_keys_in_extras() -> 
     )
     assert "ZBX_SERVER_HOST=from-core" in body
     assert "yaml-only-server" not in body
-    assert "ZBX_METADATA=x" in body
+    assert "ZBX_METADATA=x docker app" in body
 
 
 def test_merge_env_keys_updates_existing_with_only_extras() -> None:
@@ -95,7 +116,7 @@ def test_merge_env_keys_updates_existing_with_only_extras() -> None:
     assert reason == "updated"
     assert body is not None
     assert "ZBX_SERVER_HOST=srv" in body
-    assert "ZBX_METADATA=k=v" in body
+    assert "ZBX_METADATA=k=v docker app" in body
 
 
 def test_ensure_env_file_dry_run_prints_merged_env_contents(monkeypatch, capsys) -> None:
@@ -115,7 +136,12 @@ def test_ensure_env_file_dry_run_prints_merged_env_contents(monkeypatch, capsys)
 
 
 def test_ensure_env_file_dry_run_unchanged_shows_existing_file(monkeypatch, capsys) -> None:
-    existing = "ZBX_SERVER_HOST=old\nZBX_HOSTNAME=h\nZBX_ACTIVE_ALLOW=true\n"
+    existing = (
+        "ZBX_SERVER_HOST=old\n"
+        "ZBX_HOSTNAME=h\n"
+        "ZBX_METADATA=docker app\n"
+        "ZBX_ACTIVE_ALLOW=true\n"
+    )
     monkeypatch.setattr(zs, "_read_env_file", lambda: existing)
     zs._ensure_env_file(
         server=None,
@@ -129,10 +155,43 @@ def test_ensure_env_file_dry_run_unchanged_shows_existing_file(monkeypatch, caps
     assert "ZBX_SERVER_HOST=old" in out
 
 
-def test_merge_env_keys_unchanged_when_no_overrides_and_no_extras() -> None:
+def test_merge_env_keys_adds_docker_and_app_metadata_when_missing() -> None:
     existing = (
         "ZBX_SERVER_HOST=srv\n"
         "ZBX_HOSTNAME=h\n"
+        "ZBX_ACTIVE_ALLOW=true\n"
+    )
+    body, reason = zs._merge_env_keys(
+        existing,
+        server=None,
+        hostname=None,
+        active_allow=None,
+        env_defaults=None,
+    )
+    assert reason == "updated"
+    assert body is not None
+    assert "ZBX_METADATA=docker app" in body
+
+
+def test_merge_env_keys_backup_target_sets_backup_token() -> None:
+    body, reason = zs._merge_env_keys(
+        None,
+        server="srv",
+        hostname="bk",
+        active_allow=True,
+        target="backup",
+    )
+    assert reason == "created"
+    assert body is not None
+    assert "ZBX_METADATA=docker backup" in body
+    assert " app" not in body.split("ZBX_METADATA=", 1)[1].split("\n", 1)[0]
+
+
+def test_merge_env_keys_unchanged_when_no_overrides_and_tokens_present() -> None:
+    existing = (
+        "ZBX_SERVER_HOST=srv\n"
+        "ZBX_HOSTNAME=h\n"
+        "ZBX_METADATA=docker app\n"
         "ZBX_ACTIVE_ALLOW=true\n"
     )
     body, reason = zs._merge_env_keys(
@@ -353,6 +412,65 @@ def test_run_zabbix_deploy_install_rejects_without_zbx_or_cli(
     assert rc == 1
     err = capsys.readouterr().err
     assert "no Zabbix configuration" in err
+
+
+def test_install_options_backup_uses_hostname_backup_not_site_origin() -> None:
+    server, host, active = zs._install_options_from_env_and_cli(
+        args_server=None,
+        args_hostname=None,
+        args_active_allow=None,
+        env_defaults={
+            "ZBX_SERVER_HOST": "z.example",
+            "ZBX_HOSTNAME": "app-host",
+            "ZBX_HOSTNAME_BACKUP": "backup-host",
+        },
+        site_origin="https://app.example.com",
+        target="backup",
+    )
+    assert server == "z.example"
+    assert host == "backup-host"
+    assert active is True
+
+
+def test_install_options_backup_cli_hostname_wins() -> None:
+    _, host, _ = zs._install_options_from_env_and_cli(
+        args_server=None,
+        args_hostname="cli-backup",
+        args_active_allow=None,
+        env_defaults={"ZBX_HOSTNAME_BACKUP": "yaml-backup"},
+        site_origin="https://app.example.com",
+        target="backup",
+    )
+    assert host == "cli-backup"
+
+
+def test_render_userparams_conf_backup_profile() -> None:
+    body = zs.render_userparams_conf(
+        {},
+        target="backup",
+        offsite_timer_unit="indmo-rclone-garage-offsite.timer",
+    )
+    assert "UserParameter=garage.status," in body
+    assert "docker exec garage /garage status" in body or "exec garage /garage status" in body
+    assert "UserParameter=dc-backup.offsite.timer," in body
+    assert "indmo-rclone-garage-offsite.timer" in body
+    assert "pgbackrest.info" not in body
+    assert "restic.snapshots" not in body
+
+
+def test_run_zabbix_backup_install_requires_hostname(minimal_config, capsys) -> None:
+    rc = zs.run_zabbix_deploy(
+        ["install", "--force"],
+        config=minimal_config,
+        prog="dk prod zabbix",
+        ssh_target="root@203.0.113.28",
+        dry_run=True,
+        env_defaults={"ZBX_SERVER_HOST": "z.example"},
+        site_origin="https://app.example.com",
+        target="backup",
+    )
+    assert rc == 1
+    assert "zbx_hostname_backup" in capsys.readouterr().err
 
 
 def test_render_userparams_conf_v2_container_name() -> None:

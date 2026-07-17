@@ -14,6 +14,7 @@ def _mock_deploy_context(config) -> ManagedDeployContext:
         compose_file="compose.yml",
         env_add={},
         docker_host="",
+        dc_backup_docker_host="",
         site_origin="http://localhost:8000",
         site_origins=("http://localhost:8000",),
         use_prepulled_registry=False,

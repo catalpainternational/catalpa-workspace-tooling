@@ -84,6 +84,10 @@ from catalpa_tooling.systemd_remote_install import (
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
+from catalpa_tooling.dc_backup.hosts import (
+    dc_backup_tls_extra_compose_files,
+    merge_extra_compose_files,
+)
 from catalpa_tooling.local_proxy import (
     LocalProxyConfigError,
     local_proxy_extra_compose_files,
@@ -270,7 +274,7 @@ def _run_compose_path(
             use_prepulled_registry=use_prepulled_registry,
         )
     try:
-        extra_compose_files = local_proxy_extra_compose_files(
+        proxy_files = local_proxy_extra_compose_files(
             info,
             config,
             env_name,
@@ -280,11 +284,23 @@ def _run_compose_path(
     except LocalProxyConfigError as e:
         print(str(e), file=sys.stderr)
         return 1
+    try:
+        tls_files = dc_backup_tls_extra_compose_files(
+            info,
+            config,
+            env_name,
+            env_add,
+            compose_args,
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    extra_compose_files = merge_extra_compose_files(proxy_files, tls_files)
     proc = _compose(
         compose_file,
         *compose_args,
         env_add=env_add,
-        extra_compose_files=extra_compose_files or None,
+        extra_compose_files=extra_compose_files,
         check=False,
     )
     if proc.returncode != 0:
@@ -345,6 +361,11 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if env_command == "secrets":
         return _cmd_env_secrets(creds_path, repo_root, dry_run=dry_run)
 
+    if env_command == "dc-backup":
+        from catalpa_tooling.dc_backup.cli import handle_dc_backup_command
+
+        return handle_dc_backup_command(ns, config, env_name, dry_run=dry_run)
+
     if env_command == "host":
         if getattr(ns, "host_command", None) == "create":
             tail = list(getattr(ns, "host_create_args", None) or [])
@@ -363,6 +384,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             write=bool(ns.write),
             sync_dns=bool(ns.sync_dns),
             dry_run=dry_run,
+            check_remote=bool(getattr(ns, "check_remote", False)),
         )
 
     compose_file = resolve_compose_file_from_info(info, config)
@@ -411,15 +433,33 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if env_command == "zabbix":
         env_defaults = _zabbix_env_defaults(info, env_add)
+        zabbix_target = getattr(ns, "target", "app") or "app"
         ssh_target: str | None
-        try:
-            ssh_target = parse_docker_host_to_ssh_target(str(docker_host))
-        except ValueError:
-            ssh_target = None
-            print(
-                "zabbix: docker_host is not SSH-formatted; running against this local machine.",
-                file=sys.stderr,
-            )
+        if zabbix_target == "backup":
+            from catalpa_tooling.dc_backup.paths import INFO_DC_BACKUP_DOCKER_HOST
+
+            backup_host = str(info.get(INFO_DC_BACKUP_DOCKER_HOST, "") or "").strip()
+            if not backup_host:
+                print(
+                    f"zabbix --target backup requires {INFO_DC_BACKUP_DOCKER_HOST} "
+                    f"in docker/envs/{env_name}/info.yaml.",
+                    file=sys.stderr,
+                )
+                return 1
+            try:
+                ssh_target = parse_docker_host_to_ssh_target(backup_host)
+            except ValueError as e:
+                print(f"zabbix --target backup: {e}", file=sys.stderr)
+                return 1
+        else:
+            try:
+                ssh_target = parse_docker_host_to_ssh_target(str(docker_host))
+            except ValueError:
+                ssh_target = None
+                print(
+                    "zabbix: docker_host is not SSH-formatted; running against this local machine.",
+                    file=sys.stderr,
+                )
         return run_zabbix_deploy(
             _zabbix_argv_from_ns(ns),
             config=config,
@@ -428,6 +468,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dry_run=dry_run,
             env_defaults=env_defaults,
             site_origin=str(site_origin) if site_origin else None,
+            target=zabbix_target,
         )
 
     if env_command == "ensure_volumes":
@@ -724,7 +765,9 @@ def _handle_bkp_db(
                 return rc
             return run_configure_verify_online_check(compose_file, env_add)
         if mode == "stanza-create":
-            return run_bkp_db_stanza_create_flow(compose_file, env_add, image=img, config=config)
+            return run_bkp_db_stanza_create_flow(
+                compose_file, env_add, image=img, config=config, dk_env_name=env_name
+            )
         print(f"Unknown bkp_db configure mode: {mode!r}", file=sys.stderr)
         return 1
 

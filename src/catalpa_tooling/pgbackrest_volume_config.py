@@ -47,6 +47,9 @@ SUFFIX_TO_GLOBAL: dict[str, str] = {
     "KEY": "repo1-s3-key",
     "SECRET": "repo1-s3-key-secret",
     "REPO_PATH": "repo1-path",
+    # Optional (Garage / MinIO / private CA): omit for Spaces/AWS defaults.
+    "URI_STYLE": "repo1-s3-uri-style",
+    "VERIFY_TLS": "repo1-storage-verify-tls",
 }
 REQUIRED_SUFFIXES = frozenset({"BUCKET", "REGION", "KEY", "SECRET", "REPO_PATH", "STANZA"})
 
@@ -372,6 +375,13 @@ def _compose_db_platform_args() -> list[str]:
     return ["--platform", "linux/amd64"]
 
 
+def _docker_run_s3_network_args(env: dict[str, str]) -> list[str]:
+    """``--add-host`` / CA bind-mount for S3-reaching pgBackRest one-shots."""
+    from catalpa_tooling.dc_backup.hosts import docker_add_host_args, docker_ca_volume_args
+
+    return [*docker_add_host_args(env), *docker_ca_volume_args(env)]
+
+
 def _pgdata_has_control_file(
     docker_env: dict[str, str],
     image: str,
@@ -489,6 +499,11 @@ def render_pgbackrest_ini(
     )
     ret_full = vars_map.get("RETENTION_FULL") or _env_str(env, "PGBR_REPO1_RETENTION_FULL", "30")
     lines.append(f"repo1-retention-full={ret_full}")
+
+    from catalpa_tooling.dc_backup.hosts import DC_BACKUP_CA_CONTAINER_PATH, dc_backup_ca_host_path
+
+    if dc_backup_ca_host_path(env):
+        lines.append(f"repo1-storage-ca-file={DC_BACKUP_CA_CONTAINER_PATH}")
 
     lines.append("")
     lines.append("[global:archive-push]")
@@ -1118,6 +1133,7 @@ def pgbackrest_stanza_exists_in_repo(
             "run",
             "--rm",
             *_compose_db_platform_args(),
+            *_docker_run_s3_network_args(env),
             "--entrypoint",
             "pgbackrest",
             "-v",
@@ -1215,6 +1231,7 @@ def run_pgbackrest_stanza_create(
             "run",
             "--rm",
             *_compose_db_platform_args(),
+            *_docker_run_s3_network_args(env),
             "--entrypoint",
             "/bin/sh",
             "-v",

@@ -21,7 +21,15 @@ _DOCTL_RESOLUTION_TEST_FILES = frozenset(
     }
 )
 
+# These tests exercise ssh-keyscan / port probing with their own mocks.
+_SSH_KNOWN_HOSTS_TEST_FILES = frozenset({"test_ssh_known_hosts.py"})
+
 _MINIMAL_ROOT = Path(__file__).resolve().parent / "fixtures" / "minimal_project"
+
+
+def _test_file_name(request: pytest.FixtureRequest) -> str | None:
+    node_path = getattr(request.node, "path", None) or getattr(request.node, "fspath", None)
+    return Path(node_path).name if node_path is not None else None
 
 
 @pytest.fixture(autouse=True)
@@ -33,10 +41,28 @@ def _mock_sops_cli(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _mock_doctl_cli(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
     """Workspace tests do not require the official host ``doctl`` binary."""
-    node_path = getattr(request.node, "path", None) or getattr(request.node, "fspath", None)
-    if node_path is not None and Path(node_path).name in _DOCTL_RESOLUTION_TEST_FILES:
+    if _test_file_name(request) in _DOCTL_RESOLUTION_TEST_FILES:
         return
     install_doctl_mocks(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _block_real_ssh_keyscan(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Fail fast if a test contacts the network via ssh-keyscan (no 120s wait)."""
+    if _test_file_name(request) in _SSH_KNOWN_HOSTS_TEST_FILES:
+        return
+
+    def _blocked(*_a: object, **_k: object) -> None:
+        raise AssertionError(
+            "Real SSH known_hosts probing is blocked in tests. "
+            "Monkeypatch ensure_ssh_known_host_for_docker_host / "
+            "ensure_ssh_known_host_for_ssh_target (or ensure_known_host)."
+        )
+
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts._ssh_port_open", _blocked)
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts._run_ssh_keyscan", _blocked)
 
 
 @pytest.fixture

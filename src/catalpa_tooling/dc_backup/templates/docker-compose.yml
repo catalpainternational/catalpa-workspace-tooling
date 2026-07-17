@@ -1,0 +1,21 @@
+services:
+  garage:
+    image: ${GARAGE_IMAGE:-dxflrs/garage:v2.3.0}
+    container_name: garage
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /etc/garage.toml:/etc/garage.toml:ro
+      - /var/lib/garage/meta:/var/lib/garage/meta
+      - /var/lib/garage/data:/var/lib/garage/data
+    command: ["/garage", "server", "--single-node"]
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.9-alpine}
+    container_name: garage-caddy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /etc/garage/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/garage/tls:/etc/garage/tls:ro
+      - /var/lib/garage/caddy-data:/data

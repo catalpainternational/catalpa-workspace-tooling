@@ -1,6 +1,9 @@
 docker/envs/**/credentials.yaml
+docker/envs/**/dc-backup-tls.yaml
+docker/envs/**/dc-backup.yaml
 docker/envs/**/*credentials.plain.yaml
 .env
 .env.local
 .env.*
 !.env.example
+

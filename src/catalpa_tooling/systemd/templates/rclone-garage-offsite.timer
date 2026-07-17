@@ -1,0 +1,13 @@
+# Daily OOH offsite copy after app-host backups (schedule in host local time).
+# OnCalendar without a timezone uses the backup host's system timezone (not UTC).
+# Rendered by dk <env> dc-backup offsite install (see README_DC_BACKUP.md).
+#
+[Unit]
+Description=Timer for rclone Garage → external S3 offsite copy
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -48,6 +48,15 @@ RESERVED_DK_TOP_COMMANDS = frozenset({"build", "push", "transfer", "digoc", "fet
 def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
     prog = f"dk {env_name} zabbix"
     p_zabbix = cmd_sub.add_parser("zabbix", help="Install or control Zabbix Agent 2 via systemd.")
+    p_zabbix.add_argument(
+        "--target",
+        choices=("app", "backup"),
+        default="app",
+        help=(
+            "Where to install/manage the agent: app docker_host (default) or "
+            "dc_backup_docker_host (Garage/backup machine)."
+        ),
+    )
     zabbix_sub = p_zabbix.add_subparsers(dest="zabbix_command", required=True)
 
     p_install = zabbix_sub.add_parser(
@@ -56,7 +65,15 @@ def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) 
     )
     p_install.add_argument("--image", default=DEFAULT_IMAGE, help="Agent image for pull/run.")
     p_install.add_argument("--server", metavar="HOST", default=None, help="Set ZBX_SERVER_HOST.")
-    p_install.add_argument("--hostname", metavar="NAME", default=None, help="Set ZBX_HOSTNAME.")
+    p_install.add_argument(
+        "--hostname",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Set ZBX_HOSTNAME (must match the host in Zabbix). "
+            "For --target backup: required via flag or zbx_hostname_backup (not site_origin)."
+        ),
+    )
     p_install.add_argument(
         "--active-allow",
         default=None,
@@ -179,6 +196,176 @@ def _attach_env_command_parsers(
 
     cmd_sub.add_parser("secrets", help="Edit credentials.yaml with SOPS.")
 
+    p_dc = cmd_sub.add_parser(
+        "dc-backup",
+        help="Closed-DC Garage backup: TLS certs and Garage+Caddy stack.",
+    )
+    dc_sub = p_dc.add_subparsers(dest="dc_backup_command", required=True)
+
+    p_tls = dc_sub.add_parser("tls", help="Issue / install / status for private CA + server cert.")
+    tls_sub = p_tls.add_subparsers(dest="dc_backup_tls_command", required=True)
+    p_issue = tls_sub.add_parser(
+        "issue",
+        help="Generate CA + server cert (openssl) and write SOPS dc-backup-tls.yaml.",
+    )
+    p_issue.add_argument(
+        "--ip",
+        dest="ips",
+        action="append",
+        default=[],
+        metavar="IP",
+        help="IPv4 SAN (repeatable; at least one required).",
+    )
+    p_issue.add_argument(
+        "--dns",
+        dest="dns_names",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="DNS SAN (repeatable).",
+    )
+    p_issue.add_argument(
+        "--days",
+        type=int,
+        default=825,
+        metavar="N",
+        help="Certificate validity in days (default: 825).",
+    )
+    p_issue.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing dc-backup-tls.yaml.",
+    )
+    tls_sub.add_parser(
+        "install",
+        help="Install PEMs: CA+server on dc_backup_docker_host; CA on docker_host.",
+    )
+    p_tls_status = tls_sub.add_parser(
+        "status",
+        help="Show dc-backup-tls.yaml presence and SANs (no secret dump).",
+    )
+    p_tls_status.add_argument(
+        "--check-remote",
+        action="store_true",
+        help="Also probe installed paths on dc_backup_docker_host and docker_host.",
+    )
+
+    p_boot = dc_sub.add_parser(
+        "bootstrap",
+        help="Generate Garage rpc/admin secrets into SOPS dc-backup.yaml.",
+    )
+    p_boot.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing dc-backup.yaml.",
+    )
+
+    p_install = dc_sub.add_parser(
+        "install",
+        help="Install Garage+Caddy compose, toml, and Caddyfile on dc_backup_docker_host.",
+    )
+    p_install.add_argument(
+        "--up",
+        action="store_true",
+        help="Run docker compose up -d after installing files.",
+    )
+
+    p_dc_status = dc_sub.add_parser(
+        "status",
+        help="Show dc-backup.yaml presence and optional remote stack paths.",
+    )
+    p_dc_status.add_argument(
+        "--check-remote",
+        action="store_true",
+        help="Probe compose/toml/Caddy/TLS paths on dc_backup_docker_host.",
+    )
+
+    p_provision = dc_sub.add_parser(
+        "provision",
+        help="Create Garage bucket/key and write pgbr_s3_write_* / restic_write_* credentials.",
+    )
+    p_provision.add_argument(
+        "--print-only",
+        action="store_true",
+        help="Create/print credentials YAML fragment; do not write SOPS credentials.yaml.",
+    )
+    p_provision.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing WRITE credentials (required to replace Spaces with Garage).",
+    )
+    p_provision.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dc_backup_provision_dry_run",
+        help="Print what would run / which keys would be set; no Garage mutations, no SOPS write.",
+    )
+    p_provision.add_argument(
+        "--bucket",
+        metavar="NAME",
+        help="Garage bucket name (default: {project}-backups).",
+    )
+    p_provision.add_argument(
+        "--key-name",
+        metavar="NAME",
+        help="Garage key name (default: {project}-{env}-backup).",
+    )
+    p_provision.add_argument(
+        "--endpoint",
+        metavar="HOST",
+        help="S3 endpoint host/IP (default: TLS SAN IP, else backup host).",
+    )
+    p_provision.add_argument(
+        "--pgbr-repo-path",
+        metavar="PATH",
+        help="pgBackRest repo path (default: /{project}/{env}/pgbackrest).",
+    )
+    p_provision.add_argument(
+        "--restic-prefix",
+        metavar="PATH",
+        help="restic path prefix inside the bucket (default: {project}-{env}-media).",
+    )
+    p_provision.add_argument(
+        "--capacity",
+        metavar="SIZE",
+        help="Garage layout capacity if no role assigned yet (default: 300G).",
+    )
+
+    p_offsite = dc_sub.add_parser(
+        "offsite",
+        help="rclone copy Garage bucket → external S3 (daily OOH on dc_backup_docker_host).",
+    )
+    offsite_sub = p_offsite.add_subparsers(dest="dc_backup_offsite_command", required=True)
+    p_off_install = offsite_sub.add_parser(
+        "install",
+        help="Install rclone script, env file, and systemd timer on dc_backup_docker_host.",
+    )
+    p_off_install.add_argument(
+        "--enable",
+        action="store_true",
+        help="systemctl enable --now the offsite timer after install.",
+    )
+    p_off_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dc_backup_offsite_dry_run",
+        help="Print what would be installed; no remote mutations.",
+    )
+    p_off_run = offsite_sub.add_parser(
+        "run",
+        help="One-shot: refresh env and systemctl start the offsite oneshot service.",
+    )
+    p_off_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dc_backup_offsite_dry_run",
+        help="Print what would run; no remote mutations.",
+    )
+    offsite_sub.add_parser(
+        "status",
+        help="Show timer/service ActiveState on dc_backup_docker_host.",
+    )
+
     p_host = cmd_sub.add_parser("host", help="Verify droplet / print or patch docker_host.")
     host_sub = p_host.add_subparsers(dest="host_command", required=False)
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.")
@@ -188,6 +375,11 @@ def _attach_env_command_parsers(
         "--sync-dns",
         action="store_true",
         help="Create or update DigitalOcean A records for site_origin hostnames.",
+    )
+    p_host.add_argument(
+        "--check-remote",
+        action="store_true",
+        help="SSH probe docker_host (and dc_backup_docker_host): reachability + timedatectl.",
     )
 
     _attach_zabbix_commands(cmd_sub, env_name)

@@ -1,0 +1,20 @@
+# Rendered by dk <env> dc-backup offsite install (see README_DC_BACKUP.md).
+# Schedules via matching *-rclone-garage-offsite.timer.
+#
+# Runs on dc_backup_docker_host. Copies Garage bucket → external S3 (rclone copy).
+#
+[Unit]
+Description=rclone copy Garage backup bucket to external S3 (offsite)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@INSTALL_PREFIX@
+EnvironmentFile=-@CONFIG_DIR@/rclone-garage-offsite.env
+ExecStart=@INSTALL_PREFIX@/rclone-garage-offsite.sh
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

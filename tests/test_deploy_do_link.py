@@ -628,6 +628,154 @@ def test_cmd_env_host_disabled_write_fails(tmp_path: Path) -> None:
     assert cmd_env_host(config, "staging", write=True) == 1
 
 
+def test_cmd_env_host_droplet_missing_falls_back_to_manual(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "docker_host: ssh://root@203.0.113.10\n"
+        "dc_backup_docker_host: ssh://root@203.0.113.11\n"
+        "site_origin:\n  - prod.example.com\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.try_resolve_doctl_binary", lambda: Path("/doctl")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_for_link",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link.find_droplet_by_name",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dns_resolve.verify_public_dns_from_info",
+        lambda *_a, **_k: 0,
+    )
+
+    assert cmd_env_host(config, "prod", write=False) == 0
+    out = capsys.readouterr()
+    assert "host create" not in out.err
+    assert "No matching DigitalOcean droplet" in out.err
+    assert "digitalocean.disabled: true" in out.err
+    assert "docker_host: ssh://root@203.0.113.10" in out.out
+    assert "dc_backup_docker_host: ssh://root@203.0.113.11" in out.out
+    assert "site_origin:" in out.out
+
+
+def test_cmd_env_host_disabled_prints_dc_backup_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "docker_host: ssh://root@203.0.113.5\n"
+        "dc_backup_docker_host: ssh://root@203.0.113.6\n"
+        "digitalocean:\n  disabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_binary.try_resolve_doctl_binary", lambda: Path("/doctl")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dns_resolve.verify_public_dns_from_info",
+        lambda *_a, **_k: 0,
+    )
+    assert cmd_env_host(config, "staging", write=False, verify_dns=False) == 0
+    out = capsys.readouterr().out
+    assert "dc_backup_docker_host: ssh://root@203.0.113.6" in out
+
+
+def test_parse_timedatectl_show() -> None:
+    from catalpa_tooling.deploy_do_link import parse_timedatectl_show
+
+    info = parse_timedatectl_show(
+        "Timezone=Asia/Dili\nNTPSynchronized=yes\nSystemClockSynchronized=yes\n"
+    )
+    assert info.timezone == "Asia/Dili"
+    assert info.ntp_synchronized is True
+    assert info.system_clock_synchronized is True
+
+
+def test_parse_timedatectl_status_fallback() -> None:
+    from catalpa_tooling.deploy_do_link import parse_timedatectl_status
+
+    info = parse_timedatectl_status(
+        "               Local time: Thu 2026-07-16 12:00:00 +09\n"
+        "           Universal time: Thu 2026-07-16 03:00:00 UTC\n"
+        "                 RTC time: Thu 2026-07-16 03:00:00\n"
+        "                Time zone: Asia/Dili (+09, +0900)\n"
+        "System clock synchronized: yes\n"
+        "              NTP service: active\n"
+        "          RTC in local TZ: no\n"
+    )
+    assert info.timezone == "Asia/Dili"
+    assert info.system_clock_synchronized is True
+
+
+def test_check_remote_timezone_mismatch_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling.dc_backup.ssh_install import RemoteResult
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "docker_host: ssh://root@203.0.113.10\n"
+        "dc_backup_docker_host: ssh://root@203.0.113.11\n"
+        "digitalocean:\n  disabled: true\n",
+        encoding="utf-8",
+    )
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_remote(ssh_target: str, remote_cmd: str, *, dry_run: bool = False):
+        calls.append((ssh_target, remote_cmd))
+        if remote_cmd == "true":
+            return RemoteResult(0, "", "")
+        if "timedatectl show" in remote_cmd:
+            if "203.0.113.10" in ssh_target or ssh_target.endswith("203.0.113.10"):
+                return RemoteResult(
+                    0,
+                    "Timezone=Asia/Dili\nNTPSynchronized=yes\nSystemClockSynchronized=yes\n",
+                    "",
+                )
+            return RemoteResult(
+                0,
+                "Timezone=UTC\nNTPSynchronized=no\nSystemClockSynchronized=yes\n",
+                "",
+            )
+        return RemoteResult(1, "", "fail")
+
+    monkeypatch.setattr(
+        "catalpa_tooling.dc_backup.ssh_install.remote_run_capture", fake_remote
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.ssh_known_hosts.ensure_ssh_known_host_for_docker_host",
+        lambda *_a, **_k: 0,
+    )
+
+    assert cmd_env_host(config, "prod", write=False, verify_dns=False, check_remote=True) == 0
+    captured = capsys.readouterr()
+    assert "remote app: reachable" in captured.out
+    assert "timezone=Asia/Dili" in captured.out
+    assert "remote dc_backup: reachable" in captured.out
+    assert "timezone=UTC" in captured.out
+    assert "differs from" in captured.err
+    assert "NTP" in captured.err or "ntp" in captured.err.lower()
+
+
 def test_cmd_env_host_create_rejects_disabled(tmp_path: Path) -> None:
     from catalpa_tooling.deploy_do_link import cmd_env_host_create
 

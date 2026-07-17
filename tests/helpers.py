@@ -79,21 +79,23 @@ def install_in_memory_sops_mocks(
     modules: tuple[str, ...] = (
         "catalpa_tooling.sops_credentials",
         "catalpa_tooling.doctl_spaces_provision",
+        "catalpa_tooling.dc_backup.provision",
+        "catalpa_tooling.dc_backup.offsite",
     ),
     apply_credential_sets: Callable[[Path, dict[str, str]], None] | None = None,
     refresh_env_credentials: Callable[[dict[str, str], Path], None] | None = None,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, Any]]:
     """Mock SOPS CLI usage with an in-memory credentials store.
 
     Patches both ``sops_credentials`` and importing modules (e.g. ``doctl_spaces_provision``)
     because those modules bind imported names at import time.
     """
-    store: dict[str, dict[str, str]] = {}
+    store: dict[str, dict[str, Any]] = {}
 
     def fake_ensure_sops_available() -> None:
         return None
 
-    def fake_decrypt(creds_path: Path) -> dict[str, str]:
+    def fake_decrypt(creds_path: Path) -> dict[str, Any]:
         return dict(store.get(str(creds_path), {}))
 
     def default_apply(creds_path: Path, values: dict[str, str]) -> None:
@@ -113,6 +115,8 @@ def install_in_memory_sops_mocks(
         "ensure_sops_available": fake_ensure_sops_available,
         "apply_credential_sets": apply_fn,
         "refresh_env_credentials": refresh_fn,
+        "decrypt_credentials_yaml": fake_decrypt,
+        "decrypt_sops_yaml": fake_decrypt,
     }
     for mod in modules:
         patch_module_attrs(monkeypatch, mod, attrs)

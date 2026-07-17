@@ -404,13 +404,24 @@ def _docker_run_restic(
         "--platform",
         "linux/amd64",
     ]
+    from catalpa_tooling.dc_backup.hosts import (
+        docker_add_host_args,
+        docker_ca_env_flags_for_restic,
+        docker_ca_volume_args,
+        restic_cacert_argv,
+    )
+
+    cmd.extend(docker_add_host_args(merged))
+    cmd.extend(docker_ca_volume_args(merged))
     cmd.extend(_docker_run_env_flags(merged))
+    cmd.extend(docker_ca_env_flags_for_restic(merged))
     for src, dest, ro in volume_mounts:
         spec = f"{src}:{dest}"
         if ro:
             spec += ":ro"
         cmd.extend(["-v", spec])
     cmd.append(_restic_image(merged))
+    cmd.extend(restic_cacert_argv(merged))
     cmd.extend(_restic_verbose_flags(merged))
     cmd.extend(restic_argv)
     r = run_cmd(cmd, env=merged, check=False)

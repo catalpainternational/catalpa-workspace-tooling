@@ -95,6 +95,7 @@ class ManagedDeployContext:
     compose_file: str
     env_add: dict[str, str]
     docker_host: str
+    dc_backup_docker_host: str
     site_origin: str
     site_origins: tuple[str, ...]
     use_prepulled_registry: bool
@@ -143,6 +144,7 @@ def print_managed_deploy_header(
             compose_file=compose_file,
             env_add={},
             docker_host=str(info.get("docker_host", "")),
+            dc_backup_docker_host=str(info.get("dc_backup_docker_host", "") or ""),
             site_origin=primary_site_origin_for_env(info, config, env_name),
             site_origins=tuple(resolve_site_origins_for_env(info, config, env_name)),
             use_prepulled_registry=use_prepulled,
@@ -189,6 +191,7 @@ def load_managed_deploy_context(
     site_origin = site_origins_list[0] if site_origins_list else ""
     site_origins = tuple(site_origins_list)
     docker_host = info.get("docker_host", "")
+    dc_backup_docker_host = str(info.get("dc_backup_docker_host", "") or "").strip()
 
     from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
 
@@ -306,6 +309,10 @@ def load_managed_deploy_context(
     env_add.update(vite_build_metadata_env(config, str(release_for_bundle)))
     apply_backup_logging_env(env_add, config, info)
 
+    from catalpa_tooling.dc_backup.hosts import apply_inferred_dc_backup_ca_file
+
+    apply_inferred_dc_backup_ca_file(env_add, config, env_name)
+
     from catalpa_tooling.dev_lan_access import build_dev_lan_env, dev_lan_access_enabled, print_dev_lan_urls
 
     if dev_lan_access_enabled(info):
@@ -353,6 +360,7 @@ def load_managed_deploy_context(
         compose_file=compose_file,
         env_add=dict(env_add),
         docker_host=str(docker_host),
+        dc_backup_docker_host=dc_backup_docker_host,
         site_origin=site_origin,
         site_origins=site_origins,
         use_prepulled_registry=use_prepulled_registry,

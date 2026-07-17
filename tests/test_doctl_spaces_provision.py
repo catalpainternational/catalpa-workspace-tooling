@@ -245,6 +245,43 @@ def test_provision_restic_reuses_pgbr_keys(
     assert sops_sets["restic_write_repository"].startswith("s3:sgp1.digitaloceanspaces.com/bkt/")
 
 
+def test_spaces_decline_hints_dc_backup_provision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = _minimal_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    cfg = load_project_config(repo)
+    env_dir = repo / "docker/envs/prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "dc_backup_docker_host: ssh://root@203.0.113.28\n",
+        encoding="utf-8",
+    )
+    creds = env_dir / "credentials.yaml"
+    creds.write_text("sops: {}\n", encoding="utf-8")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_spaces_provision.confirm_yes_default_no",
+        lambda _p: False,
+    )
+    rc = ensure_spaces_backup_credentials(
+        cfg,
+        "prod",
+        {},
+        creds,
+        target="pgbackrest",
+        command_label="dk prod db backup",
+        dry_run=False,
+        yes=False,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "dc_backup_docker_host" in err
+    assert "dc-backup provision" in err
+
+
 def _minimal_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()

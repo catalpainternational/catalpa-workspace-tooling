@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from catalpa_tooling.config import ProjectConfig, default_pgbackrest_restore_temp_prefix
+from catalpa_tooling.dc_backup.hosts import compose_dash_f_args
 from catalpa_tooling.pgbackrest_volume_config import (
     _docker_env_for_remote,
     _pgdata_has_control_file,
@@ -201,12 +202,14 @@ def ensure_db_service_running(
         "`docker compose up -d db --wait` …",
         file=sys.stderr,
     )
+    f_args = compose_dash_f_args(
+        compose_file, env, config=config, env_name=dk_env_name, compose_verb="up"
+    )
     r = run_cmd(
         [
             "docker",
             "compose",
-            "-f",
-            compose_file,
+            *f_args,
             "up",
             "-d",
             "db",
@@ -232,6 +235,7 @@ def run_bkp_db_stanza_create_flow(
     *,
     image: str,
     config: ProjectConfig | None = None,
+    dk_env_name: str | None = None,
 ) -> int:
     """Materialize conf if needed, ensure PGDATA, skip when stanza exists, then ``stanza-create``."""
     if not pgbackrest_managed_conf_materialized(env, config=config):
@@ -260,7 +264,9 @@ def run_bkp_db_stanza_create_flow(
             "pgBackRest stanza-create: initializing PostgreSQL (starting `db`) …",
             file=sys.stderr,
         )
-        rc = ensure_db_service_running(compose_file, env, config=config)
+        rc = ensure_db_service_running(
+            compose_file, env, config=config, dk_env_name=dk_env_name
+        )
         if rc != 0:
             return rc
         if not _pgdata_has_control_file(docker_env, image, vol_data, pg1_path=pg1):
@@ -297,7 +303,7 @@ def run_bkp_db_init(
     if rc != 0:
         return rc
     return run_bkp_db_stanza_create_flow(
-        compose_file, env, image=image, config=config
+        compose_file, env, image=image, config=config, dk_env_name=dk_env_name
     )
 
 
@@ -917,14 +923,21 @@ def _compose_stop_db(compose_file: str, env: dict[str, str]) -> int:
 
 
 def _compose_up_db(
-    compose_file: str, env: dict[str, str], *, force_recreate: bool = False
+    compose_file: str,
+    env: dict[str, str],
+    *,
+    force_recreate: bool = False,
+    config: ProjectConfig | None = None,
+    dk_env_name: str | None = None,
 ) -> int:
     """``docker compose up -d db`` (optionally ``--force-recreate`` after offline restore)."""
+    f_args = compose_dash_f_args(
+        compose_file, env, config=config, env_name=dk_env_name, compose_verb="up"
+    )
     argv = [
         "docker",
         "compose",
-        "-f",
-        compose_file,
+        *f_args,
         "up",
         "-d",
     ]
@@ -1371,7 +1384,9 @@ def run_restore_offline(
         file=sys.stderr,
     )
     logs_since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    rc_up = _compose_up_db(compose_file, env, force_recreate=True)
+    rc_up = _compose_up_db(
+        compose_file, env, force_recreate=True, config=config, dk_env_name=env_name
+    )
     if rc_up == 130:
         print("pgBackRest restore: cancelled during `db` startup.", file=sys.stderr)
         print(

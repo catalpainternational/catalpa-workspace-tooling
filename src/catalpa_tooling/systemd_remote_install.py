@@ -185,6 +185,12 @@ def render_restic_env(
             lines.append(f"{key}={v}")
     for ak, av in sorted(aws_env_vars_for_s3_restic_env_file(n).items()):
         lines.append(f"{ak}={av}")
+    from catalpa_tooling.dc_backup.hosts import DC_BACKUP_CA_FILE_ENV, DOCKER_ADD_HOST_ENV
+
+    for key in (DOCKER_ADD_HOST_ENV, DC_BACKUP_CA_FILE_ENV):
+        v = (n.get(key) or env.get(key) or "").strip()
+        if v:
+            lines.append(f"{key}={v}")
     return "\n".join(lines) + "\n"
 
 

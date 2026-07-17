@@ -11,8 +11,11 @@ from typing import Literal
 
 from pathlib import Path
 
+import yaml
+
 from catalpa_tooling.cli_confirm import confirm_yes_default_no
 from catalpa_tooling.config import ProjectConfig, SpacesConfig
+from catalpa_tooling.dc_backup.paths import INFO_DC_BACKUP_DOCKER_HOST
 from catalpa_tooling.doctl_binary import (
     DoctlCommandError,
     DoctlNotFoundError,
@@ -67,6 +70,30 @@ class SpacesBackupDefaults:
     stanza: str
     write_key_name: str
     host_bucket: str
+
+
+def _env_has_dc_backup_host(config: ProjectConfig, env_name: str) -> bool:
+    """True when ``info.yaml`` sets ``dc_backup_docker_host`` (closed-DC Garage path)."""
+    info_path = config.deploy_envs_dir / env_name / "info.yaml"
+    if not info_path.is_file():
+        return False
+    try:
+        with open(info_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    return bool(str(data.get(INFO_DC_BACKUP_DOCKER_HOST, "") or "").strip())
+
+
+def dc_backup_provision_hint(env_name: str) -> str:
+    """Next-step text when Garage credentials are needed instead of Spaces auto-provision."""
+    return (
+        f"This environment has {INFO_DC_BACKUP_DOCKER_HOST}. "
+        f"For Garage WRITE credentials run `dk {env_name} dc-backup provision` "
+        f"(`dk {env_name} db` / `files` do not auto-provision Garage)."
+    )
 
 
 def spaces_backup_defaults(config: ProjectConfig, env_name: str) -> SpacesBackupDefaults:
@@ -447,6 +474,10 @@ def ensure_spaces_backup_credentials(
         print(f"Missing {creds_path}", file=sys.stderr)
         return 1
 
+    garage = _env_has_dc_backup_host(config, env_name)
+    if garage:
+        print(dc_backup_provision_hint(env_name), file=sys.stderr)
+
     if not _provision_prompt(
         target=target,
         env_name=env_name,
@@ -459,6 +490,8 @@ def ensure_spaces_backup_credentials(
             f"`dk {env_name} secrets`.",
             file=sys.stderr,
         )
+        if garage:
+            print(dc_backup_provision_hint(env_name), file=sys.stderr)
         return 1
 
     if dry_run:

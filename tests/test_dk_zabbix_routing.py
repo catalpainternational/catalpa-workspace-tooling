@@ -111,6 +111,7 @@ def test_handle_env_routes_zabbix_with_env_defaults_and_ssh_target(
         env_name=env_name,
         env_command="zabbix",
         zabbix_command="install",
+        target="app",
         image=None,
         server=None,
         hostname="stage-web-01",
@@ -127,6 +128,7 @@ def test_handle_env_routes_zabbix_with_env_defaults_and_ssh_target(
     assert called["prog"] == f"dk {env_name} zabbix"
     assert called["ssh_target"] == "deploy@example.test"
     assert called["site_origin"] == "https://example.test"
+    assert called["target"] == "app"
     assert called["env_defaults"]["ZBX_SERVER_HOST"] == "zabbix.example.test"
     assert called["env_defaults"]["ZBX_ACTIVE_ALLOW"] == "True"
 
@@ -180,6 +182,7 @@ def test_handle_env_routes_zabbix_with_local_fallback(
         env_name=env_name,
         env_command="zabbix",
         zabbix_command="logs",
+        target="app",
         lines=20,
         follow=False,
         dry_run=False,
@@ -191,6 +194,127 @@ def test_handle_env_routes_zabbix_with_local_fallback(
     assert called["argv"] == ["logs", "-n", "20"]
     assert called["ssh_target"] is None
     assert called["site_origin"] == "http://localhost:5173"
+    assert called["target"] == "app"
+
+
+def test_handle_env_routes_zabbix_backup_target(
+    tmp_path, monkeypatch, isolated_tooling: None
+) -> None:
+    env_name = "prod"
+    deploy_dir = tmp_path / "docker" / "envs" / env_name
+    deploy_dir.mkdir(parents=True)
+    info = {
+        "name": env_name,
+        "docker_host": "ssh://root@203.0.113.27",
+        "dc_backup_docker_host": "ssh://root@203.0.113.28",
+        "env": {"zbx_server_host": "zabbix.example.test"},
+    }
+    (deploy_dir / "info.yaml").write_text(yaml.safe_dump(info), encoding="utf-8")
+
+    from catalpa_tooling.config import load_project_config
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    config = load_project_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(env_handlers, "resolve_compose_file_from_info", lambda *_: "compose.yml")
+    monkeypatch.setattr(
+        env_handlers,
+        "load_managed_deploy_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            env_add={},
+            docker_host="ssh://root@203.0.113.27",
+            site_origin="https://example.test",
+            use_prepulled_registry=False,
+        ),
+    )
+    monkeypatch.setattr(
+        env_handlers,
+        "resolve_env_with_compose_project",
+        lambda _compose_file, env_add, **_kwargs: env_add,
+    )
+
+    called: dict[str, object] = {}
+
+    def fake_run_zabbix(argv, **kwargs):
+        called.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(env_handlers, "run_zabbix_deploy", fake_run_zabbix)
+
+    ns = argparse.Namespace(
+        env_name=env_name,
+        env_command="zabbix",
+        zabbix_command="install",
+        target="backup",
+        image=None,
+        server=None,
+        hostname="prod-dc-backup",
+        active_allow=None,
+        docker_group_gid=None,
+        dry_run=False,
+        force=False,
+        yes=False,
+        tag=None,
+    )
+    assert env_handlers.handle_env_command(ns, config) == 0
+    assert called["ssh_target"] == "root@203.0.113.28"
+    assert called["target"] == "backup"
+
+
+def test_handle_env_zabbix_backup_requires_dc_backup_host(
+    tmp_path, monkeypatch, isolated_tooling: None, capsys
+) -> None:
+    env_name = "prod"
+    deploy_dir = tmp_path / "docker" / "envs" / env_name
+    deploy_dir.mkdir(parents=True)
+    info = {
+        "name": env_name,
+        "docker_host": "ssh://root@203.0.113.27",
+        "env": {},
+    }
+    (deploy_dir / "info.yaml").write_text(yaml.safe_dump(info), encoding="utf-8")
+
+    from catalpa_tooling.config import load_project_config
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    config = load_project_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(env_handlers, "resolve_compose_file_from_info", lambda *_: "compose.yml")
+    monkeypatch.setattr(
+        env_handlers,
+        "load_managed_deploy_context",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            env_add={},
+            docker_host="ssh://root@203.0.113.27",
+            site_origin=None,
+            use_prepulled_registry=False,
+        ),
+    )
+    monkeypatch.setattr(
+        env_handlers,
+        "resolve_env_with_compose_project",
+        lambda _compose_file, env_add, **_kwargs: env_add,
+    )
+
+    ns = argparse.Namespace(
+        env_name=env_name,
+        env_command="zabbix",
+        zabbix_command="install",
+        target="backup",
+        image=None,
+        server=None,
+        hostname="x",
+        active_allow=None,
+        docker_group_gid=None,
+        dry_run=False,
+        force=False,
+        yes=False,
+        tag=None,
+    )
+    assert env_handlers.handle_env_command(ns, config) == 1
+    assert "dc_backup_docker_host" in capsys.readouterr().err
 
 
 def test_top_level_dk_zabbix_rejected(monkeypatch, minimal_config, capsys) -> None:
