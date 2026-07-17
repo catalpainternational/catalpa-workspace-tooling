@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.6
+
 ### Added
 
 - **`dk <env> zabbix --target backup`** — install/manage Agent 2 on `dc_backup_docker_host` with UserParameters `garage.status` and `dc-backup.offsite.timer` (hostname via `--hostname` or `zbx_hostname_backup`).
