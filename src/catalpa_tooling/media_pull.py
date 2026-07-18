@@ -1,4 +1,4 @@
-"""Pull ``django_media`` Docker volume to a local directory (docker run + tar over DOCKER_HOST)."""
+"""Pull/push Django media (named Docker volume or host bind) via docker run + tar."""
 
 from __future__ import annotations
 
@@ -8,6 +8,12 @@ import sys
 from pathlib import Path
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.media_storage import (
+    MediaStorage,
+    MediaStorageError,
+    MediaStorageKind,
+    resolve_media_storage,
+)
 from catalpa_tooling.restic_files import _default_compose_project, django_media_volume_name
 
 
@@ -22,6 +28,51 @@ def _local_docker_process_env() -> dict[str, str]:
     return out
 
 
+def _merge_run_env(env: dict[str, str]) -> dict[str, str]:
+    run_env = os.environ.copy()
+    for k, v in env.items():
+        if v is not None:
+            run_env[k] = str(v)
+    return run_env
+
+
+def _resolve_storage_for_io(
+    env: dict[str, str],
+    *,
+    config: ProjectConfig | None,
+    compose_file: str | None,
+    storage: MediaStorage | None,
+) -> MediaStorage:
+    if storage is not None:
+        return storage
+    if compose_file and config is not None:
+        return resolve_media_storage(
+            compose_file=compose_file,
+            env=env,
+            config=config,
+        )
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
+    return MediaStorage(
+        MediaStorageKind.VOLUME,
+        django_media_volume_name(project, config=config),
+    )
+
+
+def _docker_data_mount(storage: MediaStorage, *, read_only: bool) -> str:
+    """``-v`` argument mounting storage at ``/data`` inside the helper container."""
+    suffix = ":ro" if read_only else ""
+    if storage.kind is MediaStorageKind.BIND:
+        return f"{storage.location}:/data{suffix}"
+    return f"{storage.location}:/data{suffix}"
+
+
+def _source_env_for_storage(storage: MediaStorage, run_env: dict[str, str]) -> dict[str, str]:
+    """Volume side honors DOCKER_HOST; bind mounts always use the local daemon."""
+    if storage.kind is MediaStorageKind.BIND:
+        return _local_docker_process_env()
+    return run_env
+
+
 def run_pull_media(
     env: dict[str, str],
     *,
@@ -29,19 +80,25 @@ def run_pull_media(
     dry_run: bool,
     alpine_image: str = "alpine:3.21",
     config: ProjectConfig | None = None,
+    compose_file: str | None = None,
+    storage: MediaStorage | None = None,
 ) -> int:
-    """Stream the named ``django_media`` volume to ``target`` using Linux ``tar`` in Docker end-to-end.
+    """Stream media storage to ``target`` using Linux ``tar`` in Docker end-to-end.
 
-    Volume side uses ``DOCKER_HOST`` (e.g. SSH). Extract-to-disk uses the **local** Docker daemon
-    with a bind mount so archives are unpacked by the same Alpine ``tar`` family as deploy hosts,
-    avoiding macOS host ``tar`` incompatibility with streamed payloads.
+    Named volumes use ``DOCKER_HOST`` (e.g. SSH). Host binds and extract-to-disk use the
+    **local** Docker daemon with bind mounts so archives are handled by Alpine ``tar``.
     """
-    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
-    vol = django_media_volume_name(project, config=config)
-    run_env = os.environ.copy()
-    for k, v in env.items():
-        if v is not None:
-            run_env[k] = str(v)
+    try:
+        resolved = _resolve_storage_for_io(
+            env, config=config, compose_file=compose_file, storage=storage
+        )
+    except MediaStorageError as exc:
+        print(f"pull_media: {exc}", file=sys.stderr)
+        return 1
+
+    run_env = _merge_run_env(env)
+    source_env = _source_env_for_storage(resolved, run_env)
+    data_mount = _docker_data_mount(resolved, read_only=True)
 
     docker_cmd = [
         "docker",
@@ -50,7 +107,7 @@ def run_pull_media(
         "--platform",
         "linux/amd64",
         "-v",
-        f"{vol}:/data:ro",
+        data_mount,
         alpine_image,
         "tar",
         "c",
@@ -75,7 +132,7 @@ def run_pull_media(
     ]
     if dry_run:
         print(
-            f"dry-run: extract volume {vol!r} -> {target.resolve()}",
+            f"dry-run: extract {resolved.describe()} -> {target.resolve()}",
             file=sys.stderr,
         )
         print(
@@ -84,11 +141,17 @@ def run_pull_media(
         )
         return 0
 
+    if resolved.kind is MediaStorageKind.BIND:
+        host = Path(resolved.location)
+        if not host.is_dir():
+            print(f"pull_media: bind path is not a directory: {host}", file=sys.stderr)
+            return 1
+
     target.mkdir(parents=True, exist_ok=True)
 
     p1 = subprocess.Popen(
         docker_cmd,
-        env=run_env,
+        env=source_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -109,7 +172,7 @@ def run_pull_media(
     err_docker = p1.stderr.read()
     if rc_docker != 0:
         print(
-            f"docker run failed (exit {rc_docker}) for volume {vol!r}.",
+            f"docker run failed (exit {rc_docker}) for {resolved.describe()}.",
             file=sys.stderr,
         )
         if err_docker:
@@ -133,27 +196,31 @@ def run_push_media(
     dry_run: bool,
     alpine_image: str = "alpine:3.21",
     config: ProjectConfig | None = None,
+    compose_file: str | None = None,
+    storage: MediaStorage | None = None,
 ) -> int:
-    """Stream a local directory into the named ``django_media`` volume (``tar`` | ``docker run``).
+    """Stream a local directory into media storage (``tar`` | ``docker run``).
 
-    Clears existing volume top-level entries first (``find … -delete``), then extracts the archive
-    from stdin. The archive is produced by **Linux** ``tar`` inside Docker (not the host ``tar``),
-    so macOS BSD tar quirks do not drop files when unpacking on Alpine. Uses the same
-    ``DOCKER_HOST`` / ``COMPOSE_PROJECT_NAME`` resolution as ``run_pull_media`` for the destination
-    volume container; packing uses the **local** Docker daemon so bind mounts refer to this machine.
+    Clears existing top-level entries first (``find … -delete``), then extracts the archive
+    from stdin. Named volumes honor ``DOCKER_HOST``; host binds use the local daemon.
     """
-    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
-    vol = django_media_volume_name(project, config=config)
-    run_env = os.environ.copy()
-    for k, v in env.items():
-        if v is not None:
-            run_env[k] = str(v)
+    try:
+        resolved = _resolve_storage_for_io(
+            env, config=config, compose_file=compose_file, storage=storage
+        )
+    except MediaStorageError as exc:
+        print(f"push_media: {exc}", file=sys.stderr)
+        return 1
+
+    run_env = _merge_run_env(env)
+    dest_env = _source_env_for_storage(resolved, run_env)
+    data_mount = _docker_data_mount(resolved, read_only=False)
 
     if not source.is_dir():
         print(f"push_media: not a directory: {source}", file=sys.stderr)
         return 1
 
-    # Clear volume contents then extract from stdin (POSIX ``find`` in alpine).
+    # Clear volume/bind contents then extract from stdin (POSIX ``find`` in alpine).
     inner = r"find /data -mindepth 1 -delete && tar x -C /data"
     docker_cmd = [
         "docker",
@@ -163,7 +230,7 @@ def run_push_media(
         "--platform",
         "linux/amd64",
         "-v",
-        f"{vol}:/data",
+        data_mount,
         alpine_image,
         "sh",
         "-c",
@@ -186,11 +253,15 @@ def run_push_media(
     ]
     if dry_run:
         print(
-            f"dry-run: pack {source.resolve()} -> volume {vol!r}",
+            f"dry-run: pack {source.resolve()} -> {resolved.describe()}",
             file=sys.stderr,
         )
         print(f"dry-run: {' '.join(pack_cmd)} | {' '.join(docker_cmd)}", file=sys.stderr)
         return 0
+
+    if resolved.kind is MediaStorageKind.BIND:
+        host = Path(resolved.location)
+        host.mkdir(parents=True, exist_ok=True)
 
     local_env = _local_docker_process_env()
     tar_proc = subprocess.Popen(
@@ -204,7 +275,7 @@ def run_push_media(
     try:
         docker_proc = subprocess.Popen(
             docker_cmd,
-            env=run_env,
+            env=dest_env,
             stdin=tar_proc.stdout,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -226,7 +297,7 @@ def run_push_media(
         return rc_tar
     if docker_proc.returncode != 0:
         print(
-            f"docker run failed (exit {docker_proc.returncode}) for volume {vol!r}.",
+            f"docker run failed (exit {docker_proc.returncode}) for {resolved.describe()}.",
             file=sys.stderr,
         )
         if err_d:

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.8
+
+### Fixed
+
+- **`dk transfer` / `pull_media` / `push_media`** — resolve media from the env compose file: host binds (e.g. `./media:/media` on `compose.dev.yml`) are read/written directly instead of an unused `{project}_django_media` named volume. Preflight skips creating that phantom volume for bind sides and refuses an empty bind source. Remote `DOCKER_HOST` + bind media errors clearly.
+
 ## 0.9.7
 
 ### Fixed

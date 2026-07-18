@@ -20,6 +20,12 @@ from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context
 from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.media_pull import run_pull_media, run_push_media
+from catalpa_tooling.media_storage import (
+    MediaStorage,
+    MediaStorageError,
+    MediaStorageKind,
+    resolve_media_storage,
+)
 from catalpa_tooling.pgbackrest_db import (
     compose_pg_restore_extras_for_config,
     db_service_responds,
@@ -30,10 +36,7 @@ from catalpa_tooling.pgbackrest_db import (
 from catalpa_tooling.remote_deploy import list_deploy_env_names
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.storage_config import volume_bind_kwargs
-from catalpa_tooling.restic_files import (
-    django_media_volume_name,
-    resolve_env_with_compose_project,
-)
+from catalpa_tooling.restic_files import resolve_env_with_compose_project
 
 # Optional writers to quiet during transfer (only if present in the destination compose file).
 _WRITER_SERVICE_CANDIDATES: tuple[str, ...] = ("django", "caddy")
@@ -97,6 +100,51 @@ def _docker_volume_exists(name: str, env: dict[str, str]) -> bool:
     return r.returncode == 0
 
 
+def _ensure_stack_volumes(
+    *,
+    label: str,
+    env_name: str,
+    env_r: dict[str, str],
+    config: ProjectConfig,
+) -> str | None:
+    """Create missing external stack volumes. Return an error string, or None on success."""
+    print(
+        f"transfer: {label} (`{env_name}`): ensuring external volumes …",
+        file=sys.stderr,
+    )
+    bind_kwargs = volume_bind_kwargs(config, env_name)
+    if bind_kwargs:
+        import yaml
+
+        info_path = config.deploy_envs_dir / env_name / "info.yaml"
+        with open(info_path, encoding="utf-8") as f:
+            info = yaml.safe_load(f) or {}
+        from catalpa_tooling.storage_config import parse_storage_volumes_from_info
+
+        specs = parse_storage_volumes_from_info(info, config)
+        rc = ensure_host_storage(
+            config,
+            env_name,
+            info,
+            specs,
+            env_add=env_r,
+        )
+    else:
+        from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
+
+        rc = ensure_external_stack_volumes(env_r, config=config)
+    if rc != 0:
+        return f"{label} (`{env_name}`): `ensure_external_stack_volumes` failed (exit {rc})."
+    return None
+
+
+def _bind_dir_nonempty(path: Path) -> bool:
+    try:
+        return path.is_dir() and any(path.iterdir())
+    except OSError:
+        return False
+
+
 def _collect_transfer_preflight_errors(
     *,
     src: str,
@@ -105,19 +153,22 @@ def _collect_transfer_preflight_errors(
     dst_ctx: ManagedDeployContext,
     src_r: dict[str, str],
     dst_r: dict[str, str],
-    src_vol: str,
-    dst_vol: str,
+    src_media: MediaStorage | None,
+    dst_media: MediaStorage | None,
     do_db: bool,
     do_media: bool,
     config: ProjectConfig,
 ) -> list[str]:
     """Return human-readable errors; empty means preflight passed."""
     errs: list[str] = []
-    sides: tuple[tuple[str, str, ManagedDeployContext, dict[str, str], str], ...] = (
-        ("source", src, src_ctx, src_r, src_vol),
-        ("destination", dst, dst_ctx, dst_r, dst_vol),
+    sides: tuple[
+        tuple[str, str, ManagedDeployContext, dict[str, str], MediaStorage | None],
+        ...,
+    ] = (
+        ("source", src, src_ctx, src_r, src_media),
+        ("destination", dst, dst_ctx, dst_r, dst_media),
     )
-    for label, env_name, ctx, env_r, vol_name in sides:
+    for label, env_name, ctx, env_r, media in sides:
         svcs, hint = _compose_services_checked(ctx.compose_file, env_r)
         if svcs is None:
             errs.append(
@@ -126,38 +177,22 @@ def _collect_transfer_preflight_errors(
             )
             continue
 
-        # Ensure external volumes exist before starting services that mount them.
-        needs_volumes = (do_db and "db" in svcs) or do_media
-        if needs_volumes and not _docker_volume_exists(vol_name, env_r):
-            print(
-                f"transfer: {label} (`{env_name}`): ensuring external volumes …",
-                file=sys.stderr,
+        media_needs_named_vol = (
+            do_media
+            and media is not None
+            and media.kind is MediaStorageKind.VOLUME
+        )
+        # Ensure external volumes when DB needs them, or media uses a named volume.
+        needs_volume_ensure = (do_db and "db" in svcs) or media_needs_named_vol
+        vol_probe = media.location if media_needs_named_vol and media is not None else None
+        if needs_volume_ensure and (
+            vol_probe is None or not _docker_volume_exists(vol_probe, env_r)
+        ):
+            ensure_err = _ensure_stack_volumes(
+                label=label, env_name=env_name, env_r=env_r, config=config
             )
-            bind_kwargs = volume_bind_kwargs(config, env_name)
-            if bind_kwargs:
-                import yaml
-
-                info_path = config.deploy_envs_dir / env_name / "info.yaml"
-                with open(info_path, encoding="utf-8") as f:
-                    info = yaml.safe_load(f) or {}
-                from catalpa_tooling.storage_config import parse_storage_volumes_from_info
-
-                specs = parse_storage_volumes_from_info(info, config)
-                rc = ensure_host_storage(
-                    config,
-                    env_name,
-                    info,
-                    specs,
-                    env_add=env_r,
-                )
-            else:
-                from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
-
-                rc = ensure_external_stack_volumes(env_r, config=config)
-            if rc != 0:
-                errs.append(
-                    f"{label} (`{env_name}`): `ensure_external_stack_volumes` failed (exit {rc})."
-                )
+            if ensure_err:
+                errs.append(ensure_err)
                 continue
 
         if do_db:
@@ -195,11 +230,25 @@ def _collect_transfer_preflight_errors(
                         f"{label} (`{env_name}`): `db` service did not become ready after "
                         f"`docker compose up -d db`."
                     )
-        if do_media and not _docker_volume_exists(vol_name, env_r):
-            errs.append(
-                f"{label} (`{env_name}`): Docker volume {vol_name!r} not found even after "
-                f"`ensure_external_stack_volumes`."
-            )
+
+        if do_media and media is not None:
+            if media.kind is MediaStorageKind.VOLUME:
+                if not _docker_volume_exists(media.location, env_r):
+                    errs.append(
+                        f"{label} (`{env_name}`): Docker volume {media.location!r} not found even after "
+                        f"`ensure_external_stack_volumes`."
+                    )
+            else:
+                host = Path(media.location)
+                if not host.is_dir():
+                    errs.append(
+                        f"{label} (`{env_name}`): media bind path is not a directory: {host}"
+                    )
+                elif label == "source" and not _bind_dir_nonempty(host):
+                    errs.append(
+                        f"{label} (`{env_name}`): media bind path is empty: {host} "
+                        "(refusing to overwrite destination with no files)."
+                    )
     return errs
 
 
@@ -215,6 +264,7 @@ def _confirm_transfer_overwrite(
     src_env: str,
     do_db: bool,
     do_media: bool,
+    dst_media: MediaStorage | None = None,
 ) -> bool:
     print(
         "WARNING: This will overwrite data on the destination environment:",
@@ -226,7 +276,11 @@ def _confirm_transfer_overwrite(
             file=sys.stderr,
         )
     if do_media:
-        print("  - django_media volume (existing files removed, then tar extract)", file=sys.stderr)
+        where = dst_media.describe() if dst_media is not None else "django_media"
+        print(
+            f"  - media ({where}; existing files removed, then tar extract)",
+            file=sys.stderr,
+        )
     print(f"  Source: {src_env}", file=sys.stderr)
     print(f"  Destination: {dest_env}", file=sys.stderr)
     print(file=sys.stderr)
@@ -325,21 +379,29 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     dst_r = resolve_env_with_compose_project(
         dst_ctx.compose_file, dst_ctx.env_add, config=config, dk_env_name=dst
     )
-    src_vol = django_media_volume_name(
-        str(src_r.get("COMPOSE_PROJECT_NAME") or ""), config=config
-    )
-    dst_vol = django_media_volume_name(
-        str(dst_r.get("COMPOSE_PROJECT_NAME") or ""), config=config
-    )
+
+    src_media: MediaStorage | None = None
+    dst_media: MediaStorage | None = None
+    if do_media:
+        try:
+            src_media = resolve_media_storage(
+                compose_file=src_ctx.compose_file, env=src_r, config=config
+            )
+            dst_media = resolve_media_storage(
+                compose_file=dst_ctx.compose_file, env=dst_r, config=config
+            )
+        except MediaStorageError as exc:
+            print(f"dk transfer: {exc}", file=sys.stderr)
+            return 1
 
     print(
-        f"  source: {src} compose={src_ctx.compose_file!r} DOCKER_HOST={src_ctx.docker_host!r} "
-        f"django_media_volume={src_vol!r}",
+        f"  source: {src} compose={src_ctx.compose_file!r} DOCKER_HOST={src_ctx.docker_host!r}"
+        + (f" media={src_media.describe()}" if src_media else ""),
         file=sys.stderr,
     )
     print(
-        f"  dest:   {dst} compose={dst_ctx.compose_file!r} DOCKER_HOST={dst_ctx.docker_host!r} "
-        f"django_media_volume={dst_vol!r}",
+        f"  dest:   {dst} compose={dst_ctx.compose_file!r} DOCKER_HOST={dst_ctx.docker_host!r}"
+        + (f" media={dst_media.describe()}" if dst_media else ""),
         file=sys.stderr,
     )
     print(f"  steps: db={do_db} media={do_media}", file=sys.stderr)
@@ -351,8 +413,8 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         dst_ctx=dst_ctx,
         src_r=src_r,
         dst_r=dst_r,
-        src_vol=src_vol,
-        dst_vol=dst_vol,
+        src_media=src_media,
+        dst_media=dst_media,
         do_db=do_db,
         do_media=do_media,
         config=config,
@@ -376,7 +438,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         )
         return 1
     if not yes and not _confirm_transfer_overwrite(
-        dst, src_env=src, do_db=do_db, do_media=do_media
+        dst, src_env=src, do_db=do_db, do_media=do_media, dst_media=dst_media
     ):
         print("transfer: cancelled.", file=sys.stderr)
         return 1
@@ -442,14 +504,27 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
             pass
 
     if do_media:
-        print("transfer: pull_media (source) …", file=sys.stderr)
-        rc = run_pull_media(src_r, target=media_dir, dry_run=False, config=config)
+        assert src_media is not None and dst_media is not None
+        print(f"transfer: pull_media (source {src_media.describe()}) …", file=sys.stderr)
+        rc = run_pull_media(
+            src_r,
+            target=media_dir,
+            dry_run=False,
+            config=config,
+            storage=src_media,
+        )
         if rc != 0:
             _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
             shutil.rmtree(session, ignore_errors=True)
             return rc
-        print("transfer: push_media (destination) …", file=sys.stderr)
-        rc = run_push_media(dst_r, source=media_dir, dry_run=False, config=config)
+        print(f"transfer: push_media (destination {dst_media.describe()}) …", file=sys.stderr)
+        rc = run_push_media(
+            dst_r,
+            source=media_dir,
+            dry_run=False,
+            config=config,
+            storage=dst_media,
+        )
         if rc != 0:
             _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
             shutil.rmtree(session, ignore_errors=True)

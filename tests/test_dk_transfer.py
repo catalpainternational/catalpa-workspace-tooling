@@ -11,6 +11,15 @@ from catalpa_tooling.dk_transfer import (
     cmd_transfer,
 )
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext
+from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
+
+
+def _vol(name: str) -> MediaStorage:
+    return MediaStorage(MediaStorageKind.VOLUME, name)
+
+
+def _bind(path: str) -> MediaStorage:
+    return MediaStorage(MediaStorageKind.BIND, path)
 
 
 def _minimal_ctx(env_name: str, compose_file: str, minimal_project) -> ManagedDeployContext:
@@ -94,8 +103,8 @@ def test_preflight_empty_when_compose_db_and_volumes_ok(
         dst_ctx=_minimal_ctx("dev", "compose.dev.yaml", minimal_project),
         src_r={},
         dst_r={},
-        src_vol="app_compose_local_django_media",
-        dst_vol="app_compose_dev_django_media",
+        src_media=_vol("app_compose_local_django_media"),
+        dst_media=_vol("app_compose_dev_django_media"),
         do_db=True,
         do_media=True,
         config=minimal_project,
@@ -126,8 +135,8 @@ def test_preflight_errors_when_compose_config_fails(
         dst_ctx=_minimal_ctx("dev", "compose.dev.yaml", minimal_project),
         src_r={},
         dst_r={},
-        src_vol="v1",
-        dst_vol="v2",
+        src_media=None,
+        dst_media=None,
         do_db=False,
         do_media=False,
         config=minimal_project,
@@ -154,8 +163,8 @@ def test_preflight_errors_when_no_db_service(
         dst_ctx=_minimal_ctx("dev", "compose.dev.yaml", minimal_project),
         src_r={},
         dst_r={},
-        src_vol="v1",
-        dst_vol="v2",
+        src_media=None,
+        dst_media=None,
         do_db=True,
         do_media=False,
         config=minimal_project,
@@ -190,14 +199,97 @@ def test_preflight_errors_when_volume_missing(
         dst_ctx=_minimal_ctx("dev", "compose.dev.yaml", minimal_project),
         src_r={},
         dst_r={},
-        src_vol="missing_a",
-        dst_vol="missing_b",
+        src_media=_vol("missing_a"),
+        dst_media=_vol("missing_b"),
         do_db=False,
         do_media=True,
         config=minimal_project,
     )
     assert len(errs) == 2
     assert all("not found" in e for e in errs)
+
+
+def test_preflight_bind_source_skips_named_volume_ensure(
+    monkeypatch: pytest.MonkeyPatch,
+    minimal_project,
+    tmp_path,
+) -> None:
+    media_src = tmp_path / "media"
+    media_src.mkdir()
+    (media_src / "file.txt").write_text("x", encoding="utf-8")
+    media_dst = tmp_path / "out_media"
+    media_dst.mkdir()
+
+    ensure_calls: list[str] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        m.returncode = 0
+        if "config" in cmd and "--services" in cmd:
+            m.stdout = "db\ndjango\n"
+        else:
+            m.stdout = ""
+        return m
+
+    def fake_ensure(*args, **kwargs):
+        ensure_calls.append("ensure")
+        return 0
+
+    monkeypatch.setattr("catalpa_tooling.dk_transfer.run_cmd", fake_run)
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer._ensure_stack_volumes",
+        lambda **kwargs: ensure_calls.append(kwargs.get("env_name", "")) or None,
+    )
+    errs = _collect_transfer_preflight_errors(
+        src="dev",
+        dst="full",
+        src_ctx=_minimal_ctx("dev", "compose.dev.yml", minimal_project),
+        dst_ctx=_minimal_ctx("full", "compose.yml", minimal_project),
+        src_r={},
+        dst_r={},
+        src_media=_bind(str(media_src)),
+        dst_media=_bind(str(media_dst)),
+        do_db=False,
+        do_media=True,
+        config=minimal_project,
+    )
+    assert errs == []
+    assert ensure_calls == []
+
+
+def test_preflight_empty_bind_source_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    minimal_project,
+    tmp_path,
+) -> None:
+    empty = tmp_path / "empty_media"
+    empty.mkdir()
+    dest = tmp_path / "dest_media"
+    dest.mkdir()
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = "db\ndjango\n"
+        return m
+
+    monkeypatch.setattr("catalpa_tooling.dk_transfer.run_cmd", fake_run)
+    errs = _collect_transfer_preflight_errors(
+        src="dev",
+        dst="full",
+        src_ctx=_minimal_ctx("dev", "compose.dev.yml", minimal_project),
+        dst_ctx=_minimal_ctx("full", "compose.yml", minimal_project),
+        src_r={},
+        dst_r={},
+        src_media=_bind(str(empty)),
+        dst_media=_bind(str(dest)),
+        do_db=False,
+        do_media=True,
+        config=minimal_project,
+    )
+    assert len(errs) == 1
+    assert "empty" in errs[0]
+    assert str(empty) in errs[0]
 
 
 def test_transfer_invokes_post_db_restore_hooks_after_db_leg(

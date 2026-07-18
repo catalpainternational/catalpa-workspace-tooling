@@ -526,6 +526,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dry_run=dry_run,
             alpine_image=str(ns.image),
             config=config,
+            compose_file=compose_file,
         )
 
     if env_command in ("files", "bkp_files"):

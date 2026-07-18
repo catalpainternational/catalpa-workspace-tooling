@@ -21,6 +21,26 @@ def test_run_pull_media_dry_run_stderr(capsys: pytest.CaptureFixture[str]) -> No
     assert "tar" in err and "x" in err and "/out" in err
 
 
+def test_run_pull_media_dry_run_bind(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
+
+    host = tmp_path / "media"
+    host.mkdir()
+    rc = run_pull_media(
+        {"COMPOSE_PROJECT_NAME": "myproj"},
+        target=tmp_path / "out",
+        dry_run=True,
+        storage=MediaStorage(MediaStorageKind.BIND, str(host)),
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert str(host) in err
+    assert f"{host}:/data:ro" in err
+    assert "myproj_django_media" not in err
+
+
 def test_run_pull_media_pipes_tar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "media"
 
@@ -112,6 +132,27 @@ def test_run_push_media_dry_run_stderr(capsys: pytest.CaptureFixture[str], tmp_p
     assert "myproj_django_media" in err
     assert "tar c" in err
     assert "find /data" in err
+
+
+def test_run_push_media_dry_run_bind(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
+
+    source = tmp_path / "src"
+    source.mkdir()
+    host = tmp_path / "media"
+    rc = run_push_media(
+        {"COMPOSE_PROJECT_NAME": "myproj"},
+        source=source,
+        dry_run=True,
+        storage=MediaStorage(MediaStorageKind.BIND, str(host)),
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert str(host) in err
+    assert f"{host}:/data" in err
+    assert "myproj_django_media" not in err
 
 
 def test_run_push_media_not_a_directory(tmp_path: Path) -> None:
