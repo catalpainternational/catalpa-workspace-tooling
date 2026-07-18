@@ -193,7 +193,7 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
 
     apply_setup(plan_setup())
     data = json.loads((tmp_path / ".vscode/tasks.json").read_text(encoding="utf-8"))
-    assert data[MANAGED_MARKER_KEY] == "7"
+    assert data[MANAGED_MARKER_KEY] == "8"
     labels = [t["label"] for t in data["tasks"]]
     assert "Dev: Show LAN URLs" in labels
     assert "Dev: Open site on LAN" in labels
@@ -217,3 +217,33 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
 
     full_input = next(i for i in data["inputs"] if i["id"] == FULL_CURSOR_BROWSER_INPUT)
     assert full_input["args"] == {"url": "https://bero.localhost:9011"}
+
+    open_dev = next(t for t in data["tasks"] if t["label"] == "Dev: Open site in browser")
+    assert "primary_site_origin_from_info" in open_dev["osx"]["command"]
+
+
+def test_open_browser_uses_primary_when_site_origin_is_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_tooling_docker_repo(tmp_path)
+    (tmp_path / "docker/envs/full/info.yaml").write_text(
+        "site_origin:\n"
+        "  - https://primary.example.test\n"
+        "  - https://secondary.example.test\n"
+        "compose_file: compose.yaml\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+    data = json.loads((tmp_path / ".vscode/tasks.json").read_text(encoding="utf-8"))
+
+    full_input = next(i for i in data["inputs"] if i["id"] == FULL_CURSOR_BROWSER_INPUT)
+    assert full_input["args"] == {"url": "https://primary.example.test"}
+
+    open_full = next(t for t in data["tasks"] if t["label"] == "Full: Open site in browser")
+    assert "primary_site_origin_from_info" in open_full["osx"]["command"]
+    assert "['site_origin']" not in open_full["osx"]["command"]
+
+    start_full = next(t for t in data["tasks"] if t["label"] == "Full: Start stack")
+    assert "parse_site_origins_from_info" in start_full["command"]

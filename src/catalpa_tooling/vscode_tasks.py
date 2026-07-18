@@ -11,7 +11,7 @@ import yaml
 from catalpa_tooling.local_proxy import local_proxy_enabled
 from catalpa_tooling.site_origin import primary_site_origin_from_info
 
-SETUP_VSCODE_GENERATOR_VERSION = "7"
+SETUP_VSCODE_GENERATOR_VERSION = "8"
 MANAGED_MARKER_KEY = "_catalpa_setup_vscode"
 
 PATH_ENV = (
@@ -37,9 +37,11 @@ CURSOR_BROWSER_COMMAND = "workbench.action.openBrowserEditor"
 
 
 def _site_origin_py(info_yaml: str) -> str:
+    # site_origin may be a string or YAML list; open only the primary URL.
     return (
         "import yaml; "
-        f"print(yaml.safe_load(open('{info_yaml}'))['site_origin'])"
+        "from catalpa_tooling.site_origin import primary_site_origin_from_info; "
+        f"print(primary_site_origin_from_info(yaml.safe_load(open('{info_yaml}')) or {{}}))"
     )
 
 
@@ -50,8 +52,9 @@ def _start_stack_hint_py(
 ) -> str:
     return (
         "import yaml; "
+        "from catalpa_tooling.site_origin import parse_site_origins_from_info; "
         f"info=yaml.safe_load(open('{info_yaml}')) or {{}}; "
-        f"o=info.get('site_origin',''); "
+        "o=' '.join(parse_site_origins_from_info(info)); "
         f"print(f'\\nSite: {{o}}\\nOpen in OS browser: {os_browser_label}\\n"
         f"Open in Cursor: {cursor_browser_label}'); "
         "from catalpa_tooling.dev_lan_access import dev_lan_access_enabled; "

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.7
+
+### Fixed
+
+- **`setup-vscode` open-browser tasks** — `Dev:`/`Full: Open site in browser` (and start-stack site hints) now use `primary_site_origin_from_info` / `parse_site_origins_from_info`, so list-valued `site_origin` in `info.yaml` no longer breaks `open` / `xdg-open`.
+
 ## 0.9.6
 
 ### Added
