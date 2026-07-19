@@ -6,7 +6,8 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 
 | Project | Version | Status |
 |---------|---------|--------|
-| catalpa_bero | v0.9.5 | Staging |
+| Catalpa Site | v0.9.9 | Staging |
+| Catalpa Bero | v0.9.5 | Staging |
 | jid | v0.9.5 | Staging |
 | tvi | v0.9.5 | Staging |
 | NCD | v0.9.5 | Staging |
@@ -14,7 +15,6 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 | partisipa | v0.9.1 | Dev (align_ttoling branch)|
 | bilum | v0.9.1 | Dev (roberto working on it) |
 | ambulancia | v0.9.1 | Staging |
-| catlapa site | | Staging |
 | tempu | | Staging |
 | liga inan | | Dev |
 
