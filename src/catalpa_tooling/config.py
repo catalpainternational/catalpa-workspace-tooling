@@ -477,6 +477,7 @@ class ComplianceConfig:
     warn_spdx: tuple[str, ...]
     allow_strong_copyleft: bool
     outputs: ComplianceOutputsConfig
+    allowed_packages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1652,14 +1653,20 @@ def _parse_compliance(raw: Any, *, paths: PathsConfig) -> ComplianceConfig | Non
     if not isinstance(raw, dict):
         raise ProjectConfigError("compliance must be a mapping")
     project_license = _require_str(raw, "project_license", section="compliance")
-    license_files = _parse_string_list(raw.get("license_files"), field="compliance.license_files")
-    if not license_files:
+    if "license_files" not in raw:
         license_files = (f"{paths.frontend}/LICENSE",)
+    else:
+        license_files = _parse_string_list(
+            raw.get("license_files"), field="compliance.license_files"
+        )
     license_files = tuple(
         _validate_rel_path(rel, field="compliance.license_files") for rel in license_files
     )
     forbidden = _parse_string_list(raw.get("forbidden_spdx"), field="compliance.forbidden_spdx")
     warn = _parse_string_list(raw.get("warn_spdx"), field="compliance.warn_spdx")
+    allowed_packages = _parse_string_list(
+        raw.get("allowed_packages"), field="compliance.allowed_packages"
+    )
     outputs_raw = raw.get("outputs")
     outputs = (
         _parse_compliance_outputs(outputs_raw)
@@ -1685,6 +1692,7 @@ def _parse_compliance(raw: Any, *, paths: PathsConfig) -> ComplianceConfig | Non
         warn_spdx=warn or DEFAULT_WARN_SPDX,
         allow_strong_copyleft=_optional_bool(raw, "allow_strong_copyleft", default=False),
         outputs=outputs,
+        allowed_packages=allowed_packages,
     )
 
 

@@ -91,9 +91,11 @@ Paths are relative to the **consumer repo root**. Use `paths.frontend` (see `too
 
 ```yaml
 compliance:
-  project_license: AGPL-3.0-or-later   # or Apache-2.0, etc.
+  project_license: AGPL-3.0-or-later   # or Apache-2.0, LicenseRef-proprietary, etc.
   license_files:
-    - platform/LICENSE                # submodule or monorepo platform tree
+    - platform/LICENSE                # omit key → default {frontend}/LICENSE; [] → no required files
+  allowed_packages:                   # optional — skip forbidden/warn for first-party deps by name
+    - simple-locations
   python:
     lockfiles:
       - platform/docker/uv.lock       # production image lockfile(s)
@@ -118,6 +120,10 @@ compliance:
     sbom_dir: compliance/sbom
     notices: compliance/THIRD_PARTY_NOTICES.md
 ```
+
+**`license_files`:** If the key is omitted, tooling requires `{paths.frontend}/LICENSE`. An explicit empty list (`license_files: []`) means no project license files are required (typical for proprietary apps that do not ship a `LICENSE` file).
+
+**`allowed_packages`:** Case-insensitive package-name allowlist. Matching deps skip both `forbidden_spdx` and `warn_spdx` checks (use for first-party / Catalpa-owned packages that correctly report `LicenseRef-proprietary`). They still appear in SBOM and notices.
 
 When `compliance:` is omitted, tooling infers a **JS-only** minimal config if `paths.frontend/` contains `pnpm-lock.yaml`, `yarn.lock`, or `package-lock.json`. `pnpm-lock.yaml` is preferred when multiple lockfiles exist.
 

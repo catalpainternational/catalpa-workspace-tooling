@@ -79,6 +79,7 @@ def run_compliance(
                 forbidden_spdx=compliance.forbidden_spdx,
                 warn_spdx=compliance.warn_spdx,
                 allow_strong_copyleft=compliance.allow_strong_copyleft,
+                allowed_packages=compliance.allowed_packages,
             )
         )
 

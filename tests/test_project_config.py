@@ -417,7 +417,46 @@ def test_parse_compliance_section(tmp_path: Path, isolated_tooling: None) -> Non
     assert compliance.javascript.production_only is True
     assert len(compliance.bundled_assets) == 1
     assert compliance.allow_strong_copyleft is True
+    assert compliance.allowed_packages == ()
     assert compliance.outputs.sbom_dir == "compliance/sbom"
+
+
+def test_compliance_empty_license_files_means_none(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    tooling = (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+    (tmp_path / "tooling.yaml").write_text(
+        tooling
+        + """
+compliance:
+  project_license: LicenseRef-proprietary
+  license_files: []
+""",
+        encoding="utf-8",
+    )
+    config = load_project_config(tmp_path)
+    assert config.compliance is not None
+    assert config.compliance.license_files == ()
+
+
+def test_compliance_allowed_packages_parsed(tmp_path: Path, isolated_tooling: None) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    tooling = (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+    (tmp_path / "tooling.yaml").write_text(
+        tooling
+        + """
+compliance:
+  project_license: LicenseRef-proprietary
+  license_files: []
+  allowed_packages:
+    - simple-locations
+""",
+        encoding="utf-8",
+    )
+    config = load_project_config(tmp_path)
+    assert config.compliance is not None
+    assert config.compliance.allowed_packages == ("simple-locations",)
 
 
 def test_compliance_outputs_default_when_omitted(tmp_path: Path, isolated_tooling: None) -> None:

@@ -71,3 +71,49 @@ def test_policy_skips_gpl_warn_when_allow_strong_copyleft() -> None:
         allow_strong_copyleft=True,
     )
     assert violations == []
+
+
+def test_policy_skips_forbidden_when_package_allowed() -> None:
+    packages = [
+        CompliancePackage(
+            "simple-locations",
+            "4.1.0b1",
+            "LicenseRef-proprietary",
+            "python:django/uv.lock",
+        ),
+        CompliancePackage(
+            "secret-lib",
+            "1.0",
+            "LicenseRef-proprietary",
+            "python:django/uv.lock",
+        ),
+    ]
+    violations = check_license_policy(
+        packages,
+        forbidden_spdx=("LicenseRef-proprietary",),
+        warn_spdx=(),
+        allow_strong_copyleft=False,
+        allowed_packages=("Simple-Locations",),
+    )
+    assert len(violations) == 1
+    assert violations[0].code == "forbidden_license"
+    assert "secret-lib" in violations[0].message
+
+
+def test_policy_skips_warn_when_package_allowed() -> None:
+    packages = [
+        CompliancePackage(
+            "internal-gpl",
+            "1.0",
+            "GPL-2.0-only",
+            "python:test",
+        )
+    ]
+    violations = check_license_policy(
+        packages,
+        forbidden_spdx=(),
+        warn_spdx=("GPL-2.0-only",),
+        allow_strong_copyleft=False,
+        allowed_packages=("internal-gpl",),
+    )
+    assert violations == []

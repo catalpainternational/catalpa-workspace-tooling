@@ -29,14 +29,18 @@ def check_license_policy(
     forbidden_spdx: tuple[str, ...],
     warn_spdx: tuple[str, ...],
     allow_strong_copyleft: bool,
+    allowed_packages: tuple[str, ...] = (),
 ) -> list[ComplianceViolation]:
     violations: list[ComplianceViolation] = []
+    allowed = {name.strip().lower() for name in allowed_packages if name.strip()}
     effective_warn = warn_spdx
     if allow_strong_copyleft:
         strong = {"GPL-2.0-ONLY", "GPL-3.0-ONLY", "GPL-2.0-OR-LATER", "GPL-3.0-OR-LATER"}
         effective_warn = tuple(x for x in warn_spdx if _normalize_spdx(x) not in strong)
 
     for pkg in packages:
+        if pkg.name.strip().lower() in allowed:
+            continue
         spdx = normalize_license_spdx(pkg.license_spdx.strip())
         if _matches_tier(spdx, forbidden_spdx):
             violations.append(
