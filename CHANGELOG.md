@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk transfer` destination `compose up -d`** — apply the same local-proxy compose override (`ports: !reset []` + shared network) as ``dk <env> up``, so local full/dev stacks no longer try to bind host :80/:443 while ``catalpa-local-proxy`` is running.
+
 ## 0.9.9
 
 ### Fixed

@@ -1,6 +1,7 @@
 """Tests for ``dk transfer``."""
 
 import argparse
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -290,6 +291,60 @@ def test_preflight_empty_bind_source_errors(
     assert len(errs) == 1
     assert "empty" in errs[0]
     assert str(empty) in errs[0]
+
+
+def test_start_dest_writers_passes_local_proxy_override(
+    monkeypatch: pytest.MonkeyPatch,
+    minimal_project,
+    tmp_path: Path,
+) -> None:
+    """Regression: transfer compose up must reset host ports behind catalpa-local-proxy."""
+    from catalpa_tooling.dk_transfer import _start_dest_writers
+
+    override = tmp_path / "marktwain-full.yaml"
+    override.write_text("services:\n  caddy:\n    ports: !reset []\n", encoding="utf-8")
+    sync_calls: list[tuple] = []
+    compose_kwargs: list[dict] = []
+
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer.sync_local_proxy_for_compose_action",
+        lambda *a, **k: sync_calls.append((a, k)) or 0,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer.local_proxy_extra_compose_files",
+        lambda *a, **k: [str(override)],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer.dc_backup_tls_extra_compose_files",
+        lambda *a, **k: [],
+    )
+
+    def fake_compose(compose_file, *args, **kwargs):
+        compose_kwargs.append({"compose_file": compose_file, "args": args, **kwargs})
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    monkeypatch.setattr("catalpa_tooling.dk_transfer._compose", fake_compose)
+
+    info = {
+        "compose_file": "compose.yaml",
+        "local_proxy": {"lan_access": True},
+        "env": {"compose_project_name": "tempu-local"},
+    }
+    _start_dest_writers(
+        "compose.yaml",
+        {"COMPOSE_PROJECT_NAME": "tempu-local", "DOCKER_HOST": ""},
+        dry_run=False,
+        config=minimal_project,
+        env_name="full",
+        info=info,
+    )
+
+    assert sync_calls, "expected local proxy sync before compose up"
+    assert len(compose_kwargs) == 1
+    assert compose_kwargs[0]["args"] == ("up", "-d")
+    assert compose_kwargs[0]["extra_compose_files"] == [str(override)]
 
 
 def test_transfer_invokes_post_db_restore_hooks_after_db_leg(

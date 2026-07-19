@@ -9,6 +9,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig
@@ -35,6 +38,11 @@ from catalpa_tooling.pgbackrest_db import (
 )
 from catalpa_tooling.remote_deploy import list_deploy_env_names
 from catalpa_tooling.host_storage import ensure_host_storage
+from catalpa_tooling.local_proxy import (
+    LocalProxyConfigError,
+    local_proxy_extra_compose_files,
+    sync_local_proxy_for_compose_action,
+)
 from catalpa_tooling.storage_config import volume_bind_kwargs
 from catalpa_tooling.restic_files import resolve_env_with_compose_project
 
@@ -258,6 +266,43 @@ def _dest_writer_services(compose_file: str, env_add: dict[str, str]) -> list[st
     return [s for s in _WRITER_SERVICE_CANDIDATES if s in names]
 
 
+def _read_deploy_info(config: ProjectConfig, env_name: str) -> dict[str, Any]:
+    """Load ``docker/envs/<env>/info.yaml`` (empty mapping if missing/invalid)."""
+    path = config.deploy_envs_dir / env_name / "info.yaml"
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _transfer_extra_compose_files(
+    *,
+    config: ProjectConfig,
+    env_name: str,
+    info: dict[str, Any],
+    env_add: dict[str, str],
+    compose_args: list[str],
+) -> list[str] | None:
+    """Local-proxy + DC-backup TLS overrides for transfer ``compose up`` (same as ``dk <env>``)."""
+    proxy_files = local_proxy_extra_compose_files(
+        info,
+        config,
+        env_name,
+        env_add,
+        compose_args,
+    )
+    tls_files = dc_backup_tls_extra_compose_files(
+        info,
+        config,
+        env_name,
+        env_add,
+        compose_args,
+    )
+    return merge_extra_compose_files(proxy_files, tls_files)
+
+
 def _confirm_transfer_overwrite(
     dest_env: str,
     *,
@@ -316,19 +361,76 @@ def _stop_dest_writers(compose_file: str, env_add: dict[str, str], *, dry_run: b
             )
 
 
-def _start_dest_writers(compose_file: str, env_add: dict[str, str], *, dry_run: bool) -> None:
+def _start_dest_writers(
+    compose_file: str,
+    env_add: dict[str, str],
+    *,
+    dry_run: bool,
+    config: ProjectConfig,
+    env_name: str,
+    info: dict[str, Any] | None = None,
+) -> None:
     """Bring the destination stack back up (``docker compose up -d``).
 
     Uses ``up -d`` instead of ``start <service>`` so that dependencies like ``redis``
     and ``migrate`` are also started, avoiding ordering / missing-dependency errors.
+
+    Applies the same local-proxy compose override as ``dk <env> up`` so stack Caddy does
+    not publish host :80/:443 while ``catalpa-local-proxy`` holds those ports.
     """
+    compose_args = ["up", "-d"]
+    info_map = info if info is not None else _read_deploy_info(config, env_name)
     if dry_run:
         print(
-            f"dry-run: would docker compose -f {compose_file} up -d",
+            f"dry-run: would docker compose -f {compose_file} up -d"
+            " (with local-proxy / dc-backup-tls overrides when applicable)",
             file=sys.stderr,
         )
         return
-    r = _compose(compose_file, "up", "-d", env_add=env_add, check=False)
+    try:
+        proxy_rc = sync_local_proxy_for_compose_action(
+            info_map,
+            config,
+            env_name,
+            compose_args,
+            env_add,
+            dry_run=False,
+        )
+    except LocalProxyConfigError as exc:
+        print(f"transfer: warning: local proxy sync failed: {exc}", file=sys.stderr)
+        proxy_rc = 1
+    if proxy_rc != 0:
+        print(
+            "transfer: warning: local proxy sync returned "
+            f"{proxy_rc}; continuing with compose up.",
+            file=sys.stderr,
+        )
+    try:
+        extra_compose_files = _transfer_extra_compose_files(
+            config=config,
+            env_name=env_name,
+            info=info_map,
+            env_add=env_add,
+            compose_args=compose_args,
+        )
+    except LocalProxyConfigError as exc:
+        print(f"transfer: warning: local proxy override failed: {exc}", file=sys.stderr)
+        extra_compose_files = merge_extra_compose_files(
+            dc_backup_tls_extra_compose_files(
+                info_map,
+                config,
+                env_name,
+                env_add,
+                compose_args,
+            )
+        )
+    r = _compose(
+        compose_file,
+        *compose_args,
+        env_add=env_add,
+        extra_compose_files=extra_compose_files,
+        check=False,
+    )
     if r.returncode != 0:
         print(
             f"transfer: warning: `compose up -d` returned {r.returncode}; "
@@ -455,15 +557,26 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     dump_path = session / "pg.dump"
     media_dir = session / "media"
+    dst_info = _read_deploy_info(config, dst)
+
+    def restart_dest_writers() -> None:
+        _start_dest_writers(
+            dst_ctx.compose_file,
+            dst_r,
+            dry_run=False,
+            config=config,
+            env_name=dst,
+            info=dst_info,
+        )
 
     if do_db or do_media:
-        _stop_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+        _stop_dest_writers(dst_ctx.compose_file, dst_r, dry_run=False)
 
     if do_db:
         print("transfer: pg_dump (source) …", file=sys.stderr)
         rc = run_pg_dump_to_file(src_ctx.compose_file, src_r, dump_path)
         if rc != 0:
-            _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+            restart_dest_writers()
             shutil.rmtree(session, ignore_errors=True)
             return rc
         print("transfer: drop + recreate app database (destination) …", file=sys.stderr)
@@ -477,7 +590,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 dump_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+            restart_dest_writers()
             shutil.rmtree(session, ignore_errors=True)
             return rc
         print("transfer: pg_restore (destination) …", file=sys.stderr)
@@ -495,7 +608,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 dump_path.unlink(missing_ok=True)
             except OSError:
                 pass
-            _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+            restart_dest_writers()
             shutil.rmtree(session, ignore_errors=True)
             return rc
         try:
@@ -514,7 +627,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
             storage=src_media,
         )
         if rc != 0:
-            _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+            restart_dest_writers()
             shutil.rmtree(session, ignore_errors=True)
             return rc
         print(f"transfer: push_media (destination {dst_media.describe()}) …", file=sys.stderr)
@@ -526,12 +639,12 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
             storage=dst_media,
         )
         if rc != 0:
-            _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+            restart_dest_writers()
             shutil.rmtree(session, ignore_errors=True)
             return rc
 
     if do_db or do_media:
-        _start_dest_writers(dst_ctx.compose_file, dst_ctx.env_add, dry_run=False)
+        restart_dest_writers()
 
     if do_db:
         rc_hooks = run_post_db_restore_manage_commands(
