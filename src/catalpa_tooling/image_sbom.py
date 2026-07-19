@@ -247,11 +247,18 @@ def generate_image_cyclonedx(image_ref: str, output_path: Path) -> int:
     return result.returncode
 
 
+_SKIP_SBOM_HINT = "To skip image SBOMs: `uv run dk push --no-sbom`"
+
+
 def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
     """Attach a CycloneDX file as an OCI referrer to ``image@sha256:…`` via ORAS."""
     if not sbom_path.is_file():
         print(f"SBOM file missing for attach: {sbom_path}", flush=True)
+        print(_SKIP_SBOM_HINT, flush=True)
         return 1
+    work_dir = sbom_path.parent.resolve()
+    # ORAS rejects absolute file paths; pass a relative name with cwd / -w set.
+    file_arg = f"{sbom_path.name}:{CYCLONEDX_MEDIA_TYPE}"
     host_oras = _which("oras")
     if host_oras:
         result = run_cmd(
@@ -261,11 +268,12 @@ def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
                 "--artifact-type",
                 ORAS_ARTIFACT_TYPE,
                 image_ref_with_digest,
-                f"{sbom_path}:{CYCLONEDX_MEDIA_TYPE}",
+                file_arg,
             ],
             check=False,
             capture_output=True,
             text=True,
+            cwd=str(work_dir),
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
@@ -273,9 +281,9 @@ def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
                 f"oras attach failed for {image_ref_with_digest}: {detail or 'non-zero exit'}",
                 flush=True,
             )
+            print(_SKIP_SBOM_HINT, flush=True)
         return result.returncode
 
-    work_dir = sbom_path.parent.resolve()
     registry_host = registry_host_from_ref(image_ref_with_digest)
     with tempfile.TemporaryDirectory(prefix="dk-oras-docker-cfg-") as auth_tmp:
         auth_dir = Path(auth_tmp)
@@ -309,7 +317,7 @@ def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
             "--artifact-type",
             ORAS_ARTIFACT_TYPE,
             image_ref_with_digest,
-            f"{sbom_path.name}:{CYCLONEDX_MEDIA_TYPE}",
+            file_arg,
         ]
         result = run_cmd(cmd, check=False, capture_output=True, text=True)
         if result.returncode != 0:
@@ -319,6 +327,7 @@ def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
                 f"{detail or 'non-zero exit'}",
                 flush=True,
             )
+            print(_SKIP_SBOM_HINT, flush=True)
         return result.returncode
 
 
@@ -406,13 +415,17 @@ def prepare_and_attach_image_sbom(
                 if not bom_file.is_file():
                     print(
                         f"Compliance app SBOM missing ({bom_file}); "
-                        "run `uv run tests compliance` before `dk push`",
+                        "run `uv run tests compliance` before `dk push`, "
+                        "or skip with `uv run dk push --no-sbom`",
                         flush=True,
                     )
                     return 1
                 app_bom = _load_json(bom_file)
                 if app_bom is None:
-                    print(f"Could not parse app SBOM {bom_file}", flush=True)
+                    print(
+                        f"Could not parse app SBOM {bom_file}. {_SKIP_SBOM_HINT}",
+                        flush=True,
+                    )
                     return 1
                 merged = merge_cyclonedx(image_bom, app_bom)
                 attach_path = tmp_path / "merged.cdx.json"

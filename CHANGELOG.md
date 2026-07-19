@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.9
+
+### Fixed
+
+- **`dk push` image SBOM attach** — host `oras attach` now uses a relative SBOM filename with `cwd` set to the temp directory (ORAS rejects absolute paths). Failure and missing app-bom messages hint at `uv run dk push --no-sbom`.
+
 ## 0.9.8
 
 ### Fixed

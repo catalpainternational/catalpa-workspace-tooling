@@ -247,7 +247,9 @@ def test_prepare_db_skips_app_bom(
 
 
 def test_prepare_web_fails_when_app_bom_missing(
-    minimal_project, monkeypatch: pytest.MonkeyPatch
+    minimal_project,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     config = replace(minimal_project, compliance=_compliance())
     monkeypatch.setattr(
@@ -275,6 +277,9 @@ def test_prepare_web_fails_when_app_bom_missing(
         registry="ghcr.io/example/app",
     )
     assert rc == 1
+    out = capsys.readouterr().out
+    assert "tests compliance" in out
+    assert "--no-sbom" in out
 
 
 def test_prepare_fails_when_syft_fails(
@@ -379,6 +384,58 @@ def test_lookup_registry_credentials_via_helper(
     assert mod.lookup_registry_credentials("ghcr.io") == ("bob", "pat")
 
 
+def test_attach_sbom_host_oras_uses_relative_path_and_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from catalpa_tooling import image_sbom as mod
+
+    sbom = tmp_path / "syft.cdx.json"
+    sbom.write_text('{"bomFormat":"CycloneDX","components":[]}\n', encoding="utf-8")
+    monkeypatch.setattr(mod, "_which", lambda name: "/opt/homebrew/bin/oras")
+
+    seen_cmds: list[list[str]] = []
+    seen_kwargs: list[dict] = []
+
+    def fake_run(cmd, **kwargs):
+        seen_cmds.append(list(cmd))
+        seen_kwargs.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod, "run_cmd", fake_run)
+    rc = mod.attach_sbom_referrer(
+        "ghcr.io/example/app@sha256:deadbeef",
+        sbom,
+    )
+    assert rc == 0
+    assert seen_cmds
+    cmd = seen_cmds[0]
+    assert cmd[0] == "/opt/homebrew/bin/oras"
+    assert cmd[-1] == f"syft.cdx.json:{mod.CYCLONEDX_MEDIA_TYPE}"
+    assert str(sbom) not in cmd[-1]
+    assert seen_kwargs[0].get("cwd") == str(tmp_path.resolve())
+
+
+def test_attach_sbom_host_oras_failure_hints_no_sbom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from catalpa_tooling import image_sbom as mod
+
+    sbom = tmp_path / "syft.cdx.json"
+    sbom.write_text('{"bomFormat":"CycloneDX","components":[]}\n', encoding="utf-8")
+    monkeypatch.setattr(mod, "_which", lambda name: "/opt/homebrew/bin/oras")
+    monkeypatch.setattr(
+        mod,
+        "run_cmd",
+        lambda *a, **k: SimpleNamespace(
+            returncode=1, stdout="", stderr="absolute file path detected"
+        ),
+    )
+    rc = mod.attach_sbom_referrer("ghcr.io/example/app@sha256:deadbeef", sbom)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "--no-sbom" in out
+
+
 def test_attach_sbom_docker_uses_inline_auth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -405,6 +462,7 @@ def test_attach_sbom_docker_uses_inline_auth(
     cmd = seen[0]
     assert "docker" in cmd[0]
     assert ORAS_IMAGE in cmd
+    assert cmd[-1] == f"merged.cdx.json:{mod.CYCLONEDX_MEDIA_TYPE}"
     # Must mount a temp auth dir, not the real ~/.docker path blindly with keychain.
     assert any(a == "-v" and "/root/.docker:ro" in b for a, b in zip(cmd, cmd[1:]))
     assert "DOCKER_CONFIG=/root/.docker" in cmd
