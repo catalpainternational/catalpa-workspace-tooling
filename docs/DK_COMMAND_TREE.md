@@ -18,6 +18,11 @@ dk
 │   ├── status                     # running? live sites (host -> upstream, project/env)
 │   └── trust                      # trust "Catalpa Local Dev Root (<machine>)" CA once (macOS/Linux)
 │
+├── cut-release                    # release / next-branch / staging beta (dry-run default)
+│                                  #   --bump major|minor|hotfix | --beta [--beta-w N]
+│                                  #   --submodule PATH --execute --set-default
+│                                  #   --pin-submodule PATH=REF --image-env NAME
+│
 ├── digoc                          # access to doctl (probably removing this for access via dk)
 │   ├── auth                        
 │   │   ├── init
@@ -89,6 +94,7 @@ dk
 | `transfer` | Copy Postgres + `django_media` between two envs |
 | `digoc` | DigitalOcean helpers (wraps `doctl`) |
 | `proxy` | Machine-wide local dev HTTPS reverse proxy (`*.localdev.temp.build`) |
+| `cut-release` | Cut `v*` release / next `dev-*` line / staging `v*.beta.W` (see [CUT_RELEASE.md](CUT_RELEASE.md)) |
 
 ## `<env>` only
 

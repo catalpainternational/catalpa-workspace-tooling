@@ -42,7 +42,9 @@ COMMON_DOCKER_VERBS: tuple[str, ...] = (
     "start",
 )
 
-RESERVED_DK_TOP_COMMANDS = frozenset({"build", "push", "transfer", "digoc", "fetch"})
+RESERVED_DK_TOP_COMMANDS = frozenset(
+    {"build", "push", "transfer", "digoc", "fetch", "clean-images", "proxy", "cut-release"}
+)
 
 
 def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:

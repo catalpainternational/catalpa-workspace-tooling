@@ -69,3 +69,7 @@ git push origin v0.9.1
 ```
 
 CI still creates the GitHub release if `CHANGELOG.md` contains `## 0.9.1`.
+
+## App repo cutovers (`dk cut-release`)
+
+For consumer / platform repos that cut `dev-X.Y[.Z]` → `v*` releases (and staging `v*.beta.W` tags), see [CUT_RELEASE.md](CUT_RELEASE.md). That flow is unrelated to this package’s hatch-vcs versioning.

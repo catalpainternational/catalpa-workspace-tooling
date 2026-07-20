@@ -34,7 +34,8 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             f"  dk prod db pgdump\n"
             f"  dk full info -e\n"
             f"\n"
-            f"Top-level commands (no env): build, push, clean-images, transfer, fetch, digoc, proxy.\n"
+            f"Top-level commands (no env): build, push, clean-images, transfer, fetch, digoc, "
+            f"proxy, cut-release.\n"
             f"Environments: directories under {envs_dir}/<name>/ with info.yaml."
         ),
     )
@@ -158,6 +159,95 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     proxy_sub.add_parser(
         "ca",
         help="Show LAN CA download URL + QR and device install steps.",
+    )
+
+    p_cut = sub.add_parser(
+        "cut-release",
+        help="Cut a release tag, open the next dev-* line, or push a staging beta tag.",
+        description=(
+            "Three modes:\n"
+            "  A) On dev-X.Y[.Z] + --bump: merge to main, tag vX.Y[.Z], create next branch.\n"
+            "  B) On vX.Y[.Z] tag + --bump: create next branch only.\n"
+            "  C) On dev-X.Y[.Z] + --beta: tag vX.Y[.Z].beta.W on branch tip (no next branch).\n"
+            "\n"
+            "Default is dry-run; pass --execute to mutate. Never deploys remote environments."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_cut.add_argument(
+        "--bump",
+        choices=("major", "minor", "hotfix"),
+        default=None,
+        help="Next-branch bump (Mode A/B). Mutually exclusive with --beta.",
+    )
+    p_cut.add_argument(
+        "--beta",
+        action="store_true",
+        help="Mode C: cut vX.Y.Z.beta.W on the current dev-* tip (no next branch).",
+    )
+    p_cut.add_argument(
+        "--beta-w",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Explicit beta W (default: max existing + 1).",
+    )
+    p_cut.add_argument(
+        "--submodule",
+        default=None,
+        metavar="PATH",
+        help="Operate inside this submodule path (e.g. bero).",
+    )
+    p_cut.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform git/gh mutations (default: dry-run plan only).",
+    )
+    p_cut.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation when using --execute.",
+    )
+    p_cut.add_argument(
+        "--set-default",
+        action="store_true",
+        help="After creating the next branch, set it as the GitHub default (Mode A/B).",
+    )
+    p_cut.add_argument(
+        "--tag",
+        default=None,
+        metavar="TAG",
+        help="Override release or beta tag.",
+    )
+    p_cut.add_argument(
+        "--next-branch",
+        default=None,
+        metavar="BRANCH",
+        help="Override next dev-* branch name (Mode A/B).",
+    )
+    p_cut.add_argument(
+        "--pin-submodule",
+        action="append",
+        default=None,
+        metavar="PATH=REF",
+        help="Checkout REF in submodule PATH and commit the gitlink (repeatable).",
+    )
+    p_cut.add_argument(
+        "--image-env",
+        default=None,
+        metavar="NAME",
+        help="Set docker/envs/<NAME>/info.yaml image_tag to the new tag.",
+    )
+    p_cut.add_argument(
+        "--allow-prod-beta",
+        action="store_true",
+        help="Allow --image-env prod together with --beta (default: refuse).",
+    )
+    p_cut.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow --execute with uncommitted changes (prints a warning).",
     )
 
     attach_env_subparsers(sub, config)
