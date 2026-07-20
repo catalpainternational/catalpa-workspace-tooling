@@ -22,13 +22,14 @@ from catalpa_tooling.dc_backup.hosts import (
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context
 from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
-from catalpa_tooling.media_pull import run_pull_media, run_push_media
+from catalpa_tooling.media_rsync import TransferMediaMethod
 from catalpa_tooling.media_storage import (
     MediaStorage,
     MediaStorageError,
     MediaStorageKind,
     resolve_media_storage,
 )
+from catalpa_tooling.media_transfer import run_transfer_media
 from catalpa_tooling.pgbackrest_db import (
     compose_pg_restore_extras_for_config,
     db_service_responds,
@@ -310,6 +311,7 @@ def _confirm_transfer_overwrite(
     do_db: bool,
     do_media: bool,
     dst_media: MediaStorage | None = None,
+    media_method: TransferMediaMethod = "rsync",
 ) -> bool:
     print(
         "WARNING: This will overwrite data on the destination environment:",
@@ -322,8 +324,12 @@ def _confirm_transfer_overwrite(
         )
     if do_media:
         where = dst_media.describe() if dst_media is not None else "django_media"
+        if media_method == "tar":
+            media_how = "existing files removed, then tar extract"
+        else:
+            media_how = "rsync --delete (tar fallback on failure)"
         print(
-            f"  - media ({where}; existing files removed, then tar extract)",
+            f"  - media ({where}; {media_how})",
             file=sys.stderr,
         )
     print(f"  Source: {src_env}", file=sys.stderr)
@@ -446,6 +452,10 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     dst = ns.dest_env
     dry = bool(ns.dry_run)
     yes = bool(ns.yes)
+    media_method: TransferMediaMethod = getattr(ns, "media_method", None) or "rsync"
+    if media_method not in ("rsync", "tar"):
+        print(f"dk transfer: invalid --media-method {media_method!r}.", file=sys.stderr)
+        return 1
 
     if src == dst:
         print("dk transfer: source and destination must differ.", file=sys.stderr)
@@ -506,7 +516,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         + (f" media={dst_media.describe()}" if dst_media else ""),
         file=sys.stderr,
     )
-    print(f"  steps: db={do_db} media={do_media}", file=sys.stderr)
+    print(f"  steps: db={do_db} media={do_media}" + (f" media_method={media_method}" if do_media else ""), file=sys.stderr)
 
     preflight_errs = _collect_transfer_preflight_errors(
         src=src,
@@ -540,7 +550,12 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
         )
         return 1
     if not yes and not _confirm_transfer_overwrite(
-        dst, src_env=src, do_db=do_db, do_media=do_media, dst_media=dst_media
+        dst,
+        src_env=src,
+        do_db=do_db,
+        do_media=do_media,
+        dst_media=dst_media,
+        media_method=media_method,
     ):
         print("transfer: cancelled.", file=sys.stderr)
         return 1
@@ -618,25 +633,17 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if do_media:
         assert src_media is not None and dst_media is not None
-        print(f"transfer: pull_media (source {src_media.describe()}) …", file=sys.stderr)
-        rc = run_pull_media(
+        fallback_tar = media_method == "rsync"
+        rc = run_transfer_media(
             src_r,
-            target=media_dir,
-            dry_run=False,
-            config=config,
-            storage=src_media,
-        )
-        if rc != 0:
-            restart_dest_writers()
-            shutil.rmtree(session, ignore_errors=True)
-            return rc
-        print(f"transfer: push_media (destination {dst_media.describe()}) …", file=sys.stderr)
-        rc = run_push_media(
             dst_r,
-            source=media_dir,
+            src_media=src_media,
+            dst_media=dst_media,
+            media_dir=media_dir,
+            method=media_method,
             dry_run=False,
             config=config,
-            storage=dst_media,
+            fallback_tar=fallback_tar,
         )
         if rc != 0:
             restart_dest_writers()
@@ -691,6 +698,15 @@ def populate_transfer_arguments(parser: argparse.ArgumentParser, config: Project
         help="Select the django_media leg (see epilog).",
     )
     parser.add_argument(
+        "--media-method",
+        choices=("rsync", "tar"),
+        default="rsync",
+        help=(
+            "How to copy django_media (default: rsync --delete; "
+            "tar = wipe destination then full archive extract)."
+        ),
+    )
+    parser.add_argument(
         "--workdir",
         default=None,
         metavar="DIR",
@@ -710,6 +726,7 @@ def build_transfer_arg_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         prog="dk transfer",
         description=(
             "Copy PostgreSQL app data and django_media from one docker/envs/ environment to another. "
+            "Media defaults to incremental rsync (--delete); use --media-method tar for a full archive. "
             "Uses a temporary directory under --workdir (see docs/DK.md)."
         ),
         epilog=(

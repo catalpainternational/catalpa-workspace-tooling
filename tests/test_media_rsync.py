@@ -12,11 +12,14 @@ from catalpa_tooling.config import load_project_config
 from catalpa_tooling.media_rsync import (
     mountpoint_host_rsync_writable,
     resolve_push_media_source,
+    resolve_rsync_endpoint,
+    rsync_between_endpoints,
     rsync_pull_remote_to_local,
     rsync_push_local_to_dest,
     run_push_media_rsync,
     try_ssh_target_from_docker_host,
 )
+from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
 from tests.test_fetch_media_config import _write_minimal_tooling
 
 
@@ -95,6 +98,83 @@ def test_rsync_push_adds_delete_and_trailing_slash(monkeypatch: pytest.MonkeyPat
     assert recorded[0][-1] == "/vol/mount/"
 
 
+def test_rsync_between_endpoints_remote_to_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        recorded.append(list(cmd))
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    monkeypatch.setattr("catalpa_tooling.media_rsync.run_cmd", fake_run)
+    rc = rsync_between_endpoints(
+        "a@h1:/vol/a",
+        "b@h2:/vol/b",
+        delete=True,
+        dry_run=False,
+    )
+    assert rc == 0
+    assert recorded[0][-2] == "a@h1:/vol/a/"
+    assert recorded[0][-1] == "b@h2:/vol/b/"
+
+
+def test_resolve_rsync_endpoint_bind(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    media.mkdir()
+    ep = resolve_rsync_endpoint(
+        {},
+        MediaStorage(MediaStorageKind.BIND, str(media)),
+        label="test",
+    )
+    assert ep == str(media.resolve())
+
+
+def test_resolve_rsync_endpoint_ssh_volume(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.media_rsync.try_docker_volume_mountpoint_ssh",
+        lambda ssh, vol, **_: "/var/lib/docker/volumes/proj_django_media/_data",
+    )
+    ep = resolve_rsync_endpoint(
+        {"DOCKER_HOST": "ssh://root@v8.example"},
+        MediaStorage(MediaStorageKind.VOLUME, "proj_django_media"),
+        label="test",
+    )
+    assert ep == "root@v8.example:/var/lib/docker/volumes/proj_django_media/_data"
+
+
+def test_resolve_rsync_endpoint_local_writable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        "catalpa_tooling.media_rsync.try_docker_volume_mountpoint_local",
+        lambda env, vol, **_: "/var/lib/docker/volumes/x/_data",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.media_rsync.mountpoint_host_rsync_writable",
+        lambda m: True,
+    )
+    ep = resolve_rsync_endpoint(
+        {},
+        MediaStorage(MediaStorageKind.VOLUME, "x"),
+        label="test",
+    )
+    assert ep == "/var/lib/docker/volumes/x/_data"
+
+
+def test_resolve_rsync_endpoint_darwin_volume_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        "catalpa_tooling.media_rsync.try_docker_volume_mountpoint_local",
+        lambda env, vol, **_: "/var/lib/docker/volumes/x/_data",
+    )
+    ep = resolve_rsync_endpoint(
+        {},
+        MediaStorage(MediaStorageKind.VOLUME, "x"),
+        label="test",
+    )
+    assert ep is None
+
+
 def test_run_push_media_rsync_ssh_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, isolated_tooling: None
 ) -> None:
@@ -127,6 +207,33 @@ def test_run_push_media_rsync_ssh_path(
     )
     assert rc == 0
     assert calls == ["u@h:/vol/mount/"]
+
+
+def test_run_push_media_rsync_bind(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.txt").write_text("1", encoding="utf-8")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    calls: list[str] = []
+
+    def fake_push(src: Path, dest_path: str, **kwargs: object) -> int:
+        calls.append(dest_path)
+        return 0
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/rsync")
+    monkeypatch.setattr("catalpa_tooling.media_rsync.rsync_push_local_to_dest", fake_push)
+
+    rc = run_push_media_rsync(
+        {},
+        source=source,
+        dry_run=False,
+        storage=MediaStorage(MediaStorageKind.BIND, str(dest)),
+    )
+    assert rc == 0
+    assert calls == [str(dest.resolve()) + "/"]
 
 
 def test_run_push_media_tar_method(
