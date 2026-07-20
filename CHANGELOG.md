@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`dk transfer` media** — default to incremental ``rsync --delete`` (direct host↔host when both endpoints are reachable; otherwise stage then push). ``--media-method tar`` keeps the previous wipe-and-full-archive path; rsync failures fall back to tar once.
+
 ## 0.9.10
 
 ### Added
