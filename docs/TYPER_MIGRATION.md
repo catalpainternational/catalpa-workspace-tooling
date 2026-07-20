@@ -39,7 +39,7 @@ Small, mechanical changes. Each handler reads only one or two namespace fields a
 
 | Module / symbol | Notes |
 |-----------------|-------|
-| `dk_transfer.py` — `cmd_transfer` | Reads ~8 flat fields at the top (`source_env`, `dest_env`, `dry_run`, `yes`, `db`, `media`, `workdir`, `keep_workdir`). Body is long but namespace reads are localized. Wrap as `run_transfer(config, *, source_env, dest_env, …)` with thin `cmd_transfer(ns, config)` adapter. Good standalone PR. |
+| `dk_transfer.py` — `cmd_transfer` | Reads ~9 flat fields at the top (`source_env`, `dest_env`, `dry_run`, `yes`, `db`, `media`, `media_method`, `workdir`, `keep_workdir`). Body is long but namespace reads are localized. Wrap as `run_transfer(config, *, source_env, dest_env, …)` with thin `cmd_transfer(ns, config)` adapter. Good standalone PR. |
 
 ## Medium risk — worthwhile during migration prep
 

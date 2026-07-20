@@ -223,4 +223,4 @@ Arguments after the subcommand are passed to the script. Unknown flags on `pg-re
 | CLI | Overlap |
 |-----|---------|
 | `scripts` | Non-`native-` shell helpers under `paths.scripts` (string or list; e.g. `fetch-db` → `fetch_db.sh`) |
-| `dk` | Remote deploy, `db pgdump`, `files push`, `pull_media` (tar volume export; `native fetch media` is rsync pull) |
+| `dk` | Remote deploy, `db pgdump`, `files push`, `pull_media` (tar volume export; `native fetch media` is rsync pull; `dk transfer` media defaults to rsync) |

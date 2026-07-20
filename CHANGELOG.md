@@ -5,6 +5,8 @@
 ### Added
 
 - **`dk cut-release`** — dry-run-first helper to cut `vX.Y[.Z]` from `dev-X.Y[.Z]`, open the next `dev-*` line (`--bump major|minor|hotfix`), or push staging `vX.Y.Z.beta.W` tags (`--beta`). Supports `--submodule`, `--pin-submodule`, `--image-env`, and `--allow-dirty`. See [docs/CUT_RELEASE.md](docs/CUT_RELEASE.md).
+- **`dk transfer` media** — default to incremental ``rsync --delete`` (direct host↔host when both endpoints are reachable; otherwise stage then push). ``--media-method tar`` keeps the previous wipe-and-full-archive path; rsync failures fall back to tar once.
+- **Media storage resolution** — prefer merged ``docker compose config`` (follows ``include:``, expands ``${VAR}``) and match ``ops.restic.data_volume``, ``DJANGO_MEDIA_ROOT``, or ``/media`` / ``/django_media``. Fixes bind mounts like bero ``dev`` (``../../media:/django_media``) that the old ``/media``-only YAML parse missed.
 
 ## 0.9.10
 

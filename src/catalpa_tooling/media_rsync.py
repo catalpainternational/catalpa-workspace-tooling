@@ -1,4 +1,4 @@
-"""Rsync helpers for ``django_media`` volume sync (fetch + ``bkp_files push``)."""
+"""Rsync helpers for ``django_media`` volume sync (fetch + ``bkp_files push`` + transfer)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
 from catalpa_tooling.restic_files import _default_compose_project, django_media_volume_name
 from catalpa_tooling.run_cmd import format_shell_command, run as run_cmd
 from catalpa_tooling.ssh_known_hosts import (
-    ensure_ssh_known_host_for_ssh_target,
     is_ssh_host_key_verification_error,
     print_ssh_host_key_hint,
 )
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 RSYNC_BASE: tuple[str, ...] = ("rsync", "-rptgoDzv", "--progress")
 
 PushMediaMethod = Literal["rsync", "tar"]
+TransferMediaMethod = Literal["rsync", "tar"]
 
 
 def ssh_target_from_host(host: str) -> str:
@@ -45,7 +46,13 @@ def try_ssh_target_from_docker_host(docker_host: str) -> str | None:
         return None
 
 
-def _parse_volume_mountpoint_json(stdout: str, volume_name: str, *, label: str) -> str:
+def _parse_volume_mountpoint_json(
+    stdout: str,
+    volume_name: str,
+    *,
+    label: str,
+    soft: bool = False,
+) -> str | None:
     try:
         payload = json.loads(stdout or "[]")
     except json.JSONDecodeError as exc:
@@ -53,13 +60,19 @@ def _parse_volume_mountpoint_json(stdout: str, volume_name: str, *, label: str) 
             f"{label}: invalid JSON from docker volume inspect for {volume_name!r}: {exc}",
             file=sys.stderr,
         )
+        if soft:
+            return None
         raise SystemExit(1) from exc
     if not isinstance(payload, list) or not payload:
         print(f"{label}: volume {volume_name!r} not found.", file=sys.stderr)
+        if soft:
+            return None
         raise SystemExit(1)
     first = payload[0]
     if not isinstance(first, dict):
         print(f"{label}: unexpected inspect payload for {volume_name!r}.", file=sys.stderr)
+        if soft:
+            return None
         raise SystemExit(1)
     mount = str(first.get("Mountpoint") or "").strip()
     if not mount:
@@ -67,12 +80,27 @@ def _parse_volume_mountpoint_json(stdout: str, volume_name: str, *, label: str) 
             f"{label}: empty Mountpoint from docker volume inspect for {volume_name!r}",
             file=sys.stderr,
         )
+        if soft:
+            return None
         raise SystemExit(1)
     return mount.rstrip("/")
 
 
 def docker_volume_mountpoint_ssh(ssh_target: str, volume_name: str, *, label: str = "media") -> str:
     """``docker volume inspect`` on a remote host via SSH; return mount path."""
+    mount = try_docker_volume_mountpoint_ssh(ssh_target, volume_name, label=label)
+    if mount is None:
+        raise SystemExit(1)
+    return mount
+
+
+def try_docker_volume_mountpoint_ssh(
+    ssh_target: str,
+    volume_name: str,
+    *,
+    label: str = "media",
+) -> str | None:
+    """Like ``docker_volume_mountpoint_ssh`` but return ``None`` on failure (no ``SystemExit``)."""
     cmd = ["ssh", ssh_target, "docker", "volume", "inspect", volume_name]
     print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -86,8 +114,10 @@ def docker_volume_mountpoint_ssh(ssh_target: str, volume_name: str, *, label: st
             print(err, file=sys.stderr)
         if is_ssh_host_key_verification_error(err):
             print_ssh_host_key_hint(ssh_target=ssh_target)
-        raise SystemExit(proc.returncode or 1)
-    return _parse_volume_mountpoint_json(proc.stdout or "", volume_name, label=label)
+        return None
+    return _parse_volume_mountpoint_json(
+        proc.stdout or "", volume_name, label=label, soft=True
+    )
 
 
 def docker_volume_mountpoint_local(
@@ -97,6 +127,19 @@ def docker_volume_mountpoint_local(
     label: str = "media",
 ) -> str:
     """``docker volume inspect`` using ``DOCKER_HOST`` from ``env``; return mount path."""
+    mount = try_docker_volume_mountpoint_local(env, volume_name, label=label)
+    if mount is None:
+        raise SystemExit(1)
+    return mount
+
+
+def try_docker_volume_mountpoint_local(
+    env: dict[str, str],
+    volume_name: str,
+    *,
+    label: str = "media",
+) -> str | None:
+    """Like ``docker_volume_mountpoint_local`` but return ``None`` on failure (no ``SystemExit``)."""
     run_env = os.environ.copy()
     for k, v in env.items():
         if v is not None:
@@ -112,8 +155,10 @@ def docker_volume_mountpoint_local(
         )
         if err:
             print(err, file=sys.stderr)
-        raise SystemExit(proc.returncode or 1)
-    return _parse_volume_mountpoint_json(proc.stdout or "", volume_name, label=label)
+        return None
+    return _parse_volume_mountpoint_json(
+        proc.stdout or "", volume_name, label=label, soft=True
+    )
 
 
 def mountpoint_host_rsync_writable(mount: str) -> bool:
@@ -127,13 +172,90 @@ def mountpoint_host_rsync_writable(mount: str) -> bool:
         return False
 
 
+def resolve_rsync_endpoint(
+    env: dict[str, str],
+    storage: MediaStorage,
+    *,
+    label: str = "media",
+    config: ProjectConfig | None = None,
+) -> str | None:
+    """Return a host-reachable rsync location, or ``None`` when staging is required.
+
+    Formats:
+    - local path: ``/var/lib/docker/volumes/…/_data`` or a bind directory
+    - remote: ``user@host:/var/lib/docker/volumes/…/_data``
+    """
+    del config  # reserved for future volume-name overrides
+    if storage.kind is MediaStorageKind.BIND:
+        host = Path(storage.location)
+        if host.is_dir():
+            return str(host.resolve())
+        print(f"{label}: bind path is not a directory: {host}", file=sys.stderr)
+        return None
+
+    docker_host = str(env.get("DOCKER_HOST") or "").strip()
+    ssh_target = try_ssh_target_from_docker_host(docker_host)
+    if ssh_target:
+        mount = try_docker_volume_mountpoint_ssh(
+            ssh_target, storage.location, label=label
+        )
+        if mount is None:
+            return None
+        return f"{ssh_target}:{mount}"
+
+    mount = try_docker_volume_mountpoint_local(env, storage.location, label=label)
+    if mount is None:
+        return None
+    if mountpoint_host_rsync_writable(mount):
+        return mount
+    return None
+
+
+def _normalize_rsync_src(src: str) -> str:
+    """Ensure trailing slash so rsync copies directory *contents*."""
+    if src.endswith(":"):
+        return src
+    # Remote ``user@host:path`` — slash after path, not after host.
+    if "@" in src and ":" in src.split("@", 1)[-1]:
+        if not src.endswith("/"):
+            return src + "/"
+        return src
+    if not src.endswith(os.sep) and not src.endswith("/"):
+        return src + "/"
+    return src
+
+
+def _normalize_rsync_dest(dest: str) -> str:
+    if not dest.endswith("/"):
+        return dest + "/"
+    return dest
+
+
+def rsync_between_endpoints(
+    src: str,
+    dst: str,
+    *,
+    delete: bool,
+    dry_run: bool,
+) -> int:
+    """Rsync ``src/`` to ``dst/`` (local paths and/or ``user@host:path``)."""
+    src_norm = _normalize_rsync_src(src)
+    dest_norm = _normalize_rsync_dest(dst)
+    cmd: list[str] = list(RSYNC_BASE)
+    if delete:
+        cmd.append("--delete")
+    if dry_run:
+        cmd.extend(["--dry-run", "--itemize-changes"])
+    cmd.extend([src_norm, dest_norm])
+    print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
+    return run_cmd(cmd, check=False, print_cmd=False).returncode
+
+
 def rsync_pull_remote_to_local(ssh_target: str, remote_path: str, local_path: Path) -> int:
     """Rsync from ``ssh:remote_path`` into ``local_path`` (``dev fetch media``)."""
     local_path.mkdir(parents=True, exist_ok=True)
     remote = f"{ssh_target}:{remote_path}"
-    cmd = [*RSYNC_BASE, remote, str(local_path)]
-    print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-    return run_cmd(cmd, check=False, print_cmd=False).returncode
+    return rsync_between_endpoints(remote, str(local_path), delete=False, dry_run=False)
 
 
 def rsync_push_local_to_dest(
@@ -144,18 +266,7 @@ def rsync_push_local_to_dest(
     dry_run: bool,
 ) -> int:
     """Rsync ``source/`` to ``dest`` (local path or ``user@host:path``)."""
-    src = str(source.resolve())
-    if not src.endswith(os.sep):
-        src = src + os.sep
-    dest_norm = dest if dest.endswith("/") else dest + "/"
-    cmd: list[str] = list(RSYNC_BASE)
-    if delete:
-        cmd.append("--delete")
-    if dry_run:
-        cmd.extend(["--dry-run", "--itemize-changes"])
-    cmd.extend([src, dest_norm])
-    print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-    return run_cmd(cmd, check=False, print_cmd=False).returncode
+    return rsync_between_endpoints(str(source.resolve()), dest, delete=delete, dry_run=dry_run)
 
 
 def rsync_push_via_container(
@@ -252,6 +363,8 @@ def run_push_media_rsync(
     delete: bool = True,
     alpine_image: str = "alpine:3.21",
     config: ProjectConfig | None = None,
+    storage: MediaStorage | None = None,
+    label: str = "bkp_files push",
 ) -> int:
     """Push host media into ``django_media`` via rsync (tar fallback on failure or ``method=tar``)."""
     from catalpa_tooling.media_pull import run_push_media
@@ -263,33 +376,48 @@ def run_push_media_rsync(
             dry_run=dry_run,
             alpine_image=alpine_image,
             config=config,
+            storage=storage,
         )
 
     if not shutil.which("rsync"):
         print(
-            "bkp_files push: rsync is not on PATH; use `--method tar` or install rsync.",
+            f"{label}: rsync is not on PATH; use `--method tar` or install rsync.",
             file=sys.stderr,
         )
         return 1
 
+    if storage is not None and storage.kind is MediaStorageKind.BIND:
+        dest = str(Path(storage.location).resolve())
+        print(f"{label}: rsync → bind {dest}/", file=sys.stderr)
+        rc = rsync_push_local_to_dest(source, dest + "/", delete=delete, dry_run=dry_run)
+        if rc != 0 and not dry_run:
+            print(
+                f"{label}: rsync failed; retry with `--method tar` for a full archive load.",
+                file=sys.stderr,
+            )
+        return rc
+
     project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
-    vol = django_media_volume_name(project, config=config)
+    if storage is not None and storage.kind is MediaStorageKind.VOLUME:
+        vol = storage.location
+    else:
+        vol = django_media_volume_name(project, config=config)
     docker_host = str(env.get("DOCKER_HOST") or "").strip()
 
     ssh_target = try_ssh_target_from_docker_host(docker_host)
     if ssh_target:
         print(f"Resolving Docker volume {vol!r} on {ssh_target} …", file=sys.stderr)
-        mount = docker_volume_mountpoint_ssh(ssh_target, vol, label="bkp_files push")
+        mount = docker_volume_mountpoint_ssh(ssh_target, vol, label=label)
         dest = f"{ssh_target}:{mount}/"
         rc = rsync_push_local_to_dest(source, dest, delete=delete, dry_run=dry_run)
     else:
-        mount = docker_volume_mountpoint_local(env, vol, label="bkp_files push")
+        mount = docker_volume_mountpoint_local(env, vol, label=label)
         if mountpoint_host_rsync_writable(mount):
-            print(f"bkp_files push: rsync → {mount}/", file=sys.stderr)
+            print(f"{label}: rsync → {mount}/", file=sys.stderr)
             rc = rsync_push_local_to_dest(source, mount + "/", delete=delete, dry_run=dry_run)
         else:
             print(
-                f"bkp_files push: using container rsync into volume {vol!r} "
+                f"{label}: using container rsync into volume {vol!r} "
                 "(volume mount not writable on this host).",
                 file=sys.stderr,
             )
@@ -304,7 +432,7 @@ def run_push_media_rsync(
 
     if rc != 0 and not dry_run:
         print(
-            "bkp_files push: rsync failed; retry with `--method tar` for a full archive load.",
+            f"{label}: rsync failed; retry with `--method tar` for a full archive load.",
             file=sys.stderr,
         )
     return rc
