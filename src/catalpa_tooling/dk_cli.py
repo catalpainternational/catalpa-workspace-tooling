@@ -21,6 +21,7 @@ from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.doctl_cli import dispatch_digoc
 from catalpa_tooling.env_handlers import handle_env_command
 from catalpa_tooling.local_proxy_cli import cmd_proxy
+from catalpa_tooling.cut_release import cut_release
 from catalpa_tooling.remote_deploy import list_dk_env_names, list_deploy_env_names, resolve_deploy_env_name
 
 
@@ -71,10 +72,20 @@ def _main_impl() -> None:
             raise
         envs = list_dk_env_names(config)
         first = argv[0] if argv else ""
-        if first and first not in ("build", "push", "clean-images", "transfer", "fetch", "digoc", "proxy") and first not in envs:
+        if first and first not in (
+            "build",
+            "push",
+            "clean-images",
+            "transfer",
+            "fetch",
+            "digoc",
+            "proxy",
+            "cut-release",
+        ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
-                f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, `dk digoc`, `dk proxy`, or a name with "
+                f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
+                f"`dk digoc`, `dk proxy`, `dk cut-release`, or a name with "
                 f"{config.paths.deploy.envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
@@ -117,6 +128,25 @@ def _main_impl() -> None:
         sys.exit(dispatch_digoc(ns))
     if cmd == "proxy":
         sys.exit(cmd_proxy(ns))
+    if cmd == "cut-release":
+        sys.exit(
+            cut_release(
+                repo_root=config.repo_root,
+                bump=ns.bump,
+                beta=ns.beta,
+                beta_w=ns.beta_w,
+                submodule=ns.submodule,
+                execute=ns.execute,
+                yes=ns.yes,
+                set_default=ns.set_default,
+                tag=ns.tag,
+                next_branch=ns.next_branch,
+                pin_submodule=ns.pin_submodule,
+                image_env=ns.image_env,
+                allow_prod_beta=ns.allow_prod_beta,
+                allow_dirty=ns.allow_dirty,
+            )
+        )
 
     if getattr(ns, "env_name", None):
         sys.exit(handle_env_command(ns, config))
