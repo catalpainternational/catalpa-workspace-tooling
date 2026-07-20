@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **`dk transfer` media** — default to incremental ``rsync --delete`` (direct host↔host when both endpoints are reachable; otherwise stage then push). ``--media-method tar`` keeps the previous wipe-and-full-archive path; rsync failures fall back to tar once.
+- **Media storage resolution** — prefer merged ``docker compose config`` (follows ``include:``, expands ``${VAR}``) and match ``ops.restic.data_volume``, ``DJANGO_MEDIA_ROOT``, or ``/media`` / ``/django_media``. Fixes bind mounts like bero ``dev`` (``../../media:/django_media``) that the old ``/media``-only YAML parse missed.
 
 ## 0.9.10
 

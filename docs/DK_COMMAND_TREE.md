@@ -86,7 +86,7 @@ dk
 | `build` | Build compose stack images locally |
 | `push` | Build for `linux/amd64`, push to registry, attach CycloneDX SBOMs (`--no-sbom` to skip) |
 | `clean-images` | Remove old GHCR package versions (dry-run default; `--apply` to delete) |
-| `transfer` | Copy Postgres + `django_media` between two envs (media: rsync `--delete` by default; `--media-method tar` for full archive; first remote sync is still roughly full-size, repeats are incremental) |
+| `transfer` | Copy Postgres + `django_media` between two envs (media: rsync `--delete` by default; `--media-method tar` for full archive; first remote sync is still roughly full-size, repeats are incremental). Media path resolved via merged `compose config` (binds and `/django_media` supported). |
 | `digoc` | DigitalOcean helpers (wraps `doctl`) |
 | `proxy` | Machine-wide local dev HTTPS reverse proxy (`*.localdev.temp.build`) |
 
