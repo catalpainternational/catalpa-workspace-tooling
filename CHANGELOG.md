@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0
+
 ### Added
 
 - **`dk cut-release`** — dry-run-first helper to cut `vX.Y[.Z]` from `dev-X.Y[.Z]`, open the next `dev-*` line (`--bump major|minor|hotfix`), or push staging `vX.Y.Z.beta.W` tags (`--beta`). Supports `--submodule`, `--pin-submodule`, `--image-env`, and `--allow-dirty`. See [docs/CUT_RELEASE.md](docs/CUT_RELEASE.md).
