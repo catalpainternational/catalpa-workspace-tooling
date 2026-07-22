@@ -9,9 +9,11 @@ from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
 from catalpa_tooling.site_origin import (
     derive_dev_hostname,
     derive_site_origin,
+    dns_hostnames_from_info,
     domain_env_from_origins,
     hostnames_from_origins,
     normalize_site_origin_entry,
+    parse_redirect_origins_from_info,
     parse_site_origin_entries,
     parse_site_origins_from_info,
     primary_site_origin_for_env,
@@ -74,6 +76,59 @@ def test_env_nested_fallback() -> None:
     assert primary_site_origin_from_info(info) == "https://nested.example.com"
 
 
+def test_parse_redirect_origins() -> None:
+    info = {
+        "site_origin": "https://example.org",
+        "redirect_origins": [
+            "www.example.org",
+            "https://example.com",
+            "www.example.com",
+        ],
+    }
+    assert parse_redirect_origins_from_info(info) == [
+        "https://www.example.org",
+        "https://example.com",
+        "https://www.example.com",
+    ]
+
+
+def test_parse_redirect_origins_env_nested() -> None:
+    info = {"env": {"redirect_origins": ["alias.example.com"]}}
+    assert parse_redirect_origins_from_info(info) == ["https://alias.example.com"]
+
+
+def test_parse_redirect_origins_top_level_wins() -> None:
+    info = {
+        "redirect_origins": ["top.example.com"],
+        "env": {"redirect_origins": ["nested.example.com"]},
+    }
+    assert parse_redirect_origins_from_info(info) == ["https://top.example.com"]
+
+
+def test_dns_hostnames_include_redirect_origins() -> None:
+    info = {
+        "site_origin": "https://example.org",
+        "redirect_origins": ["www.example.org", "example.com"],
+    }
+    assert dns_hostnames_from_info(info) == [
+        "example.org",
+        "www.example.org",
+        "example.com",
+    ]
+
+
+def test_dns_hostnames_dedupe_overlap() -> None:
+    info = {
+        "site_origin": ["example.org", "www.example.org"],
+        "redirect_origins": ["www.example.org", "example.com"],
+    }
+    assert dns_hostnames_from_info(info) == [
+        "example.org",
+        "www.example.org",
+        "example.com",
+    ]
+
+
 def test_invalid_type_raises() -> None:
     with pytest.raises(ValueError, match="site_origin"):
         parse_site_origin_entries(42, field="site_origin")
@@ -102,6 +157,33 @@ def test_load_managed_deploy_context_sets_domain_and_site_origin(
     )
     assert ctx.env_add["SITE_ORIGIN"] == "https://web.example.com"
     assert ctx.env_add["DOMAIN"] == "web.example.com, api.example.com"
+
+
+def test_load_managed_deploy_context_redirect_origins_not_in_domain(
+    minimal_project,
+) -> None:
+    env_dir = minimal_project.deploy_envs_dir / "local"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "info.yaml").write_text(
+        "name: local\n"
+        "site_origin: https://example.org\n"
+        "redirect_origins:\n"
+        "  - www.example.org\n"
+        "  - example.com\n"
+        "local_proxy:\n"
+        "  enabled: false\n"
+        "credentials_decrypt_optional: true\n",
+        encoding="utf-8",
+    )
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["SITE_ORIGIN"] == "https://example.org"
+    assert ctx.env_add["DOMAIN"] == "example.org"
+    assert ctx.env_add["CADDY_REDIRECT_SITE_ADDRESSES"] == (
+        "https://www.example.org https://example.com"
+    )
+    assert "www.example.org" not in ctx.env_add["DOMAIN"]
+    assert "example.com" not in ctx.env_add["DOMAIN"]
 
 
 def test_load_managed_deploy_context_respects_django_debug_from_info(

@@ -8,10 +8,7 @@ import sys
 from typing import Any
 from urllib.parse import urlparse
 
-from catalpa_tooling.site_origin import (
-    hostnames_from_origins,
-    parse_site_origins_from_info,
-)
+from catalpa_tooling.site_origin import dns_hostnames_from_info
 
 DEFAULT_SSH_USER = "root"
 
@@ -198,11 +195,8 @@ def verify_public_dns_from_info(
     *,
     recovery_env_name: str | None = None,
 ) -> int:
-    """Verify ``site_origin`` hostnames resolve to ``expected_ip`` via public DNS."""
-    origins = parse_site_origins_from_info(info)
-    if not origins:
-        return 0
-    hostnames = hostnames_from_origins(origins)
+    """Verify ``site_origin`` / ``redirect_origins`` resolve to ``expected_ip`` via public DNS."""
+    hostnames = dns_hostnames_from_info(info)
     if not hostnames:
         return 0
     return verify_public_dns(

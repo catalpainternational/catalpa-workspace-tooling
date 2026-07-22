@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.site_origin import hostnames_from_origins, parse_site_origins_from_info
+from catalpa_tooling.site_origin import dns_hostnames_from_info
 
 DEFAULT_DNS_TTL = 300
 MIN_DNS_TTL = 30
@@ -333,17 +333,16 @@ def verify_host_dns(
     context: str | None,
     project_id: str | None = None,
 ) -> int:
-    """Verify DO DNS zones and A/CNAME records for ``site_origin`` hostnames. Returns exit code."""
+    """Verify DO DNS zones and A/CNAME records for ``site_origin`` / ``redirect_origins``.
+
+    Returns exit code.
+    """
     from catalpa_tooling.doctl_projects import (
         list_project_domain_urns,
         resolve_project_id,
     )
 
-    origins = parse_site_origins_from_info(info)
-    if not origins:
-        return 0
-
-    hostnames = hostnames_from_origins(origins)
+    hostnames = dns_hostnames_from_info(info)
     if not hostnames:
         return 0
 
@@ -574,12 +573,8 @@ def sync_host_dns(
     context: str | None,
     dry_run: bool = False,
 ) -> int:
-    """Create or update A records on DO-managed zones for ``site_origin`` hostnames."""
-    origins = parse_site_origins_from_info(info)
-    if not origins:
-        return 0
-
-    hostnames = hostnames_from_origins(origins)
+    """Create or update A records for ``site_origin`` and ``redirect_origins`` hostnames."""
+    hostnames = dns_hostnames_from_info(info)
     if not hostnames:
         return 0
 

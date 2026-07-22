@@ -106,6 +106,37 @@ def parse_site_origins_from_info(info: dict) -> list[str]:
     return []
 
 
+def parse_redirect_origins_from_info(info: dict) -> list[str]:
+    """Return normalized redirect-only origins from ``info.yaml``.
+
+    ``redirect_origins`` lists hosts that should terminate TLS and permanently redirect
+    to the primary ``site_origin`` / ``BERO_ORIGIN``. They must not be listed under
+    ``site_origin`` (those hosts serve the app). Nested ``env.redirect_origins`` is used
+    only when the top-level field is empty.
+    """
+    origins = _origins_from_field(info, "redirect_origins", legacy_domain=False)
+    if origins:
+        return origins
+    env_block = info.get("env")
+    if isinstance(env_block, dict):
+        return _origins_from_field(env_block, "redirect_origins", legacy_domain=False)
+    return []
+
+
+def dns_hostnames_from_info(info: dict) -> list[str]:
+    """Hostnames for DNS verify/sync: ``site_origin`` then ``redirect_origins`` (unique)."""
+    seen: set[str] = set()
+    hosts: list[str] = []
+    for origin in parse_site_origins_from_info(info) + parse_redirect_origins_from_info(
+        info
+    ):
+        for host in hostnames_from_origins([origin]):
+            if host not in seen:
+                seen.add(host)
+                hosts.append(host)
+    return hosts
+
+
 def primary_site_origin_from_info(info: dict) -> str:
     """First normalized origin, or empty string."""
     origins = parse_site_origins_from_info(info)
