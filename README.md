@@ -195,7 +195,7 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 | `dk digoc droplets list`, `dk <env> host` (droplet verify) | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list` |
 | `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`project:update`** (assign droplet to project after create; doctl `--project-id` uses a second API call), **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
 | `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`) |
-| `dk <env> host` (DNS verify for `site_origin`) | above, plus `domain:read` |
+| `dk <env> host` (DNS verify for `site_origin` / `redirect_origins`) | above, plus `domain:read` |
 | `dk <env> host create` (DNS sync after droplet create) | above, plus `domain:write` (or granular domain record create/update) |
 | `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds) | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete` |
 
@@ -287,9 +287,9 @@ Provision and link a new droplet:
 
 ```bash
 dk prod host create       # create droplet, wait, patch docker_host, sync DNS A records on DO zones
-dk prod host              # verify droplet + site_origin DNS (DO API + public resolution)
+dk prod host              # verify droplet + site_origin / redirect_origins DNS (DO API + public resolution)
 dk prod host --write      # refresh docker_host from droplet public IPv4 + register SSH host key
-dk prod host --sync-dns   # create/update DO A records for site_origin (no known_hosts / verify)
+dk prod host --sync-dns   # create/update DO A records for site_origin / redirect_origins (no known_hosts / verify)
 dk digoc droplets list    # includes Env column when tooling.yaml is present
 ```
 
@@ -307,7 +307,7 @@ After `host create` or `host --write`, the tooling registers the deploy host’s
 | Resume all post-create steps | `dk <env> host create` (reuses existing droplet by default) |
 | Droplet in default DO project (e.g. Internal) | Fix token (`project:update`), then `dk <env> host create` or `doctl projects resources assign <project-uuid> --resource=do:droplet:<id>` |
 
-**Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` is set, it verifies (1) DigitalOcean DNS API — A records (or CNAMEs that chain to an apex A) on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each `site_origin` hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
+**Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` and/or `redirect_origins` are set, it verifies (1) DigitalOcean DNS API — A records (or CNAMEs that chain to an apex A) on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
 
 **Non-DO or manual host:** Prefer `digitalocean.disabled: true` in `docker/envs/<env>/info.yaml` for permanent datacenter / TIC hosts, and maintain `docker_host` (+ optional `dc_backup_docker_host`) and `site_origin`. `dk <env> host` then skips droplet lookup and DO API DNS; it prints configured hosts and checks public DNS only. `host create` and `host --write` are not available in this mode.
 
@@ -339,6 +339,26 @@ Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin
 | `DOMAIN` | Comma+space joined hostnames for Caddy and Django (e.g. `catalpa.io, www.catalpa.io`) |
 
 Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
+
+### `redirect_origins` in `info.yaml`
+
+Optional **`redirect_origins`** (hostname, URL, or YAML list) declares hosts that should terminate TLS and permanently redirect to the primary `site_origin` / `BERO_ORIGIN` — for example `www.` or alternate TLDs. They are **not** app origins:
+
+| Compose env | Value |
+|-------------|--------|
+| `CADDY_REDIRECT_SITE_ADDRESSES` | Space-separated Caddy site addresses (deployed: `https://…`; behind local proxy: `http://…`) |
+
+Redirect hosts are included in `dk <env> host` DNS verify/sync alongside `site_origin`, but are **not** added to `DOMAIN`, `BERO_EXTRA_ALLOWED_HOSTS`, or `CADDY_SITE_ADDRESS`. Do not list the same host under both `site_origin` and `redirect_origins`. Stack Caddy must define a redirect site block that consumes `CADDY_REDIRECT_SITE_ADDRESSES` (bero support lands separately).
+
+```yaml
+site_origin: https://example.org
+redirect_origins:
+  - https://www.example.org
+  - https://example.com
+  - https://www.example.com
+```
+
+Nested `env.redirect_origins` is used only when the top-level field is empty.
 
 ### Local dev HTTPS proxy (`local_proxy` in `info.yaml`)
 

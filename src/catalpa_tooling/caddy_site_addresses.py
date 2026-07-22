@@ -5,6 +5,10 @@ Caddy site blocks in bero (and ambulancia) stacks key off ``CADDY_SITE_ADDRESS``
 origin vars. Those compose defaults are ``http://…`` so, without injection, a deployed
 stack never turns on Caddy automatic HTTPS.
 
+Optional ``redirect_origins`` in ``info.yaml`` become ``CADDY_REDIRECT_SITE_ADDRESSES``
+(space-separated) for a redirect-only Caddy site block — never mixed into ``DOMAIN`` or
+the primary app site address.
+
 Two callers:
 
 * **Local proxy** (``behind_local_proxy=True``) — dev/full stacks behind the machine-wide
@@ -23,6 +27,7 @@ from catalpa_tooling.site_origin import (
     derive_site_origin,
     hostnames_from_origins,
     local_proxy_role_names,
+    parse_redirect_origins_from_info,
     role_site_origin_from_primary,
 )
 
@@ -146,6 +151,29 @@ def _deployed_metabase_origin(
     return None
 
 
+def _apply_redirect_site_addresses(
+    env_add: dict[str, str],
+    *,
+    info: dict,
+    behind_local_proxy: bool,
+) -> None:
+    """Inject ``CADDY_REDIRECT_SITE_ADDRESSES`` from ``redirect_origins`` (space-separated).
+
+    Redirect hosts get TLS (when deployed) and a Caddy ``redir`` site block; they are not
+    added to ``DOMAIN`` / ``BERO_EXTRA_ALLOWED_HOSTS`` / ``CADDY_SITE_ADDRESS``.
+    """
+    redirects = parse_redirect_origins_from_info(info)
+    if not redirects:
+        return
+    if behind_local_proxy:
+        value = " ".join(
+            f"http://{host}" for host in hostnames_from_origins(redirects)
+        )
+    else:
+        value = " ".join(redirects)
+    env_add.setdefault("CADDY_REDIRECT_SITE_ADDRESSES", value)
+
+
 def apply_caddy_site_addresses(
     env_add: dict[str, str],
     *,
@@ -174,3 +202,8 @@ def apply_caddy_site_addresses(
             site_origin=site_origin,
             site_origins=site_origins,
         )
+    _apply_redirect_site_addresses(
+        env_add,
+        info=info,
+        behind_local_proxy=behind_local_proxy,
+    )

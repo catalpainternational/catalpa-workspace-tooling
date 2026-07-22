@@ -405,6 +405,34 @@ def test_sync_host_dns_dry_run(
     assert str(DEFAULT_DNS_TTL) in err
 
 
+def test_sync_host_dns_includes_redirect_origins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    config = _load_config(tmp_path)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_domains.list_registered_domains",
+        lambda *, context: ["example.org", "example.com"],
+    )
+    dry_msgs: list[str] = []
+
+    def fake_upsert(target: Any, ip: str, *, context: str | None, dry_run: bool, ttl: int) -> None:
+        dry_msgs.append(f"{target.hostname}->{ip}")
+
+    monkeypatch.setattr("catalpa_tooling.doctl_domains._upsert_a_record", fake_upsert)
+    info = {
+        "site_origin": "https://example.org",
+        "redirect_origins": ["www.example.org", "example.com"],
+    }
+    assert sync_host_dns(
+        config, info, droplet_ip="203.0.113.5", context=None, dry_run=True
+    ) == 0
+    assert dry_msgs == [
+        "example.org->203.0.113.5",
+        "www.example.org->203.0.113.5",
+        "example.com->203.0.113.5",
+    ]
+
+
 def test_sync_host_dns_uses_env_dns_ttl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

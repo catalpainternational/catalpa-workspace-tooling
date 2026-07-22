@@ -160,3 +160,58 @@ def test_local_proxy_uses_http_addresses() -> None:
     allowed = env["BERO_EXTRA_ALLOWED_HOSTS"]
     assert "admin.ncd-dev.localdev.temp.build" in allowed
     assert "stats.ncd-dev.localdev.temp.build" in allowed
+
+
+def test_deployed_redirect_origins_injects_caddy_addresses() -> None:
+    env = _deployed(
+        {},
+        _config("bero", metabase=True),
+        info={
+            "redirect_origins": [
+                "www.example.org",
+                "https://example.com",
+            ],
+        },
+        site_origin="https://example.org",
+    )
+    assert env["CADDY_SITE_ADDRESS"] == "https://example.org"
+    assert env["CADDY_REDIRECT_SITE_ADDRESSES"] == (
+        "https://www.example.org https://example.com"
+    )
+
+
+def test_deployed_no_redirect_origins_skips_caddy_redirect() -> None:
+    env = _deployed({}, _config("frontend"))
+    assert "CADDY_REDIRECT_SITE_ADDRESSES" not in env
+
+
+def test_deployed_redirect_origins_respect_explicit_override() -> None:
+    env = _deployed(
+        {"CADDY_REDIRECT_SITE_ADDRESSES": "https://custom.example.com"},
+        _config("bero"),
+        info={"redirect_origins": ["www.example.org"]},
+        site_origin="https://example.org",
+    )
+    assert env["CADDY_REDIRECT_SITE_ADDRESSES"] == "https://custom.example.com"
+
+
+def test_local_proxy_redirect_origins_use_http() -> None:
+    env: dict[str, str] = {}
+    apply_caddy_site_addresses(
+        env,
+        info={
+            "local_proxy": {"roles": ["admin"]},
+            "redirect_origins": ["www.example.org", "alias.example.com"],
+        },
+        config=_config("bero"),  # type: ignore[arg-type]
+        env_name="dev",
+        site_origin="https://app-dev.localdev.temp.build",
+        site_origins=["https://app-dev.localdev.temp.build"],
+        behind_local_proxy=True,
+    )
+    assert env["CADDY_REDIRECT_SITE_ADDRESSES"] == (
+        "http://www.example.org http://alias.example.com"
+    )
+    assert "BERO_EXTRA_ALLOWED_HOSTS" in env
+    assert "www.example.org" not in env["BERO_EXTRA_ALLOWED_HOSTS"]
+    assert "alias.example.com" not in env["BERO_EXTRA_ALLOWED_HOSTS"]
