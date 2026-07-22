@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0
+
 ### Added
 
 - **`redirect_origins` in `info.yaml`** — declare redirect-only hosts (e.g. `www.`, alternate TLDs). Tooling injects space-separated `CADDY_REDIRECT_SITE_ADDRESSES` for stack Caddy, and includes those hostnames in `dk <env> host` DNS verify/sync. Redirect hosts are **not** added to `DOMAIN`, `BERO_EXTRA_ALLOWED_HOSTS`, or `CADDY_SITE_ADDRESS`. Stack Caddy must consume the env var (bero redirect site block lands separately).

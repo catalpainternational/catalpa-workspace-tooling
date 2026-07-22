@@ -16,7 +16,7 @@ Usage: scripts/finalize-changelog.sh <version> [--write]
 Renames the current "## Unreleased" section to "## X.Y.Z" and inserts an empty
 "## Unreleased" placeholder above it.
 
-Without --write, prints the updated changelog to stdout (dry run).
+Without --write, prints a preview of that section only (dry run).
 With --write, updates CHANGELOG.md in place.
 EOF
 }
@@ -91,7 +91,15 @@ if [[ "$write" == true ]]; then
   printf '%s\n' "$updated" >"$changelog"
   echo "Updated $changelog: moved Unreleased notes to ## ${version}"
 else
-  printf '%s\n' "$updated"
+  # Preview only Unreleased + the new version section (not the whole file).
+  printf '%s\n' "$updated" | awk -v version="$version" '
+    /^## Unreleased$/ { capture = 1 }
+    capture && /^## / && $0 != "## Unreleased" && seen_version { exit }
+    capture {
+      if (/^## / && $0 != "## Unreleased") seen_version = 1
+      print
+    }
+  '
   echo >&2
-  echo "Dry run only. Re-run with --write to update $changelog." >&2
+  echo "Dry run only (preview above). Re-run with --write to update $changelog." >&2
 fi
