@@ -28,6 +28,44 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
 )
 
 
+def peel_worktree_flag(argv: list[str]) -> tuple[str | None, list[str]]:
+    """Strip ``--worktree SLUG`` / ``-W SLUG`` / ``--worktree=SLUG`` from argv.
+
+    Returns ``(slug_or_none, remaining_argv)``. Does not validate the slug path.
+    Raises ``ValueError`` when the flag is present without a slug or given twice.
+    """
+    out: list[str] = []
+    slug: str | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("--worktree", "-W"):
+            if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                raise ValueError(
+                    f"dk: {tok} requires a worktree slug "
+                    "(e.g. dk --worktree onboarding dev up -d)"
+                )
+            if slug is not None:
+                raise ValueError("dk: --worktree / -W may only be given once")
+            slug = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith("--worktree="):
+            if slug is not None:
+                raise ValueError("dk: --worktree / -W may only be given once")
+            slug = tok.split("=", 1)[1]
+            if not slug.strip():
+                raise ValueError(
+                    "dk: --worktree= requires a worktree slug "
+                    "(e.g. dk --worktree=onboarding dev up -d)"
+                )
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return (slug.strip() if slug else None), out
+
+
 def normalize_dk_root_argv(argv: list[str]) -> list[str]:
     """Rewrite top-level argv for ``dk`` before the root parser runs.
 

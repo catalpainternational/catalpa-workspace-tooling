@@ -1,0 +1,30 @@
+---
+description: Isolated git worktrees via dk worktree (local parallel feature work)
+alwaysApply: false
+---
+# Git worktrees (`dk worktree`)
+
+For parallel feature or maintenance work in consumer repos, prefer:
+
+```bash
+uv run dk worktree create <slug> --up
+# or create then: uv run dk worktree up <slug>
+```
+
+`create` seeds DB + host media from the main `dev` stack by default. Use `--no-seed` to skip, or `dk worktree seed <slug> -y` to re-seed later.
+
+Each worktree gets gitignored **`AGENTS.local.md`** (identity + command hints). Refresh with `dk worktree context [--json]`.
+
+## Rules
+
+- Create from the **main** checkout only (not nested inside an existing worktree).
+- Prefer **`dk worktree up/down`** or **`dk --worktree <slug> …`** from main for stack control (avoids direnv when entering `.worktrees/`).
+- Worktrees live under gitignored `.worktrees/`; identity is `.catalpa-worktree.yaml` (also gitignored).
+- Inside a worktree (or with `--worktree`), keep using **`dk dev`** — the overlay remaps compose project + localdev domains.
+- `create --up` does not run migrations; run `dk --worktree <slug> dev manage migrate` when needed.
+- Submodules on create reuse the main checkout via `git --reference` when those paths exist (e.g. `bero/`); otherwise they fetch remote (shallow by default).
+- Do **not** remap or invent worktree overlays for remote envs (`docker_host`).
+- `remove --wipe` destroys that worktree’s Docker volumes; confirm with the user first.
+- `down` stops the stack but keeps volumes; `remove` drops the git worktree; `remove --wipe` also removes Docker volumes.
+
+See `docs/WORKTREES.md` in catalpa-workspace-tooling.

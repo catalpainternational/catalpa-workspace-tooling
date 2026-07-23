@@ -12,6 +12,7 @@ from catalpa_tooling.env_parser import attach_env_subparsers
 from catalpa_tooling.local_proxy import LOCAL_PROXY_CONTAINER
 from catalpa_tooling.cli.completion import attach_choices_completer
 from catalpa_tooling.remote_deploy import list_deploy_env_names
+from catalpa_tooling.worktree_cli import attach_worktree_subcommands
 
 
 def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
@@ -30,13 +31,27 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             f"Examples:\n"
             f"  dk build db\n"
             f"  dk full up -d\n"
+            f"  dk --worktree onboarding dev up -d\n"
             f"  dk full compose logs {svc_web}\n"
             f"  dk prod db pgdump\n"
             f"  dk full info -e\n"
             f"\n"
             f"Top-level commands (no env): build, push, clean-images, transfer, fetch, digoc, "
-            f"proxy, cut-release.\n"
-            f"Environments: directories under {envs_dir}/<name>/ with info.yaml."
+            f"proxy, cut-release, worktree.\n"
+            f"Environments: directories under {envs_dir}/<name>/ with info.yaml.\n"
+            f"Use --worktree / -W <slug> from the main checkout to target .worktrees/<slug> "
+            f"without cd (no direnv)."
+        ),
+    )
+    parser.add_argument(
+        "--worktree",
+        "-W",
+        dest="worktree_slug",
+        default=None,
+        metavar="SLUG",
+        help=(
+            "Run against .worktrees/<SLUG> (load that checkout's tooling + overlay). "
+            "Peeled before subcommands; prefer `dk --worktree SLUG <env> …` from the main repo."
         ),
     )
     sub = parser.add_subparsers(dest="dk_command", required=True)
@@ -249,6 +264,18 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         action="store_true",
         help="Allow --execute with uncommitted changes (prints a warning).",
     )
+
+    p_worktree = sub.add_parser(
+        "worktree",
+        help="Isolated git worktrees for local dk dev (own DB volumes + domains).",
+        description=(
+            "Create checkouts under .worktrees/<slug>/ with a gitignored "
+            ".catalpa-worktree.yaml overlay that remaps COMPOSE_PROJECT_NAME and "
+            "localdev hostnames for dk <base-env> (default: dev)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    attach_worktree_subcommands(p_worktree)
 
     attach_env_subparsers(sub, config)
 

@@ -933,9 +933,16 @@ def print_ca_trust_hint(env_name: str, *, file: TextIO | None = None) -> None:
     )
 
 
-def local_proxy_override_path(config: ProjectConfig, env_name: str) -> Path:
+def local_proxy_override_path(
+    config: ProjectConfig,
+    env_name: str,
+    compose_project_name: str | None = None,
+) -> Path:
     project = _sanitize_route_label(config.meta.name, field="project name")
     env = _sanitize_route_label(env_name, field="env name")
+    if compose_project_name:
+        cpn = _sanitize_route_label(compose_project_name, field="compose project")
+        return local_proxy_data_dir() / "overrides" / f"{project}-{env}-{cpn}.yaml"
     return local_proxy_data_dir() / "overrides" / f"{project}-{env}.yaml"
 
 
@@ -961,7 +968,7 @@ def write_local_proxy_override(
     Uses ``ports: !reset []`` to drop host port publishing from the base compose file.
     Requires Docker Compose 2.24+.
     """
-    path = local_proxy_override_path(config, env_name)
+    path = local_proxy_override_path(config, env_name, compose_project_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     services = local_proxy_front_services(config, compose_project_name, info)
 

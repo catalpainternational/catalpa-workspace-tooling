@@ -289,6 +289,15 @@ def test_write_local_proxy_override(
     assert "proxy:" in text
     assert "ports: !reset []" in text
     assert "ambulancia_dev-proxy" in text
+    assert "ambulancia-dev" in path.name
+    assert path.name.endswith(".yaml")
+
+    wt_path = write_local_proxy_override(
+        minimal_config, "dev", _DEV_INFO, "ambulancia_dev_onboarding"
+    )
+    assert wt_path != path
+    assert path.name != wt_path.name
+    assert "onboarding" in wt_path.name
 
 
 def test_parse_route_id_metadata_lan_suffix() -> None:

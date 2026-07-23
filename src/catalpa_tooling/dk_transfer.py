@@ -572,7 +572,7 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     dump_path = session / "pg.dump"
     media_dir = session / "media"
-    dst_info = _read_deploy_info(config, dst)
+    dst_info = dst_ctx.info
 
     def restart_dest_writers() -> None:
         _start_dest_writers(

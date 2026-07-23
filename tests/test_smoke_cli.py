@@ -22,6 +22,7 @@ def _mock_deploy_context(config) -> ManagedDeployContext:
         info_tag=None,
         config=config,
         storage_volumes={},
+        info={},
     )
 
 

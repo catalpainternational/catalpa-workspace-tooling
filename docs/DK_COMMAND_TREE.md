@@ -23,6 +23,22 @@ dk
 │                                  #   --submodule PATH --execute --set-default
 │                                  #   --pin-submodule PATH=REF --image-env NAME
 │
+├── worktree                       # isolated git worktrees for local dk dev
+│   ├── create <slug>              # .worktrees/<slug> + overlay + AGENTS.local.md; seeds DB + media (--no-seed); --up → proxy + stack
+│   ├── up [slug]                  # ensure proxy + remapped compose up -d
+│   ├── down [slug]                # compose down (keeps volumes)
+│   ├── restart [slug] [--service …]
+│   ├── logs [slug] [-f] [SERVICE …]
+│   ├── status [slug]              # overlay + stack status + compose ps
+│   ├── context [slug] [--json]    # agent identity; refreshes AGENTS.local.md
+│   ├── list
+│   ├── info [slug]
+│   ├── seed [slug] [--db|--media] # copy main dev DB + host media (slug from main checkout)
+│   └── remove <slug> [--wipe]     # git worktree remove; --wipe → compose down -v
+│
+# Global (before subcommand):
+#   dk --worktree <slug> | -W <slug>  …   # target .worktrees/<slug> without cd
+│
 ├── digoc                          # access to doctl (probably removing this for access via dk)
 │   ├── auth                        
 │   │   ├── init
@@ -95,6 +111,7 @@ dk
 | `digoc` | DigitalOcean helpers (wraps `doctl`) |
 | `proxy` | Machine-wide local dev HTTPS reverse proxy (`*.localdev.temp.build`) |
 | `cut-release` | Cut `v*` release / next `dev-*` line / staging `v*.beta.W` (see [CUT_RELEASE.md](CUT_RELEASE.md)) |
+| `worktree` | Isolated git worktrees under `.worktrees/` for parallel local `dk dev` (see [WORKTREES.md](WORKTREES.md)). Global `--worktree`/`-W <slug>` retargets any `dk` command from the main checkout. |
 
 ## `<env>` only
 
