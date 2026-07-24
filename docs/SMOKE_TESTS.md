@@ -111,10 +111,10 @@ Host does not need the Django/bero workspace package, Playwright, or a host Node
 
 ```bash
 uv sync --frozen --only-group tooling
-uv run tests ci
+uv run --no-sync tests ci
 ```
 
-Same empty-migrate semantics as local. Primary DB migrate stays on `dk <env> manage migrate` when you need it.
+Use ``--no-sync`` so ``uv run`` does not pull workspace ``bero`` / default groups (Django, Playwright, …) onto the runner. Same empty-migrate semantics as local. Primary DB migrate stays on `dk <env> manage migrate` when you need it.
 
 Host `uv`/pnpm installs do **not** populate Docker BuildKit cache mounts (`/root/.cache/uv`, pnpm store); those stay inside image builds.
 
