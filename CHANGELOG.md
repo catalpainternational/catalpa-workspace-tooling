@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.0
+
 ### Fixed
 
 - **Worktree local proxy routes** — `dk --worktree <slug> dev up` now registers remapped hostnames (`{project}-dev-{slug}.localdev…`) against the worktree Caddy upstream. Previously raw `info.yaml` hostnames were paired with the remapped compose project, overwriting main checkout routes. Compose proxy overrides are keyed by compose project name so main and worktree stacks no longer share one override file.
