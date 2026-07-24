@@ -141,6 +141,33 @@ def test_wait_for_frontend_url_retries_until_success() -> None:
         assert attempts["n"] == 3
 
 
+def test_run_compose_manage_uses_run_no_deps(minimal_project) -> None:
+    from catalpa_tooling.smoke_cli import _run_compose_manage
+
+    config = minimal_project
+    with patch(
+        "catalpa_tooling.smoke_cli._compose",
+        return_value=type("R", (), {"returncode": 0})(),
+    ) as compose:
+        assert (
+            _run_compose_manage(
+                "compose.yml",
+                config,
+                {},
+                "migrate",
+                "--noinput",
+                extra_exec_env={"DJANGO_DB": "bero_db_smoke_empty", "POSTGRES_DB": "bero_db_smoke_empty"},
+            )
+            == 0
+        )
+        argv = list(compose.call_args.args[1:])
+        assert argv[:4] == ["run", "--rm", "-T", "--no-deps"]
+        assert "-e" in argv
+        assert f"{config.stack_service('web')}" in argv
+        assert "./manage.py" in argv
+        assert "migrate" in argv
+
+
 def test_run_smoke_ci_lean_up_skips_proxy(minimal_project) -> None:
     config = minimal_project
     with (
@@ -163,7 +190,7 @@ def test_run_smoke_ci_lean_up_skips_proxy(minimal_project) -> None:
         up_args = compose.call_args.args[1:]
         assert up_args[0] == "up"
         assert config.stack_service("db") in up_args
-        assert config.stack_service("web") in up_args
+        assert config.stack_service("web") not in up_args
         pytest_smoke.assert_not_called()
 
 
