@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -229,30 +230,48 @@ def load_managed_deploy_context(
             return None
     else:
         decrypt_optional = bool(info.get("credentials_decrypt_optional", False))
-        result = run_cmd(
-            ["sops", "-d", str(creds_path)],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=False,
-            print_cmd=False,
-        )
-        if result.returncode != 0:
-            if decrypt_optional:
+        if not shutil.which("sops"):
+            if decrypt_optional or config.credentials_optional_for_env(env_name):
                 print(
-                    f"Warning: could not decrypt {creds_path} (sops). "
-                    "Continuing with no credential keys from that file; only non-secret `env` "
-                    "from info.yaml is applied. Backup/restore commands that need those secrets "
-                    "will fail until decryption works (e.g. configure SOPS age key). "
-                    f"sops: {result.stderr or result.stdout}",
+                    f"Warning: sops not installed; skipping decrypt of {creds_path}. "
+                    "Continuing with non-secret `env` from info.yaml only.",
                     file=sys.stderr,
                 )
                 creds = {}
             else:
-                print(f"sops decrypt failed: {result.stderr or result.stdout}", file=sys.stderr)
+                print(
+                    f"sops is required to decrypt {creds_path} but was not found on PATH.",
+                    file=sys.stderr,
+                )
                 return None
         else:
-            creds = yaml.safe_load(result.stdout) or {}
+            result = run_cmd(
+                ["sops", "-d", str(creds_path)],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+                print_cmd=False,
+            )
+            if result.returncode != 0:
+                if decrypt_optional:
+                    print(
+                        f"Warning: could not decrypt {creds_path} (sops). "
+                        "Continuing with no credential keys from that file; only non-secret `env` "
+                        "from info.yaml is applied. Backup/restore commands that need those secrets "
+                        "will fail until decryption works (e.g. configure SOPS age key). "
+                        f"sops: {result.stderr or result.stdout}",
+                        file=sys.stderr,
+                    )
+                    creds = {}
+                else:
+                    print(
+                        f"sops decrypt failed: {result.stderr or result.stdout}",
+                        file=sys.stderr,
+                    )
+                    return None
+            else:
+                creds = yaml.safe_load(result.stdout) or {}
 
     info_env = info.get("env") or {}
     if not isinstance(info_env, dict):

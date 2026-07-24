@@ -222,6 +222,34 @@ def test_load_managed_deploy_context_defaults_django_debug_off(
     assert ctx.env_add["DJANGO_DEBUG"] == "0"
 
 
+def test_load_managed_deploy_context_skips_sops_when_missing(
+    minimal_project,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GHA runners often lack sops; credentials_decrypt_optional must still load info.env."""
+    env_dir = minimal_project.deploy_envs_dir / "local"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "info.yaml").write_text(
+        "name: local\n"
+        "site_origin: https://example.org\n"
+        "credentials_decrypt_optional: true\n"
+        "env:\n"
+        "  postgres_password: from-info\n",
+        encoding="utf-8",
+    )
+    (env_dir / "credentials.yaml").write_text(
+        "postgres_password: ENC[AES256_GCM,data:dummy]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.managed_deploy_env.shutil.which",
+        lambda _name: None,
+    )
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["POSTGRES_PASSWORD"] == "from-info"
+
+
 def test_derive_dev_hostname(minimal_config) -> None:
     assert derive_dev_hostname(minimal_config, "dev") == "minimal-dev.localdev.temp.build"
     assert (
