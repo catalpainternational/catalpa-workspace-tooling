@@ -19,22 +19,7 @@ def _add_ci_gate_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--check-only",
         action="store_true",
-        help="Use migrate --check instead of migrate --noinput.",
-    )
-    parser.add_argument(
-        "--fresh-db",
-        action="store_true",
-        help="Ephemeral empty-DB migrate (default for local CI gate; ignored in CI).",
-    )
-    parser.add_argument(
-        "--no-fresh-db",
-        action="store_true",
-        help="Skip ephemeral empty-DB migrate (still migrates primary DB).",
-    )
-    parser.add_argument(
-        "--ci",
-        action="store_true",
-        help="CI mode: assume primary DB is empty; skip ephemeral fresh-db.",
+        help="Use migrate --check instead of migrate --noinput on the ephemeral empty DB.",
     )
 
 
@@ -67,8 +52,8 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
     p_ci = subparsers.add_parser(
         "ci",
         help=(
-            "CI gate: empty migrate, manage check, makemigrations --check, "
-            "frontend type-check/build, guest Playwright."
+            "CI gate: empty migrate on ephemeral DB, manage check, makemigrations --check, "
+            "frontend type-check/build, guest Playwright. Defaults to --env dev and starts the stack."
         ),
     )
     _add_stack_flags(p_ci)

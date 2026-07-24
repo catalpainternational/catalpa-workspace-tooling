@@ -701,18 +701,15 @@ def run_smoke(
     env_name: str = "dev",
     no_up: bool = False,
     check_only: bool = False,
-    fresh_db: bool = False,
-    no_fresh_db: bool = False,
     functional: bool = False,
-    ci_mode: bool = False,
     pytest_args: list[str] | None = None,
     log_prefix: str = "smoke",
 ) -> int:
     """Run layered CI gate or functional Playwright checks. Returns process exit code.
 
-    CI gate (``functional=False``): empty-DB migrate (ephemeral locally; primary when
-    ``ci_mode``), ``manage check``, ``makemigrations --check``, frontend production
-    build, HTTP wait, guest pytest.
+    CI gate (``functional=False``): empty-DB migrate on ephemeral ``{dbname}_smoke_empty``
+    (never touches the primary DB), ``makemigrations --check``, frontend production build,
+    HTTP wait, guest pytest.
 
     Functional (``functional=True``): skip the gate; wait for HTTP and run pytest only.
     """
@@ -724,21 +721,11 @@ def run_smoke(
     )
     p = log_prefix
 
-    if functional:
-        if fresh_db or no_fresh_db or check_only:
-            print(
-                f"{p}: functional mode ignores --fresh-db / --no-fresh-db / --check-only",
-                file=sys.stderr,
-            )
-        fresh_db = False
-        no_fresh_db = True
-    elif ci_mode and fresh_db:
-        print(f"{p}: ignoring --fresh-db in CI mode (primary DB is already empty)", file=sys.stderr)
-        fresh_db = False
-
-    # Local CI gate: empty migrate on ephemeral DB unless opted out or CI (primary empty).
-    if not functional and not ci_mode and not no_fresh_db:
-        fresh_db = True
+    if functional and check_only:
+        print(
+            f"{p}: functional mode ignores --check-only",
+            file=sys.stderr,
+        )
 
     resolved = _resolve_deploy_context(config, env_name)
     if resolved is None:
@@ -804,21 +791,9 @@ def run_smoke(
             print(f"{p}: database service did not become ready", file=sys.stderr)
             return 1
 
-        if fresh_db:
-            rc = _fresh_db_smoke(compose_file, config, env_add, check_only=check_only)
-            if rc != 0:
-                return rc
-
-        migrate_argv = ("migrate", "--check") if check_only else ("migrate", "--noinput")
-        print(f"{p}: primary DB {migrate_argv}", file=sys.stderr)
-        if _run_compose_manage(compose_file, config, env_add, *migrate_argv) != 0:
-            print(f"{p}: primary database migrate failed", file=sys.stderr)
-            return 1
-
-        print(f"{p}: manage check", file=sys.stderr)
-        if _run_compose_manage(compose_file, config, env_add, "check") != 0:
-            print(f"{p}: manage check failed", file=sys.stderr)
-            return 1
+        rc = _fresh_db_smoke(compose_file, config, env_add, check_only=check_only)
+        if rc != 0:
+            return rc
 
         print(f"{p}: makemigrations --check --dry-run", file=sys.stderr)
         if _run_compose_manage(

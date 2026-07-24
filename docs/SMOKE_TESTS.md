@@ -8,10 +8,19 @@ Project-health and Playwright checks for Django + Docker Compose stacks. Tooling
 
 | Command | Role |
 |---------|------|
-| `uv run tests ci` | CI gate: empty migrate, makemigrations, frontend type-check/build, guest Playwright |
-| `uv run tests functional` | Skip gate; run functional Playwright (`-m elearning` by default) |
+| `uv run tests ci` | CI gate: **empty migrate** (ephemeral DB), makemigrations check, frontend type-check/build, guest Playwright |
+| `uv run tests functional` | Skip gate; Playwright against an **existing** DB / running stack (`-m elearning` by default) |
 | `uv run tests functional headed` | Same, visible browser with default slow-mo (250 ms) |
+| `uv run dk <env> manage migrate` | Migrate the **primary** (existing) database |
 | `uv run tests smoke` | **Deprecated** alias for `tests ci` (or `tests smoke --functional` → functional) |
+
+Everyday CI gate (local or GitHub Actions):
+
+```bash
+uv run tests ci
+```
+
+Defaults to `--env dev` and starts the stack. No extra flags required.
 
 ## What tooling runs
 
@@ -19,21 +28,19 @@ Project-health and Playwright checks for Django + Docker Compose stacks. Tooling
 
 Ordered pipeline (implemented in `smoke_cli.run_smoke`):
 
-1. Resolve `docker/envs/<env>/info.yaml` and compose file
+1. Resolve `docker/envs/<env>/info.yaml` and compose file (default env: `dev`)
 2. Optional `docker compose up -d` (skip with `--no-up`); same preflight as `dk <env> up`
 3. Wait for Postgres (`pg_isready`)
-4. **Empty migrate:** ephemeral `{dbname}_smoke_empty` locally (default; skip with `--no-fresh-db`). With `--ci` / `CI=1`, primary DB is assumed empty.
-5. Primary DB: `migrate` (`--check-only` → `migrate --check`)
-6. `manage check`
-7. `makemigrations --check --dry-run`
-8. **Frontend type-check + production build** — prefer `docker compose run --no-deps node pnpm run …` when a `node` service exists (image `node_modules`); otherwise host package manager under `paths.frontend`
-9. Wait for `stack.healthcheck` on the web service
-10. Poll HTTP GET `{site_origin}/` until 2xx/3xx
-11. Guest pytest under `{paths.frontend}/smoke` (elearning skipped unless you pass a marker)
+4. **Empty migrate** on ephemeral `{dbname}_smoke_empty` (migrate + `manage check`), then drop it — **never touches the primary DB**
+5. `makemigrations --check --dry-run`
+6. **Frontend type-check + production build** — prefer `docker compose run --no-deps node pnpm run …` when a `node` service exists (image `node_modules`); otherwise host package manager under `paths.frontend`
+7. Wait for `stack.healthcheck` on the web service
+8. Poll HTTP GET `{site_origin}/` until 2xx/3xx
+9. Guest pytest under `{paths.frontend}/smoke` (elearning skipped unless you pass a marker)
 
 ### Functional (`tests functional` / `tests functional headed`)
 
-Skips the migrate / makemigrations / frontend-build gate. Waits for HTTP, then runs pytest with `-m elearning` by default. `headed` adds `--headed --slowmo=250` (override with your own `--slowmo=`).
+Skips the migrate / makemigrations / frontend-build gate. Waits for HTTP, then runs pytest with `-m elearning` by default. `headed` adds `--headed --slowmo=250` (override with your own `--slowmo=`). Use against a fetched/restored primary DB.
 
 ```mermaid
 flowchart TD
@@ -41,9 +48,9 @@ flowchart TD
   mode -->|ci| up{Stack running?}
   up -->|no| composeUp[compose up -d]
   up -->|yes| emptyMigrate
-  composeUp --> emptyMigrate[empty DB migrate]
-  emptyMigrate --> migrate[primary migrate + check + makemigrations]
-  migrate --> build[type-check + build]
+  composeUp --> emptyMigrate[ephemeral empty migrate]
+  emptyMigrate --> makemigrations[makemigrations check]
+  makemigrations --> build[type-check + build]
   build --> web[healthcheck + HTTP]
   web --> pytest[guest pytest]
   mode -->|functional| web2[healthcheck + HTTP]
@@ -94,16 +101,18 @@ uv run playwright install chromium
 
 ### GitHub Actions (tooling + smoke only)
 
-Host does not need the Django/bero workspace package or a host Node install when compose provides `node`:
+Host does not need the Django/bero workspace package or a host Node install when compose provides `node`. Map `*.localdev.temp.build` hostnames to `127.0.0.1` (for local_proxy), then:
 
 ```bash
 uv sync --frozen --only-group tooling --only-group smoke
 uv run playwright install --with-deps chromium
-uv run dk ci up -d
-uv run tests ci --env ci --no-up --ci
+uv run tests ci
 ```
 
+Same empty-migrate semantics as local. Primary DB migrate stays on `dk <env> manage migrate` when you need it.
+
 Host `uv`/pnpm installs do **not** populate Docker BuildKit cache mounts (`/root/.cache/uv`, pnpm store); those stay inside image builds.
+
 ## Writing smoke tests
 
 Location: `{repo_root}/{paths.frontend}/smoke/`. Tooling sets **`SMOKE_FE_URL`**.
@@ -113,8 +122,7 @@ Extra pytest args: `uv run tests ci -- -k pwa -vv`
 ## Bero consumer fast path
 
 ```bash
-uv run dk dev up -d
-uv run tests ci --no-up
+uv run tests ci
 uv run tests functional --no-up
 uv run tests functional headed --no-up
 ```
@@ -127,12 +135,9 @@ See [bero/README_TESTING.md](https://github.com/catalpainternational/bero/blob/d
 
 | Flag | Behavior |
 |------|----------|
-| `--env dev` | Deploy env under `docker/envs/` |
+| `--env dev` | Deploy env under `docker/envs/` (default: `dev`) |
 | `--no-up` | Skip `docker compose up -d` |
-| `--check-only` | `migrate --check` instead of apply |
-| `--fresh-db` | Explicit ephemeral empty DB (already default locally) |
-| `--no-fresh-db` | Skip ephemeral empty-DB migrate |
-| `--ci` | Assume primary DB empty; skip ephemeral fresh-db |
+| `--check-only` | Ephemeral empty migrate uses `migrate --check` |
 | `-- …` | Forwarded to pytest |
 
 ### `tests functional`
@@ -142,15 +147,6 @@ See [bero/README_TESTING.md](https://github.com/catalpainternational/bero/blob/d
 | `--env` / `--no-up` | Same as CI |
 | `headed` | `--headed --slowmo=250` unless overridden |
 | `-- …` | Forwarded to pytest (default `-m elearning`) |
-
-## CI
-
-```yaml
-- run: uv run dk dev up -d
-- run: uv run tests ci --no-up --ci
-```
-
-Use `tests functional` only for content-dependent local runs, not the empty-DB CI job.
 
 ## Related docs
 

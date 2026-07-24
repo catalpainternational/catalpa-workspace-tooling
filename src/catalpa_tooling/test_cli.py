@@ -117,10 +117,7 @@ def _run_ci_gate(args: object) -> int:
         env_name=getattr(args, "env", "dev"),
         no_up=bool(getattr(args, "no_up", False)),
         check_only=bool(getattr(args, "check_only", False)),
-        fresh_db=bool(getattr(args, "fresh_db", False)),
-        no_fresh_db=bool(getattr(args, "no_fresh_db", False)),
         functional=False,
-        ci_mode=_ci_env_mode(bool(getattr(args, "ci", False))),
         pytest_args=extra,
         log_prefix="ci",
     )
@@ -144,7 +141,6 @@ def _run_functional(args: object) -> int:
         env_name=env_name,
         no_up=no_up,
         functional=True,
-        ci_mode=False,
         pytest_args=pytest_args,
         log_prefix="functional",
     )

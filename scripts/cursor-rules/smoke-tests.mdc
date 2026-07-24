@@ -12,6 +12,7 @@ Project health checks via **`uv run tests ci`** and **`uv run tests functional`*
 
 - Validate a stack after tooling / submodule changes → `tests ci`
 - Authenticated / elearning Playwright iteration → `tests functional` / `tests functional headed`
+- Primary DB migrate → `dk <env> manage migrate` (not `tests ci`)
 
 ## Setup (Django compose consumers)
 
@@ -23,13 +24,12 @@ Project health checks via **`uv run tests ci`** and **`uv run tests functional`*
 ## Safe local run
 
 ```bash
-uv run dk dev up -d
-uv run tests ci --no-up
+uv run tests ci
 uv run tests functional --no-up
 uv run tests functional headed --no-up
 ```
 
-`tests smoke` is a deprecated alias for `tests ci`. Do not run against staging/prod without explicit confirmation.
+`tests ci` always empty-migrates an ephemeral DB (never the primary). `tests smoke` is a deprecated alias for `tests ci`. Do not run against staging/prod without explicit confirmation.
 
 ## Related
 

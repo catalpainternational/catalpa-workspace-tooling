@@ -37,55 +37,25 @@ def _mock_resolve(config):
     return ("compose.yml", {}, "http://localhost:8000", _mock_deploy_context(config), {})
 
 
-def test_run_smoke_ci_ignores_fresh_db(minimal_project) -> None:
+def test_run_smoke_gate_always_empty_migrates(minimal_project) -> None:
+    """CI gate always uses ephemeral empty DB; never migrates primary."""
     config = minimal_project
     with (
         patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
         patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
         patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0) as fresh,
-        patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
+        patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0) as manage,
         patch("catalpa_tooling.smoke_cli._run_frontend_build", return_value=0),
         patch("catalpa_tooling.smoke_cli._wait_for_web_service", return_value=True),
         patch("catalpa_tooling.smoke_cli._wait_for_frontend_url", return_value=True),
         patch("catalpa_tooling.smoke_cli._run_pytest_smoke", return_value=0),
     ):
-        rc = run_smoke(config, fresh_db=True, ci_mode=True, no_up=True)
-        assert rc == 0
-        fresh.assert_not_called()
-
-
-def test_run_smoke_fresh_db_default_when_not_ci(minimal_project) -> None:
-    config = minimal_project
-    with (
-        patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
-        patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
-        patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0) as fresh,
-        patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
-        patch("catalpa_tooling.smoke_cli._run_frontend_build", return_value=0),
-        patch("catalpa_tooling.smoke_cli._wait_for_web_service", return_value=True),
-        patch("catalpa_tooling.smoke_cli._wait_for_frontend_url", return_value=True),
-        patch("catalpa_tooling.smoke_cli._run_pytest_smoke", return_value=0),
-    ):
-        rc = run_smoke(config, ci_mode=False, no_up=True)
+        rc = run_smoke(config, no_up=True)
         assert rc == 0
         fresh.assert_called_once()
-
-
-def test_run_smoke_no_fresh_db_skips_ephemeral(minimal_project) -> None:
-    config = minimal_project
-    with (
-        patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
-        patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
-        patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0) as fresh,
-        patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
-        patch("catalpa_tooling.smoke_cli._run_frontend_build", return_value=0),
-        patch("catalpa_tooling.smoke_cli._wait_for_web_service", return_value=True),
-        patch("catalpa_tooling.smoke_cli._wait_for_frontend_url", return_value=True),
-        patch("catalpa_tooling.smoke_cli._run_pytest_smoke", return_value=0),
-    ):
-        rc = run_smoke(config, no_fresh_db=True, no_up=True)
-        assert rc == 0
-        fresh.assert_not_called()
+        # Only makemigrations --check on the default DB connection (no primary migrate).
+        assert manage.call_count == 1
+        assert manage.call_args.args[3:6] == ("makemigrations", "--check", "--dry-run")
 
 
 def test_run_smoke_functional_skips_gate(minimal_project) -> None:
