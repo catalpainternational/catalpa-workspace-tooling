@@ -1,6 +1,7 @@
 """argparse entrypoint for dk: build/push stack images, or Docker Compose per docker/envs/<env>."""
 
 import argparse
+import os
 import sys
 
 from catalpa_tooling.cli.completion import activate, argcomplete_active
@@ -9,9 +10,10 @@ from catalpa_tooling.cli.dk_argv import (
     is_implicit_compose_argv,
     normalize_dk_env_argv,
     normalize_dk_root_argv,
+    peel_worktree_flag,
 )
 from catalpa_tooling.cli_interrupt import run_cli
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import ProjectConfig, load_project_config
 from catalpa_tooling.local_compose import _cmd_build
 from catalpa_tooling.build_push import _cmd_push
 from catalpa_tooling.clean_images import clean_images
@@ -23,6 +25,10 @@ from catalpa_tooling.env_handlers import handle_env_command
 from catalpa_tooling.local_proxy_cli import cmd_proxy
 from catalpa_tooling.cut_release import cut_release
 from catalpa_tooling.remote_deploy import list_dk_env_names, list_deploy_env_names, resolve_deploy_env_name
+from catalpa_tooling.repo_paths import repo_root_from_cwd
+from catalpa_tooling.worktree import resolve_worktree_root
+from catalpa_tooling.worktree_cli import cmd_worktree
+from catalpa_tooling.worktree_overlay import WorktreeOverlayError, WORKTREES_DIRNAME
 
 
 def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentParser) -> argparse.Namespace:
@@ -53,13 +59,53 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
     return parser.parse_args(root_argv)
 
 
+def _load_config_for_argv(argv: list[str]) -> tuple[ProjectConfig, list[str], str | None]:
+    """Peel ``--worktree`` / ``-W``, optionally chdir into that worktree, load config.
+
+    Returns ``(config, remaining_argv, worktree_slug_or_none)``.
+    """
+    try:
+        worktree_slug, rest = peel_worktree_flag(argv)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    if worktree_slug is None:
+        return ProjectConfig.from_cwd(), rest, None
+
+    # create always targets the main checkout
+    if len(rest) >= 2 and rest[0] == "worktree" and rest[1] == "create":
+        print(
+            "dk: --worktree cannot be combined with `worktree create` "
+            "(create always runs from the main checkout).",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    try:
+        cwd_root = repo_root_from_cwd()
+        wt_root = resolve_worktree_root(cwd_root, worktree_slug)
+    except (FileNotFoundError, WorktreeOverlayError) as exc:
+        print(f"dk: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    try:
+        rel = wt_root.relative_to(cwd_root.resolve())
+    except ValueError:
+        # cwd was already a worktree; show path relative to main if possible
+        rel = Path(WORKTREES_DIRNAME) / wt_root.name
+
+    print(f"worktree: targeting {rel}", file=sys.stderr)
+    os.chdir(wt_root)
+    return load_project_config(wt_root), rest, worktree_slug
+
+
 def _main_impl() -> None:
-    config = ProjectConfig.from_cwd()
+    argv = sys.argv[1:]
+    config, argv, _worktree_slug = _load_config_for_argv(argv)
     parser = build_dk_parser(config)
     # Must run before custom argv routing: argcomplete uses COMP_LINE while sys.argv is often bare ``dk``.
     activate(parser)
-
-    argv = sys.argv[1:]
 
     if argv and argv[0] in ("-h", "--help"):
         parser.print_help()
@@ -81,11 +127,12 @@ def _main_impl() -> None:
             "digoc",
             "proxy",
             "cut-release",
+            "worktree",
         ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
-                f"`dk digoc`, `dk proxy`, `dk cut-release`, or a name with "
+                f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk worktree`, or a name with "
                 f"{config.paths.deploy.envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
@@ -147,6 +194,8 @@ def _main_impl() -> None:
                 allow_dirty=ns.allow_dirty,
             )
         )
+    if cmd == "worktree":
+        sys.exit(cmd_worktree(ns, config))
 
     if getattr(ns, "env_name", None):
         sys.exit(handle_env_command(ns, config))

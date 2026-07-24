@@ -64,8 +64,8 @@ def _resolve_deploy_context(
         config=config,
         dk_env_name=env_name,
     )
-    site_origin = primary_site_origin_from_info(info) or ctx.site_origin
-    return compose_file, env_add, site_origin, ctx, info
+    site_origin = primary_site_origin_from_info(ctx.info) or ctx.site_origin
+    return compose_file, env_add, site_origin, ctx, ctx.info
 
 
 def _prepare_compose_up(

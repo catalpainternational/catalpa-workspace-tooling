@@ -43,6 +43,7 @@ def test_db_restore_prints_deploy_summary_once(
             site_origin="http://example.test:9004",
             use_prepulled_registry=False,
             storage_volumes={},
+            info=info,
         )
 
     monkeypatch.setattr(env_handlers, "resolve_compose_file_from_info", lambda *_: "compose.yml")

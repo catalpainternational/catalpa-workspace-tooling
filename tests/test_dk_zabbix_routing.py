@@ -90,6 +90,7 @@ def test_handle_env_routes_zabbix_with_env_defaults_and_ssh_target(
             docker_host="ssh://deploy@example.test",
             site_origin="https://example.test",
             use_prepulled_registry=False,
+            info=info,
         ),
     )
     monkeypatch.setattr(
@@ -161,6 +162,7 @@ def test_handle_env_routes_zabbix_with_local_fallback(
             docker_host="unix:///var/run/docker.sock",
             site_origin="http://localhost:5173",
             use_prepulled_registry=False,
+            info=info,
         ),
     )
     monkeypatch.setattr(
@@ -226,6 +228,7 @@ def test_handle_env_routes_zabbix_backup_target(
             docker_host="ssh://root@203.0.113.27",
             site_origin="https://example.test",
             use_prepulled_registry=False,
+            info=info,
         ),
     )
     monkeypatch.setattr(
@@ -290,6 +293,7 @@ def test_handle_env_zabbix_backup_requires_dc_backup_host(
             docker_host="ssh://root@203.0.113.27",
             site_origin=None,
             use_prepulled_registry=False,
+            info=info,
         ),
     )
     monkeypatch.setattr(

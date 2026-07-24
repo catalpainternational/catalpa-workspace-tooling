@@ -415,6 +415,8 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     )
     if ctx is None:
         return 1
+    # Use post-overlay info for proxy hostnames, LAN URLs, and compose helpers.
+    info = ctx.info
     env_add = ctx.env_add
     docker_host = ctx.docker_host
     site_origin = ctx.site_origin

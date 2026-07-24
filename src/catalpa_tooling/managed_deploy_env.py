@@ -103,6 +103,8 @@ class ManagedDeployContext:
     info_tag: str | None
     config: ProjectConfig
     storage_volumes: dict[str, StorageVolumeSpec]
+    # Effective info.yaml (post worktree overlay remap). Used for proxy hostnames, etc.
+    info: dict
 
 
 def print_managed_deploy_summary(ctx: ManagedDeployContext) -> None:
@@ -152,6 +154,7 @@ def print_managed_deploy_header(
             info_tag=effective_tag,
             config=config,
             storage_volumes={},
+            info=dict(info),
         )
     )
 
@@ -163,11 +166,14 @@ def load_managed_deploy_context(
     info: dict | None = None,
     compose_file: str | None = None,
     tag_override: str | None = None,
+    apply_worktree: bool = True,
 ) -> ManagedDeployContext | None:
     """Load ``info.yaml`` + ``credentials.yaml`` and build ``env_add`` for docker compose.
 
     If ``info`` is None, reads ``docker/envs/<env_name>/info.yaml``.
     If ``compose_file`` is None, resolves it from ``info``.
+    When ``apply_worktree`` is true and ``.catalpa-worktree.yaml`` is present for
+    ``base_env``, remaps compose project + localdev origins for isolation.
     Prints summary to stderr. Returns None on missing files / SOPS failure.
     """
     repo_root = config.repo_root
@@ -181,6 +187,34 @@ def load_managed_deploy_context(
             return None
         with open(info_path, encoding="utf-8") as f:
             info = yaml.safe_load(f) or {}
+
+    worktree_overlay = None
+    worktree_applied = False
+    if apply_worktree:
+        from catalpa_tooling.worktree_overlay import (
+            WorktreeOverlayError,
+            apply_worktree_overlay_to_info,
+            load_worktree_overlay,
+        )
+
+        try:
+            worktree_overlay = load_worktree_overlay(repo_root)
+        except WorktreeOverlayError as exc:
+            print(f"worktree overlay: {exc}", file=sys.stderr)
+            return None
+        if worktree_overlay is not None:
+            remapped = apply_worktree_overlay_to_info(
+                info, worktree_overlay, env_name=env_name
+            )
+            if remapped is not None:
+                info = remapped
+                worktree_applied = True
+                print(
+                    f"worktree overlay: slug={worktree_overlay.slug!r} "
+                    f"compose={worktree_overlay.compose_project_name!r} "
+                    f"site={worktree_overlay.site_origin}",
+                    file=sys.stderr,
+                )
 
     if compose_file is None:
         compose_file = _resolve_compose_file_from_info(info, config)
@@ -283,6 +317,11 @@ def load_managed_deploy_context(
         behind_local_proxy=local_proxy_enabled(info),
     )
 
+    if worktree_applied and worktree_overlay is not None:
+        from catalpa_tooling.worktree_overlay import force_worktree_origin_env
+
+        force_worktree_origin_env(env_add, overlay=worktree_overlay, info=info)
+
     if effective_tag:
         env_add["STACK_IMAGE_TAG"] = effective_tag
     elif not use_prepulled_registry:
@@ -368,6 +407,7 @@ def load_managed_deploy_context(
         info_tag=effective_tag,
         config=config,
         storage_volumes=storage_volumes,
+        info=dict(info),
     )
 
 

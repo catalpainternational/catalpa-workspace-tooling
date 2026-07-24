@@ -1,0 +1,37 @@
+# Worktree agent context (${SLUG})
+
+This checkout is an isolated git worktree. Prefer tooling commands that target it explicitly.
+
+## Identity
+
+| Field | Value |
+|-------|-------|
+| Slug | `${SLUG}` |
+| Branch | `${BRANCH}` |
+| Compose project | `${COMPOSE_PROJECT}` |
+| Site origin | `${SITE_ORIGIN}` |
+| Base env | `${BASE_ENV}` |
+| Worktree path | `${WORKTREE_PATH}` |
+| Parent repo | `${PARENT_REPO}` |
+| Media path | `${MEDIA_PATH}` |
+
+## Commands
+
+From the **parent** checkout (recommended — no `cd` / direnv):
+
+```bash
+uv run dk --worktree ${SLUG} …
+uv run dk worktree up ${SLUG}
+uv run dk worktree down ${SLUG}
+uv run dk worktree context ${SLUG} --json
+```
+
+Inside this worktree, `dk ${BASE_ENV}` uses the remapped compose project and localdev hostnames.
+
+## Rules
+
+- Read the repo `AGENTS.md` and `.cursor/rules/` (especially secrets and remote environments).
+- **Do not** run remote deploy envs (`staging`, `prod`, or any env with `docker_host`) from this worktree unless the user explicitly confirms target and action.
+- Never decrypt or print SOPS credentials in agent sessions.
+
+See `docs/WORKTREES.md` in catalpa-workspace-tooling.

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Worktree local proxy routes** — `dk --worktree <slug> dev up` now registers remapped hostnames (`{project}-dev-{slug}.localdev…`) against the worktree Caddy upstream. Previously raw `info.yaml` hostnames were paired with the remapped compose project, overwriting main checkout routes. Compose proxy overrides are keyed by compose project name so main and worktree stacks no longer share one override file.
+
+### Added
+
+- **`dk worktree`** — isolated git worktrees under `.worktrees/<slug>/` with `.catalpa-worktree.yaml` overlay (remaps compose project + localdev domains for `dk dev`). Lifecycle: `create` (seeds DB/media by default; `--up` for proxy + stack), `up`/`down`/`restart`/`logs`/`status`, `context [--json]`, `list`/`info`, `seed`, `remove [--wipe]`. Global **`--worktree`/`-W`**. Writes gitignored **`AGENTS.local.md`** per worktree. Submodules: shallow + local `--reference` by default. See [docs/WORKTREES.md](docs/WORKTREES.md).
+
 ## 1.1.0
 
 ### Added

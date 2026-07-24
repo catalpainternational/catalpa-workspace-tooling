@@ -18,6 +18,8 @@ cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/secrets-and-agents.md
 cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/remote-environments.mdc .cursor/rules/
 # Optional — smoke test hints for agents (Django compose consumers):
 cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/smoke-tests.mdc .cursor/rules/
+# Optional — parallel git worktrees:
+cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/worktrees.mdc .cursor/rules/
 ```
 
 | File | Purpose |
@@ -26,8 +28,11 @@ cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/smoke-tests.mdc .curs
 | [`secrets-and-agents.mdc`](../scripts/cursor-rules/secrets-and-agents.mdc) | No decrypt/show of SOPS or env secrets |
 | [`remote-environments.mdc`](../scripts/cursor-rules/remote-environments.mdc) | No `dk staging`/`prod`, push, transfer, `clean-images --apply`, or fetch-from-prod without user confirmation |
 | [`smoke-tests.mdc`](../scripts/cursor-rules/smoke-tests.mdc) | Optional — `tests smoke` setup and when to run after tooling bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
+| [`worktrees.mdc`](../scripts/cursor-rules/worktrees.mdc) | Optional — `dk worktree` for isolated local worktrees ([WORKTREES.md](WORKTREES.md)) |
 
-Commit all three required paths (and optional `smoke-tests.mdc` for Django compose consumers) to the application repository so all contributors get the same guardrails.
+Each worktree checkout also gets a gitignored **`AGENTS.local.md`** at its root (from `create`; refreshed on `dk worktree up` / `context`) with slug-specific origins and command hints. Copy `worktrees.mdc` into `.cursor/rules/` when using parallel worktrees.
+
+Commit all three required paths (and optional rules for smoke tests / worktrees) to the application repository so all contributors get the same guardrails.
 
 ## Local vs remote environments
 
