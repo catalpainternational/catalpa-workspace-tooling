@@ -6,12 +6,28 @@ import argparse
 
 from catalpa_tooling.config import ProjectConfig
 
+# Default Playwright slow-mo for ``tests functional headed`` (milliseconds).
+FUNCTIONAL_HEADED_SLOWMO_MS = 250
+
+
+def _add_stack_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--env", default="dev", help="Deploy env (default: dev).")
+    parser.add_argument("--no-up", action="store_true", help="Skip docker compose up -d.")
+
+
+def _add_ci_gate_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Use migrate --check instead of migrate --noinput on the ephemeral empty DB.",
+    )
+
 
 def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.ArgumentParser:
     _ = config
     parser = argparse.ArgumentParser(
         prog="tests",
-        description="Run backend pytest, frontend Vitest, or repo-root workspace tests.",
+        description="Run backend pytest, frontend Vitest, CI gate, or functional Playwright.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -32,28 +48,60 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
         nargs=argparse.REMAINDER,
         help="Arguments forwarded to pytest (e.g. tests/test_foo.py -k name).",
     )
+
+    p_ci = subparsers.add_parser(
+        "ci",
+        help=(
+            "CI gate: empty migrate on ephemeral DB, manage check, makemigrations --check, "
+            "frontend type-check/build, guest Playwright. Defaults to --env dev and starts the stack."
+        ),
+    )
+    _add_stack_flags(p_ci)
+    _add_ci_gate_flags(p_ci)
+    p_ci.add_argument(
+        "pytest_args",
+        nargs=argparse.REMAINDER,
+        help="Extra pytest args after `--` (guest suite; elearning stays skipped).",
+    )
+
+    p_functional = subparsers.add_parser(
+        "functional",
+        help=(
+            "Functional Playwright against a running stack (skips CI gate). "
+            "Use `tests functional headed` for a visible browser "
+            f"(default slow-mo {FUNCTIONAL_HEADED_SLOWMO_MS} ms)."
+        ),
+    )
+    _add_stack_flags(p_functional)
+    p_functional.add_argument(
+        "--headed",
+        action="store_true",
+        help=f"Visible browser with default slow-mo ({FUNCTIONAL_HEADED_SLOWMO_MS} ms).",
+    )
+    p_functional.add_argument(
+        "rest",
+        nargs=argparse.REMAINDER,
+        help="Optional `headed`, then pytest args (after `--` if needed).",
+    )
+
+    # Deprecated alias — prefer ``tests ci`` / ``tests functional``.
     p_smoke = subparsers.add_parser(
         "smoke",
-        help="Project smoke tests (stack, migrations, HTTP, Playwright PWA load).",
+        help="Deprecated alias for `tests ci` (or `tests functional` with --functional).",
     )
-    p_smoke.add_argument("--env", default="dev", help="Deploy env (default: dev).")
-    p_smoke.add_argument("--no-up", action="store_true", help="Skip docker compose up -d.")
+    _add_stack_flags(p_smoke)
+    _add_ci_gate_flags(p_smoke)
     p_smoke.add_argument(
-        "--check-only",
+        "--functional",
         action="store_true",
-        help="Use migrate --check instead of migrate --noinput.",
+        help="Deprecated: use `tests functional` instead.",
     )
-    p_smoke.add_argument(
-        "--fresh-db",
-        action="store_true",
-        help="Ephemeral empty-DB migration test (local; skipped in CI).",
-    )
-    p_smoke.add_argument("--ci", action="store_true", help="CI mode (ignore --fresh-db).")
     p_smoke.add_argument(
         "pytest_args",
         nargs=argparse.REMAINDER,
         help="Extra pytest args after `--`.",
     )
+
     p_compliance = subparsers.add_parser(
         "compliance",
         help="OSS compliance scan (licenses, SBOM, NOTICES, policy gate).",

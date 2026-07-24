@@ -408,7 +408,7 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 
 | Document | Contents |
 |----------|----------|
-| [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `tests smoke` prerequisites, authoring tests, flags |
+| [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `tests ci` / `tests functional` prerequisites, authoring tests, flags |
 | [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation) |
 | [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) | Typer migration audit and low-risk refactor targets |
 | [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
