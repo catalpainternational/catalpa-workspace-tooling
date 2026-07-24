@@ -1,39 +1,36 @@
 ---
-description: Run tests smoke after tooling bumps; smoke deps in consumer pyproject.toml only
+description: Run tests ci after tooling bumps; smoke deps in consumer pyproject.toml only
 globs: pyproject.toml, **/smoke/**, pytest.ini
 alwaysApply: false
 ---
 
-# Smoke tests
+# CI / functional tests
 
-Project health checks via **`uv run tests smoke`** (catalpa-workspace-tooling v0.8.1+; `*.dev.localhost` healthcheck fix in v0.8.3+). [docs/SMOKE_TESTS.md](https://github.com/catalpainternational/catalpa-workspace-tooling/blob/main/docs/SMOKE_TESTS.md) in catalpa-workspace-tooling.
+Project health checks via **`uv run tests ci`** and **`uv run tests functional`**. Full contract: [docs/SMOKE_TESTS.md](https://github.com/catalpainternational/catalpa-workspace-tooling/blob/main/docs/SMOKE_TESTS.md).
 
-## When to suggest smoke
+## When to suggest
 
-- User bumped **catalpa-workspace-tooling** or asks to validate a stack after changes
-- User mentions smoke tests, PWA load check, or post-merge validation on **local dev**
+- Validate a stack after tooling / submodule changes → `tests ci`
+- Authenticated / elearning Playwright iteration → `tests functional` / `tests functional headed`
 
 ## Setup (Django compose consumers)
 
-1. **`[dependency-groups].smoke`** in consumer repo root `pyproject.toml` — not in shared vendor/submodule `pyproject.toml` if that would force unrelated lock churn
-2. Tests live in **`{paths.frontend}/smoke/`** (from `tooling.yaml`)
+1. **`[dependency-groups].smoke`** in consumer repo root `pyproject.toml`
+2. Tests under **`{paths.frontend}/smoke/`**
 3. One-time: `uv run playwright install chromium`
+4. CI hosts can use `uv sync --only-group tooling --only-group smoke` (no app install); frontend gate prefers compose `node`
 
 ## Safe local run
 
 ```bash
-uv run dk dev up -d          # if stack not running
-uv run tests smoke --no-up    # skip compose up when stack is already up
+uv run dk dev up -d
+uv run tests ci --no-up
+uv run tests functional --no-up
+uv run tests functional headed --no-up
 ```
 
-Use **`--check-only`** for migration preflight without applying. Use **`--fresh-db`** for empty-DB migrate on an ephemeral database (local only).
-
-## Do not
-
-- Add `pytest` / `pytest-playwright` to shared submodule `pyproject.toml` when deps belong in the consumer repo only
-- Run **`uv run tests smoke`** against **staging/prod** without explicit user confirmation (same bar as remote `dk`; see `remote-environments.mdc`)
-- Decrypt or print deploy secrets to debug smoke failures
+`tests smoke` is a deprecated alias for `tests ci`. Do not run against staging/prod without explicit confirmation.
 
 ## Related
 
-- Smoke test docs: `docs/SMOKE_TESTS.md` in catalpa-workspace-tooling
+- `docs/SMOKE_TESTS.md` in catalpa-workspace-tooling
