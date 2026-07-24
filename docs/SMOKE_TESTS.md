@@ -8,7 +8,7 @@ Project-health and Playwright checks for Django + Docker Compose stacks. Tooling
 
 | Command | Role |
 |---------|------|
-| `uv run tests ci` | CI gate: lean **db + django** up, **empty migrate** (ephemeral DB), makemigrations check, frontend type-check/build. **No Playwright.** |
+| `uv run tests ci` | CI gate: lean **db-only** up, **empty migrate** (ephemeral DB via `compose run`), makemigrations check, frontend type-check/build. **No Playwright.** |
 | `uv run tests guest` | Guest Playwright against a **full** stack + local_proxy (skips CI gate) |
 | `uv run tests functional` | Skip gate; Playwright against an **existing** DB / running stack (`-m elearning` by default) |
 | `uv run tests functional headed` | Same, visible browser with default slow-mo (250 ms) |
@@ -21,7 +21,7 @@ Everyday CI gate (local or GitHub Actions):
 uv run tests ci
 ```
 
-Defaults to `--env dev` and starts a **lean** stack (`db` + web). No extra flags required.
+Defaults to `--env dev` and starts a **lean** stack (`db` only). No extra flags required.
 
 ## What tooling runs
 
@@ -30,10 +30,10 @@ Defaults to `--env dev` and starts a **lean** stack (`db` + web). No extra flags
 Ordered pipeline (implemented in `smoke_cli.run_smoke`):
 
 1. Resolve `docker/envs/<env>/info.yaml` and compose file (default env: `dev`)
-2. Optional lean `docker compose up -d db <web>` (skip with `--no-up`); builds only `db`, web, and `node` images; **no** local_proxy / caddy / metabase / redis
+2. Optional lean `docker compose up -d db` (skip with `--no-up`); builds `db`, web, and `node` images but does **not** start web (no migrate oneshot / runserver); **no** local_proxy / caddy / metabase / redis
 3. Wait for Postgres (`pg_isready`)
-4. **Empty migrate** on ephemeral `{dbname}_smoke_empty` (migrate + `manage check`), then drop it — **never touches the primary DB**
-5. `makemigrations --check --dry-run`
+4. **Empty migrate** on ephemeral `{dbname}_smoke_empty` via `docker compose run --rm --no-deps <web> ./manage.py …` (sets `DJANGO_DB` / `POSTGRES_DB`), then `manage check`, then drop — **never touches the primary DB**. Consumers must use `DJANGO_DB` for `DATABASES['default']['NAME']` (not `DJANGO_DB_NAME`).
+5. `makemigrations --check --dry-run` (same `compose run --no-deps`)
 6. **Frontend type-check + production build** — prefer `docker compose run --no-deps node pnpm run …` when a `node` service exists (image `node_modules`); otherwise host package manager under `paths.frontend`
 
 ### Guest (`tests guest`)
@@ -47,8 +47,8 @@ Same Playwright wait path as guest, but defaults to `-m elearning`. `headed` add
 ```mermaid
 flowchart TD
   start[tests ci / guest / functional] --> mode{command}
-  mode -->|ci| upLean[lean up db + web]
-  upLean --> emptyMigrate[ephemeral empty migrate]
+  mode -->|ci| upLean[lean up db only]
+  upLean --> emptyMigrate[ephemeral empty migrate via compose run]
   emptyMigrate --> makemigrations[makemigrations check]
   makemigrations --> build[type-check + build]
   mode -->|guest| upFull[full stack + proxy]

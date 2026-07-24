@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.3.1
+
+### Changed
+
+- **`tests ci`** — lean stack is **db only** (no web container / primary migrate oneshot). Empty-DB migrate, `manage check`, and `makemigrations --check` use `docker compose run --rm --no-deps <web>`. Consumers must use **`DJANGO_DB`** for the database name (not `DJANGO_DB_NAME`).
+
 ## 1.3.0
 
 ### Changed

@@ -228,11 +228,13 @@ def _start_lean_ci_stack(
     *,
     log_prefix: str,
 ) -> int:
-    """Bring up only ``db`` + web (migrate via depends_on); no local_proxy."""
+    """Bring up only ``db`` (no web/runserver / migrate oneshot); no local_proxy.
+
+    Gate manage commands use ``compose run --no-deps`` against the built web image.
+    """
     p = log_prefix
     db = config.stack_service("db")
-    web = config.stack_service("web")
-    print(f"{p}: starting lean stack ({compose_file}: {db}, {web})", file=sys.stderr)
+    print(f"{p}: starting lean stack ({compose_file}: {db})", file=sys.stderr)
     if (
         _prepare_compose_up(
             deploy_ctx,
@@ -246,7 +248,7 @@ def _start_lean_ci_stack(
         print(f"{p}: stack prepare failed", file=sys.stderr)
         return 1
     compose_argv = _insert_up_build_if_no_registry(
-        ["up", "-d", db, web],
+        ["up", "-d", db],
         use_prepulled_registry=deploy_ctx.use_prepulled_registry,
     )
     if _compose(compose_file, *compose_argv, env_add=env_add, check=False).returncode != 0:
@@ -287,7 +289,12 @@ def _run_compose_manage(
     *manage_argv: str,
     extra_exec_env: dict[str, str] | None = None,
 ) -> int:
-    cmd = ["exec", "-T"]
+    """One-off ``compose run --rm --no-deps`` so CI need not keep a web container up.
+
+    Ephemeral DB override (e.g. empty-migrate) must set ``DJANGO_DB`` — consumers
+    should read that for ``DATABASES['default']['NAME']`` (not ``DJANGO_DB_NAME``).
+    """
+    cmd = ["run", "--rm", "-T", "--no-deps"]
     if extra_exec_env:
         for key, value in extra_exec_env.items():
             cmd.extend(["-e", f"{key}={value}"])
