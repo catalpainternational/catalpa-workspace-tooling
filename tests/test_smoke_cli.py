@@ -39,7 +39,7 @@ def _mock_resolve(config):
 
 
 def test_run_smoke_gate_always_empty_migrates(minimal_project) -> None:
-    """CI gate always uses ephemeral empty DB; never migrates primary."""
+    """CI gate always uses ephemeral empty DB; never migrates primary; no Playwright."""
     config = minimal_project
     with (
         patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
@@ -47,9 +47,9 @@ def test_run_smoke_gate_always_empty_migrates(minimal_project) -> None:
         patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0) as fresh,
         patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0) as manage,
         patch("catalpa_tooling.smoke_cli._run_frontend_build", return_value=0),
-        patch("catalpa_tooling.smoke_cli._wait_for_web_service", return_value=True),
-        patch("catalpa_tooling.smoke_cli._wait_for_frontend_url", return_value=True),
-        patch("catalpa_tooling.smoke_cli._run_pytest_smoke", return_value=0),
+        patch("catalpa_tooling.smoke_cli._wait_for_web_service") as wait_web,
+        patch("catalpa_tooling.smoke_cli._wait_for_frontend_url") as wait_fe,
+        patch("catalpa_tooling.smoke_cli._run_pytest_smoke") as pytest_smoke,
     ):
         rc = run_smoke(config, no_up=True)
         assert rc == 0
@@ -57,6 +57,9 @@ def test_run_smoke_gate_always_empty_migrates(minimal_project) -> None:
         # Only makemigrations --check on the default DB connection (no primary migrate).
         assert manage.call_count == 1
         assert manage.call_args.args[3:6] == ("makemigrations", "--check", "--dry-run")
+        wait_web.assert_not_called()
+        wait_fe.assert_not_called()
+        pytest_smoke.assert_not_called()
 
 
 def test_run_smoke_functional_skips_gate(minimal_project) -> None:
@@ -76,6 +79,23 @@ def test_run_smoke_functional_skips_gate(minimal_project) -> None:
         wait_db.assert_not_called()
         fresh.assert_not_called()
         manage.assert_not_called()
+        build.assert_not_called()
+        pytest_smoke.assert_called_once()
+
+
+def test_run_smoke_guest_skips_gate(minimal_project) -> None:
+    config = minimal_project
+    with (
+        patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
+        patch("catalpa_tooling.smoke_cli._fresh_db_smoke") as fresh,
+        patch("catalpa_tooling.smoke_cli._run_frontend_build") as build,
+        patch("catalpa_tooling.smoke_cli._wait_for_web_service", return_value=True),
+        patch("catalpa_tooling.smoke_cli._wait_for_frontend_url", return_value=True),
+        patch("catalpa_tooling.smoke_cli._run_pytest_smoke", return_value=0) as pytest_smoke,
+    ):
+        rc = run_smoke(config, guest=True, no_up=True)
+        assert rc == 0
+        fresh.assert_not_called()
         build.assert_not_called()
         pytest_smoke.assert_called_once()
 
@@ -121,7 +141,33 @@ def test_wait_for_frontend_url_retries_until_success() -> None:
         assert attempts["n"] == 3
 
 
-def test_run_smoke_prepares_stack_before_up(minimal_project) -> None:
+def test_run_smoke_ci_lean_up_skips_proxy(minimal_project) -> None:
+    config = minimal_project
+    with (
+        patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
+        patch("catalpa_tooling.smoke_cli._prepare_compose_up", return_value=0) as prepare,
+        patch("catalpa_tooling.smoke_cli.sync_local_proxy_for_compose_action") as sync_proxy,
+        patch("catalpa_tooling.smoke_cli._compose", return_value=type("R", (), {"returncode": 0})()) as compose,
+        patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
+        patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0),
+        patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
+        patch("catalpa_tooling.smoke_cli._run_frontend_build", return_value=0),
+        patch("catalpa_tooling.smoke_cli._run_pytest_smoke") as pytest_smoke,
+    ):
+        rc = run_smoke(config, no_up=False)
+        assert rc == 0
+        prepare.assert_called_once()
+        assert prepare.call_args.kwargs.get("lean_ci") is True
+        sync_proxy.assert_not_called()
+        compose.assert_called_once()
+        up_args = compose.call_args.args[1:]
+        assert up_args[0] == "up"
+        assert config.stack_service("db") in up_args
+        assert config.stack_service("web") in up_args
+        pytest_smoke.assert_not_called()
+
+
+def test_run_smoke_guest_prepares_full_stack_with_proxy(minimal_project) -> None:
     config = minimal_project
     with (
         patch("catalpa_tooling.smoke_cli._resolve_deploy_context", return_value=_mock_resolve(config)),
@@ -132,17 +178,14 @@ def test_run_smoke_prepares_stack_before_up(minimal_project) -> None:
             return_value=["/tmp/local-proxy-override.yaml"],
         ) as extra_files,
         patch("catalpa_tooling.smoke_cli._compose", return_value=type("R", (), {"returncode": 0})()) as compose,
-        patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
-        patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0),
-        patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
-        patch("catalpa_tooling.smoke_cli._run_frontend_build", return_value=0),
         patch("catalpa_tooling.smoke_cli._wait_for_web_service", return_value=True),
         patch("catalpa_tooling.smoke_cli._wait_for_frontend_url", return_value=True),
         patch("catalpa_tooling.smoke_cli._run_pytest_smoke", return_value=0),
     ):
-        rc = run_smoke(config, no_up=False)
+        rc = run_smoke(config, guest=True, no_up=False)
         assert rc == 0
         prepare.assert_called_once()
+        assert prepare.call_args.kwargs.get("lean_ci", False) is False
         sync_proxy.assert_called_once()
         extra_files.assert_called_once()
         compose.assert_called_once()

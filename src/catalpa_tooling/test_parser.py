@@ -27,7 +27,10 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
     _ = config
     parser = argparse.ArgumentParser(
         prog="tests",
-        description="Run backend pytest, frontend Vitest, CI gate, or functional Playwright.",
+        description=(
+            "Run backend pytest, frontend Vitest, CI gate, or Playwright "
+            "(guest / functional)."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -52,8 +55,9 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
     p_ci = subparsers.add_parser(
         "ci",
         help=(
-            "CI gate: empty migrate on ephemeral DB, manage check, makemigrations --check, "
-            "frontend type-check/build, guest Playwright. Defaults to --env dev and starts the stack."
+            "CI gate: lean db+django up, empty migrate on ephemeral DB, manage check, "
+            "makemigrations --check, frontend type-check/build. No Playwright. "
+            "Defaults to --env dev."
         ),
     )
     _add_stack_flags(p_ci)
@@ -61,7 +65,21 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
     p_ci.add_argument(
         "pytest_args",
         nargs=argparse.REMAINDER,
-        help="Extra pytest args after `--` (guest suite; elearning stays skipped).",
+        help="Ignored on CI gate (use `tests guest` / `tests functional`).",
+    )
+
+    p_guest = subparsers.add_parser(
+        "guest",
+        help=(
+            "Guest Playwright against a running stack (skips CI gate). "
+            "Starts the full stack + local_proxy unless --no-up."
+        ),
+    )
+    _add_stack_flags(p_guest)
+    p_guest.add_argument(
+        "pytest_args",
+        nargs=argparse.REMAINDER,
+        help="Extra pytest args after `--` (elearning stays skipped unless selected).",
     )
 
     p_functional = subparsers.add_parser(
@@ -84,7 +102,7 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
         help="Optional `headed`, then pytest args (after `--` if needed).",
     )
 
-    # Deprecated alias — prefer ``tests ci`` / ``tests functional``.
+    # Deprecated alias — prefer ``tests ci`` / ``tests functional`` / ``tests guest``.
     p_smoke = subparsers.add_parser(
         "smoke",
         help="Deprecated alias for `tests ci` (or `tests functional` with --functional).",

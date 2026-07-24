@@ -1,14 +1,15 @@
-# Smoke / CI / functional tests (`tests ci`, `tests functional`)
+# Smoke / CI / functional tests (`tests ci`, `tests guest`, `tests functional`)
 
 Project-health and Playwright checks for Django + Docker Compose stacks. Tooling orchestrates the stack; your repo supplies tests under `{paths.frontend}/smoke/`.
 
-**Requires:** catalpa-workspace-tooling with `tests ci` / `tests functional` (formerly `tests smoke`).
+**Requires:** catalpa-workspace-tooling with `tests ci` / `tests guest` / `tests functional` (formerly `tests smoke`).
 
 ## Overview
 
 | Command | Role |
 |---------|------|
-| `uv run tests ci` | CI gate: **empty migrate** (ephemeral DB), makemigrations check, frontend type-check/build, guest Playwright |
+| `uv run tests ci` | CI gate: lean **db + django** up, **empty migrate** (ephemeral DB), makemigrations check, frontend type-check/build. **No Playwright.** |
+| `uv run tests guest` | Guest Playwright against a **full** stack + local_proxy (skips CI gate) |
 | `uv run tests functional` | Skip gate; Playwright against an **existing** DB / running stack (`-m elearning` by default) |
 | `uv run tests functional headed` | Same, visible browser with default slow-mo (250 ms) |
 | `uv run dk <env> manage migrate` | Migrate the **primary** (existing) database |
@@ -20,7 +21,7 @@ Everyday CI gate (local or GitHub Actions):
 uv run tests ci
 ```
 
-Defaults to `--env dev` and starts the stack. No extra flags required.
+Defaults to `--env dev` and starts a **lean** stack (`db` + web). No extra flags required.
 
 ## What tooling runs
 
@@ -29,29 +30,29 @@ Defaults to `--env dev` and starts the stack. No extra flags required.
 Ordered pipeline (implemented in `smoke_cli.run_smoke`):
 
 1. Resolve `docker/envs/<env>/info.yaml` and compose file (default env: `dev`)
-2. Optional `docker compose up -d` (skip with `--no-up`); same preflight as `dk <env> up`
+2. Optional lean `docker compose up -d db <web>` (skip with `--no-up`); builds only `db`, web, and `node` images; **no** local_proxy / caddy / metabase / redis
 3. Wait for Postgres (`pg_isready`)
 4. **Empty migrate** on ephemeral `{dbname}_smoke_empty` (migrate + `manage check`), then drop it — **never touches the primary DB**
 5. `makemigrations --check --dry-run`
 6. **Frontend type-check + production build** — prefer `docker compose run --no-deps node pnpm run …` when a `node` service exists (image `node_modules`); otherwise host package manager under `paths.frontend`
-7. Wait for `stack.healthcheck` on the web service
-8. Poll HTTP GET `{site_origin}/` until 2xx/3xx
-9. Guest pytest under `{paths.frontend}/smoke` (elearning skipped unless you pass a marker)
+
+### Guest (`tests guest`)
+
+Skips the migrate / makemigrations / frontend-build gate. Starts the **full** stack + local_proxy (unless `--no-up`), waits for HTTP, then runs guest pytest under `{paths.frontend}/smoke` (elearning skipped unless you pass a marker).
 
 ### Functional (`tests functional` / `tests functional headed`)
 
-Skips the migrate / makemigrations / frontend-build gate. Waits for HTTP, then runs pytest with `-m elearning` by default. `headed` adds `--headed --slowmo=250` (override with your own `--slowmo=`). Use against a fetched/restored primary DB.
+Same Playwright wait path as guest, but defaults to `-m elearning`. `headed` adds `--headed --slowmo=250` (override with your own `--slowmo=`). Use against a fetched/restored primary DB.
 
 ```mermaid
 flowchart TD
-  start[tests ci / functional] --> mode{command}
-  mode -->|ci| up{Stack running?}
-  up -->|no| composeUp[compose up -d]
-  up -->|yes| emptyMigrate
-  composeUp --> emptyMigrate[ephemeral empty migrate]
+  start[tests ci / guest / functional] --> mode{command}
+  mode -->|ci| upLean[lean up db + web]
+  upLean --> emptyMigrate[ephemeral empty migrate]
   emptyMigrate --> makemigrations[makemigrations check]
   makemigrations --> build[type-check + build]
-  build --> web[healthcheck + HTTP]
+  mode -->|guest| upFull[full stack + proxy]
+  upFull --> web[healthcheck + HTTP]
   web --> pytest[guest pytest]
   mode -->|functional| web2[healthcheck + HTTP]
   web2 --> pytestF[elearning pytest]
@@ -63,22 +64,27 @@ Dev tests use `site_origin` from `docker/envs/dev/info.yaml` (port **901N**). Se
 
 ## Project prerequisites
 
-### Required
+### Required for CI gate
 
 | Requirement | Where | Notes |
 |-------------|-------|-------|
 | Valid `tooling.yaml` | repo root | Same manifest as `dk` / other `tests` subcommands |
 | `stack.services.web` + `stack.services.db` | `tooling.yaml` | Web container must expose `./manage.py` |
+| Compose `node` service (recommended) | e.g. `compose.dev.yaml` | CI gate runs type-check/build here; avoids host `pnpm install` |
+
+### Required for guest / functional Playwright
+
+| Requirement | Where | Notes |
+|-------------|-------|-------|
 | `stack.healthcheck` | `tooling.yaml` | URL when app is healthy (bero: `/cms/`) |
 | `site_origin` | `docker/envs/dev/info.yaml` | HTTP probe + `SMOKE_FE_URL` |
 | `{paths.frontend}/smoke/` | e.g. `bero/smoke/` | Missing directory → failure |
 | `[dependency-groups].smoke` | consumer `pyproject.toml` | `pytest`, `pytest-playwright` |
 | Playwright browser (one-time) | host | `uv run playwright install chromium` |
-| Compose `node` service (recommended) | e.g. `compose.dev.yaml` | CI gate runs type-check/build here; avoids host `pnpm install` |
 
 ### Recommended
 
-- `[tool.uv] default-groups` includes `"smoke"`
+- `[tool.uv] default-groups` includes `"smoke"` when you run Playwright locally
 - Root `pytest.ini`: `testpaths = bero/smoke`
 
 ## Consumer `pyproject.toml`
@@ -96,16 +102,15 @@ smoke = [
 
 ```bash
 uv sync
-uv run playwright install chromium
+uv run playwright install chromium   # only needed for guest / functional
 ```
 
-### GitHub Actions (tooling + smoke only)
+### GitHub Actions (tooling only — CI gate)
 
-Host does not need the Django/bero workspace package or a host Node install when compose provides `node`. Map `*.localdev.temp.build` hostnames to `127.0.0.1` (for local_proxy), then:
+Host does not need the Django/bero workspace package, Playwright, or a host Node install when compose provides `node`:
 
 ```bash
-uv sync --frozen --only-group tooling --only-group smoke
-uv run playwright install --with-deps chromium
+uv sync --frozen --only-group tooling
 uv run tests ci
 ```
 
@@ -117,12 +122,13 @@ Host `uv`/pnpm installs do **not** populate Docker BuildKit cache mounts (`/root
 
 Location: `{repo_root}/{paths.frontend}/smoke/`. Tooling sets **`SMOKE_FE_URL`**.
 
-Extra pytest args: `uv run tests ci -- -k pwa -vv`
+Extra pytest args: `uv run tests guest -- -k pwa -vv`
 
 ## Bero consumer fast path
 
 ```bash
 uv run tests ci
+uv run tests guest --no-up
 uv run tests functional --no-up
 uv run tests functional headed --no-up
 ```
@@ -136,17 +142,16 @@ See [bero/README_TESTING.md](https://github.com/catalpainternational/bero/blob/d
 | Flag | Behavior |
 |------|----------|
 | `--env dev` | Deploy env under `docker/envs/` (default: `dev`) |
-| `--no-up` | Skip `docker compose up -d` |
+| `--no-up` | Skip lean `docker compose up -d` |
 | `--check-only` | Ephemeral empty migrate uses `migrate --check` |
-| `-- …` | Forwarded to pytest |
 
-### `tests functional`
+### `tests guest` / `tests functional`
 
 | Flag / mode | Behavior |
 |-------------|----------|
-| `--env` / `--no-up` | Same as CI |
-| `headed` | `--headed --slowmo=250` unless overridden |
-| `-- …` | Forwarded to pytest (default `-m elearning`) |
+| `--env` / `--no-up` | Same as CI (guest/functional start the **full** stack when up is needed) |
+| `headed` (functional) | `--headed --slowmo=250` unless overridden |
+| `-- …` | Forwarded to pytest |
 
 ## Related docs
 

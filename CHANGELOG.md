@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.3.0
+
+### Changed
+
+- **`tests ci`** — CI gate no longer runs guest Playwright or waits for HTTP / local_proxy. It brings up a **lean** stack (`db` + web only), builds only `db` / web / `node` images, then runs empty-DB migrate, `makemigrations --check`, and frontend type-check/build.
+
+### Added
+
+- **`tests guest`** — former CI Playwright tail: full stack + local_proxy (unless `--no-up`), HTTP wait, guest pytest under `{paths.frontend}/smoke/`.
+
 ## 1.2.0
 
 ### Fixed
