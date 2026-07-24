@@ -1,4 +1,4 @@
-"""argparse entrypoint for tests: pytest (backend), Vitest, CI gate, functional Playwright."""
+"""argparse entrypoint for tests: pytest (backend), Vitest, CI gate, Playwright."""
 
 from __future__ import annotations
 
@@ -118,8 +118,22 @@ def _run_ci_gate(args: object) -> int:
         no_up=bool(getattr(args, "no_up", False)),
         check_only=bool(getattr(args, "check_only", False)),
         functional=False,
+        guest=False,
         pytest_args=extra,
         log_prefix="ci",
+    )
+
+
+def _run_guest(args: object) -> int:
+    extra = _strip_pytest_sep(list(getattr(args, "pytest_args", None) or []))
+    return run_smoke(
+        _config(),
+        env_name=getattr(args, "env", "dev"),
+        no_up=bool(getattr(args, "no_up", False)),
+        functional=False,
+        guest=True,
+        pytest_args=extra,
+        log_prefix="guest",
     )
 
 
@@ -141,6 +155,7 @@ def _run_functional(args: object) -> int:
         env_name=env_name,
         no_up=no_up,
         functional=True,
+        guest=False,
         pytest_args=pytest_args,
         log_prefix="functional",
     )
@@ -160,10 +175,12 @@ def _test_main() -> None:
         sys.exit(_run_workspace_tests(extra))
     if args.command == "ci":
         sys.exit(_run_ci_gate(args))
+    if args.command == "guest":
+        sys.exit(_run_guest(args))
     if args.command == "functional":
         sys.exit(_run_functional(args))
     if args.command == "smoke":
-        warn_deprecated("tests smoke", "tests ci (or tests functional)")
+        warn_deprecated("tests smoke", "tests ci (or tests functional / tests guest)")
         if bool(getattr(args, "functional", False)):
             # Map legacy ``tests smoke --functional`` → functional path.
             class _LegacyFunctional:

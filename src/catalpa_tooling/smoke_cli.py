@@ -36,6 +36,9 @@ from catalpa_tooling.restic_files import resolve_env_with_compose_project
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import primary_site_origin_from_info
 
+# Compose service that holds frontend deps (bero ``compose.dev.yaml`` ``node``).
+_DEFAULT_NODE_SERVICE = "node"
+
 
 def _load_env_info(config: ProjectConfig, env_name: str) -> dict:
     info_path = config.deploy_envs_dir / env_name / "info.yaml"
@@ -78,8 +81,15 @@ def _prepare_compose_up(
     ctx: ManagedDeployContext,
     info: dict,
     env_add: dict[str, str],
+    *,
+    compose_file: str | None = None,
+    lean_ci: bool = False,
 ) -> int:
-    """Match ``dk <env> up`` preflight: volumes, local builds, pgBackRest config materialization."""
+    """Match ``dk <env> up`` preflight: volumes, local builds, pgBackRest config materialization.
+
+    When ``lean_ci`` is true, build only ``db`` / web / ``node`` on the env compose file
+    (no caddy/metabase/full stack build).
+    """
     rc = _ensure_stack_volumes(
         ctx.config,
         ctx.env_name,
@@ -90,11 +100,22 @@ def _prepare_compose_up(
     )
     if rc != 0:
         return rc
-    rc = _ensure_local_stack_images_built(
-        ctx.config,
-        env_add,
-        use_prepulled_registry=ctx.use_prepulled_registry,
-    )
+    if lean_ci:
+        if compose_file is None:
+            print("smoke: lean CI prepare requires compose_file", file=sys.stderr)
+            return 1
+        rc = _build_lean_ci_images(
+            compose_file,
+            ctx.config,
+            env_add,
+            use_prepulled_registry=ctx.use_prepulled_registry,
+        )
+    else:
+        rc = _ensure_local_stack_images_built(
+            ctx.config,
+            env_add,
+            use_prepulled_registry=ctx.use_prepulled_registry,
+        )
     if rc != 0:
         return rc
     return materialize_configs(
@@ -103,6 +124,160 @@ def _prepare_compose_up(
         postgres_image=postgres_image_from_env(env_add, config=ctx.config),
         config=ctx.config,
     )
+
+
+def _build_lean_ci_images(
+    compose_file: str,
+    config: ProjectConfig,
+    env_add: dict[str, str],
+    *,
+    use_prepulled_registry: bool,
+) -> int:
+    """Build only the images needed for the CI gate (db, django, node)."""
+    if use_prepulled_registry:
+        return 0
+    from catalpa_tooling.remote_deploy import _apply_build_placeholders
+
+    build_env = dict(env_add)
+    _apply_build_placeholders(build_env, config.stack.build_placeholders)
+    services = [config.stack_service("db"), config.stack_service("web")]
+    names = _compose_service_names(compose_file, build_env)
+    if _DEFAULT_NODE_SERVICE in names:
+        services.append(_DEFAULT_NODE_SERVICE)
+    print(f"smoke: building CI images ({', '.join(services)})", file=sys.stderr)
+    return _compose(
+        compose_file,
+        "build",
+        *services,
+        env_add=build_env,
+        check=False,
+    ).returncode
+
+
+def _start_full_stack_with_proxy(
+    compose_file: str,
+    config: ProjectConfig,
+    env_name: str,
+    env_add: dict[str, str],
+    deploy_ctx: ManagedDeployContext,
+    info: dict,
+    *,
+    log_prefix: str,
+) -> int:
+    """Full ``compose up -d`` with local_proxy overlays (Playwright / site_origin)."""
+    p = log_prefix
+    print(f"{p}: starting stack ({compose_file})", file=sys.stderr)
+    if _prepare_compose_up(deploy_ctx, info, env_add) != 0:
+        print(f"{p}: stack prepare failed", file=sys.stderr)
+        return 1
+    compose_argv = _insert_up_build_if_no_registry(
+        ["up", "-d"],
+        use_prepulled_registry=deploy_ctx.use_prepulled_registry,
+    )
+    try:
+        proxy_rc = sync_local_proxy_for_compose_action(
+            info,
+            config,
+            env_name,
+            compose_argv,
+            env_add,
+        )
+        if proxy_rc != 0:
+            print(f"{p}: local proxy sync failed", file=sys.stderr)
+            return proxy_rc
+        extra_compose_files = merge_extra_compose_files(
+            local_proxy_extra_compose_files(
+                info,
+                config,
+                env_name,
+                env_add,
+                compose_argv,
+            ),
+            dc_backup_tls_extra_compose_files(
+                info,
+                config,
+                env_name,
+                env_add,
+                compose_argv,
+            ),
+        )
+    except (LocalProxyConfigError, ValueError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if (
+        _compose(
+            compose_file,
+            *compose_argv,
+            env_add=env_add,
+            extra_compose_files=extra_compose_files,
+            check=False,
+        ).returncode
+        != 0
+    ):
+        print(f"{p}: docker compose up failed", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _start_lean_ci_stack(
+    compose_file: str,
+    config: ProjectConfig,
+    env_add: dict[str, str],
+    deploy_ctx: ManagedDeployContext,
+    info: dict,
+    *,
+    log_prefix: str,
+) -> int:
+    """Bring up only ``db`` + web (migrate via depends_on); no local_proxy."""
+    p = log_prefix
+    db = config.stack_service("db")
+    web = config.stack_service("web")
+    print(f"{p}: starting lean stack ({compose_file}: {db}, {web})", file=sys.stderr)
+    if (
+        _prepare_compose_up(
+            deploy_ctx,
+            info,
+            env_add,
+            compose_file=compose_file,
+            lean_ci=True,
+        )
+        != 0
+    ):
+        print(f"{p}: stack prepare failed", file=sys.stderr)
+        return 1
+    compose_argv = _insert_up_build_if_no_registry(
+        ["up", "-d", db, web],
+        use_prepulled_registry=deploy_ctx.use_prepulled_registry,
+    )
+    if _compose(compose_file, *compose_argv, env_add=env_add, check=False).returncode != 0:
+        print(f"{p}: docker compose up failed", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _wait_http_and_run_pytest(
+    compose_file: str,
+    config: ProjectConfig,
+    env_add: dict[str, str],
+    *,
+    fe_url: str,
+    pytest_args: list[str],
+    log_prefix: str,
+    label: str,
+) -> int:
+    p = log_prefix
+    print(f"{p}: waiting for web service", file=sys.stderr)
+    if not _wait_for_web_service(compose_file, config, env_add=env_add):
+        print(f"{p}: web service healthcheck timed out", file=sys.stderr)
+        return 1
+
+    print(f"{p}: waiting for frontend URL {fe_url}", file=sys.stderr)
+    if not _wait_for_frontend_url(fe_url):
+        print(f"{p}: frontend URL did not respond: {fe_url}", file=sys.stderr)
+        return 1
+
+    print(f"{p}: {label}", file=sys.stderr)
+    return _run_pytest_smoke(config, fe_url=fe_url.rstrip("/"), extra_pytest=pytest_args)
 
 
 def _run_compose_manage(
@@ -559,10 +734,6 @@ def _frontend_package_scripts(frontend_dir) -> dict[str, str]:
     return {k: v for k, v in scripts.items() if isinstance(k, str) and isinstance(v, str)}
 
 
-# Compose service that holds frontend deps (bero ``compose.dev.yaml`` ``node``).
-_DEFAULT_NODE_SERVICE = "node"
-
-
 def _compose_service_names(
     compose_file: str,
     env_add: dict[str, str],
@@ -702,28 +873,41 @@ def run_smoke(
     no_up: bool = False,
     check_only: bool = False,
     functional: bool = False,
+    guest: bool = False,
     pytest_args: list[str] | None = None,
     log_prefix: str = "smoke",
 ) -> int:
-    """Run layered CI gate or functional Playwright checks. Returns process exit code.
+    """Run CI gate or Playwright checks. Returns process exit code.
 
-    CI gate (``functional=False``): empty-DB migrate on ephemeral ``{dbname}_smoke_empty``
-    (never touches the primary DB), ``makemigrations --check``, frontend production build,
-    HTTP wait, guest pytest.
+    CI gate (default): lean ``db`` + web up, empty-DB migrate on ephemeral
+    ``{dbname}_smoke_empty``, ``makemigrations --check``, frontend type-check/build.
+    No local_proxy, HTTP wait, or Playwright.
 
-    Functional (``functional=True``): skip the gate; wait for HTTP and run pytest only.
+    Guest (``guest=True``): full stack + proxy; wait for HTTP; guest pytest.
+
+    Functional (``functional=True``): skip the gate; wait for HTTP and run pytest
+    (typically ``-m elearning``).
     """
     pytest_args = list(pytest_args or [])
-    functional = _resolve_functional(
-        functional=functional,
-        pytest_args=pytest_args,
-        log_prefix=log_prefix,
-    )
+    if not guest:
+        functional = _resolve_functional(
+            functional=functional,
+            pytest_args=pytest_args,
+            log_prefix=log_prefix,
+        )
     p = log_prefix
+    playwright_only = functional or guest
 
-    if functional and check_only:
+    if playwright_only and check_only:
         print(
-            f"{p}: functional mode ignores --check-only",
+            f"{p}: Playwright mode ignores --check-only",
+            file=sys.stderr,
+        )
+
+    if not playwright_only and pytest_args:
+        print(
+            f"{p}: ignoring pytest args on CI gate "
+            f"(use `tests guest` or `tests functional`); got {pytest_args!r}",
             file=sys.stderr,
         )
 
@@ -734,59 +918,29 @@ def run_smoke(
     fe_url = (site_origin or "http://127.0.0.1:9011").rstrip("/") + "/"
 
     if not no_up:
-        print(f"{p}: starting stack ({compose_file})", file=sys.stderr)
-        if _prepare_compose_up(deploy_ctx, info, env_add) != 0:
-            print(f"{p}: stack prepare failed", file=sys.stderr)
-            return 1
-        compose_argv = _insert_up_build_if_no_registry(
-            ["up", "-d"],
-            use_prepulled_registry=deploy_ctx.use_prepulled_registry,
-        )
-        # Match ``dk <env> up``: ensure shared local proxy + drop host :80/:443 publishing.
-        try:
-            proxy_rc = sync_local_proxy_for_compose_action(
-                info,
+        if playwright_only:
+            rc = _start_full_stack_with_proxy(
+                compose_file,
                 config,
                 env_name,
-                compose_argv,
                 env_add,
+                deploy_ctx,
+                info,
+                log_prefix=p,
             )
-            if proxy_rc != 0:
-                print(f"{p}: local proxy sync failed", file=sys.stderr)
-                return proxy_rc
-            extra_compose_files = merge_extra_compose_files(
-                local_proxy_extra_compose_files(
-                    info,
-                    config,
-                    env_name,
-                    env_add,
-                    compose_argv,
-                ),
-                dc_backup_tls_extra_compose_files(
-                    info,
-                    config,
-                    env_name,
-                    env_add,
-                    compose_argv,
-                ),
-            )
-        except (LocalProxyConfigError, ValueError) as e:
-            print(str(e), file=sys.stderr)
-            return 1
-        if (
-            _compose(
+        else:
+            rc = _start_lean_ci_stack(
                 compose_file,
-                *compose_argv,
-                env_add=env_add,
-                extra_compose_files=extra_compose_files,
-                check=False,
-            ).returncode
-            != 0
-        ):
-            print(f"{p}: docker compose up failed", file=sys.stderr)
-            return 1
+                config,
+                env_add,
+                deploy_ctx,
+                info,
+                log_prefix=p,
+            )
+        if rc != 0:
+            return rc
 
-    if not functional:
+    if not playwright_only:
         if not _wait_for_db(compose_file, config, env_add):
             print(f"{p}: database service did not become ready", file=sys.stderr)
             return 1
@@ -811,16 +965,16 @@ def run_smoke(
             print(f"{p}: frontend production build failed", file=sys.stderr)
             return 1
 
-    print(f"{p}: waiting for web service", file=sys.stderr)
-    if not _wait_for_web_service(compose_file, config, env_add=env_add):
-        print(f"{p}: web service healthcheck timed out", file=sys.stderr)
-        return 1
-
-    print(f"{p}: waiting for frontend URL {fe_url}", file=sys.stderr)
-    if not _wait_for_frontend_url(fe_url):
-        print(f"{p}: frontend URL did not respond: {fe_url}", file=sys.stderr)
-        return 1
+        print(f"{p}: CI gate OK", file=sys.stderr)
+        return 0
 
     label = "functional pytest" if functional else "pytest (guest)"
-    print(f"{p}: {label}", file=sys.stderr)
-    return _run_pytest_smoke(config, fe_url=fe_url.rstrip("/"), extra_pytest=pytest_args)
+    return _wait_http_and_run_pytest(
+        compose_file,
+        config,
+        env_add,
+        fe_url=fe_url,
+        pytest_args=pytest_args,
+        log_prefix=p,
+        label=label,
+    )
