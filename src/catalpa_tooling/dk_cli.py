@@ -23,7 +23,7 @@ from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.doctl_cli import dispatch_digoc
 from catalpa_tooling.env_handlers import handle_env_command
 from catalpa_tooling.local_proxy_cli import cmd_proxy
-from catalpa_tooling.cut_release import cut_release
+from catalpa_tooling.cut_release import cut_release_beta, cut_release_final, next_branch
 from catalpa_tooling.remote_deploy import list_dk_env_names, list_deploy_env_names, resolve_deploy_env_name
 from catalpa_tooling.repo_paths import repo_root_from_cwd
 from catalpa_tooling.worktree import resolve_worktree_root
@@ -127,13 +127,14 @@ def _main_impl() -> None:
             "digoc",
             "proxy",
             "cut-release",
+            "next-branch",
             "worktree",
         ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
-                f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk worktree`, or a name with "
-                f"{config.paths.deploy.envs_dir}/<name>/info.yaml.",
+                f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk next-branch`, `dk worktree`, "
+                f"or a name with {config.paths.deploy.envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
             if envs:
@@ -176,21 +177,40 @@ def _main_impl() -> None:
     if cmd == "proxy":
         sys.exit(cmd_proxy(ns))
     if cmd == "cut-release":
+        sub = ns.cut_release_command
+        if sub == "final":
+            sys.exit(
+                cut_release_final(
+                    repo_root=config.repo_root,
+                    submodule=ns.submodule_path,
+                    execute=ns.execute,
+                    yes=ns.yes,
+                    allow_dirty=ns.allow_dirty,
+                )
+            )
+        if sub == "beta":
+            sys.exit(
+                cut_release_beta(
+                    repo_root=config.repo_root,
+                    beta_w=ns.beta_w,
+                    tag=ns.tag,
+                    submodule=ns.submodule_path,
+                    execute=ns.execute,
+                    yes=ns.yes,
+                    allow_dirty=ns.allow_dirty,
+                )
+            )
+        print(f"dk cut-release: unknown subcommand {sub!r}", file=sys.stderr)
+        sys.exit(1)
+    if cmd == "next-branch":
         sys.exit(
-            cut_release(
+            next_branch(
                 repo_root=config.repo_root,
-                bump=ns.bump,
-                beta=ns.beta,
-                beta_w=ns.beta_w,
-                submodule=ns.submodule,
+                spec=ns.spec,
+                set_default=ns.set_default,
+                submodule=ns.submodule_path,
                 execute=ns.execute,
                 yes=ns.yes,
-                set_default=ns.set_default,
-                tag=ns.tag,
-                next_branch=ns.next_branch,
-                pin_submodule=ns.pin_submodule,
-                image_env=ns.image_env,
-                allow_prod_beta=ns.allow_prod_beta,
                 allow_dirty=ns.allow_dirty,
             )
         )
