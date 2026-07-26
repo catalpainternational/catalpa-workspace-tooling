@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.2
+
 ### Changed
 
 - **Breaking: `dk cut-release` CLI reshape** ([#50](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/50)) — explicit verbs instead of HEAD-inferred modes:
