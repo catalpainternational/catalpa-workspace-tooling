@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking: `dk cut-release` CLI reshape** ([#50](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/50)) — explicit verbs instead of HEAD-inferred modes:
+  - `dk cut-release final` — tag + merge to `main` (no next-branch bundling)
+  - `dk cut-release beta [W] [--tag TAG]` — beta on a named branch; `--tag` required when not on `dev-*`
+  - `dk next-branch <major|minor|hotfix|dev-*>` — open the next line (absorbs old Mode B / Mode A next-branch half)
+  - Shared: `--execute`, `-y`, `-C PATH` (replaces `--submodule`), `--allow-dirty`; `--set-default` only on `next-branch`
+  - Removed: `--bump`, `--beta`, `--beta-w`, `--next-branch`, `--image-env`, `--allow-prod-beta`, `--pin-submodule`, `--tag` on final
+  - See [docs/CUT_RELEASE.md](docs/CUT_RELEASE.md).
+
 ## 1.3.1
 
 ### Changed

@@ -1,4 +1,4 @@
-"""Tests for dk cut-release plan building (temp git repos)."""
+"""Tests for dk cut-release / next-branch plan building (temp git repos)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from catalpa_tooling.cut_release import CutReleaseError, build_cut_release_plan, cut_release
 from catalpa_tooling.config import load_project_config
+from catalpa_tooling.cut_release import (
+    CutReleaseError,
+    build_beta_plan,
+    build_final_plan,
+    build_next_branch_plan,
+    cut_release_final,
+)
 from catalpa_tooling.dk_parser import build_dk_parser
 from tests.helpers import write_minimal_tooling_tree
 
@@ -25,7 +31,6 @@ def _init_repo(path: Path, *, branch: str = "main") -> Path:
     (path / "README").write_text("x\n", encoding="utf-8")
     _git(path, "add", "README")
     _git(path, "commit", "-m", "init")
-    # rename default branch to main if needed
     current = subprocess.run(
         ["git", "-C", str(path), "branch", "--show-current"],
         check=True,
@@ -49,187 +54,159 @@ def tooling_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_dk_parser_cut_release(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dk_parser_cut_release_final(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tooling_repo)
     config = load_project_config(tooling_repo)
     parser = build_dk_parser(config)
-    ns = parser.parse_args(
-        [
-            "cut-release",
-            "--bump",
-            "hotfix",
-            "--submodule",
-            "bero",
-            "--execute",
-            "--set-default",
-            "--image-env",
-            "staging",
-            "--pin-submodule",
-            "bero=v7.4.1",
-        ]
-    )
+    ns = parser.parse_args(["cut-release", "final", "-C", "bero", "--execute", "-y"])
     assert ns.dk_command == "cut-release"
-    assert ns.bump == "hotfix"
-    assert ns.submodule == "bero"
+    assert ns.cut_release_command == "final"
+    assert ns.submodule_path == "bero"
     assert ns.execute is True
+    assert ns.yes is True
+
+
+def test_dk_parser_cut_release_beta(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    parser = build_dk_parser(config)
+    ns = parser.parse_args(["cut-release", "beta", "3", "--tag", "v7.4.1.beta.9"])
+    assert ns.cut_release_command == "beta"
+    assert ns.beta_w == 3
+    assert ns.tag == "v7.4.1.beta.9"
+
+
+def test_dk_parser_next_branch(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    parser = build_dk_parser(config)
+    ns = parser.parse_args(["next-branch", "hotfix", "--set-default", "--execute"])
+    assert ns.dk_command == "next-branch"
+    assert ns.spec == "hotfix"
     assert ns.set_default is True
-    assert ns.image_env == "staging"
-    assert ns.pin_submodule == ["bero=v7.4.1"]
+    assert ns.execute is True
 
 
-def test_plan_mode_a_hotfix(tmp_path: Path) -> None:
+def test_dk_parser_final_rejects_tag(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    parser = build_dk_parser(config)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["cut-release", "final", "--tag", "v1.0"])
+
+
+def test_plan_final(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
-    plan = build_cut_release_plan(
-        repo=repo,
-        bump="hotfix",
-        beta=False,
-        beta_w=None,
-        tag_override=None,
-        next_branch_override=None,
-        set_default=True,
-        pin_submodules=None,
-        image_env="staging",
-        allow_prod_beta=False,
-    )
-    assert plan.mode == "release"
+    plan = build_final_plan(repo=repo)
+    assert plan.mode == "final"
     assert plan.release_tag == "v7.4.1"
-    assert plan.next_branch == "dev-7.4.2"
+    assert plan.next_branch is None
     assert plan.from_branch == "dev-7.4.1"
-    assert plan.image_tag_value == "v7.4.1"
-    assert plan.set_default is True
+    assert plan.set_default is False
 
 
-def test_plan_mode_a_minor_major(tmp_path: Path) -> None:
-    repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
-    minor = build_cut_release_plan(
-        repo=repo,
-        bump="minor",
-        beta=False,
-        beta_w=None,
-        tag_override=None,
-        next_branch_override=None,
-        set_default=False,
-        pin_submodules=None,
-        image_env=None,
-        allow_prod_beta=False,
-    )
-    assert minor.next_branch == "dev-7.5"
-    major = build_cut_release_plan(
-        repo=repo,
-        bump="major",
-        beta=False,
-        beta_w=None,
-        tag_override=None,
-        next_branch_override=None,
-        set_default=False,
-        pin_submodules=None,
-        image_env=None,
-        allow_prod_beta=False,
-    )
-    assert major.next_branch == "dev-8.0"
-
-
-def test_plan_mode_b_from_tag(tmp_path: Path) -> None:
-    repo = _init_repo(tmp_path / "app")
-    _git(repo, "tag", "-a", "v7.4.1", "-m", "v7.4.1")
-    # detach onto the tag
-    _git(repo, "checkout", "v7.4.1")
-    plan = build_cut_release_plan(
-        repo=repo,
-        bump="minor",
-        beta=False,
-        beta_w=None,
-        tag_override=None,
-        next_branch_override=None,
-        set_default=True,
-        pin_submodules=None,
-        image_env=None,
-        allow_prod_beta=False,
-    )
-    assert plan.mode == "next-branch"
-    assert plan.release_tag is None
-    assert plan.next_branch == "dev-7.5"
-
-
-def test_plan_mode_c_beta_auto_w(tmp_path: Path) -> None:
+def test_plan_beta_auto_w(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
     _git(repo, "tag", "-a", "v7.4.1.beta.1", "-m", "b1")
     _git(repo, "tag", "-a", "v7.4.1.beta.2", "-m", "b2")
-    plan = build_cut_release_plan(
-        repo=repo,
-        bump=None,
-        beta=True,
-        beta_w=None,
-        tag_override=None,
-        next_branch_override=None,
-        set_default=False,
-        pin_submodules=None,
-        image_env="staging",
-        allow_prod_beta=False,
-    )
+    plan = build_beta_plan(repo=repo, beta_w=None, tag_override=None)
     assert plan.mode == "beta"
     assert plan.beta_tag == "v7.4.1.beta.3"
     assert plan.next_branch is None
-    assert plan.image_tag_value == "v7.4.1.beta.3"
 
 
-def test_plan_mode_c_refuses_prod_beta(tmp_path: Path) -> None:
-    repo = _init_repo(tmp_path / "app", branch="dev-2.9")
-    with pytest.raises(CutReleaseError, match="prod"):
-        build_cut_release_plan(
-            repo=repo,
-            bump=None,
-            beta=True,
-            beta_w=None,
-            tag_override=None,
-            next_branch_override=None,
-            set_default=False,
-            pin_submodules=None,
-            image_env="prod",
-            allow_prod_beta=False,
-        )
-
-
-def test_plan_beta_rejects_bump(tmp_path: Path) -> None:
-    repo = _init_repo(tmp_path / "app", branch="dev-2.9")
-    with pytest.raises(CutReleaseError, match="cannot be combined"):
-        build_cut_release_plan(
-            repo=repo,
-            bump="hotfix",
-            beta=True,
-            beta_w=None,
-            tag_override=None,
-            next_branch_override=None,
-            set_default=False,
-            pin_submodules=None,
-            image_env=None,
-            allow_prod_beta=False,
-        )
-
-
-def test_cut_release_dry_run(tmp_path: Path) -> None:
+def test_plan_beta_explicit_w(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
-    rc = cut_release(repo_root=repo, bump="hotfix", execute=False)
+    plan = build_beta_plan(repo=repo, beta_w=5, tag_override=None)
+    assert plan.beta_tag == "v7.4.1.beta.5"
+
+
+def test_plan_beta_non_dev_requires_tag(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "app", branch="feature/foo")
+    with pytest.raises(CutReleaseError, match="pass --tag"):
+        build_beta_plan(repo=repo, beta_w=None, tag_override=None)
+    plan = build_beta_plan(repo=repo, beta_w=None, tag_override="v7.4.1.beta.1")
+    assert plan.beta_tag == "v7.4.1.beta.1"
+    assert plan.from_branch == "feature/foo"
+
+
+def test_plan_beta_refuses_detached(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
+    _git(repo, "tag", "-a", "v7.4.1", "-m", "v")
+    _git(repo, "checkout", "v7.4.1")
+    with pytest.raises(CutReleaseError, match="named branch"):
+        build_beta_plan(repo=repo, beta_w=None, tag_override=None)
+
+
+def test_plan_beta_rejects_w_and_tag(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
+    with pytest.raises(CutReleaseError, match="not both"):
+        build_beta_plan(repo=repo, beta_w=3, tag_override="v7.4.1.beta.3")
+
+
+def test_plan_next_branch_from_detached_tag(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "app")
+    _git(repo, "tag", "-a", "v7.4.1", "-m", "v7.4.1")
+    _git(repo, "checkout", "v7.4.1")
+    plan = build_next_branch_plan(repo=repo, spec="minor", set_default=True)
+    assert plan.mode == "next-branch"
+    assert plan.release_tag is None
+    assert plan.next_branch == "dev-7.5"
+    assert plan.set_default is True
+    assert plan.prior_dev_branch == "dev-7.4.1"
+
+
+def test_plan_next_branch_from_main_at_tag(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "app")
+    _git(repo, "tag", "-a", "v7.4.1", "-m", "v7.4.1")
+    # still on main, which points at the tagged commit
+    plan = build_next_branch_plan(repo=repo, spec="hotfix", set_default=False)
+    assert plan.next_branch == "dev-7.4.2"
+
+
+def test_plan_next_branch_explicit_dev(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "app")
+    _git(repo, "tag", "-a", "v7.4.1", "-m", "v")
+    plan = build_next_branch_plan(repo=repo, spec="dev-8.0", set_default=False)
+    assert plan.next_branch == "dev-8.0"
+
+
+def test_plan_next_branch_rejects_untagged(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
+    with pytest.raises(CutReleaseError, match="final v"):
+        build_next_branch_plan(repo=repo, spec="hotfix", set_default=False)
+
+
+def test_cut_release_final_dry_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
+    rc = cut_release_final(repo_root=repo, execute=False)
     assert rc == 0
+    err = capsys.readouterr().err
+    assert "mode:          final" in err
+    assert "release_tag:   v7.4.1" in err
 
 
 def test_execute_refuses_dirty_without_allow(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
     (repo / "README").write_text("dirty\n", encoding="utf-8")
-    rc = cut_release(repo_root=repo, bump="hotfix", execute=True, yes=True)
+    rc = cut_release_final(repo_root=repo, execute=True, yes=True)
     assert rc == 1
 
 
 def test_execute_allow_dirty_warns_then_fails_on_missing_remote(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """With --allow-dirty, clean-tree check is skipped (fetch may still fail without origin)."""
     repo = _init_repo(tmp_path / "app", branch="dev-7.4.1")
     (repo / "README").write_text("dirty\n", encoding="utf-8")
-    rc = cut_release(
-        repo_root=repo, bump="hotfix", execute=True, yes=True, allow_dirty=True
-    )
+    rc = cut_release_final(repo_root=repo, execute=True, yes=True, allow_dirty=True)
     captured = capsys.readouterr()
     assert "WARNING: proceeding with a dirty working tree" in captured.err
-    # No origin remote in temp repo → fetch fails after dirty bypass
     assert rc != 0

@@ -43,7 +43,17 @@ COMMON_DOCKER_VERBS: tuple[str, ...] = (
 )
 
 RESERVED_DK_TOP_COMMANDS = frozenset(
-    {"build", "push", "transfer", "digoc", "fetch", "clean-images", "proxy", "cut-release"}
+    {
+        "build",
+        "push",
+        "transfer",
+        "digoc",
+        "fetch",
+        "clean-images",
+        "proxy",
+        "cut-release",
+        "next-branch",
+    }
 )
 
 

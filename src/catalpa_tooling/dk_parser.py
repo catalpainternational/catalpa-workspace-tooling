@@ -37,7 +37,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             f"  dk full info -e\n"
             f"\n"
             f"Top-level commands (no env): build, push, clean-images, transfer, fetch, digoc, "
-            f"proxy, cut-release, worktree.\n"
+            f"proxy, cut-release, next-branch, worktree.\n"
             f"Environments: directories under {envs_dir}/<name>/ with info.yaml.\n"
             f"Use --worktree / -W <slug> from the main checkout to target .worktrees/<slug> "
             f"without cd (no direnv)."
@@ -178,92 +178,95 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
 
     p_cut = sub.add_parser(
         "cut-release",
-        help="Cut a release tag, open the next dev-* line, or push a staging beta tag.",
+        help="Cut a final or beta v* tag (dry-run default; never deploys).",
         description=(
-            "Three modes:\n"
-            "  A) On dev-X.Y[.Z] + --bump: merge to main, tag vX.Y[.Z], create next branch.\n"
-            "  B) On vX.Y[.Z] tag + --bump: create next branch only.\n"
-            "  C) On dev-X.Y[.Z] + --beta: tag vX.Y[.Z].beta.W on branch tip (no next branch).\n"
+            "Cut a tag from the current named branch:\n"
+            "  final — on dev-X.Y[.Z]: merge to main, tag vX.Y[.Z], push (suggest next-branch)\n"
+            "  beta  — on a named branch: tag vX.Y[.Z].beta.W (infer from dev-*, or --tag)\n"
             "\n"
+            "Opening the next dev-* line is a separate command: dk next-branch.\n"
             "Default is dry-run; pass --execute to mutate. Never deploys remote environments."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p_cut.add_argument(
-        "--bump",
-        choices=("major", "minor", "hotfix"),
-        default=None,
-        help="Next-branch bump (Mode A/B). Mutually exclusive with --beta.",
+    cut_sub = p_cut.add_subparsers(dest="cut_release_command", required=True)
+
+    def _add_cut_shared(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "-C",
+            dest="submodule_path",
+            default=None,
+            metavar="PATH",
+            help="Operate inside this submodule path (e.g. bero).",
+        )
+        p.add_argument(
+            "--execute",
+            action="store_true",
+            help="Perform git mutations (default: dry-run plan only).",
+        )
+        p.add_argument(
+            "-y",
+            "--yes",
+            action="store_true",
+            help="Skip the interactive confirmation when using --execute.",
+        )
+        p.add_argument(
+            "--allow-dirty",
+            action="store_true",
+            help="Allow --execute with uncommitted changes (prints a warning).",
+        )
+
+    p_final = cut_sub.add_parser(
+        "final",
+        help="Tag vX.Y[.Z] from current dev-* branch, merge to main, push.",
     )
-    p_cut.add_argument(
-        "--beta",
-        action="store_true",
-        help="Mode C: cut vX.Y.Z.beta.W on the current dev-* tip (no next branch).",
+    _add_cut_shared(p_final)
+
+    p_beta = cut_sub.add_parser(
+        "beta",
+        help="Tag vX.Y[.Z].beta.W on current named branch tip (no merge to main).",
     )
-    p_cut.add_argument(
-        "--beta-w",
+    p_beta.add_argument(
+        "beta_w",
+        nargs="?",
         type=int,
         default=None,
-        metavar="N",
-        help="Explicit beta W (default: max existing + 1).",
+        metavar="W",
+        help="Beta index (>=1). Default: max existing + 1 when on a parseable dev-* branch.",
     )
-    p_cut.add_argument(
-        "--submodule",
-        default=None,
-        metavar="PATH",
-        help="Operate inside this submodule path (e.g. bero).",
-    )
-    p_cut.add_argument(
-        "--execute",
-        action="store_true",
-        help="Perform git/gh mutations (default: dry-run plan only).",
-    )
-    p_cut.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="Skip the interactive confirmation when using --execute.",
-    )
-    p_cut.add_argument(
-        "--set-default",
-        action="store_true",
-        help="After creating the next branch, set it as the GitHub default (Mode A/B).",
-    )
-    p_cut.add_argument(
+    p_beta.add_argument(
         "--tag",
         default=None,
         metavar="TAG",
-        help="Override release or beta tag.",
+        help=(
+            "Explicit beta tag vX.Y[.Z].beta.W. Required when the branch is not "
+            "dev-X.Y[.Z]; optional override on a dev-* branch (mutually exclusive with W)."
+        ),
     )
-    p_cut.add_argument(
-        "--next-branch",
-        default=None,
-        metavar="BRANCH",
-        help="Override next dev-* branch name (Mode A/B).",
+    _add_cut_shared(p_beta)
+
+    p_next = sub.add_parser(
+        "next-branch",
+        help="Open the next dev-* line from a final v* tag tip (dry-run default).",
+        description=(
+            "Create/push the next dev-* branch from HEAD when HEAD is at a final "
+            "vX.Y[.Z] tag tip (detached or any branch, e.g. main after cut-release final).\n"
+            "\n"
+            "Default is dry-run; pass --execute to mutate."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p_cut.add_argument(
-        "--pin-submodule",
-        action="append",
-        default=None,
-        metavar="PATH=REF",
-        help="Checkout REF in submodule PATH and commit the gitlink (repeatable).",
+    p_next.add_argument(
+        "spec",
+        metavar="BUMP|BRANCH",
+        help="major|minor|hotfix, or an explicit dev-X.Y[.Z] name.",
     )
-    p_cut.add_argument(
-        "--image-env",
-        default=None,
-        metavar="NAME",
-        help="Set docker/envs/<NAME>/info.yaml image_tag to the new tag.",
-    )
-    p_cut.add_argument(
-        "--allow-prod-beta",
+    p_next.add_argument(
+        "--set-default",
         action="store_true",
-        help="Allow --image-env prod together with --beta (default: refuse).",
+        help="After creating the branch, set it as the GitHub default.",
     )
-    p_cut.add_argument(
-        "--allow-dirty",
-        action="store_true",
-        help="Allow --execute with uncommitted changes (prints a warning).",
-    )
+    _add_cut_shared(p_next)
 
     p_worktree = sub.add_parser(
         "worktree",
