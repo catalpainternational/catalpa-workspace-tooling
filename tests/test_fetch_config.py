@@ -3,17 +3,22 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from catalpa_tooling.config import (
-    FetchConfig,
     FetchDatabaseEntry,
     ProjectConfigError,
     load_project_config,
 )
 
 
-def _write_minimal_tooling(tmp_path: Path, *, extra: str = "") -> None:
+def _write_minimal_tooling(tmp_path: Path, *, extra: str = "", omit_metabase_path: bool = False) -> None:
     (tmp_path / "pyproject.toml").write_text("n=1\n", encoding="utf-8")
+    mb_line = (
+        ""
+        if omit_metabase_path
+        else "  fetch_metabase_db_dump: docker/dumps/metabase_db.custom\n"
+    )
     (tmp_path / "tooling.yaml").write_text(
         f"""
 project:
@@ -25,8 +30,7 @@ paths:
   env_local: .env.local
   email_backend_dir: email_out
   fetch_db_dump: docker/dumps/app_db.custom
-  fetch_metabase_db_dump: docker/dumps/metabase_db.custom
-  deploy:
+{mb_line}  deploy:
     envs_dir: docker/envs
     images_config: docker/images.yaml
     default_compose: compose.yml
@@ -121,7 +125,12 @@ native:
     assert cfg.native.fetch.databases["app"].db_name == "app_db"
     assert cfg.native.fetch.databases["app"].via == "ssh_native"
     assert cfg.native.fetch.ssh_host == "root@legacy.example"
-    assert "metabase" in cfg.native.fetch.databases
+    assert cfg.native.fetch.databases["metabase"] == FetchDatabaseEntry(
+        db_name="metabase_db",
+        via="ssh_native",
+        ssh_host="root@legacy.example",
+        soft_skip_if_missing=True,
+    )
 
 
 def test_legacy_script_via_when_fetch_db_sh_exists(tmp_path: Path, isolated_tooling: None) -> None:
@@ -131,3 +140,67 @@ def test_legacy_script_via_when_fetch_db_sh_exists(tmp_path: Path, isolated_tool
     (scripts / "fetch_db.sh").write_text("#!/bin/bash\n", encoding="utf-8")
     cfg = load_project_config(tmp_path)
     assert cfg.native.fetch.databases["app"].via == "script"
+
+
+def test_default_fetch_via_dk_when_prod_has_docker_host(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    _write_minimal_tooling(tmp_path, omit_metabase_path=True)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        yaml.dump({"docker_host": "ssh://root@206.189.81.205", "env": {}}),
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.native.fetch.dk_env == "prod"
+    assert cfg.native.fetch.databases["app"] == FetchDatabaseEntry(
+        db_name="app_db",
+        via="dk",
+    )
+    assert cfg.native.fetch.databases["metabase"] == FetchDatabaseEntry(
+        db_name="metabase_db",
+        via="dk",
+        soft_skip_if_missing=True,
+    )
+    assert cfg.fetch_metabase_db_dump_path == tmp_path / "docker/dumps/metabase_db.custom"
+    assert cfg.has_metabase_fetch() is True
+
+
+def test_default_fetch_respects_explicit_dk_env(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    _write_minimal_tooling(
+        tmp_path,
+        extra="""
+native:
+  fetch:
+    dk_env: staging
+""",
+    )
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        yaml.dump({"docker_host": "ssh://root@staging.example", "env": {}}),
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.native.fetch.dk_env == "staging"
+    assert cfg.native.fetch.databases["app"].via == "dk"
+
+
+def test_docker_host_preferred_over_fetch_db_sh(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    _write_minimal_tooling(tmp_path)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "fetch_db.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        yaml.dump({"docker_host": "ssh://root@prod.example", "env": {}}),
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.native.fetch.databases["app"].via == "dk"

@@ -13,9 +13,11 @@ from catalpa_tooling.media_rsync import (
     docker_volume_mountpoint_ssh,
     rsync_pull_remote_to_local,
     ssh_target_from_host,
+    try_docker_volume_mountpoint_ssh,
 )
-from catalpa_tooling.restic_files import django_media_volume_name
+from catalpa_tooling.restic_files import django_media_volume_name, restic_data_volume_key
 from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_ssh_target
+from catalpa_tooling.storage_config import parse_storage_volumes_from_info
 from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
 
 
@@ -24,13 +26,21 @@ def _ensure_ssh_target_known(ssh_target: str) -> None:
         raise SystemExit(1)
 
 
-def dk_info_fetch_media_defaults(config: ProjectConfig, env_name: str) -> tuple[str, str]:
-    """Return ``(ssh_user@host, compose_project_name)`` from ``docker/envs/<env>/info.yaml``."""
+def _load_env_info(config: ProjectConfig, env_name: str) -> dict:
     info_path = config.deploy_envs_dir / env_name / "info.yaml"
     if not info_path.is_file():
         raise FileNotFoundError(f"Missing {info_path}")
     with open(info_path, encoding="utf-8") as f:
         info = yaml.safe_load(f) or {}
+    if not isinstance(info, dict):
+        raise ValueError(f"{info_path}: expected a mapping")
+    return info
+
+
+def dk_info_fetch_media_defaults(config: ProjectConfig, env_name: str) -> tuple[str, str]:
+    """Return ``(ssh_user@host, compose_project_name)`` from ``docker/envs/<env>/info.yaml``."""
+    info = _load_env_info(config, env_name)
+    info_path = config.deploy_envs_dir / env_name / "info.yaml"
     try:
         ssh = parse_docker_host_to_ssh_target(str(info.get("docker_host", "") or ""))
     except ValueError as exc:
@@ -42,6 +52,48 @@ def dk_info_fetch_media_defaults(config: ProjectConfig, env_name: str) -> tuple[
     project = str(env_block.get("compose_project_name") or default_project).strip()
     project = project or default_project
     return ssh, project
+
+
+def _storage_media_host_path(config: ProjectConfig, env_name: str) -> str | None:
+    """Return ``storage.volumes.<data_volume>.path`` from info.yaml when set."""
+    try:
+        info = _load_env_info(config, env_name)
+    except (FileNotFoundError, ValueError):
+        return None
+    try:
+        specs = parse_storage_volumes_from_info(info, config)
+    except Exception:
+        return None
+    key = restic_data_volume_key(config)
+    spec = specs.get(key)
+    if spec is None or not (spec.path or "").strip():
+        return None
+    return spec.path.rstrip("/")
+
+
+def resolve_docker_media_remote_base(
+    config: ProjectConfig,
+    *,
+    dk_env: str,
+    ssh_target: str,
+    compose_project: str,
+) -> str:
+    """Resolve remote media path: Docker volume mountpoint, else storage host path."""
+    volume = django_media_volume_name(compose_project, config=config)
+    print(f"Resolving Docker volume {volume!r} on {ssh_target} …", file=sys.stderr)
+    mount = try_docker_volume_mountpoint_ssh(ssh_target, volume, label="fetch media")
+    if mount:
+        return mount.rstrip("/")
+    storage_path = _storage_media_host_path(config, dk_env)
+    if storage_path:
+        print(
+            f"fetch media: volume {volume!r} not found; using storage path "
+            f"{storage_path!r} from docker/envs/{dk_env}/info.yaml",
+            file=sys.stderr,
+        )
+        return storage_path
+    # Fall through to the hard-fail path for a clear error message.
+    return docker_volume_mountpoint_ssh(ssh_target, volume, label="fetch media").rstrip("/")
 
 
 def run_fetch_media(
@@ -83,6 +135,7 @@ def run_fetch_media(
             )
         ssh_target = ssh_target_from_host(ssh_host)
         print(f"Rsync legacy path {remote_base!r} from {ssh_target} …", file=sys.stderr)
+        _ensure_ssh_target_known(ssh_target)
     else:
         if host is None:
             ssh_target, project = dk_info_fetch_media_defaults(config, dk_env)
@@ -92,16 +145,13 @@ def run_fetch_media(
                 project = compose_project
             else:
                 _, project = dk_info_fetch_media_defaults(config, dk_env)
-        volume = django_media_volume_name(
-            compose_project if compose_project is not None else project,
-            config=config,
+        _ensure_ssh_target_known(ssh_target)
+        remote_base = resolve_docker_media_remote_base(
+            config,
+            dk_env=dk_env,
+            ssh_target=ssh_target,
+            compose_project=compose_project if compose_project is not None else project,
         )
-        print(f"Resolving Docker volume {volume!r} on {ssh_target} …", file=sys.stderr)
-
-    _ensure_ssh_target_known(ssh_target)
-
-    if not legacy_path:
-        remote_base = docker_volume_mountpoint_ssh(ssh_target, volume, label="fetch media")
 
     if partial:
         for sub in ("documents", "original_images"):

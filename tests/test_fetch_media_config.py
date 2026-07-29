@@ -191,7 +191,7 @@ def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, m
         return 0
 
     monkeypatch.setattr(
-        "catalpa_tooling.fetch_media.docker_volume_mountpoint_ssh",
+        "catalpa_tooling.fetch_media.try_docker_volume_mountpoint_ssh",
         lambda _s, _v, **_: "/vol/mount",
     )
     monkeypatch.setattr("catalpa_tooling.fetch_media.rsync_pull_remote_to_local", fake_rsync)
@@ -203,6 +203,53 @@ def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, m
 
     run_fetch_media(cfg, dk_env="prod", host=None, dest=tmp_path / "media", partial=False, legacy_path=False, legacy_remote=None, compose_project=None)
     assert calls == [("u@h", "/vol/mount/", tmp_path / "media")]
+
+
+def test_run_fetch_media_falls_back_to_storage_path(
+    tmp_path: Path, isolated_tooling: None, monkeypatch
+) -> None:
+    _write_minimal_tooling(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        yaml.dump(
+            {
+                "docker_host": "ssh://u@h",
+                "env": {},
+                "storage": {"volumes": {"django_media": {"path": "/mnt/jid-media"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_rsync(ssh_target: str, remote_path: str, local_path: Path) -> int:
+        calls.append((ssh_target, remote_path, local_path))
+        return 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.try_docker_volume_mountpoint_ssh",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr("catalpa_tooling.fetch_media.rsync_pull_remote_to_local", fake_rsync)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.ensure_ssh_known_host_for_ssh_target",
+        lambda *_a, **_k: 0,
+    )
+
+    run_fetch_media(
+        cfg,
+        dk_env="prod",
+        host=None,
+        dest=tmp_path / "media",
+        partial=False,
+        legacy_path=False,
+        legacy_remote=None,
+        compose_project=None,
+    )
+    assert calls == [("u@h", "/mnt/jid-media/", tmp_path / "media")]
 
 
 def test_run_fetch_media_legacy_requires_host(tmp_path: Path, isolated_tooling: None) -> None:

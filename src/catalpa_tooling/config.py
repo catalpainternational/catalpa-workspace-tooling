@@ -160,11 +160,88 @@ class StackConfig:
 
 # PG 18+ official image layout (see catalpa-postgres-entrypoint.sh); override via tooling.yaml pg1_path.
 DEFAULT_PGBR_PG1_PATH = "/var/lib/postgresql/18/docker"
+DEFAULT_PGBR_POSTGRES_CONF = "30-pgbackrest-archive.conf"
+DEFAULT_PGBR_CONF = "50-managed.conf"
+DEFAULT_PGBR_REGISTRY = "ghcr.io/catalpainternational"
+DEFAULT_PGBR_DATA_VOLUME = "postgres_data"
+
+DEFAULT_DEPLOY_ENVS_DIR = "docker/envs"
+DEFAULT_DEPLOY_IMAGES_CONFIG = "docker/images.yaml"
+DEFAULT_DEPLOY_COMPOSE = "compose.yaml"
+DEFAULT_DEPLOY_DEV_COMPOSE = "compose.dev.yaml"
+
+DEFAULT_STACK_REGISTRY_KEY = "image_registry"
+DEFAULT_STACK_WEB_SERVICE = "django"
+DEFAULT_STACK_PROXY_SERVICE = "caddy"
+DEFAULT_STACK_DB_SERVICE = "db"
+
+# Bero-family default systemd unit suffixes (no pgbackrest-diff); prefix with systemd_unit_prefix.
+DEFAULT_SYSTEMD_PGBACKREST_SUFFIXES: tuple[str, ...] = (
+    "pgbackrest-backup-full.service",
+    "pgbackrest-backup-incr.service",
+    "pgbackrest-backup-full.timer",
+    "pgbackrest-backup-incr.timer",
+)
+DEFAULT_SYSTEMD_RESTIC_SUFFIXES: tuple[str, ...] = (
+    "restic-files-backup.service",
+    "restic-files-backup.timer",
+)
 
 
 def default_pgbackrest_restore_temp_prefix(project_name: str) -> str:
     """Default ``/tmp`` archive prefix for compose ``pg_restore`` (``ops.pgbackrest.restore_temp_prefix``)."""
     return f"{project_name}_pgrestore_"
+
+
+def default_fetch_db_dump_path(project_name: str) -> str:
+    """Default ``paths.fetch_db_dump`` for Docker-deployed consumers."""
+    return f"docker/postgres/dumps/{project_name}_db.custom"
+
+
+def default_stack_image_components(project_name: str) -> dict[str, str]:
+    return {
+        "web": f"{project_name}-django",
+        "proxy": f"{project_name}-caddy",
+        "db": f"{project_name}-db",
+    }
+
+
+def default_systemd_unit_lists(unit_prefix: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return ``(pgbackrest_units, restic_units)`` for a bero-family ``systemd_unit_prefix``."""
+    pg = tuple(f"{unit_prefix}{s}" for s in DEFAULT_SYSTEMD_PGBACKREST_SUFFIXES)
+    restic = tuple(f"{unit_prefix}{s}" for s in DEFAULT_SYSTEMD_RESTIC_SUFFIXES)
+    return pg, restic
+
+
+def _storage_volume_host_path_from_info(
+    repo_root: Path,
+    paths: PathsConfig,
+    *,
+    dk_env: str,
+    volume_key: str,
+) -> str | None:
+    """Return ``storage.volumes.<volume_key>.path`` from ``docker/envs/<dk_env>/info.yaml``."""
+    info_path = repo_root / paths.deploy.envs_dir / dk_env / "info.yaml"
+    if not info_path.is_file():
+        return None
+    try:
+        with open(info_path, encoding="utf-8") as f:
+            info = yaml.safe_load(f) or {}
+    except OSError:
+        return None
+    if not isinstance(info, dict):
+        return None
+    storage = info.get("storage")
+    if not isinstance(storage, dict):
+        return None
+    volumes = storage.get("volumes")
+    if not isinstance(volumes, dict):
+        return None
+    spec = volumes.get(volume_key)
+    if not isinstance(spec, dict):
+        return None
+    path = str(spec.get("path") or "").strip()
+    return path.rstrip("/") if path.startswith("/") else None
 
 
 @dataclass(frozen=True)
@@ -271,6 +348,13 @@ class FetchDatabaseEntry:
     pg_user: str = "postgres"
     dk_env: str | None = None
     dump: str | None = None
+    # Synthetic Docker defaults soft-skip when the remote DB is missing; explicit
+    # tooling.yaml entries keep the hard-fail behaviour.
+    soft_skip_if_missing: bool = False
+
+
+DEFAULT_METABASE_DB_NAME = "metabase_db"
+DEFAULT_METABASE_DUMP_FILENAME = "metabase_db.custom"
 
 
 @dataclass(frozen=True)
@@ -574,10 +658,12 @@ class ProjectConfig:
         return self.repo_root / self.paths.fetch_db_dump
 
     @property
-    def fetch_metabase_db_dump_path(self) -> Path | None:
-        if self.paths.fetch_metabase_db_dump is None:
-            return None
-        return self.repo_root / self.paths.fetch_metabase_db_dump
+    def fetch_metabase_db_dump_path(self) -> Path:
+        """Metabase dump path: ``paths.fetch_metabase_db_dump`` or sibling of the app dump."""
+        rel = self.paths.fetch_metabase_db_dump
+        if rel is None:
+            rel = str(Path(self.paths.fetch_db_dump).with_name(DEFAULT_METABASE_DUMP_FILENAME))
+        return self.repo_root / rel
 
     @property
     def fetch_media_dest_path(self) -> Path:
@@ -599,11 +685,8 @@ class ProjectConfig:
         return None
 
     def has_metabase_fetch(self) -> bool:
-        """True when Metabase is configured for fetch and a dump output path exists."""
-        return (
-            "metabase" in self.native.fetch.databases
-            and self.fetch_metabase_db_dump_path is not None
-        )
+        """True when Metabase is configured under ``native.fetch.databases``."""
+        return "metabase" in self.native.fetch.databases
 
     @property
     def deploy_envs_dir(self) -> Path:
@@ -894,33 +977,67 @@ def _db_name_from_dump_path(dump_rel: str, *, project_name: str) -> str:
     return local_postgres_db_name(project_name)
 
 
-def _legacy_fetch_config(
+def _env_info_has_ssh_docker_host(
+    repo_root: Path,
+    paths: PathsConfig,
+    dk_env: str,
+) -> bool:
+    """True when ``docker/envs/<dk_env>/info.yaml`` has an SSH ``docker_host``."""
+    info_path = repo_root / paths.deploy.envs_dir / dk_env / "info.yaml"
+    if not info_path.is_file():
+        return False
+    try:
+        with open(info_path, encoding="utf-8") as f:
+            info = yaml.safe_load(f) or {}
+    except OSError:
+        return False
+    if not isinstance(info, dict):
+        return False
+    docker_host = str(info.get("docker_host") or "").strip()
+    return docker_host.lower().startswith("ssh://")
+
+
+def _default_fetch_config(
     *,
     paths: PathsConfig,
     fetch_media: FetchMediaConfig,
     fetch_metabase_db: FetchMetabaseDbConfig,
     repo_root: Path,
     project_name: str,
+    dk_env: str | None = None,
 ) -> FetchConfig:
     """Synthetic ``native.fetch`` when ``native.fetch.databases`` is omitted."""
+    env_name = (dk_env or fetch_media.dk_env or DEFAULT_FETCH_MEDIA_DK_ENV).strip()
     ssh_host = fetch_metabase_db.ssh_host
     if not ssh_host and fetch_media.legacy and fetch_media.legacy.ssh_host:
         ssh_host = fetch_media.legacy.ssh_host
     scripts_dir = repo_root / paths.scripts[0] if paths.scripts else repo_root / "scripts"
-    via = "script" if (scripts_dir / "fetch_db.sh").is_file() else "ssh_native"
     app_db = _db_name_from_dump_path(paths.fetch_db_dump, project_name=project_name)
-    databases: dict[str, FetchDatabaseEntry] = {
+
+    if _env_info_has_ssh_docker_host(repo_root, paths, env_name):
+        databases: dict[str, FetchDatabaseEntry] = {
+            "app": FetchDatabaseEntry(db_name=app_db, via="dk"),
+            "metabase": FetchDatabaseEntry(
+                db_name=DEFAULT_METABASE_DB_NAME,
+                via="dk",
+                soft_skip_if_missing=True,
+            ),
+        }
+        return FetchConfig(dk_env=env_name, ssh_host=ssh_host, databases=databases)
+
+    via = "script" if (scripts_dir / "fetch_db.sh").is_file() else "ssh_native"
+    databases = {
         "app": FetchDatabaseEntry(db_name=app_db, via=via, ssh_host=ssh_host),
     }
-    if paths.fetch_metabase_db_dump and ssh_host:
-        mb_db = _db_name_from_dump_path(paths.fetch_metabase_db_dump, project_name=project_name)
+    if ssh_host:
         databases["metabase"] = FetchDatabaseEntry(
-            db_name=mb_db,
+            db_name=DEFAULT_METABASE_DB_NAME,
             via="ssh_native",
             ssh_host=ssh_host,
+            soft_skip_if_missing=True,
         )
     return FetchConfig(
-        dk_env=fetch_media.dk_env,
+        dk_env=env_name,
         ssh_host=ssh_host,
         databases=databases,
     )
@@ -996,12 +1113,13 @@ def _parse_fetch(
                 "native.fetch.databases.metabase",
                 context="tooling.yaml",
             )
-        return _legacy_fetch_config(
+        return _default_fetch_config(
             paths=paths,
             fetch_media=fetch_media,
             fetch_metabase_db=fetch_metabase_db,
             repo_root=repo_root,
             project_name=project_name,
+            dk_env=fetch_media.dk_env,
         )
     if not isinstance(raw, dict):
         raise ProjectConfigError("native.fetch must be a mapping")
@@ -1019,12 +1137,13 @@ def _parse_fetch(
         ssh_host = fetch_media.legacy.ssh_host
     databases = _parse_fetch_databases(raw.get("databases"))
     if not databases:
-        return _legacy_fetch_config(
+        return _default_fetch_config(
             paths=paths,
             fetch_media=fetch_media,
             fetch_metabase_db=fetch_metabase_db,
             repo_root=repo_root,
             project_name=project_name,
+            dk_env=dk_env,
         )
     return FetchConfig(dk_env=dk_env, ssh_host=ssh_host, databases=databases)
 
@@ -1038,22 +1157,27 @@ def _parse_fetch_metabase_db(raw: Any) -> FetchMetabaseDbConfig:
     return FetchMetabaseDbConfig(ssh_host=ssh_host)
 
 
-def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
-    deploy_raw = _require_mapping(paths_raw.get("deploy"), "paths.deploy")
+def _parse_paths(paths_raw: dict[str, Any], *, project_name: str) -> PathsConfig:
+    deploy_raw = paths_raw.get("deploy")
+    if deploy_raw is None:
+        deploy_raw = {}
+    elif not isinstance(deploy_raw, dict):
+        raise ProjectConfigError("paths.deploy must be a mapping")
     deploy = DeployPathsConfig(
         envs_dir=_validate_rel_path(
-            _require_str(deploy_raw, "envs_dir", section="paths.deploy"), field="paths.deploy.envs_dir"
+            _optional_str(deploy_raw, "envs_dir") or DEFAULT_DEPLOY_ENVS_DIR,
+            field="paths.deploy.envs_dir",
         ),
         images_config=_validate_rel_path(
-            _require_str(deploy_raw, "images_config", section="paths.deploy"),
+            _optional_str(deploy_raw, "images_config") or DEFAULT_DEPLOY_IMAGES_CONFIG,
             field="paths.deploy.images_config",
         ),
         default_compose=_validate_rel_path(
-            _require_str(deploy_raw, "default_compose", section="paths.deploy"),
+            _optional_str(deploy_raw, "default_compose") or DEFAULT_DEPLOY_COMPOSE,
             field="paths.deploy.default_compose",
         ),
         dev_compose=_validate_rel_path(
-            _require_str(deploy_raw, "dev_compose", section="paths.deploy"),
+            _optional_str(deploy_raw, "dev_compose") or DEFAULT_DEPLOY_DEV_COMPOSE,
             field="paths.deploy.dev_compose",
         ),
         credentials_optional_envs=_parse_string_list(
@@ -1062,6 +1186,7 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
         ),
         env_aliases=_parse_env_aliases(deploy_raw.get("env_aliases")),
     )
+    fetch_db = _optional_str(paths_raw, "fetch_db_dump") or default_fetch_db_dump_path(project_name)
     return PathsConfig(
         backend=_validate_rel_path(
             _require_str(paths_raw, "backend", section="paths"), field="paths.backend"
@@ -1087,9 +1212,7 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
             if (p := _optional_str(paths_raw, "media_dir"))
             else None
         ),
-        fetch_db_dump=_validate_rel_path(
-            _require_str(paths_raw, "fetch_db_dump", section="paths"), field="paths.fetch_db_dump"
-        ),
+        fetch_db_dump=_validate_rel_path(fetch_db, field="paths.fetch_db_dump"),
         fetch_metabase_db_dump=(
             _validate_rel_path(p, field="paths.fetch_metabase_db_dump")
             if (p := _optional_str(paths_raw, "fetch_metabase_db_dump"))
@@ -1135,32 +1258,63 @@ def _parse_dev(raw: Any, *, digitalocean: DigitalOceanConfig | None) -> DevConfi
     )
 
 
-def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
-    services_raw = _require_mapping(stack_raw.get("services"), "stack.services")
-    images_raw = _require_mapping(stack_raw.get("images"), "stack.images")
-    components_raw = _require_mapping(images_raw.get("components"), "stack.images.components")
+def _parse_stack(stack_raw: dict[str, Any], *, project_name: str) -> StackConfig:
+    services_raw = stack_raw.get("services")
+    if services_raw is None:
+        services = StackServicesConfig(
+            web=DEFAULT_STACK_WEB_SERVICE,
+            proxy=DEFAULT_STACK_PROXY_SERVICE,
+            db=DEFAULT_STACK_DB_SERVICE,
+        )
+    else:
+        services_map = _require_mapping(services_raw, "stack.services")
+        services = StackServicesConfig(
+            web=_optional_str(services_map, "web") or DEFAULT_STACK_WEB_SERVICE,
+            proxy=_optional_str(services_map, "proxy") or DEFAULT_STACK_PROXY_SERVICE,
+            db=_optional_str(services_map, "db") or DEFAULT_STACK_DB_SERVICE,
+        )
+
+    images_raw = stack_raw.get("images")
+    if images_raw is None:
+        images_raw = {}
+    elif not isinstance(images_raw, dict):
+        raise ProjectConfigError("stack.images must be a mapping")
+    components_raw = images_raw.get("components")
+    if components_raw is None:
+        components = default_stack_image_components(project_name)
+    else:
+        components_map = _require_mapping(components_raw, "stack.images.components")
+        defaults = default_stack_image_components(project_name)
+        components = {
+            "web": _optional_str(components_map, "web") or defaults["web"],
+            "proxy": _optional_str(components_map, "proxy") or defaults["proxy"],
+            "db": _optional_str(components_map, "db") or defaults["db"],
+        }
+        for key, val in components_map.items():
+            k = str(key)
+            if k not in components:
+                components[k] = _require_str({k: val}, k, section="stack.images.components")
+
     health_raw = _require_mapping(stack_raw.get("healthcheck"), "stack.healthcheck")
-    components: dict[str, str] = {}
-    for key, val in components_raw.items():
-        components[str(key)] = _require_str({str(key): val}, str(key), section="stack.images.components")
+    health_service = _optional_str(health_raw, "service") or services.web
     origin_keys = _parse_env_key_list(
         stack_raw.get("origin_env_keys"),
         field="stack.origin_env_keys",
         default=DEFAULT_ORIGIN_ENV_KEYS,
     )
     return StackConfig(
-        compose_project_default=_require_str(stack_raw, "compose_project_default", section="stack"),
-        services=StackServicesConfig(
-            web=_require_str(services_raw, "web", section="stack.services"),
-            proxy=_require_str(services_raw, "proxy", section="stack.services"),
-            db=_require_str(services_raw, "db", section="stack.services"),
+        compose_project_default=(
+            _optional_str(stack_raw, "compose_project_default") or project_name
         ),
+        services=services,
         images=StackImagesConfig(
-            registry_key=_require_str(images_raw, "registry_key", section="stack.images"),
+            registry_key=(
+                _optional_str(images_raw, "registry_key") or DEFAULT_STACK_REGISTRY_KEY
+            ),
             components=components,
         ),
         healthcheck=StackHealthcheckConfig(
-            service=_require_str(health_raw, "service", section="stack.healthcheck"),
+            service=health_service,
             url=_require_str(health_raw, "url", section="stack.healthcheck"),
         ),
         origin_env_keys=origin_keys,
@@ -1483,25 +1637,55 @@ def _parse_restic_verbose_field(raw: dict[str, Any], key: str, *, section: str) 
         raise ProjectConfigError(str(e)) from e
 
 
-def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
-    pg_raw = _require_mapping(ops_raw.get("pgbackrest"), "ops.pgbackrest")
-    zabbix_raw = _require_mapping(ops_raw.get("zabbix"), "ops.zabbix")
-    units_raw = _require_mapping(ops_raw.get("systemd_units"), "ops.systemd_units")
-    pg_units = _parse_string_list(units_raw.get("pgbackrest"), field="ops.systemd_units.pgbackrest")
-    restic_units = _parse_string_list(units_raw.get("restic"), field="ops.systemd_units.restic")
-    timers_pg = _parse_string_list(
-        units_raw.get("timers_enable_pgbackrest"),
-        field="ops.systemd_units.timers_enable_pgbackrest",
-    )
-    timers_restic = _parse_string_list(
-        units_raw.get("timers_enable_restic"),
-        field="ops.systemd_units.timers_enable_restic",
-    )
-    if not timers_pg and len(pg_units) >= 4:
+def _parse_ops(
+    ops_raw: dict[str, Any],
+    *,
+    project_name: str,
+    repo_root: Path,
+    paths: PathsConfig,
+) -> OpsConfig:
+    pg_raw = ops_raw.get("pgbackrest")
+    if pg_raw is None:
+        pg_raw = {}
+    elif not isinstance(pg_raw, dict):
+        raise ProjectConfigError("ops.pgbackrest must be a mapping")
+
+    unit_prefix = _optional_str(ops_raw, "systemd_unit_prefix") or f"{project_name}-"
+    default_pg_units, default_restic_units = default_systemd_unit_lists(unit_prefix)
+
+    units_raw = ops_raw.get("systemd_units")
+    if units_raw is None:
+        pg_units = default_pg_units
+        restic_units = default_restic_units
         timers_pg = tuple(u for u in pg_units if u.endswith(".timer"))
-    if not timers_restic and restic_units:
         timers_restic = tuple(u for u in restic_units if u.endswith(".timer"))
-    unit_prefix = _require_str(ops_raw, "systemd_unit_prefix", section="ops")
+    else:
+        units_map = _require_mapping(units_raw, "ops.systemd_units")
+        if "pgbackrest" in units_map:
+            pg_units = _parse_string_list(
+                units_map.get("pgbackrest"), field="ops.systemd_units.pgbackrest"
+            )
+        else:
+            pg_units = default_pg_units
+        if "restic" in units_map:
+            restic_units = _parse_string_list(
+                units_map.get("restic"), field="ops.systemd_units.restic"
+            )
+        else:
+            restic_units = default_restic_units
+        timers_pg = _parse_string_list(
+            units_map.get("timers_enable_pgbackrest"),
+            field="ops.systemd_units.timers_enable_pgbackrest",
+        )
+        timers_restic = _parse_string_list(
+            units_map.get("timers_enable_restic"),
+            field="ops.systemd_units.timers_enable_restic",
+        )
+        if not timers_pg and len(pg_units) >= 4:
+            timers_pg = tuple(u for u in pg_units if u.endswith(".timer"))
+        if not timers_restic and restic_units:
+            timers_restic = tuple(u for u in restic_units if u.endswith(".timer"))
+
     systemd_units = SystemdUnitsOpsConfig(
         pgbackrest=pg_units,
         restic=restic_units,
@@ -1513,6 +1697,7 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     unit_errors = validate_systemd_units(systemd_units, unit_prefix)
     if unit_errors:
         raise ProjectConfigError("; ".join(unit_errors))
+
     restic_raw = ops_raw.get("restic")
     if restic_raw is None:
         restic_raw = {}
@@ -1525,23 +1710,55 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     restic_backup_path = _optional_str(restic_raw, "backup_path")
     if restic_backup_path is not None and not restic_backup_path.startswith("/"):
         raise ProjectConfigError("ops.restic.backup_path must be an absolute path")
+    if restic_backup_path is None:
+        restic_backup_path = _storage_volume_host_path_from_info(
+            repo_root,
+            paths,
+            dk_env=DEFAULT_FETCH_MEDIA_DK_ENV,
+            volume_key=restic_data_volume,
+        )
+
+    zabbix_raw = ops_raw.get("zabbix")
+    if zabbix_raw is None:
+        zabbix = ZabbixOpsConfig(
+            unit_name=f"{unit_prefix}zabbix-agent2.service",
+            userparams_file=f"99-{project_name}-userparams.conf",
+        )
+    else:
+        zabbix_map = _require_mapping(zabbix_raw, "ops.zabbix")
+        zabbix = ZabbixOpsConfig(
+            unit_name=(
+                _optional_str(zabbix_map, "unit_name")
+                or f"{unit_prefix}zabbix-agent2.service"
+            ),
+            userparams_file=(
+                _optional_str(zabbix_map, "userparams_file")
+                or f"99-{project_name}-userparams.conf"
+            ),
+        )
+
+    transfer = _optional_str(ops_raw, "transfer_workdir") or f".{project_name}-transfer"
     return OpsConfig(
-        install_prefix=_require_str(ops_raw, "install_prefix", section="ops"),
-        config_dir=_require_str(ops_raw, "config_dir", section="ops"),
+        install_prefix=_optional_str(ops_raw, "install_prefix") or f"/opt/{project_name}",
+        config_dir=_optional_str(ops_raw, "config_dir") or f"/etc/{project_name}",
         systemd_unit_prefix=unit_prefix,
-        transfer_workdir=_validate_rel_path(
-            _require_str(ops_raw, "transfer_workdir", section="ops"), field="ops.transfer_workdir"
-        ),
+        transfer_workdir=_validate_rel_path(transfer, field="ops.transfer_workdir"),
         pgbackrest=PgbackrestOpsConfig(
-            postgres_conf=_require_str(pg_raw, "postgres_conf", section="ops.pgbackrest"),
-            pgbackrest_conf=_require_str(pg_raw, "pgbackrest_conf", section="ops.pgbackrest"),
-            default_registry=_require_str(pg_raw, "default_registry", section="ops.pgbackrest"),
+            postgres_conf=(
+                _optional_str(pg_raw, "postgres_conf") or DEFAULT_PGBR_POSTGRES_CONF
+            ),
+            pgbackrest_conf=(
+                _optional_str(pg_raw, "pgbackrest_conf") or DEFAULT_PGBR_CONF
+            ),
+            default_registry=(
+                _optional_str(pg_raw, "default_registry") or DEFAULT_PGBR_REGISTRY
+            ),
             restore_temp_prefix=(
                 _optional_str(pg_raw, "restore_temp_prefix")
                 or default_pgbackrest_restore_temp_prefix(project_name)
             ),
             data_volume=_validate_compose_volume_key(
-                _optional_str(pg_raw, "data_volume") or "postgres_data",
+                _optional_str(pg_raw, "data_volume") or DEFAULT_PGBR_DATA_VOLUME,
                 field="ops.pgbackrest.data_volume",
             ),
             pg1_path=_optional_str(pg_raw, "pg1_path") or DEFAULT_PGBR_PG1_PATH,
@@ -1563,16 +1780,15 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
                 restic_raw, "restore_verbose", section="ops.restic"
             ),
         ),
-        zabbix=ZabbixOpsConfig(
-            unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
-            userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),
-        ),
+        zabbix=zabbix,
         systemd_units=systemd_units,
         post_db_restore=_parse_post_db_restore(ops_raw.get("post_db_restore")),
         post_metabase_db_restore=_parse_post_metabase_db_restore(
             ops_raw.get("post_metabase_db_restore")
         ),
-        default_db_container=_require_str(ops_raw, "default_db_container", section="ops"),
+        default_db_container=(
+            _optional_str(ops_raw, "default_db_container") or f"{project_name}-full-db-1"
+        ),
     )
 
 
@@ -1756,13 +1972,18 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         else:
             digitalocean = _parse_digitalocean(do_raw)
     dev = _parse_dev(data.get("dev"), digitalocean=digitalocean)
-    paths = _parse_paths(paths_raw)
+    paths = _parse_paths(paths_raw, project_name=meta.name)
     compliance = _parse_compliance(data.get("compliance"), paths=paths) if "compliance" in data else None
     return ProjectConfig(
         meta=meta,
         paths=paths,
-        stack=_parse_stack(stack_raw),
-        ops=_parse_ops(ops_raw, project_name=meta.name),
+        stack=_parse_stack(stack_raw, project_name=meta.name),
+        ops=_parse_ops(
+            ops_raw,
+            project_name=meta.name,
+            repo_root=repo_root,
+            paths=paths,
+        ),
         native=_resolve_native_config(
             data,
             paths=paths,
