@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **Generic Django multi-origin support** — tooling now preserves Bero's
+  `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` contract while also injecting and
+  merging `DJANGO_EXTRA_ORIGINS`. It derives `CADDY_DJANGO_SITE_HOSTS` and local-proxy
+  routes from `DJANGO_ORIGIN` plus those extra origins.
+
 ## 1.3.2
 
 ### Changed

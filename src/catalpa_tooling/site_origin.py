@@ -71,6 +71,39 @@ def hostnames_from_origins(origins: list[str]) -> list[str]:
     return hosts
 
 
+def split_env_host_tokens(value: object) -> list[str]:
+    """Split a comma- or space-separated env value into host/origin tokens."""
+    if value is None:
+        return []
+    return [part for part in str(value).replace(",", " ").split() if part]
+
+
+def hostname_from_host_spec(spec: str) -> str:
+    """Return ``hostname[:port]`` from a bare host or HTTP(S) origin."""
+    value = spec.strip().rstrip("/")
+    parsed = urlparse(value if "://" in value else f"//{value}")
+    return parsed.netloc or parsed.path.split("/")[0]
+
+
+def django_site_hosts_from_env(env: dict[str, str]) -> list[str]:
+    """Deduplicated hosts from ``DJANGO_ORIGIN`` and ``DJANGO_EXTRA_ORIGINS``."""
+    specs = split_env_host_tokens(env.get("DJANGO_ORIGIN"))
+    specs.extend(split_env_host_tokens(env.get("DJANGO_EXTRA_ORIGINS")))
+    seen: set[str] = set()
+    hosts: list[str] = []
+    for spec in specs:
+        host = hostname_from_host_spec(spec)
+        if host and host not in seen:
+            seen.add(host)
+            hosts.append(host)
+    return hosts
+
+
+def format_caddy_site_hosts(hosts: list[str]) -> str:
+    """Format hostnames for a Caddy site address or host matcher."""
+    return " ".join(hosts)
+
+
 def domain_env_from_origins(origins: list[str]) -> str:
     """Comma+space separated hostnames for compose ``DOMAIN`` (Caddy + Django)."""
     return ", ".join(hostnames_from_origins(origins))

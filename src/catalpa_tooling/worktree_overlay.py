@@ -292,3 +292,4 @@ def force_worktree_origin_env(
     extra_hosts = [hostnames_from_origins([o])[0] for o in origins[1:]]
     if extra_hosts:
         env_add["BERO_EXTRA_ALLOWED_HOSTS"] = ", ".join(extra_hosts)
+        env_add["DJANGO_EXTRA_ORIGINS"] = ", ".join(origins[1:])
