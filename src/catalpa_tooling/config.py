@@ -105,6 +105,20 @@ def _validate_compose_volume_key(name: str, *, field: str) -> str:
     return s
 
 
+def _missing_section(section: str, *, needed_for: str) -> ProjectConfigError:
+    """Error for a deploy-side section a command needs but the manifest omits.
+
+    Sections such as ``stack:`` and ``ops:`` are optional so that a project can adopt the
+    engine-agnostic commands (``dk cut-release``, ``tests compliance``, ``scripts``) without
+    inventing compose, pgbackrest, zabbix, and systemd configuration it does not use.
+    """
+    return ProjectConfigError(
+        f"tooling.yaml has no `{section}:` section, which is required for {needed_for}. "
+        f"Add a `{section}:` block — see tests/fixtures/minimal_project/tooling.yaml "
+        f"in catalpa-workspace-tooling for a reference."
+    )
+
+
 @dataclass(frozen=True)
 class DeployPathsConfig:
     envs_dir: str
@@ -126,7 +140,17 @@ class PathsConfig:
     media_dir: str | None
     fetch_db_dump: str
     fetch_metabase_db_dump: str | None
-    deploy: DeployPathsConfig
+    deploy_optional: DeployPathsConfig | None
+
+    @property
+    def deploy(self) -> DeployPathsConfig:
+        """Deploy paths, or raise when ``paths.deploy`` is absent."""
+        if self.deploy_optional is None:
+            raise _missing_section(
+                "paths.deploy",
+                needed_for="deploy and image commands (dk build, dk push, dk <env>, tests ci)",
+            )
+        return self.deploy_optional
 
 
 @dataclass(frozen=True)
@@ -384,6 +408,18 @@ DEFAULT_FRONTEND_DEV_SCRIPT = "dev"
 DEFAULT_NATIVE_START_PORTS: tuple[int, ...] = (8000, 8080)
 
 
+DEFAULT_TEST_GROUP = "test"
+DEFAULT_TEST_FRONTEND_SCRIPT = "test"
+
+
+@dataclass(frozen=True)
+class TestConfig:
+    """``native.test`` in tooling.yaml (how ``tests backend`` / ``tests frontend`` invoke)."""
+
+    group: str
+    frontend_script: str
+
+
 @dataclass(frozen=True)
 class StartConfig:
     """``native.start`` in tooling.yaml (host ``native start`` via Honcho)."""
@@ -420,6 +456,7 @@ class NativeConfig:
     django: DjangoDevConfig
     frontend: FrontendDevConfig
     start: StartConfig
+    test: TestConfig
 
 
 @dataclass(frozen=True)
@@ -522,14 +559,49 @@ class ProjectConfig:
 
     meta: ProjectMetaConfig
     paths: PathsConfig
-    stack: StackConfig
-    ops: OpsConfig
+    stack_optional: StackConfig | None
+    ops_optional: OpsConfig | None
     native: NativeConfig
     dev: DevConfig
     digitalocean: DigitalOceanConfig | None
     compliance: ComplianceConfig | None
     repo_root: Path
     tooling_path: Path
+
+    @property
+    def stack(self) -> StackConfig:
+        """Compose stack config, or raise when ``stack:`` is absent."""
+        if self.stack_optional is None:
+            raise _missing_section(
+                "stack",
+                needed_for="stack commands (dk build, dk push, dk <env>, tests ci)",
+            )
+        return self.stack_optional
+
+    @property
+    def ops(self) -> OpsConfig:
+        """Host ops config, or raise when ``ops:`` is absent."""
+        if self.ops_optional is None:
+            raise _missing_section(
+                "ops",
+                needed_for="host ops commands (dk transfer, backups, systemd, zabbix)",
+            )
+        return self.ops_optional
+
+    @property
+    def has_stack(self) -> bool:
+        """True when the manifest declares a ``stack:`` section."""
+        return self.stack_optional is not None
+
+    @property
+    def has_ops(self) -> bool:
+        """True when the manifest declares an ``ops:`` section."""
+        return self.ops_optional is not None
+
+    @property
+    def has_deploy_paths(self) -> bool:
+        """True when the manifest declares a ``paths.deploy`` section."""
+        return self.paths.deploy_optional is not None
 
     @property
     def backend_dir(self) -> Path:
@@ -1038,9 +1110,8 @@ def _parse_fetch_metabase_db(raw: Any) -> FetchMetabaseDbConfig:
     return FetchMetabaseDbConfig(ssh_host=ssh_host)
 
 
-def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
-    deploy_raw = _require_mapping(paths_raw.get("deploy"), "paths.deploy")
-    deploy = DeployPathsConfig(
+def _parse_deploy_paths(deploy_raw: dict[str, Any]) -> DeployPathsConfig:
+    return DeployPathsConfig(
         envs_dir=_validate_rel_path(
             _require_str(deploy_raw, "envs_dir", section="paths.deploy"), field="paths.deploy.envs_dir"
         ),
@@ -1061,6 +1132,15 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
             field="paths.deploy.credentials_optional_envs",
         ),
         env_aliases=_parse_env_aliases(deploy_raw.get("env_aliases")),
+    )
+
+
+def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
+    deploy_raw = paths_raw.get("deploy")
+    deploy = (
+        _parse_deploy_paths(_require_mapping(deploy_raw, "paths.deploy"))
+        if deploy_raw is not None
+        else None
     )
     return PathsConfig(
         backend=_validate_rel_path(
@@ -1095,7 +1175,7 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
             if (p := _optional_str(paths_raw, "fetch_metabase_db_dump"))
             else None
         ),
-        deploy=deploy,
+        deploy_optional=deploy,
     )
 
 
@@ -1271,6 +1351,18 @@ def _parse_start_ports(raw: Any) -> tuple[int, ...]:
     return tuple(ports) if ports else DEFAULT_NATIVE_START_PORTS
 
 
+def _parse_test(raw: Any) -> TestConfig:
+    """``native.test`` — the uv dependency group and the package.json script to run."""
+    if raw is None:
+        return TestConfig(group=DEFAULT_TEST_GROUP, frontend_script=DEFAULT_TEST_FRONTEND_SCRIPT)
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("native.test must be a mapping")
+    return TestConfig(
+        group=_optional_str(raw, "group") or DEFAULT_TEST_GROUP,
+        frontend_script=_optional_str(raw, "frontend_script") or DEFAULT_TEST_FRONTEND_SCRIPT,
+    )
+
+
 def _parse_start(raw: Any) -> StartConfig:
     if raw is None:
         return StartConfig(
@@ -1366,6 +1458,7 @@ def _parse_native(
             django=_parse_django(None),
             frontend=_parse_frontend(None),
             start=_parse_start(None),
+            test=_parse_test(None),
         )
     if not isinstance(raw, dict):
         raise ProjectConfigError("native must be a mapping")
@@ -1377,6 +1470,7 @@ def _parse_native(
         django=_parse_django(raw.get("django")),
         frontend=_parse_frontend(raw.get("frontend")),
         start=_parse_start(raw.get("start")),
+        test=_parse_test(raw.get("test")),
     )
 
 
@@ -1737,8 +1831,10 @@ def resolve_compliance_config(config: ProjectConfig) -> ComplianceConfig | None:
 def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path) -> ProjectConfig:
     project_raw = _require_mapping(data.get("project"), "project")
     paths_raw = _require_mapping(data.get("paths"), "paths")
-    stack_raw = _require_mapping(data.get("stack"), "stack")
-    ops_raw = _require_mapping(data.get("ops"), "ops")
+    # stack/ops are deploy-side and optional: a project can adopt the engine-agnostic
+    # commands without declaring compose services, pgbackrest, zabbix, or systemd units.
+    stack_raw = data.get("stack")
+    ops_raw = data.get("ops")
     meta = ProjectMetaConfig(
         name=_require_str(project_raw, "name", section="project"),
         root_marker=_optional_str(project_raw, "root_marker") or DEFAULT_ROOT_MARKER,
@@ -1761,8 +1857,14 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
     return ProjectConfig(
         meta=meta,
         paths=paths,
-        stack=_parse_stack(stack_raw),
-        ops=_parse_ops(ops_raw, project_name=meta.name),
+        stack_optional=(
+            _parse_stack(_require_mapping(stack_raw, "stack")) if stack_raw is not None else None
+        ),
+        ops_optional=(
+            _parse_ops(_require_mapping(ops_raw, "ops"), project_name=meta.name)
+            if ops_raw is not None
+            else None
+        ),
         native=_resolve_native_config(
             data,
             paths=paths,

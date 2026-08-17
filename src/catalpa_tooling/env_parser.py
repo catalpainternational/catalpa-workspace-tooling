@@ -454,6 +454,10 @@ def attach_env_subparsers(
 ) -> None:
     """Register one subparser per deploy environment under ``dk``."""
     env_flags = build_env_flags_parent()
+    if not config.has_deploy_paths:
+        # No `paths.deploy` — there are no environments to attach. Deploy-side commands
+        # raise the pointed ProjectConfigError when invoked.
+        return
     env_names = list_dk_env_names(config)
     envs_dir = config.paths.deploy.envs_dir
 

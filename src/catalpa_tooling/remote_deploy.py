@@ -67,7 +67,13 @@ def list_deploy_env_names(deploy_envs_dir: Path) -> list[str]:
 
 
 def list_dk_env_names(config: ProjectConfig) -> list[str]:
-    """Canonical deploy env names plus deprecated alias keys from tooling.yaml."""
+    """Canonical deploy env names plus deprecated alias keys from tooling.yaml.
+
+    A manifest without ``paths.deploy`` declares no environments, so this is empty rather
+    than an error — ``dk`` still routes its engine-agnostic commands (cut-release, worktree).
+    """
+    if not config.has_deploy_paths:
+        return []
     canonical = list_deploy_env_names(config.deploy_envs_dir)
     aliases = [name for name in config.paths.deploy.env_aliases if name not in canonical]
     return sorted(set(canonical) | set(aliases))

@@ -16,10 +16,15 @@ from catalpa_tooling.worktree_cli import attach_worktree_subcommands
 
 
 def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
-    svc_web = config.stack_service("web")
-    svc_proxy = config.stack_service("proxy")
-    svc_db = config.stack_service("db")
-    envs_dir = config.paths.deploy.envs_dir
+    # Service names and envs_dir appear only in help text. A project that adopts the
+    # engine-agnostic commands (cut-release, next-branch) declares no `stack:` or
+    # `paths.deploy`, so fall back to placeholders rather than failing to build the parser —
+    # the pointed ProjectConfigError is raised by the handler that actually needs the section.
+    svc_web = config.stack_service("web") if config.has_stack else "web"
+    svc_proxy = config.stack_service("proxy") if config.has_stack else "proxy"
+    svc_db = config.stack_service("db") if config.has_stack else "db"
+    envs_dir = config.paths.deploy.envs_dir if config.has_deploy_paths else "docker/envs"
+    compose_prod = config.compose_prod if config.has_deploy_paths else "compose.yml"
 
     parser = argparse.ArgumentParser(
         prog="dk",
@@ -58,7 +63,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
 
     p_build = sub.add_parser(
         "build",
-        help=f"Build {svc_db}, {svc_web}, {svc_proxy} images ({config.compose_prod}).",
+        help=f"Build {svc_db}, {svc_web}, {svc_proxy} images ({compose_prod}).",
     )
     services = p_build.add_argument(
         "services",
@@ -141,7 +146,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     populate_transfer_arguments(p_transfer, config)
-    env_names = list_deploy_env_names(config.deploy_envs_dir)
+    env_names = list_deploy_env_names(config.deploy_envs_dir) if config.has_deploy_paths else []
     for action in p_transfer._actions:
         if action.dest in ("source_env", "dest_env") and env_names:
             attach_choices_completer(action, env_names)

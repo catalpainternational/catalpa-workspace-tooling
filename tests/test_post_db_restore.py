@@ -13,7 +13,7 @@ def _config_with_hooks(minimal_project, *, envs=None, commands=()):
 
     hooks = PostDbRestoreOpsConfig(envs=envs, db_psql=(), manage_commands=commands)
     ops = replace(minimal_project.ops, post_db_restore=hooks)
-    return replace(minimal_project, ops=ops)
+    return replace(minimal_project, ops_optional=ops)
 
 
 def test_skips_when_no_commands(minimal_project) -> None:
@@ -243,7 +243,7 @@ def test_db_psql_runs_before_manage_commands(minimal_project) -> None:
         db_psql=(DbPsqlRestoreEntry(target="app", file="fix.sql"),),
         manage_commands=(("migrate",),),
     )
-    cfg = replace(minimal_project, ops=replace(minimal_project.ops, post_db_restore=hooks))
+    cfg = replace(minimal_project, ops_optional=replace(minimal_project.ops, post_db_restore=hooks))
     call_order: list[str] = []
 
     def fake_db_psql(*args: object, **kwargs: object) -> int:
@@ -292,7 +292,7 @@ def test_db_psql_only_skips_compose(minimal_project, tmp_path) -> None:
         manage_commands=(),
     )
     cfg = replace(minimal_project, repo_root=tmp_path)
-    cfg = replace(cfg, ops=replace(cfg.ops, post_db_restore=hooks))
+    cfg = replace(cfg, ops_optional=replace(cfg.ops, post_db_restore=hooks))
     (tmp_path / "fix.sql").write_text("SELECT 1;\n", encoding="utf-8")
 
     with (
