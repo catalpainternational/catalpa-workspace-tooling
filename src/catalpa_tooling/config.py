@@ -113,9 +113,9 @@ def _missing_section(section: str, *, needed_for: str) -> ProjectConfigError:
     inventing compose, pgbackrest, zabbix, and systemd configuration it does not use.
     """
     return ProjectConfigError(
-        f"tooling.yaml has no `{section}:` section, which is required for {needed_for}. "
-        f"Add a `{section}:` block — see tests/fixtures/minimal_project/tooling.yaml "
-        f"in catalpa-workspace-tooling for a reference."
+        f"tooling.yaml has no `{section}:` section (or it is empty), which is required for "
+        f"{needed_for}. Add a `{section}:` block — catalpa-workspace-tooling's "
+        f"tests/fixtures/minimal_project/tooling.yaml is a complete reference manifest."
     )
 
 

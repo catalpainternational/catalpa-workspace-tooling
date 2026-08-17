@@ -130,3 +130,15 @@ def test_malformed_stack_section_still_rejected(native_only_project: Path) -> No
 
     with pytest.raises(ProjectConfigError, match="stack"):
         load_project_config(native_only_project)
+
+
+def test_empty_section_is_treated_as_absent(native_only_project: Path) -> None:
+    """`stack:` with no children parses as None; say so, since the key IS in the file."""
+    manifest = native_only_project / "tooling.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "\nstack:\n", encoding="utf-8")
+
+    config = load_project_config(native_only_project)
+    assert config.has_stack is False
+
+    with pytest.raises(ProjectConfigError, match="or it is empty"):
+        _ = config.stack
