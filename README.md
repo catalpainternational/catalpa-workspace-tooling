@@ -4,27 +4,23 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 
 ## Project usage status
 
-| Project | Version | Status |
-|---------|---------|--------|
-| Catalpa Bero | v1.0.0 | Production |
-| Catalpa Site | v1.0.0 | Production |
-| tvi | v0.9.5 | Production |
-| jid | v0.9.5 | Staging |
-| NCD | v0.9.5 | Staging |
-| pas_indmo | v0.9.5 | Production |
-| partisipa | v0.9.1 | Dev (align_ttoling branch)|
-| bilum | v0.9.1 | Dev (roberto working on it) |
-| ambulancia | v0.9.1 | Staging |
-| tempu | | Staging |
-| liga inan | | Dev |
+| Project      | Version | Status                      |
+| ------------ | ------- | --------------------------- |
+| Catalpa Bero | v1.0.0  | Production                  |
+| Catalpa Site | v1.0.0  | Production                  |
+| tvi          | v0.9.5  | Production                  |
+| jid          | v0.9.5  | Staging                     |
+| NCD          | v0.9.5  | Staging                     |
+| pas_indmo    | v0.9.5  | Production                  |
+| partisipa    | v0.9.1  | Dev (align_ttoling branch)  |
+| bilum        | v0.9.1  | Dev (roberto working on it) |
+| ambulancia   | v0.9.1  | Staging                     |
+| tempu        |         | Staging                     |
+| liga inan    |         | Dev                         |
 
 ## Install
 
-From a consumer repository with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv add "catalpa-workspace-tooling @ git+https://github.com/catalpainternational/catalpa-workspace-tooling@v0.1.3"
-```
+Consumer application repos: pin a released tag and follow [QUICKSTART.md](QUICKSTART.md) (`uv add --group tooling`, then `tooling.yaml` and `docker/envs/`).
 
 For local development of this library:
 
@@ -89,7 +85,7 @@ Remove any global `dk() { uv run dk "$@"; }` or global `eval "$(register-python-
 
 **4. Cursor agents (recommended for repos with SOPS credentials):**
 
-Copy [`scripts/cursorignore.template`](scripts/cursorignore.template) to `.cursorignore` and both [`scripts/cursor-rules/secrets-and-agents.mdc`](scripts/cursor-rules/secrets-and-agents.mdc) and [`scripts/cursor-rules/remote-environments.mdc`](scripts/cursor-rules/remote-environments.mdc) to `.cursor/rules/`. For Django compose consumers with Playwright smoke tests, optionally add [`scripts/cursor-rules/smoke-tests.mdc`](scripts/cursor-rules/smoke-tests.mdc). See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
+Copy the templates as part of consumer setup ([QUICKSTART.md](QUICKSTART.md), [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md)). After the first remote `docker_host` is committed, those rules treat the env as remote and require confirmation before `dk staging` / `prod`, `dk push`, transfer, or fetch.
 
 **Single-project / bash (no direnv):**
 
@@ -135,14 +131,14 @@ Completion is built at runtime from the repo you are in: deploy environment name
 
 After install, these console scripts are available:
 
-| Command | Purpose |
-|---------|---------|
-| `native` | Host development helpers (Django, Vite, fetch, plus `scripts/native-*.sh` extensions) |
-| `local` | Deprecated alias for `native` (shell reserved word; prints warning) |
-| `dev` | Deprecated alias for `native` (prints warning) |
-| `dk` | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), **`dk proxy`** (machine-wide local HTTPS reverse proxy — see [README_DEV_PROXY.md](README_DEV_PROXY.md)), **`dk worktree`** (isolated git worktrees for local `dk dev` — see [docs/WORKTREES.md](docs/WORKTREES.md)), etc. See [Backup and monitoring](#backup-and-monitoring). `dk <env> trust-caddy-cert` / `dk proxy trust` trust Caddy's local HTTPS CA (macOS/Linux). |
-| `tests` | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) |
-| `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`) |
+| Command   | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `native`  | Host development helpers (Django, Vite, fetch, plus `scripts/native-*.sh` extensions)                                                                                                                                                                                                                                                                                                                                                                        |
+| `local`   | Deprecated alias for `native` (shell reserved word; prints warning)                                                                                                                                                                                                                                                                                                                                                                                          |
+| `dev`     | Deprecated alias for `native` (prints warning)                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `dk`      | Docker stack deploy, backup/restore, transfer, Zabbix, DigitalOcean (`dk digoc`), **`dk proxy`** (machine-wide local HTTPS reverse proxy — see [README_DEV_PROXY.md](README_DEV_PROXY.md)), **`dk worktree`** (isolated git worktrees for local `dk dev` — see [docs/WORKTREES.md](docs/WORKTREES.md)), etc. See [Backup and monitoring](#backup-and-monitoring). `dk <env> trust-caddy-cert` / `dk proxy trust` trust Caddy's local HTTPS CA (macOS/Linux). |
+| `tests`   | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md)                                                                                                                                                                                                                                                                                                        |
+| `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`)                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ### Project script extensions
 
@@ -183,21 +179,21 @@ uv run dk digoc --help
 - Python 3.12+
 - Consumer repo must include a valid `tooling.yaml` (see [tests/fixtures/indmo_reference_tooling.yaml](tests/fixtures/indmo_reference_tooling.yaml) or [tests/fixtures/minimal_project/tooling.yaml](tests/fixtures/minimal_project/tooling.yaml) for examples)
 - Host tools for deploy workflows: Docker, `uv`, `sops`, `age` (as needed by your project)
-- For DigitalOcean: install the official [doctl](https://docs.digitalocean.com/reference/doctl/) on `PATH` (or set `DOCTL_BIN`). Use **`dk digoc`** for project wrappers (auth, droplets, cloud-config). Run `dk digoc auth init` once per machine. If a stale token is stored, run `dk digoc auth remove --context default` first, or pass a new token with `dk digoc auth init -t TOKEN`
+- For DigitalOcean: install the official [doctl](https://docs.digitalocean.com/reference/doctl/) on `PATH` (or set `DOCTL_BIN`). First droplet + deploy: [QUICKSTART.md](QUICKSTART.md#7-first-remote-environment-digitalocean-droplet-and-deploy). Auth: `dk digoc auth init` once per machine (`dk digoc auth remove --context default` if a stale token is stored, or `dk digoc auth init -t TOKEN`).
 
 ### DigitalOcean PAT scopes
 
 Create a [personal access token](https://docs.digitalocean.com/reference/api/create-personal-access-token/) for the team that owns your projects. `dk` and `dk digoc` call the DigitalOcean API via the host `doctl` binary; insufficient scopes show up as `403` errors.
 
-| What you use | Scopes |
-|--------------|--------|
-| `dk digoc projects list`, project resolution | `project:read` |
-| `dk digoc droplets list`, `dk <env> host` (droplet verify) | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list` |
-| `dk digoc droplets create`, `dk <env> host create` | above, plus `droplet:create`, **`project:update`** (assign droplet to project after create; doctl `--project-id` uses a second API call), **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
-| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`) |
-| `dk <env> host` (DNS verify for `site_origin` / `redirect_origins`) | above, plus `domain:read` |
-| `dk <env> host create` (DNS sync after droplet create) | above, plus `domain:write` (or granular domain record create/update) |
-| `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds) | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete` |
+| What you use                                                              | Scopes                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dk digoc projects list`, project resolution                              | `project:read`                                                                                                                                                                                                            |
+| `dk digoc droplets list`, `dk <env> host` (droplet verify)                | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list`                                                                                                                       |
+| `dk digoc droplets create`, `dk <env> host create`                        | above, plus `droplet:create`, **`project:update`** (assign droplet to project after create; doctl `--project-id` uses a second API call), **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
+| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`)                                                                   |
+| `dk <env> host` (DNS verify for `site_origin` / `redirect_origins`)       | above, plus `domain:read`                                                                                                                                                                                                 |
+| `dk <env> host create` (DNS sync after droplet create)                    | above, plus `domain:write` (or granular domain record create/update)                                                                                                                                                      |
+| `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds)      | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete`                                                                                                         |
 
 `droplet:read`, `droplet:create`, and domain/spaces scopes require companion read scopes (`regions:read`, `sizes:read`, `actions:read`, `image:read`, etc.); the [custom scopes picker](https://cloud.digitalocean.com/account/api/tokens) adds these when you select those scopes. See [Scopes for API tokens](https://docs.digitalocean.com/reference/api/scopes/) for the full list.
 
@@ -222,11 +218,11 @@ PATs are created in the [control panel](https://cloud.digitalocean.com/account/a
 
 `dk push` and `dk clean-images` call the GitHub Container Registry and Packages API. Auth comes from `gh auth token`, or `GH_TOKEN` / `GITHUB_TOKEN`. Insufficient scopes show up as `403` errors.
 
-| What you use | Scopes |
-|--------------|--------|
-| `dk push` | `write:packages` (push images) |
+| What you use                | Scopes                                      |
+| --------------------------- | ------------------------------------------- |
+| `dk push`                   | `write:packages` (push images)              |
 | `dk clean-images` (dry-run) | **`read:packages`** (list package versions) |
-| `dk clean-images --apply` | **`read:packages`**, **`delete:packages`** |
+| `dk clean-images --apply`   | **`read:packages`**, **`delete:packages`**  |
 
 A default `gh auth login` often does **not** include package scopes. Refresh or re-auth:
 
@@ -240,103 +236,43 @@ For org packages on `ghcr.io/catalpainternational`, use a **classic** PAT with t
 
 **403 on delete:** add **`delete:packages`**. You also need permission to delete versions in the org (package settings or org admin).
 
-Full usage, retention config, and deploy-tag exclusion: [docs/GHCR_CLEANUP.md](docs/GHCR_CLEANUP.md).
+Full usage, retention config, and deploy-tag exclusion: [docs/GHCR_CLEANUP.md](docs/GHCR_CLEANUP.md). First `dk push` on a new machine: [QUICKSTART.md](QUICKSTART.md#push-images-and-deploy).
 
-Optional `tooling.yaml` block for DigitalOcean defaults:
+### DigitalOcean droplets
 
-```yaml
-digitalocean:
-  project_name: my-do-project
-  context: default   # optional host doctl auth context
-  timezone: Asia/Dili
-  region: sgp1
-  size: s-2vcpu-4gb
-  image: ubuntu-24-04-x64
-  ssh_keys:
-    - "aa:bb:cc:..."   # fingerprint or ID from host `doctl compute ssh-key list`
-  monitoring: true      # optional; default true — passes --enable-monitoring to doctl
-```
+Application env (name, `docker_host`, DNS): [QUICKSTART.md](QUICKSTART.md#7-first-remote-environment-digitalocean-droplet-and-deploy) (`dk <env> host create`). `tooling.yaml` `digitalocean:` defaults and per-env overrides are documented there. Partial create, DNS verify, `--check-remote`, and non-DO fallbacks: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#host-create-and-dns).
 
-Bootstrap a new droplet (Docker CE, UFW, unattended upgrades, SSH key-only). By default the DigitalOcean metrics agent (`do-agent`) is enabled via `--enable-monitoring` ([DO docs](https://docs.digitalocean.com/products/monitoring/how-to/install-metrics-agent/)); pass `--no-monitoring` or set `digitalocean.monitoring: false` to skip.
+Low-level create (no env link — prefer `host create` for app stacks):
 
 ```bash
 dk digoc cloud-config print --timezone Asia/Dili
 dk digoc droplets create my-host --project my-do-project --dry-run
 dk digoc droplets create my-host --wait   # uses digitalocean.* from tooling.yaml
+dk digoc droplets list                    # includes Env column when tooling.yaml is present
 ```
 
-By default, **all SSH keys** on your DigitalOcean account are embedded (via host `doctl compute ssh-key list`). Override with `--ssh-key` (repeatable) or `digitalocean.ssh_keys` in `tooling.yaml`. DO Insights metrics use `--enable-monitoring` by default (complements Zabbix; see [ZABBIX_README.md](ZABBIX_README.md)).
-
-### Linking droplets to `dk` environments
-
-By default the DigitalOcean droplet name is **`{project.name}-{env}`** from `tooling.yaml` and the deploy env folder (e.g. `catalpa-site-prod`). Underscores in `project.name` or explicit `droplet_name` values are converted to hyphens (DO hostnames allow only `a-z`, `A-Z`, `0-9`, `.`, and `-`). Override in `docker/envs/<env>/info.yaml`:
-
-```yaml
-digitalocean:
-  droplet_name: my-hostname   # optional
-  ssh_user: root              # optional
-  disabled: false             # true: manual docker_host only (no droplet / DO DNS API)
-  size: s-2vcpu-4gb           # optional; used by `dk <env> host create`
-  region: sgp1                # optional; used by `dk <env> host create`
-  dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300; e.g. 3600 for prod)
-```
-
-For `host create`, resolution order is **CLI flag → env `info.yaml` → `tooling.yaml`** for `size` and `region`.
-
-Provision and link a new droplet:
-
-```bash
-dk prod host create       # create droplet, wait, patch docker_host, sync DNS A records on DO zones
-dk prod host              # verify droplet + site_origin / redirect_origins DNS (DO API + public resolution)
-dk prod host --write      # refresh docker_host from droplet public IPv4 + register SSH host key
-dk prod host --sync-dns   # create/update DO A records for site_origin / redirect_origins (no known_hosts / verify)
-dk digoc droplets list    # includes Env column when tooling.yaml is present
-```
-
-After `host create` or `host --write`, the tooling registers the deploy host’s SSH key in your `~/.ssh/known_hosts` (via `ssh-keyscan`, with retries until sshd is reachable) so the next `dk <env> …` command can use `DOCKER_HOST=ssh://…` without a manual first `ssh` login. The same check runs idempotently before other remote `dk` commands when `docker_host` is SSH-formatted, and before `native fetch db` / `native fetch media` when they SSH to a host configured in `tooling.yaml` (legacy `ssh_host`, `fetch_metabase_db.ssh_host`, or the env’s `docker_host`).
-
-**New droplets:** DigitalOcean may report a droplet `active` before SSH accepts connections on port 22. The tooling waits up to ~2 minutes; if registration still fails, `docker_host` is usually already patched — finish with `dk <env> host --write` (or re-run `host create`, which resumes when the droplet already exists).
-
-**Recovery after a partial `host create`:**
-
-| Step | Command |
-|------|---------|
-| SSH host key | `dk <env> host --write` |
-| DO A records only | `dk <env> host --sync-dns` |
-| Verify DNS | `dk <env> host` |
-| Resume all post-create steps | `dk <env> host create` (reuses existing droplet by default) |
-| Droplet in default DO project (e.g. Internal) | Fix token (`project:update`), then `dk <env> host create` or `doctl projects resources assign <project-uuid> --resource=do:droplet:<id>` |
-
-**Default (DigitalOcean):** With doctl, `dk <env> host` checks the droplet exists, status is `active`, and public IPv4 is available; lookup is scoped to `digitalocean.project_name` / `project_id` in `tooling.yaml` when set. When `site_origin` and/or `redirect_origins` are set, it verifies (1) DigitalOcean DNS API — A records (or CNAMEs that chain to an apex A) on DO-managed zones must point at the droplet IP, zones must be in the project; hostnames not on DO DNS are skipped with a warning — and (2) **public DNS** via the system resolver (Python stdlib, no `dig` required): each hostname must resolve to that IP. `dk <env> host create` creates or updates DO A records after the droplet is active, then runs both checks (not on `host --write`).
-
-**Non-DO or manual host:** Prefer `digitalocean.disabled: true` in `docker/envs/<env>/info.yaml` for permanent datacenter / TIC hosts, and maintain `docker_host` (+ optional `dc_backup_docker_host`) and `site_origin`. `dk <env> host` then skips droplet lookup and DO API DNS; it prints configured hosts and checks public DNS only. `host create` and `host --write` are not available in this mode.
-
-If doctl is available but no matching droplet exists and `docker_host` is already set, `dk <env> host` falls back to the same manual status path (no `host create` hint) and notes that `digitalocean.disabled: true` opts out of doctl permanently. Without doctl but with `docker_host` set, behavior matches the disabled path.
-
-Optional `--check-remote` SSHes to `docker_host` and `dc_backup_docker_host` (when set): BatchMode reachability plus `timedatectl` (timezone and NTP sync flags). Timezone mismatch between app and backup hosts, or NTP not synchronized, prints a soft warning; exit stays 0 unless SSH itself fails hard.
-
-**Caveats:** Public DNS uses the machine’s resolver (VPN, `/etc/hosts`, caching). A CDN or proxy in front of the origin can make the public check fail while DO API records are correct.
+Monitoring (`do-agent`) defaults on; `--no-monitoring` or `digitalocean.monitoring: false` skips it ([DO docs](https://docs.digitalocean.com/products/monitoring/how-to/install-metrics-agent/), [ZABBIX_README.md](ZABBIX_README.md)).
 
 ### Backup and monitoring
 
 Topic guides (run `dk <env> …` from the application repo root):
 
-| Topic | Guide |
-|-------|--------|
+| Topic                                  | Guide                                        |
+| -------------------------------------- | -------------------------------------------- |
 | pgBackRest (S3, `bkp_db`, WAL archive) | [README_PGBACKREST.md](README_PGBACKREST.md) |
-| Restic (media files, `bkp_files`) | [README_RESTIC.md](README_RESTIC.md) |
-| Closed-DC Garage backup (`dc-backup`) | [README_DC_BACKUP.md](README_DC_BACKUP.md) |
-| Systemd timers on deploy hosts | [README_SYSTEMD.md](README_SYSTEMD.md) |
-| Zabbix Agent 2 | [ZABBIX_README.md](ZABBIX_README.md) |
+| Restic (media files, `bkp_files`)      | [README_RESTIC.md](README_RESTIC.md)         |
+| Closed-DC Garage backup (`dc-backup`)  | [README_DC_BACKUP.md](README_DC_BACKUP.md)   |
+| Systemd timers on deploy hosts         | [README_SYSTEMD.md](README_SYSTEMD.md)       |
+| Zabbix Agent 2                         | [ZABBIX_README.md](ZABBIX_README.md)         |
 
 ### `site_origin` in `info.yaml`
 
 Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin`** as a hostname, full URL, or YAML list of either. The `dk` CLI derives:
 
-| Compose env | Value |
-|-------------|--------|
-| `SITE_ORIGIN` | First normalized origin (e.g. `https://catalpa.io`) |
-| `DOMAIN` | Comma+space joined hostnames for Caddy and Django (e.g. `catalpa.io, www.catalpa.io`) |
+| Compose env   | Value                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------- |
+| `SITE_ORIGIN` | First normalized origin (e.g. `https://catalpa.io`)                                   |
+| `DOMAIN`      | Comma+space joined hostnames for Caddy and Django (e.g. `catalpa.io, www.catalpa.io`) |
 
 Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
 
@@ -344,8 +280,8 @@ Top-level **`domain`** (string or list) is still accepted but deprecated; prefer
 
 Optional **`redirect_origins`** (hostname, URL, or YAML list) declares hosts that should terminate TLS and permanently redirect to the primary `site_origin` / `BERO_ORIGIN` — for example `www.` or alternate TLDs. They are **not** app origins:
 
-| Compose env | Value |
-|-------------|--------|
+| Compose env                     | Value                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------- |
 | `CADDY_REDIRECT_SITE_ADDRESSES` | Space-separated Caddy site addresses (deployed: `https://…`; behind local proxy: `http://…`) |
 
 Redirect hosts are included in `dk <env> host` DNS verify/sync alongside `site_origin`, but are **not** added to `DOMAIN`, `BERO_EXTRA_ALLOWED_HOSTS`, or `CADDY_SITE_ADDRESS`. Do not list the same host under both `site_origin` and `redirect_origins`. Stack Caddy must define a redirect site block that consumes `CADDY_REDIRECT_SITE_ADDRESSES` (bero support lands separately).
@@ -364,19 +300,19 @@ Nested `env.redirect_origins` is used only when the top-level field is empty.
 
 For local Docker environments (no `docker_host`), projects may enable a **machine-wide** Caddy reverse proxy that maps a real HTTPS hostname under `*.localdev.temp.build` to the stack's front container. See the topic guides:
 
-| Topic | Guide |
-|-------|--------|
-| Local dev HTTPS proxy (`local_proxy`, CA trust, `dk proxy`) | [README_DEV_PROXY.md](README_DEV_PROXY.md) |
-| LAN access from phones/tablets (sslip.io) | [README_LAN_ACCESS.md](README_LAN_ACCESS.md) |
+| Topic                                                       | Guide                                        |
+| ----------------------------------------------------------- | -------------------------------------------- |
+| Local dev HTTPS proxy (`local_proxy`, CA trust, `dk proxy`) | [README_DEV_PROXY.md](README_DEV_PROXY.md)   |
+| LAN access from phones/tablets (sslip.io)                   | [README_LAN_ACCESS.md](README_LAN_ACCESS.md) |
 
 ### Host storage (`storage` in `info.yaml`)
 
 Compose data volumes use stable Docker names (`name: ${COMPOSE_PROJECT_NAME}_…`). Two independent choices:
 
-| Axis | Where | Purpose |
-|------|--------|---------|
-| **Host path on deploy** | `storage.volumes.<key>.path` in `docker/envs/<env>/info.yaml` | Bind `django_media`, `postgres_data`, or `caddy_data` to a mounted path (optional DO block provisioning) |
-| **Volume lifecycle** | `external: true` per volume in the project `compose.yaml` (optional) | Compose fail-fast vs compose-managed create/remove |
+| Axis                    | Where                                                                | Purpose                                                                                                  |
+| ----------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **Host path on deploy** | `storage.volumes.<key>.path` in `docker/envs/<env>/info.yaml`        | Bind `django_media`, `postgres_data`, or `caddy_data` to a mounted path (optional DO block provisioning) |
+| **Volume lifecycle**    | `external: true` per volume in the project `compose.yaml` (optional) | Compose fail-fast vs compose-managed create/remove                                                       |
 
 When `storage.volumes` is set, tooling pre-creates bind-mounted named volumes before `docker compose up` (`dk up`, `storage ensure`, and post-restore hooks). Host bind placement does **not** require `external: true` in compose.
 
@@ -406,18 +342,20 @@ When tooling pre-creates named volumes for non-`external` compose definitions, i
 
 ## Documentation
 
-| Document | Contents |
-|----------|----------|
-| [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md) | `tests ci` / `tests guest` / `tests functional` prerequisites, authoring tests, flags |
-| [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation) |
-| [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md) | Typer migration audit and low-risk refactor targets |
-| [README_PGBACKREST.md](README_PGBACKREST.md) | `pgbr_s3_*` credentials, volume materialize, `bkp_db` |
-| [README_RESTIC.md](README_RESTIC.md) | `restic_*` credentials, `bkp_files` |
-| [README_DC_BACKUP.md](README_DC_BACKUP.md) | `DOCKER_ADD_HOST` / `DC_BACKUP_CA_FILE`, `dc_backup_docker_host`, `dk dc-backup` |
-| [README_SYSTEMD.md](README_SYSTEMD.md) | `ops.systemd_units`, `install-systemd` on deploy hosts |
-| [ZABBIX_README.md](ZABBIX_README.md) | `dk <env> zabbix`, UserParameters |
+| Document                                                 | Contents                                                                                        |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| [QUICKSTART.md](QUICKSTART.md)                           | Onboard a **consumer** repo: install, `tooling.yaml`, first local run, first droplet and deploy |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md)                 | Config map, env precedence, partial `host create` / DNS                                         |
+| [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md)               | `tests ci` / `tests guest` / `tests functional` prerequisites, authoring tests, flags           |
+| [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) | `.cursorignore` + Cursor rules (secrets + remote `dk` confirmation)                             |
+| [docs/TYPER_MIGRATION.md](docs/TYPER_MIGRATION.md)       | Typer migration audit and low-risk refactor targets                                             |
+| [README_PGBACKREST.md](README_PGBACKREST.md)             | `pgbr_s3_*` credentials, volume materialize, `bkp_db`                                           |
+| [README_RESTIC.md](README_RESTIC.md)                     | `restic_*` credentials, `bkp_files`                                                             |
+| [README_DC_BACKUP.md](README_DC_BACKUP.md)               | `DOCKER_ADD_HOST` / `DC_BACKUP_CA_FILE`, `dc_backup_docker_host`, `dk dc-backup`                |
+| [README_SYSTEMD.md](README_SYSTEMD.md)                   | `ops.systemd_units`, `install-systemd` on deploy hosts                                          |
+| [ZABBIX_README.md](ZABBIX_README.md)                     | `dk <env> zabbix`, UserParameters                                                               |
 
-Full onboarding and manifest reference are planned (`ONBOARDING.md`, `CONFIG_REFERENCE.md`). Until then, use an existing consumer’s `tooling.yaml` (see bundled fixtures under `tests/fixtures/`) and that project’s `docker/envs/` layout as a template. Add [Cursor agent guardrails](docs/AGENTS_AND_SECRETS.md) when onboarding a new repo.
+New application repos: start with [QUICKSTART.md](QUICKSTART.md). Fixtures under `tests/fixtures/` remain the machine-checked examples. A full `CONFIG_REFERENCE.md` is still planned. Add [Cursor agent guardrails](docs/AGENTS_AND_SECRETS.md) when onboarding a new repo.
 
 ## Development
 

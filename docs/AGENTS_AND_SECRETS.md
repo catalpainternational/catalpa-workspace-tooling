@@ -85,7 +85,8 @@ Some projects put low-risk dev defaults in `docker/envs/dev/info.yaml`. OAuth cl
 
 ## Related docs
 
-- [README.md](../README.md) — install, `docker/envs/` layout, [GitHub PAT scopes (GHCR)](../README.md#github-pat-scopes-ghcr)
+- [QUICKSTART.md](../QUICKSTART.md) — consumer install, first droplet / deploy, remote-env confirmation after `docker_host`
+- [README.md](../README.md) — [GitHub PAT scopes (GHCR)](../README.md#github-pat-scopes-ghcr), `site_origin`
 - [GHCR_CLEANUP.md](GHCR_CLEANUP.md) — `dk clean-images` usage and retention config
 - [SMOKE_TESTS.md](SMOKE_TESTS.md) — `tests smoke` contract and authoring tests
 - Consumer `docker/envs/README.md` — per-env credentials bootstrap

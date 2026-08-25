@@ -8,6 +8,11 @@
   `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` contract while also injecting and
   merging `DJANGO_EXTRA_ORIGINS`. It derives `CADDY_DJANGO_SITE_HOSTS` and local-proxy
   routes from `DJANGO_ORIGIN` plus those extra origins.
+- Docs: first-deploy footguns — image `pgbackrest.conf` must not set `pg1-path` (`[031]`),
+  do not pgBackRest-restore Debian/package clusters (use `db pgrestore` / `restore --dumps`),
+  and empty `CADDY_DJANGO_UPSTREAM` causes Caddy `no upstreams available`.
+  [QUICKSTART.md](QUICKSTART.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md),
+  [README_PGBACKREST.md](README_PGBACKREST.md).
 
 ## 1.3.2
 

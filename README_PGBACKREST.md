@@ -154,6 +154,7 @@ The dk-only flag **`--provision`** on `up` is stripped before compose and does n
 
 | Command | Effect |
 |---------|--------|
+| `PGDATA still missing after starting \`db\`` | Wrong `ops.pgbackrest.pg1_path` / `PGBR_PG1_PATH` (PG 18+ is often `/var/lib/postgresql/18/docker`, not `…/data`). The service name `db` in the message is expected. |
 | `ensure_volumes` | Create compose `external` volumes only. |
 | `bkp_db configure` | Materialize pgBackRest INI + WAL `archive_command` into conf volumes only. |
 | `bkp_db configure verify` | `pgbackrest version` on conf volume, then online `check` (`db` must be running). |
@@ -256,16 +257,22 @@ After `install-systemd`, the host has `@CONFIG_DIR@/pgbackrest-backup.env` with 
 
 ## Troubleshooting
 
+Cross-cutting config (where values live, service vs container name, compose project): [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 | Symptom | Likely cause |
 |---------|----------------|
+| `PGDATA still missing after starting \`db\`` | Wrong `ops.pgbackrest.pg1_path` / `PGBR_PG1_PATH` (PG 18+ is often `/var/lib/postgresql/18/docker`, not `…/data`). The service name `db` in the message is expected. |
 | `missing required env for write mode` | Incomplete `pgbr_s3_write_*` in credentials. |
 | `PGBR_S3_WRITE_* and PGBR_S3_READ_* are mutually exclusive` | Both prefixes set in one env. |
 | `Skipping pgBackRest systemd files: PGBR_S3_WRITE_STANZA is not set` | WRITE credentials missing. |
 | `Could not discover a unique db container` | Stack not up, multiple Postgres containers, or set `pgbr_db_container`. |
 | Archive still off after deploy | Run `bkp_db configure` or any `dk <env> up`; entrypoint may not overwrite provisioned drop-ins. |
-| `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically); or `dk <env> up -d db` then retry. |
+| `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically); or `dk <env> up -d db` then retry. Check `pg1_path` matches real `PGDATA`. |
 | `info` shows `missing stanza path` after `init` skipped stanza-create | Broken or empty S3 repo prefix; clear repo path or fix credentials, then re-run `bkp_db configure stanza-create` (tooling only skips when `info` reports `status: ok`). |
 | `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
+| `[031]: option 'pg1-path' cannot be set multiple times` | Image `/etc/pgbackrest.conf` (or `/etc/pgbackrest/pgbackrest.conf`) also sets `pg1-path`. Tooling already writes it in `conf.d`. Remove it from the image file; keep only lock/log/spool. See [QUICKSTART.md](QUICKSTART.md#postgres-image-and-pgbackrestconf). |
+| `could not load $PGDATA/pg_hba.conf` after `db restore` | Source backup is a Debian/Ubuntu **package** cluster (HBA lives under `/etc/postgresql/`, not in PGDATA). Do not pgBackRest-restore that onto this image. Use `pg_dump -Fc` + `dk <env> db pgrestore` or `db restore --dumps`. Recreate `postgres_data` first if the volume already has the broken restore. |
+| `dk <env> db restore` used pgBackRest when you wanted a dump | Complete `pgbr_s3_read_*` / `pgbr_s3_write_*` select the pgBackRest path. Force dumps with `--dumps`, or call `db pgrestore --file …`. |
 | `invalid checkpoint record` / `could not locate required checkpoint record` after restore | Often an **online** deploy backup with no WAL archive chain in the repo (`pgbackrest info` shows `wal archive min/max: none present`). Wipe `postgres_data`, restore from an **offline** full backup, or pass `dk <env> db restore -- --type=immediate --archive-mode=off`. Re-create deploy backups with Postgres stopped (see `upgrade_postgres` `backup.sh`). |
 | `dk <env> db restore -- …` passes invalid option `--` to pgBackRest | Omit the `--` separator, or upgrade tooling (leading `--` is stripped before invoke). |
 | Restore uses wrong S3 `repo1-path` after editing credentials | Volume config was stale; run `dk <env> db restore --dry-run` to compare volume vs env, then `dk <env> db configure` or accept the restore prompt to re-materialize. |
