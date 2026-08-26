@@ -10,8 +10,7 @@
   routes from `DJANGO_ORIGIN` plus those extra origins.
 - Docs: first-deploy footguns — image `pgbackrest.conf` must not set `pg1-path` (`[031]`),
   do not pgBackRest-restore Debian/package clusters (use `db pgrestore` / `restore --dumps`),
-  do not `files restore` Ansible/host-path restic snapshots (use `dk fetch media` + `files push`),
-  and empty `CADDY_DJANGO_UPSTREAM` causes Caddy `no upstreams available`.
+  do not `files restore` Ansible/host-path restic snapshots (use `dk fetch media` + `files push`).
   [QUICKSTART.md](QUICKSTART.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md),
   [README_PGBACKREST.md](README_PGBACKREST.md), [README_RESTIC.md](README_RESTIC.md).
 

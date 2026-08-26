@@ -138,12 +138,6 @@ uv run dk <env> files push
 
 See [README_RESTIC.md](README_RESTIC.md#ansible--host-path-snapshots).
 
-### I. Caddy 503 `no upstreams available`
-
-TLS + a matching `Host` with this error is **not** a bad `site_origin`. Caddy accepted the site block; `reverse_proxy` has an empty backend.
-
-If compose sets `CADDY_DJANGO_UPSTREAM: ${CADDY_DJANGO_UPSTREAM:-}` (empty default), the variable is **present but blank**. Caddy’s `{$VAR:default}` then uses the blank value and ignores the Caddyfile fallback (typically `unix//config/gunicorn.sock`). Default the interpolation, or omit the env unless you set a real upstream. Recreate the proxy service after changing it.
-
 ---
 
 ## 4. Symptom → first places to look
@@ -159,7 +153,6 @@ If compose sets `CADDY_DJANGO_UPSTREAM: ${CADDY_DJANGO_UPSTREAM:-}` (empty defau
 | `could not load …/pg_hba.conf` after `db restore`       | pgBackRest from a Debian/non-Docker source (see §3.H); use dumps                       |
 | `dk <env> db restore` ran pgBackRest instead of a dump  | Complete `pgbr_s3_*` keys; pass `--dumps` or use `db pgrestore`                        |
 | `no snapshot found` / `lchown` on `files restore`       | Ansible/host-path restic snapshot (see §3.H); use `dk fetch media` + `files push`      |
-| Caddy `503` / `no upstreams available`                  | Empty `CADDY_DJANGO_UPSTREAM` overrides the socket default (see §3.I)                  |
 | `Could not discover a unique db container`              | Stack up? One Postgres? Set `pgbr_db_container`                                        |
 | Stale S3 path / stanza after editing credentials        | Re-run `dk <env> db configure`; compare with `db restore --dry-run`                    |
 | Image pull / wrong tag                                  | `info.yaml` `image_tag`, `--tag`, `STACK_IMAGE_REGISTRY`, `docker/images.yaml`         |

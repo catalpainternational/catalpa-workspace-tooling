@@ -320,7 +320,6 @@ storage:
 - Behind the local proxy, tooling injects **`http://`** addresses (proxy terminates TLS). On remote deploy it injects **`https://`** so Caddy can obtain certificates.
 - Explicit `env:` values win over injection (`setdefault`).
 - Extra local hostnames: `local_proxy.roles: [admin]` and/or `[stats]` (subdomains of the primary localdev host).
-- If the Caddyfile uses `reverse_proxy {$CADDY_DJANGO_UPSTREAM:unix//config/gunicorn.sock}`, **do not** pass an empty `CADDY_DJANGO_UPSTREAM` from Compose (`${CADDY_DJANGO_UPSTREAM:-}`). Caddy treats a blank env var as set and then has **no upstreams** (HTTP 503) even when TLS and `site_origin` are correct. Use a real default, e.g. `${CADDY_DJANGO_UPSTREAM:-unix//config/gunicorn.sock}`, matching the gunicorn bind on the shared config volume.
 
 ### Postgres image and `pgbackrest.conf`
 
