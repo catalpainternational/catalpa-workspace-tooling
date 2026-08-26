@@ -22,7 +22,7 @@ ops:
     backup_path: /mnt/btrfs-data/myapp-media   # optional; path prefix in snapshots
 ```
 
-When ``backup_path`` is set, the compose volume is mounted at that path inside the restic container for backup and restore (must match paths in existing snapshots). Default: ``/backup/{data_volume}``.
+When ``backup_path`` is set, the compose volume is mounted at that path inside the restic container for backup and restore (must match paths in existing snapshots). Default: ``/backup/{data_volume}``. Use this when **this stack** already writes snapshots under a non-default prefix — not as a way to ingest Ansible-era host trees (see [below](#ansible--host-path-snapshots)).
 
 `COMPOSE_PROJECT_NAME` must match the Compose project on the deploy host (from `info.yaml` env or `stack.compose_project_default` in `tooling.yaml`). The volume key must match the `volumes:` name in your compose file.
 
@@ -93,10 +93,23 @@ When WRITE-mode `restic_write_*` keys are missing, `dk <env> bkp_files …` can 
 | `snapshots` | List snapshots |
 | `check` | Repository check |
 | `stats` | Repository stats |
-| `restore [SNAPSHOT]` | Restore into staging volume / media (destructive; confirms by env name) |
+| `restore [SNAPSHOT]` | Restore a snapshot **this stack** wrote into staging volume / media (destructive; confirms by env name). Not for Ansible/host-path snapshots — see [below](#ansible--host-path-snapshots). |
 | `install-systemd [--dry-run] [--enable]` | Install timer on deploy host ([README_SYSTEMD.md](README_SYSTEMD.md)) |
 
 `restore` refuses to run without a TTY unless you pass global `dk --yes`. Scheduled `backup` via systemd stays quiet unless `ops.restic.verbose` is set in `tooling.yaml`.
+
+## Ansible / host-path snapshots
+
+`dk <env> files restore` filters `--path` to `ops.restic.backup_path` or `/backup/<data_volume>`. Snapshots taken on an Ansible or native host store the live tree (e.g. `/var/www/app/public/media`), so restore reports `no snapshot found`, or extracts under the old prefix into a staging volume (needs ~2× disk) and discards that extract if restic exits `Fatal` (common `lchown` metadata errors).
+
+Do **not** use `files restore` to seed a new Docker host from those snapshots. Copy the live tree, then let this stack write new same-layout backups:
+
+```bash
+uv run dk fetch media            # legacy host path when native.fetch_media.legacy is set
+uv run dk <env> files push
+```
+
+Same rule as the database: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups).
 
 ## New host checklist
 
@@ -127,5 +140,7 @@ For private-CA S3 endpoints, issue/install via [README_DC_BACKUP.md](README_DC_B
 | `Skipping restic systemd files` | READ-only credentials or missing repository/password. |
 | Wrong volume in snapshots | `COMPOSE_PROJECT_NAME` does not match the running stack. |
 | `403` / lock errors on READ | Expected for read-only IAM; restore uses `--no-lock` where needed. |
+| `no snapshot found` on `files restore` | Snapshot `Paths` are a host prefix (Ansible); restore filters `/backup/<volume>`. Seed with `dk fetch media` + `files push`. |
+| `lchown … no such file` then empty media volume | Restore extracted to staging then discarded on Fatal. Same: do not `files restore` host-path snapshots. |
 
 Default image: `restic/restic:0.17.3` (override with `RESTIC_IMAGE` in the env file).

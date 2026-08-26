@@ -257,6 +257,8 @@ Monitoring (`do-agent`) defaults on; `--no-monitoring` or `digitalocean.monitori
 
 Topic guides (run `dk <env> …` from the application repo root):
 
+`dk <env> db restore` and `dk <env> files restore` replay backups **this stack** wrote. Seeding from Ansible / a native host uses dumps and `dk fetch media` + `files push` — [TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups).
+
 | Topic                                  | Guide                                        |
 | -------------------------------------- | -------------------------------------------- |
 | pgBackRest (S3, `bkp_db`, WAL archive) | [README_PGBACKREST.md](README_PGBACKREST.md) |

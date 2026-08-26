@@ -326,7 +326,7 @@ storage:
 
 Tooling materializes stanza / `pg1-path` / S3 into the **`pgbackrest_conf` volume** (`/etc/pgbackrest/conf.d/…`). The file baked into the Postgres image is only for process paths the `postgres` user can write (`lock-path`, `log-path`, `spool-path`) plus comments. **Do not set `pg1-path` (or `repo1-*`) in the image file** — that duplicates the drop-in and pgBackRest exits `[031]`. Create and `chown` those lock/log/spool directories in the Dockerfile. Consumer examples: bero / Indmo `docker/postgres/pgbackrest.conf`.
 
-pgBackRest restore is for backups **this stack** wrote. To load an Ansible-era or package-install cluster, use a custom-format dump and `dk <env> db pgrestore` / `db restore --dumps` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-an-old-non-tooling-cluster)).
+`dk <env> db restore` / `files restore` are for backups **this stack** wrote. To load an Ansible-era or package-install cluster, use a custom-format dump (`db pgrestore` / `db restore --dumps`) and `dk fetch media` + `files push` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)).
 
 ### Django / smoke-test env names
 
@@ -433,7 +433,7 @@ uv run dk staging ps
 uv run dk staging manage migrate
 ```
 
-To copy **application data** from a pre-Docker host, do **not** run `dk staging db restore` if that env also has `pgbr_s3_read_*` / `pgbr_s3_write_*` (that is offline pgBackRest). Dump the old cluster (`pg_dump -Fc`) into `paths.fetch_db_dump`, then `uv run dk staging db pgrestore` or `uv run dk staging db restore --dumps`. Details: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-an-old-non-tooling-cluster).
+To copy **application data** from a pre-Docker / Ansible host, do **not** run `dk staging db restore` or `dk staging files restore`. Those replay this stack’s pgBackRest and restic layouts (and `db restore` is offline pgBackRest whenever `pgbr_s3_read_*` / `pgbr_s3_write_*` are set). Dump the old cluster (`pg_dump -Fc`) into `paths.fetch_db_dump`, then `uv run dk staging db pgrestore` or `uv run dk staging db restore --dumps`. For media: `uv run dk fetch media` then `uv run dk staging files push`. Details: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups).
 
 Commit `image_tag` when you want that pin shared.
 

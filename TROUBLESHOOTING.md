@@ -113,11 +113,11 @@ docker exec <project>-db-1 grep '^pg1-path=' /etc/pgbackrest/conf.d/*.conf
 - [ ] If `info.yaml` sets `storage.volumes.<key>.path`, that path must exist and be writable on the **deploy** host before `up` / restore.
 - [ ] Bind path and compose volume **key** (`django_media`, `postgres_data`, …) must match `tooling.yaml` / compose.
 
-### H. Seeding a new Docker host from an old (non-tooling) cluster
+### H. Seeding a new Docker host from Ansible / native backups
 
-`dk <env> db restore` is **offline pgBackRest** whenever `pgbr_s3_read_*` or `pgbr_s3_write_*` are complete. That is the right path only when the **source backup was taken by this Docker/pgBackRest layout**.
+`dk <env> db restore` and `dk <env> files restore` replay **this stack’s** pgBackRest and restic layouts. Do **not** use them to copy data from an Ansible or host-native deploy. After the stack is writing its own backups, those two commands are the right DR path.
 
-Do **not** pgBackRest-restore a cluster from a regular Debian/Ubuntu Postgres package (Ansible-era hosts). Those keep `postgresql.conf` / `pg_hba.conf` under `/etc/postgresql/…`, outside PGDATA. After restore, the official image skips `initdb` (“directory appears to contain a database”) and then `FATAL: could not load $PGDATA/pg_hba.conf`.
+**Database.** `dk <env> db restore` is offline pgBackRest whenever `pgbr_s3_read_*` or `pgbr_s3_write_*` are complete. Debian/Ubuntu package clusters (Ansible-era hosts) keep `postgresql.conf` / `pg_hba.conf` under `/etc/postgresql/…`, outside PGDATA. After a physical restore, the official image skips `initdb` (“directory appears to contain a database”) and then `FATAL: could not load $PGDATA/pg_hba.conf`.
 
 For those sources: `pg_dump -Fc` on the old host, place the archive at `paths.fetch_db_dump` (and Metabase at `paths.fetch_metabase_db_dump` if used), then:
 
@@ -128,6 +128,15 @@ uv run dk <env> db restore --dumps
 ```
 
 `db` must already be a **healthy Docker-initialized** volume (wipe/recreate `postgres_data` if a Debian pgBackRest restore already landed). See [README_PGBACKREST.md](README_PGBACKREST.md#bkp_db-subcommands).
+
+**Media.** Ansible restic snapshots store host paths (e.g. `/var/www/app/public/media`). `files restore` filters `--path /backup/<volume>` (or `ops.restic.backup_path`), so those snapshots miss, extract under the old prefix, and need a second full-size staging volume — a metadata failure then discards the extract. Copy the live tree instead:
+
+```bash
+uv run dk fetch media            # legacy host path when native.fetch_media.legacy is set
+uv run dk <env> files push
+```
+
+See [README_RESTIC.md](README_RESTIC.md#ansible--host-path-snapshots).
 
 ### I. Caddy 503 `no upstreams available`
 
@@ -149,6 +158,7 @@ If compose sets `CADDY_DJANGO_UPSTREAM: ${CADDY_DJANGO_UPSTREAM:-}` (empty defau
 | `[031]: option 'pg1-path' cannot be set multiple times` | Image `pgbackrest.conf` also sets `pg1-path` (see §3.E)                                |
 | `could not load …/pg_hba.conf` after `db restore`       | pgBackRest from a Debian/non-Docker source (see §3.H); use dumps                       |
 | `dk <env> db restore` ran pgBackRest instead of a dump  | Complete `pgbr_s3_*` keys; pass `--dumps` or use `db pgrestore`                        |
+| `no snapshot found` / `lchown` on `files restore`       | Ansible/host-path restic snapshot (see §3.H); use `dk fetch media` + `files push`      |
 | Caddy `503` / `no upstreams available`                  | Empty `CADDY_DJANGO_UPSTREAM` overrides the socket default (see §3.I)                  |
 | `Could not discover a unique db container`              | Stack up? One Postgres? Set `pgbr_db_container`                                        |
 | Stale S3 path / stanza after editing credentials        | Re-run `dk <env> db configure`; compare with `db restore --dry-run`                    |
