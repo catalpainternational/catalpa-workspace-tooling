@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.3.3
+
 ### Added
 
 - **Partial adoption: `stack:`, `ops:`, and `paths.deploy` are now optional in `tooling.yaml`.**
