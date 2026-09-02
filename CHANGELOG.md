@@ -9,9 +9,46 @@
   - `stack.compose_project_default`, `services` (`django`/`caddy`/`db`), `images.components` (`{name}-django|caddy|db`), `images.registry_key`, healthcheck `service` (defaults to web service)
   - `ops.install_prefix` / `config_dir` / `systemd_unit_prefix` / `transfer_workdir` / `default_db_container`, zabbix unit names, bero-family systemd unit lists, pgbackrest conf filenames + `ghcr.io/catalpainternational` registry
   - Explicit values always win; empty `systemd_units.pgbackrest: []` stays empty (not replaced)
+  - Key-level defaults apply within a declared section; omitting `stack:` / `ops:` / `paths.deploy` entirely still means "not adopted" (1.3.3 partial adoption), and deploy-side commands fail with the pointed missing-section error
 - **`ops.restic.backup_path`** — when omitted, use `storage.volumes.<data_volume>.path` from `docker/envs/prod/info.yaml` (e.g. `/mnt/jid-media`); else keep `/backup/<data_volume>` at restic runtime
 - **Default `dk fetch db` from prod Docker** — when `native.fetch.databases` is omitted and `docker/envs/<dk_env>/info.yaml` has an SSH `docker_host`, synthesize `via: dk` for `app` and `metabase` (compose `pg_dump`). Otherwise keep the previous `fetch_db.sh` / `ssh_native` fallback. Metabase dump path defaults to a sibling of `paths.fetch_db_dump` (`metabase_db.custom`) when `paths.fetch_metabase_db_dump` is omitted. Synthetic metabase soft-skips if the remote DB is missing; an explicit `databases.metabase` entry still hard-fails.
 - **`dk fetch media` storage-path fallback** — if Docker volume inspect fails, rsync `storage.volumes.<data_volume>.path` from that env’s `info.yaml` on the same `docker_host`. `native.fetch_media.legacy` remains available for hosts that are not fully Docker-deployed.
+
+## 1.3.3
+
+### Added
+
+- **Partial adoption: `stack:`, `ops:`, and `paths.deploy` are now optional in `tooling.yaml`.**
+  A project can adopt the engine-agnostic commands — `dk cut-release`, `dk next-branch`,
+  `tests compliance`, `scripts`, `setup-shell`, `setup-vscode` — with a manifest declaring only
+  `project:` and `paths:`, instead of inventing compose services, pgbackrest/zabbix config, and
+  systemd unit names it never uses. Deploy-side commands now fail at the point of use with an
+  error naming the missing section and the commands that need it, rather than failing at
+  manifest load. `config.has_stack` / `has_ops` / `has_deploy_paths` report presence.
+  See `tests/fixtures/minimal_native_project/tooling.yaml`.
+
+- **`native.test` manifest section** — `native.test.group` (default `test`) selects the uv
+  dependency group for `tests backend` / `tests workspace`, and `native.test.frontend_script`
+  (default `test`) selects the package.json script for `tests frontend`.
+
+### Fixed
+
+- `tests frontend` ran `npm run test` unconditionally, ignoring `native.frontend.package_manager`
+  and lockfile auto-detection. It now uses the resolved package manager, so pnpm and yarn
+  projects no longer need npm installed. Projects with no package-manager signal are unaffected.
+
+### Changed
+
+- `run_cli` now reports `ProjectConfigError` as a single stderr line and exit 1, instead of an
+  unhandled traceback. Applies to every console entrypoint (`dk`, `native`, `tests`, `scripts`).
+- A manifest without `paths.deploy` declares no environments: `list_dk_env_names` returns empty
+  and `dk` still routes its non-deploy subcommands.
+
+### Internal
+
+- `ProjectConfig.stack` / `.ops` and `PathsConfig.deploy` are now raising properties over the
+  optional fields `stack_optional` / `ops_optional` / `deploy_optional`. Call sites are
+  unchanged; only direct constructor calls need the new field names.
 
 ## 1.3.2
 

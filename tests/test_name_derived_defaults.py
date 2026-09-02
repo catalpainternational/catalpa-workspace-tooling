@@ -34,6 +34,7 @@ paths:
   scripts: scripts
   env_local: .env.local
   email_backend_dir: media
+  deploy: {}
 stack:
   healthcheck:
     url: http://localhost:8000/cms/
@@ -86,6 +87,7 @@ paths:
   scripts: scripts
   env_local: .env.local
   email_backend_dir: media
+  deploy: {}
 stack:
   healthcheck:
     url: http://localhost:8000/cms/

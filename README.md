@@ -12,7 +12,7 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 | jid | v0.9.5 | Staging |
 | NCD | v0.9.5 | Staging |
 | pas_indmo | v0.9.5 | Production |
-| partisipa | v0.9.1 | Dev (align_ttoling branch)|
+| partisipa | — | Not adopted (evaluating; Podman/just stack) |
 | bilum | v0.9.1 | Dev (roberto working on it) |
 | ambulancia | v0.9.1 | Staging |
 | tempu | | Staging |

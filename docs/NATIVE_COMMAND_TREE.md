@@ -36,9 +36,9 @@ native
 | `native.fetch.ssh_host` | Default SSH target for `via: ssh_*` methods (legacy / transitional hosts) |
 | `paths.fetch_db_dump` | Output for `databases.app`; omit → `docker/postgres/dumps/{project.name}_db.custom` |
 | `paths.fetch_metabase_db_dump` | Optional output for `databases.metabase`; when omitted, defaults to a sibling of `paths.fetch_db_dump` (`…/metabase_db.custom`) |
-| `paths.deploy.*` | Omit for bero defaults (`docker/envs`, `docker/images.yaml`, `compose.yaml`, `compose.dev.yaml`); set only `credentials_optional_envs` / `env_aliases` when needed |
-| `stack.*` | Omit compose project / services / image names — derived from `project.name` (`{name}-django|caddy|db`, services `django`/`caddy`/`db`); keep `healthcheck.url` |
-| `ops.*` | Omit install paths, zabbix, systemd unit lists, pgbackrest conf/registry — derived from `project.name`; keep post-restore hooks and optional `restic.verbose` |
+| `paths.deploy.*` | Declare the section (`deploy: {}` is enough) for bero defaults (`docker/envs`, `docker/images.yaml`, `compose.yaml`, `compose.dev.yaml`); set only `credentials_optional_envs` / `env_aliases` when needed. Omitting the section entirely means the project does not deploy through the tooling — deploy commands then fail with a pointed error |
+| `stack.*` | Declare `stack:` with `healthcheck.url`; omit compose project / services / image names — derived from `project.name` (`{name}-django|caddy|db`, services `django`/`caddy`/`db`) |
+| `ops.*` | Declare `ops:`; omit install paths, zabbix, systemd unit lists, pgbackrest conf/registry — derived from `project.name`; keep post-restore hooks and optional `restic.verbose` |
 | `ops.restic.backup_path` | Omit to use `storage.volumes.<data_volume>.path` from `docker/envs/prod/info.yaml`; else `/backup/<data_volume>` at runtime |
 | `paths.scripts` | Shell wrappers (`native-*.sh`; legacy `fetch_db.sh` when `native.fetch.databases` omitted and no SSH `docker_host`) |
 | `native.fetch_media.dk_env` | Default env for media fetch / when `native.fetch` omitted (package default: `prod`) |
@@ -59,6 +59,8 @@ native
 | `native.django.port` | Host port for `native runserver` (e.g. `8005` for PEP digit 5); default Django `8000` when unset |
 | `native.start.ports` | TCP ports freed on exit when listeners remain (default: `[8000, 8080]`) |
 | `native.start.migrate` | When using auto-generated Procfile, run `native manage migrate` before `runserver` (default: `true`) |
+| `native.test.group` | uv dependency group for `tests backend` (run in `paths.backend`) **and** `tests workspace` (run at repo root) — one value for both; default: `test` |
+| `native.test.frontend_script` | `package.json` script for `tests frontend` (default: `test`); run with `native.frontend.package_manager` |
 
 **Host Postgres defaults** (when `.env.local` omits connection vars): `localhost:5432`, database from dump stem or `{project.name}_db`. **`reset-db` / `pg-restore` libpq tools always omit `-U` / `PGUSER`** (current OS user, typical Postgres.app trust auth) even when `DJANGO_DB_USER` or `POSTGRES_USER` is set for Docker or Django. Django `manage` / `runserver` use the same host/port/name defaults when those vars are unset; set `DJANGO_DB_USER` in `.env.local` only when Django itself needs a dedicated role.
 

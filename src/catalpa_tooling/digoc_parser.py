@@ -15,7 +15,7 @@ PROG = "dk digoc"
 def attach_digoc_subcommands(parser: argparse.ArgumentParser, config: ProjectConfig | None = None) -> None:
     """Attach ``digoc`` subcommands to an existing ``dk digoc`` parser node."""
     deploy_env_choices: list[str] = []
-    if config is not None:
+    if config is not None and config.has_deploy_paths:
         deploy_env_choices = list_deploy_env_names(config.deploy_envs_dir)
 
     sub = parser.add_subparsers(dest="digoc_command", required=True)
