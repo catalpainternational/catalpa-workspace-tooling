@@ -710,7 +710,10 @@ def populate_transfer_arguments(parser: argparse.ArgumentParser, config: Project
         "--workdir",
         default=None,
         metavar="DIR",
-        help=f"Parent directory for the transfer session (default: <repo>/{config.ops.transfer_workdir}).",
+        help=(
+            "Parent directory for the transfer session "
+            f"(default: <repo>/{config.ops.transfer_workdir if config.has_ops else '<ops.transfer_workdir>'})."
+        ),
     )
     parser.add_argument(
         "--keep-workdir",

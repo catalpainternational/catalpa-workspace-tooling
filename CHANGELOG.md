@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Added
+
+- **Partial adoption: `stack:`, `ops:`, and `paths.deploy` are now optional in `tooling.yaml`.**
+  A project can adopt the engine-agnostic commands — `dk cut-release`, `dk next-branch`,
+  `tests compliance`, `scripts`, `setup-shell`, `setup-vscode` — with a manifest declaring only
+  `project:` and `paths:`, instead of inventing compose services, pgbackrest/zabbix config, and
+  systemd unit names it never uses. Deploy-side commands now fail at the point of use with an
+  error naming the missing section and the commands that need it, rather than failing at
+  manifest load. `config.has_stack` / `has_ops` / `has_deploy_paths` report presence.
+  See `tests/fixtures/minimal_native_project/tooling.yaml`.
+
+- **`native.test` manifest section** — `native.test.group` (default `test`) selects the uv
+  dependency group for `tests backend` / `tests workspace`, and `native.test.frontend_script`
+  (default `test`) selects the package.json script for `tests frontend`.
+
+### Fixed
+
+- `tests frontend` ran `npm run test` unconditionally, ignoring `native.frontend.package_manager`
+  and lockfile auto-detection. It now uses the resolved package manager, so pnpm and yarn
+  projects no longer need npm installed. Projects with no package-manager signal are unaffected.
+
+### Changed
+
+- `run_cli` now reports `ProjectConfigError` as a single stderr line and exit 1, instead of an
+  unhandled traceback. Applies to every console entrypoint (`dk`, `native`, `tests`, `scripts`).
+- A manifest without `paths.deploy` declares no environments: `list_dk_env_names` returns empty
+  and `dk` still routes its non-deploy subcommands.
+
+### Internal
+
+- `ProjectConfig.stack` / `.ops` and `PathsConfig.deploy` are now raising properties over the
+  optional fields `stack_optional` / `ops_optional` / `deploy_optional`. Call sites are
+  unchanged; only direct constructor calls need the new field names.
+
 ## 1.3.2
 
 ### Changed

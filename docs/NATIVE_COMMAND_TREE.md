@@ -55,6 +55,8 @@ native
 | `native.django.port` | Host port for `native runserver` (e.g. `8005` for PEP digit 5); default Django `8000` when unset |
 | `native.start.ports` | TCP ports freed on exit when listeners remain (default: `[8000, 8080]`) |
 | `native.start.migrate` | When using auto-generated Procfile, run `native manage migrate` before `runserver` (default: `true`) |
+| `native.test.group` | uv dependency group for `tests backend` (run in `paths.backend`) **and** `tests workspace` (run at repo root) — one value for both; default: `test` |
+| `native.test.frontend_script` | `package.json` script for `tests frontend` (default: `test`); run with `native.frontend.package_manager` |
 
 **Host Postgres defaults** (when `.env.local` omits connection vars): `localhost:5432`, database from dump stem or `{project.name}_db`. **`reset-db` / `pg-restore` libpq tools always omit `-U` / `PGUSER`** (current OS user, typical Postgres.app trust auth) even when `DJANGO_DB_USER` or `POSTGRES_USER` is set for Docker or Django. Django `manage` / `runserver` use the same host/port/name defaults when those vars are unset; set `DJANGO_DB_USER` in `.env.local` only when Django itself needs a dedicated role.
 

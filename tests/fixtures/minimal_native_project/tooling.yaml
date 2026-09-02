@@ -1,0 +1,18 @@
+# Reference consumer that adopts ONLY the engine-agnostic commands.
+#
+# No `stack:`, no `ops:`, no `paths.deploy` — this project has no compose stack and does not
+# deploy through the tooling. It can still use `dk cut-release`, `tests compliance`, `scripts`,
+# `setup-shell`, and `setup-vscode`. Deploy-side commands fail with a pointed error naming the
+# section to add. See tests/fixtures/minimal_project/tooling.yaml for the full manifest.
+
+project:
+  name: minimal-native
+  root_marker: pyproject.toml
+
+paths:
+  backend: backend
+  frontend: frontend
+  scripts: scripts
+  env_local: .env.local
+  email_backend_dir: email_out
+  fetch_db_dump: dumps/app.custom

@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from catalpa_tooling.cli.completion import activate
 from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.deprecation import warn_deprecated
+from catalpa_tooling.frontend_pkg import package_install_cmd, package_run_cmd
 from catalpa_tooling.native_parser import build_native_parser
 from catalpa_tooling.native_start import run_native_start
 from catalpa_tooling.fetch_media import run_fetch_media
@@ -487,19 +488,11 @@ def _use_nvm_in_cwd(cwd: Path, node_version: str | None = None) -> bool:
 
 
 def _pkg_install_cmd(package_manager: str) -> list[str]:
-    if package_manager == "yarn":
-        return ["yarn", "install"]
-    if package_manager == "pnpm":
-        return ["pnpm", "install"]
-    return ["npm", "install"]
+    return package_install_cmd(package_manager)
 
 
 def _pkg_run_cmd(package_manager: str, script: str) -> list[str]:
-    if package_manager == "yarn":
-        return ["yarn", "run", script]
-    if package_manager == "pnpm":
-        return ["pnpm", "run", script]
-    return ["npm", "run", script]
+    return package_run_cmd(package_manager, script)
 
 
 def _run_pkg_install(cwd: Path, package_manager: str, *, node_version: str | None = None) -> int:
