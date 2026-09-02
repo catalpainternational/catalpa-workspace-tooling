@@ -22,8 +22,7 @@ def script_process_env(config: ProjectConfig) -> dict[str, str]:
     elif config.native.fetch_metabase_db.ssh_host:
         env["FETCH_DB_SSH_HOST"] = config.native.fetch_metabase_db.ssh_host
     dump = config.fetch_metabase_db_dump_path
-    if dump is not None:
-        env["FETCH_DB_OUTPUT"] = str(dump)
+    env["FETCH_DB_OUTPUT"] = str(dump)
     ssh_host = (env.get("FETCH_DB_SSH_HOST") or "").strip()
     if ssh_host and ensure_ssh_known_host_for_ssh_target(ssh_host) != 0:
         raise SystemExit(1)

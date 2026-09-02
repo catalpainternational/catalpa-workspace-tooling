@@ -15,9 +15,11 @@ from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
 from catalpa_tooling.media_rsync import ssh_target_from_host
 from catalpa_tooling.pgbackrest_db import (
+    DbRestoreTarget,
     _PG_DUMP_CUSTOM_MAGIC,
     db_service_responds,
     ensure_db_service_running,
+    remote_database_exists,
     run_pg_dump_to_file,
 )
 from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_ssh_target
@@ -107,11 +109,16 @@ def _fetch_ssh_docker(
     _atomic_write_from_stream(dest, io.BytesIO(proc.stdout))
 
 
+def _dump_target_for_key(key: str) -> DbRestoreTarget:
+    return "metabase" if key == "metabase" else "app"
+
+
 def _fetch_via_dk(
     config: ProjectConfig,
+    key: str,
+    entry: FetchDatabaseEntry,
     *,
     dk_env: str,
-    db_name: str,
     dest: Path,
     pg_dump_args: Sequence[str] | None,
 ) -> None:
@@ -129,8 +136,28 @@ def _fetch_via_dk(
         )
         if rc != 0:
             raise SystemExit(rc)
+
+    target = _dump_target_for_key(key)
+    db_name = entry.db_name
+    if entry.soft_skip_if_missing:
+        # Prefer METABASE_DB / DJANGO_DB from the remote compose env when probing.
+        probe_name = db_name
+        if target == "metabase":
+            probe_name = (env_add.get("METABASE_DB") or db_name).strip() or db_name
+        elif target == "app":
+            probe_name = (
+                env_add.get("DJANGO_DB") or env_add.get("DJANGO_APP_DB") or db_name
+            ).strip() or db_name
+        if not remote_database_exists(compose_file, env_add, probe_name):
+            print(
+                f"fetch db: skipping {key!r} — database {probe_name!r} not found on "
+                f"dk {dk_env}",
+                file=sys.stderr,
+            )
+            return
+
     print(f"Fetching {db_name} via dk {dk_env} bkp_db pgdump → {dest}", file=sys.stderr)
-    rc = run_pg_dump_to_file(compose_file, env_add, dest, pg_dump_args)
+    rc = run_pg_dump_to_file(compose_file, env_add, dest, pg_dump_args, target=target)
     if rc != 0:
         raise SystemExit(rc)
     if dest.stat().st_size < _MIN_CUSTOM_DUMP_BYTES:
@@ -199,11 +226,14 @@ def run_fetch_database(
     elif entry.via == "dk":
         _fetch_via_dk(
             config,
+            key,
+            entry,
             dk_env=dk_env,
-            db_name=entry.db_name,
             dest=dest,
             pg_dump_args=pg_dump_args,
         )
+        if entry.soft_skip_if_missing and not dest.is_file():
+            return
     elif entry.via == "script":
         _fetch_via_script(config, dest=dest, dk_env=dk_env)
     else:
@@ -275,5 +305,4 @@ def configured_app_dump_exists(config: ProjectConfig) -> bool:
 
 
 def configured_metabase_dump_exists(config: ProjectConfig) -> bool:
-    path = config.fetch_metabase_db_dump_path
-    return path is not None and dump_path_usable(path)
+    return dump_path_usable(config.fetch_metabase_db_dump_path)

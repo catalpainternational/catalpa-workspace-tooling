@@ -104,8 +104,6 @@ def run_compose_metabase_dump_restore(
     if not config.has_metabase_fetch():
         return 0
     dump_path = archive_path or config.fetch_metabase_db_dump_path
-    if dump_path is None:
-        return 0
     extras = list(extra_pg_restore_args or [])
     extras = ["--file", str(dump_path), *extras]
     restore_extras = compose_pg_restore_extras_for_config(

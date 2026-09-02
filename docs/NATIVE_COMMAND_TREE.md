@@ -31,15 +31,19 @@ native
 | `paths.env_local` | Loaded for `manage`, `runserver`, `reset-db`, `pg-restore` (e.g. `.env.local`) |
 | `paths.email_backend_dir` | Default `EMAIL_BACKEND_FOLDER` for host `manage` / `runserver` when unset |
 | `paths.media_dir` | Optional host media tree for `native runserver` / `manage` (`DJANGO_MEDIA_ROOT` when unset) |
-| `native.fetch.databases` | Per-DB fetch sources (`app` required when set): `db_name`, `via` (`ssh_native` \| `ssh_docker` \| `dk`), optional `ssh_host`, `container`, `pg_user`, `dk_env`, `dump` |
-| `native.fetch.dk_env` | Default source env for `via: dk` and `dk fetch` (falls back to `native.fetch_media.dk_env`) |
-| `native.fetch.ssh_host` | Default SSH target for `via: ssh_*` methods |
-| `paths.fetch_db_dump` | Default output for `databases.app` |
-| `paths.fetch_metabase_db_dump` | Default output for `databases.metabase` |
-| `paths.scripts` | Shell wrappers (`native-*.sh`; legacy `fetch_db.sh` when `native.fetch.databases` omitted) |
-| `native.fetch_media.dk_env` | Legacy default env when `native.fetch` omitted (package default: `prod`) |
+| `native.fetch.databases` | Per-DB fetch sources (`app` required when set): `db_name`, `via` (`ssh_native` \| `ssh_docker` \| `dk` \| `script`), optional `ssh_host`, `container`, `pg_user`, `dk_env`, `dump`. **Omit** for Docker-deployed hosts — defaults to `via: dk` when `docker/envs/<dk_env>/info.yaml` has an SSH `docker_host` |
+| `native.fetch.dk_env` | Default source env for `via: dk` and `dk fetch` (falls back to `native.fetch_media.dk_env`, then `prod`) |
+| `native.fetch.ssh_host` | Default SSH target for `via: ssh_*` methods (legacy / transitional hosts) |
+| `paths.fetch_db_dump` | Output for `databases.app`; omit → `docker/postgres/dumps/{project.name}_db.custom` |
+| `paths.fetch_metabase_db_dump` | Optional output for `databases.metabase`; when omitted, defaults to a sibling of `paths.fetch_db_dump` (`…/metabase_db.custom`) |
+| `paths.deploy.*` | Declare the section (`deploy: {}` is enough) for bero defaults (`docker/envs`, `docker/images.yaml`, `compose.yaml`, `compose.dev.yaml`); set only `credentials_optional_envs` / `env_aliases` when needed. Omitting the section entirely means the project does not deploy through the tooling — deploy commands then fail with a pointed error |
+| `stack.*` | Declare `stack:` with `healthcheck.url`; omit compose project / services / image names — derived from `project.name` (`{name}-django|caddy|db`, services `django`/`caddy`/`db`) |
+| `ops.*` | Declare `ops:`; omit install paths, zabbix, systemd unit lists, pgbackrest conf/registry — derived from `project.name`; keep post-restore hooks and optional `restic.verbose` |
+| `ops.restic.backup_path` | Omit to use `storage.volumes.<data_volume>.path` from `docker/envs/prod/info.yaml`; else `/backup/<data_volume>` at runtime |
+| `paths.scripts` | Shell wrappers (`native-*.sh`; legacy `fetch_db.sh` when `native.fetch.databases` omitted and no SSH `docker_host`) |
+| `native.fetch_media.dk_env` | Default env for media fetch / when `native.fetch` omitted (package default: `prod`) |
 | `native.fetch_media.dest` | Local media directory relative to repo root (default: `media`) |
-| `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`, optional `default: true`) |
+| `native.fetch_media.legacy` | Optional fixed host path for `--legacy-path` (`remote`, optional `ssh_host`, optional `default: true`). Omit on fully Docker-deployed hosts — Docker volume / `storage.volumes` path is used instead |
 | `native.reset_db.postgis` | If true, run `CREATE EXTENSION postgis` before migrate on host reset (default: `false`); for compose `pgrestore` / `dk transfer`, pre-creates PostGIS, grants catalog tables to the app user, and defaults compose `pg_restore` to `--role postgres` (unless `restore_as_super` or `pg_restore_args` sets another role) |
 | `native.reset_db.restore_as_super` | If true (default: `false`), compose restore temporarily promotes ``APP_USER`` to superuser and reloads with ``--role APP_USER`` instead of the ``postgis`` default ``--role postgres`` — for dbsamizdat-friendly ownership while extension DDL/comments still succeed |
 | `native.reset_db.pg_restore_args` | Extra `pg_restore` flags for dump restore (`native reset-db`, `native pg-restore`, **`dk <env> db restore`**, **`dk <env> db pgrestore`**, **`dk transfer`**) — e.g. `--clean`, `--if-exists`, `--role=postgres` |
@@ -60,7 +64,32 @@ native
 
 **Host Postgres defaults** (when `.env.local` omits connection vars): `localhost:5432`, database from dump stem or `{project.name}_db`. **`reset-db` / `pg-restore` libpq tools always omit `-U` / `PGUSER`** (current OS user, typical Postgres.app trust auth) even when `DJANGO_DB_USER` or `POSTGRES_USER` is set for Docker or Django. Django `manage` / `runserver` use the same host/port/name defaults when those vars are unset; set `DJANGO_DB_USER` in `.env.local` only when Django itself needs a dedicated role.
 
-Example (catalpa-site — PostGIS + Wagtail hook only; DB name comes from `paths.fetch_db_dump`):
+**Minimal Docker-deployed bero consumer** (most ops/stack/paths derived from `project.name`; fetch uses prod `docker_host`):
+
+```yaml
+project:
+  name: myapp
+paths:
+  backend: .
+  frontend: bero
+  scripts: [scripts, bero/docker/postgres/scripts]
+  env_local: .env.local
+  email_backend_dir: media
+  deploy:
+    credentials_optional_envs: [full, dev]
+stack:
+  healthcheck:
+    url: http://localhost:8000/cms/
+ops:
+  post_db_restore:
+    envs: [dev, full, staging]
+    manage_commands: [[migrate]]
+  # restic.backup_path omitted → docker/envs/prod/info.yaml storage.volumes.django_media.path
+```
+
+`paths.fetch_db_dump` defaults to `docker/postgres/dumps/{name}_db.custom`; metabase dump to a sibling `metabase_db.custom`. Omit `native.fetch` / `fetch_media.legacy` when prod has SSH `docker_host`.
+
+Example (catalpa-site — PostGIS + Wagtail hook; still uses legacy media path):
 
 ```yaml
 native:
@@ -76,7 +105,6 @@ native:
     post_manage_commands:
       - [sync_wagtail_sites, --profile, host]
 ```
-
 ## Top-level commands
 
 | Command | Role |
@@ -93,16 +121,18 @@ native:
 
 ## `fetch db`
 
+When `native.fetch.databases` is omitted and `docker/envs/<dk_env>/info.yaml` has an SSH `docker_host`, defaults to `via: dk` for `app` and `metabase` (`compose exec db pg_dump`). Synthetic metabase soft-skips if the remote has no `metabase_db`; an explicit `databases.metabase` entry still hard-fails if missing. Without SSH `docker_host`, falls back to `scripts/fetch_db.sh` (`via: script`) or `via: ssh_native`.
+
 | Option | Default | Notes |
 |--------|---------|--------|
 | `-o`, `--output` | `paths.fetch_db_dump` | Custom-format dump path |
-| `--env` | `native.fetch_media.dk_env` | Passed to `fetch_db.sh` as `FETCH_DK_ENV` |
+| `--env` | `native.fetch.dk_env` / `native.fetch_media.dk_env` | Source env for `via: dk` / `FETCH_DK_ENV` |
 
-Requires `uv`, `bash`, and network/SSH access to the remote stack (same as `dk <env> bkp_db pgdump`).
+Requires network/SSH access to the remote stack (same as `dk <env> bkp_db pgdump`).
 
 ## `fetch media`
 
-**Docker volume mode (default):** SSH to `docker_host` from `docker/envs/<env>/info.yaml`, `docker volume inspect` on `{compose_project}_{ops.restic.data_volume}` (default `{project}_django_media`), then `rsync` the volume mount path.
+**Docker mode (default):** SSH to `docker_host` from `docker/envs/<env>/info.yaml`, `docker volume inspect` on `{compose_project}_{ops.restic.data_volume}` (default `{project}_django_media`), then `rsync` the volume mount path. If volume inspect fails, falls back to `storage.volumes.<data_volume>.path` from that env’s `info.yaml` (same SSH host).
 
 | Option | Default | Notes |
 |--------|---------|--------|
@@ -111,12 +141,12 @@ Requires `uv`, `bash`, and network/SSH access to the remote stack (same as `dk <
 | `--dest` | `<repo>/native.fetch_media.dest` | Local destination |
 | `--partial` | off | Only `documents/` and `original_images/` |
 | `--compose-project` | from `info.yaml` or `stack.compose_project_default` | Volume name prefix |
-| `--legacy-path` / `--no-legacy-path` | `native.fetch_media.legacy.default` (else off) | Use `native.fetch_media.legacy` instead of Docker volume |
+| `--legacy-path` / `--no-legacy-path` | `native.fetch_media.legacy.default` (else off) | Use `native.fetch_media.legacy` instead of Docker volume / storage path |
 | `--remote` | `legacy.remote` | Remote directory when `--legacy-path` (override) |
 
 Requires `rsync` and `ssh` on PATH.
 
-**Legacy path mode:** rsync from a fixed directory on the SSH host (`--legacy-path`, or by default when `legacy.default: true` in tooling.yaml). Needs `legacy.remote` in tooling.yaml or `--remote`, and `legacy.ssh_host` or `--host`. Use `--no-legacy-path` to force Docker volume mode.
+**Legacy path mode:** rsync from a fixed directory on the SSH host (`--legacy-path`, or by default when `legacy.default: true` in tooling.yaml). Use for hosts that are not fully `dk` prod-deployed yet. Needs `legacy.remote` in tooling.yaml or `--remote`, and `legacy.ssh_host` or `--host`. Use `--no-legacy-path` to force Docker / storage-path mode.
 
 **Load into a local Compose stack** (named `django_media` volume, not host bind-mount):
 

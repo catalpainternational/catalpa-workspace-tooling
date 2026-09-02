@@ -71,7 +71,9 @@ def restic_backup_mount_path(*, config: ProjectConfig | None = None) -> str:
     """Path inside the restic container used for backup/restore snapshot paths.
 
     Defaults to ``/backup/<ops.restic.data_volume>``; override with ``ops.restic.backup_path``
-    when existing snapshots use a different prefix (legacy host mounts).
+    when existing snapshots use a different prefix (legacy host mounts). When
+    ``backup_path`` is omitted in tooling.yaml, config load may set it from
+    ``storage.volumes.<data_volume>.path`` in ``docker/envs/prod/info.yaml``.
     """
     if config is not None and config.ops.restic.backup_path:
         return config.ops.restic.backup_path

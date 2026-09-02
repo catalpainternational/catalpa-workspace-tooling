@@ -503,10 +503,14 @@ def run_version(compose_file: str, env: dict[str, str]) -> int:
     return _compose_exec_pgbackrest(compose_file, env, "version")
 
 
-def _pg_dump_inner_script(extra_pg_dump_args: Sequence[str] | None) -> str:
+def _pg_dump_inner_script(
+    extra_pg_dump_args: Sequence[str] | None,
+    *,
+    target: DbRestoreTarget = "app",
+) -> str:
     extras = tuple(extra_pg_dump_args or ())
     inner = (
-        _DJANGO_APP_SHELL_VARS
+        _db_shell_vars(target)
         + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
         + 'exec pg_dump -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -Fc'
     )
@@ -519,14 +523,17 @@ def run_pg_dump(
     compose_file: str,
     env: dict[str, str],
     extra_pg_dump_args: Sequence[str] | None = None,
+    *,
+    target: DbRestoreTarget = "app",
 ) -> int:
-    """Run ``pg_dump`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``); stream to stdout.
+    """Run ``pg_dump`` in the ``db`` container; stream to stdout.
 
-    Uses the superuser inside the container (``postgres`` / ``POSTGRES_PASSWORD``). Optional
-    ``extra_pg_dump_args`` are appended (shell-quoted). Command echo is suppressed so stdout is
-    suitable for ``> file`` or piping.
+    ``target`` selects Django app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``) or Metabase
+    (``METABASE_DB``). Uses the superuser inside the container (``postgres`` /
+    ``POSTGRES_PASSWORD``). Optional ``extra_pg_dump_args`` are appended (shell-quoted).
+    Command echo is suppressed so stdout is suitable for ``> file`` or piping.
     """
-    inner = _pg_dump_inner_script(extra_pg_dump_args)
+    inner = _pg_dump_inner_script(extra_pg_dump_args, target=target)
     r = run_cmd(
         [
             "docker",
@@ -553,12 +560,14 @@ def run_pg_dump_to_file(
     env: dict[str, str],
     dest: Path,
     extra_pg_dump_args: Sequence[str] | None = None,
+    *,
+    target: DbRestoreTarget = "app",
 ) -> int:
     """Same as ``run_pg_dump`` but writes the ``-Fc`` archive to ``dest`` (binary-safe).
 
     Writes to a ``.tmp`` sibling first, then replaces ``dest`` on success.
     """
-    inner = _pg_dump_inner_script(extra_pg_dump_args)
+    inner = _pg_dump_inner_script(extra_pg_dump_args, target=target)
     cmd = [
         "docker",
         "compose",
@@ -603,6 +612,48 @@ def run_pg_dump_to_file(
         except OSError:
             pass
         return 1
+
+
+def remote_database_exists(
+    compose_file: str,
+    env: dict[str, str],
+    db_name: str,
+) -> bool:
+    """True when ``db_name`` exists in the compose ``db`` Postgres instance."""
+    name = (db_name or "").strip()
+    if not name:
+        return False
+    safe = name.replace("'", "''")
+    sql = f"SELECT 1 FROM pg_database WHERE datname = '{safe}'"
+    # Quote the SQL for the remote shell (psql -c takes one argument).
+    script = (
+        'export PGPASSWORD="$POSTGRES_PASSWORD"; '
+        "psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -tAc "
+        + shlex.quote(sql)
+    )
+    r = run_cmd(
+        [
+            "docker",
+            "compose",
+            "-f",
+            compose_file,
+            "exec",
+            "-T",
+            "db",
+            "sh",
+            "-c",
+            script,
+        ],
+        env=_merged_process_env(env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    if r.returncode != 0:
+        return False
+    return (r.stdout or "").strip() == "1"
 
 
 def _drop_create_app_database_psql_block(*, postgis: bool) -> str:

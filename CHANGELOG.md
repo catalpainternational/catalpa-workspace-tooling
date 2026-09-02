@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- **Name-derived `tooling.yaml` defaults** — omit common project-prefixed keys; package synthesizes from `project.name`:
+  - `paths.fetch_db_dump` → `docker/postgres/dumps/{name}_db.custom`; deploy compose/images paths default to `compose.yaml` / `compose.dev.yaml` / `docker/envs` / `docker/images.yaml`
+  - `stack.compose_project_default`, `services` (`django`/`caddy`/`db`), `images.components` (`{name}-django|caddy|db`), `images.registry_key`, healthcheck `service` (defaults to web service)
+  - `ops.install_prefix` / `config_dir` / `systemd_unit_prefix` / `transfer_workdir` / `default_db_container`, zabbix unit names, bero-family systemd unit lists, pgbackrest conf filenames + `ghcr.io/catalpainternational` registry
+  - Explicit values always win; empty `systemd_units.pgbackrest: []` stays empty (not replaced)
+  - Key-level defaults apply within a declared section; omitting `stack:` / `ops:` / `paths.deploy` entirely still means "not adopted" (1.3.3 partial adoption), and deploy-side commands fail with the pointed missing-section error
+- **`ops.restic.backup_path`** — when omitted, use `storage.volumes.<data_volume>.path` from `docker/envs/prod/info.yaml` (e.g. `/mnt/jid-media`); else keep `/backup/<data_volume>` at restic runtime
+- **Default `dk fetch db` from prod Docker** — when `native.fetch.databases` is omitted and `docker/envs/<dk_env>/info.yaml` has an SSH `docker_host`, synthesize `via: dk` for `app` and `metabase` (compose `pg_dump`). Otherwise keep the previous `fetch_db.sh` / `ssh_native` fallback. Metabase dump path defaults to a sibling of `paths.fetch_db_dump` (`metabase_db.custom`) when `paths.fetch_metabase_db_dump` is omitted. Synthetic metabase soft-skips if the remote DB is missing; an explicit `databases.metabase` entry still hard-fails.
+- **`dk fetch media` storage-path fallback** — if Docker volume inspect fails, rsync `storage.volumes.<data_volume>.path` from that env’s `info.yaml` on the same `docker_host`. `native.fetch_media.legacy` remains available for hosts that are not fully Docker-deployed.
+
 ## 1.3.3
 
 ### Added

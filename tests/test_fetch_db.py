@@ -249,3 +249,100 @@ def test_metabase_dump_restore_runs_hooks_after_pgrestore(
     )
     assert rc == 0
     assert order == ["pgrestore", "hooks"]
+
+
+def test_fetch_via_dk_metabase_soft_skips_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_tooling: None,
+) -> None:
+    """Synthetic via:dk metabase entry soft-skips when remote DB is absent."""
+    _write_tooling(tmp_path)
+    text = (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+    # Drop explicit databases so defaults synthesize via:dk + soft_skip metabase.
+    text = text.replace(
+        "native:\n  fetch:\n    dk_env: prod\n    ssh_host: root@example.com\n"
+        "    databases:\n      app:\n        db_name: app_db\n        via: ssh_native\n",
+        "native:\n  fetch:\n    dk_env: prod\n",
+    )
+    (tmp_path / "tooling.yaml").write_text(text, encoding="utf-8")
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(
+        "docker_host: ssh://root@prod.example\nenv: {}\n",
+        encoding="utf-8",
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.native.fetch.databases["metabase"].soft_skip_if_missing is True
+
+    class _Ctx:
+        compose_file = "compose.yml"
+        env_add: dict[str, str] = {}
+
+    dumped: list[str] = []
+
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_db.load_managed_deploy_context",
+        lambda *_a, **_k: _Ctx(),
+    )
+    monkeypatch.setattr("catalpa_tooling.fetch_db.db_service_responds", lambda *_a, **_k: True)
+
+    def _exists(_cf, _env, name: str) -> bool:
+        return name != "metabase_db"
+
+    monkeypatch.setattr("catalpa_tooling.fetch_db.remote_database_exists", _exists)
+
+    def _dump_ok(compose_file, env, dest, extra=None, *, target="app"):
+        dumped.append(target)
+        _valid_dump(dest)
+        return 0
+
+    monkeypatch.setattr("catalpa_tooling.fetch_db.run_pg_dump_to_file", _dump_ok)
+    run_fetch_all_dbs(cfg)
+    assert dumped == ["app"]
+    assert dump_path_usable(cfg.fetch_db_dump_path)
+    assert not cfg.fetch_metabase_db_dump_path.is_file()
+
+
+def test_fetch_via_dk_explicit_metabase_does_not_soft_skip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_tooling: None,
+) -> None:
+    _write_tooling(tmp_path)
+    text = (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
+    text = text.replace(
+        "  fetch_db_dump: docker/dumps/app_db.custom\n",
+        "  fetch_db_dump: docker/dumps/app_db.custom\n"
+        "  fetch_metabase_db_dump: docker/dumps/metabase_db.custom\n",
+    )
+    text = text.replace(
+        "      app:\n        db_name: app_db\n        via: ssh_native\n",
+        "      app:\n        db_name: app_db\n        via: dk\n"
+        "      metabase:\n        db_name: metabase_db\n        via: dk\n",
+    )
+    (tmp_path / "tooling.yaml").write_text(text, encoding="utf-8")
+    cfg = load_project_config(tmp_path)
+    assert cfg.native.fetch.databases["metabase"].soft_skip_if_missing is False
+
+    class _Ctx:
+        compose_file = "compose.yml"
+        env_add: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_db.load_managed_deploy_context",
+        lambda *_a, **_k: _Ctx(),
+    )
+    monkeypatch.setattr("catalpa_tooling.fetch_db.db_service_responds", lambda *_a, **_k: True)
+
+    def _dump_ok(compose_file, env, dest, extra=None, *, target="app"):
+        _valid_dump(dest)
+        return 0
+
+    monkeypatch.setattr("catalpa_tooling.fetch_db.run_pg_dump_to_file", _dump_ok)
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_db.remote_database_exists",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not probe")),
+    )
+    run_fetch_all_dbs(cfg, only="metabase")
+    assert dump_path_usable(cfg.fetch_metabase_db_dump_path)
