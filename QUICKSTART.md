@@ -108,7 +108,7 @@ Start from [tests/fixtures/minimal_project/tooling.yaml](tests/fixtures/minimal_
 | `paths.scripts`                                | One directory or an **ordered list** (earlier wins on name clash).      |                                                             |
 | `paths.env_local`                              | Host env file for `native` (not `dk`).                                  |                                                             |
 | `paths.email_backend_dir`                      | Default `EMAIL_BACKEND_FOLDER` for host Django.                         |                                                             |
-| `paths.fetch_db_dump`                          | Default dump path for `native fetch db` / `dk fetch db`.                |                                                             |
+| `paths.fetch_db_dump`                          | Default dump path for `native fetch db` / `dk fetch db`.                | Use dk fetch media/db for Ansible hosts                     |
 | `paths.deploy.envs_dir`                        | Usually `docker/envs`.                                                  |                                                             |
 | `paths.deploy.images_config`                   | Usually `docker/images.yaml`.                                           |                                                             |
 | `paths.deploy.default_compose` / `dev_compose` | Prod-like vs local compose files.                                       |                                                             |
