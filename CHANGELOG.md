@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-### Added
-
 - **Generic Django multi-origin support** — tooling now preserves Bero's
   `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` contract while also injecting and
   merging `DJANGO_EXTRA_ORIGINS`. It derives `CADDY_DJANGO_SITE_HOSTS` and local-proxy
@@ -13,6 +11,43 @@
   do not `files restore` Ansible/host-path restic snapshots (use `dk fetch media` + `files push`).
   [QUICKSTART.md](QUICKSTART.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md),
   [README_PGBACKREST.md](README_PGBACKREST.md), [README_RESTIC.md](README_RESTIC.md).
+
+## 1.3.3
+
+### Added
+
+- **Partial adoption: `stack:`, `ops:`, and `paths.deploy` are now optional in `tooling.yaml`.**
+  A project can adopt the engine-agnostic commands — `dk cut-release`, `dk next-branch`,
+  `tests compliance`, `scripts`, `setup-shell`, `setup-vscode` — with a manifest declaring only
+  `project:` and `paths:`, instead of inventing compose services, pgbackrest/zabbix config, and
+  systemd unit names it never uses. Deploy-side commands now fail at the point of use with an
+  error naming the missing section and the commands that need it, rather than failing at
+  manifest load. `config.has_stack` / `has_ops` / `has_deploy_paths` report presence.
+  See `tests/fixtures/minimal_native_project/tooling.yaml`.
+
+- **`native.test` manifest section** — `native.test.group` (default `test`) selects the uv
+  dependency group for `tests backend` / `tests workspace`, and `native.test.frontend_script`
+  (default `test`) selects the package.json script for `tests frontend`.
+
+### Fixed
+
+- `tests frontend` ran `npm run test` unconditionally, ignoring `native.frontend.package_manager`
+  and lockfile auto-detection. It now uses the resolved package manager, so pnpm and yarn
+  projects no longer need npm installed. Projects with no package-manager signal are unaffected.
+
+### Changed
+
+- `run_cli` now reports `ProjectConfigError` as a single stderr line and exit 1, instead of an
+  unhandled traceback. Applies to every console entrypoint (`dk`, `native`, `tests`, `scripts`).
+- A manifest without `paths.deploy` declares no environments: `list_dk_env_names` returns empty
+  and `dk` still routes its non-deploy subcommands.
+
+### Internal
+
+- `ProjectConfig.stack` / `.ops` and `PathsConfig.deploy` are now raising properties over the
+  optional fields `stack_optional` / `ops_optional` / `deploy_optional`. Call sites are
+  unchanged; only direct constructor calls need the new field names.
+  > > > > > > > origin/main
 
 ## 1.3.2
 
@@ -63,8 +98,8 @@
 ### Added
 
 - **`dk cut-release`** — dry-run-first helper to cut `vX.Y[.Z]` from `dev-X.Y[.Z]`, open the next `dev-*` line (`--bump major|minor|hotfix`), or push staging `vX.Y.Z.beta.W` tags (`--beta`). Supports `--submodule`, `--pin-submodule`, `--image-env`, and `--allow-dirty`. See [docs/CUT_RELEASE.md](docs/CUT_RELEASE.md).
-- **`dk transfer` media** — default to incremental ``rsync --delete`` (direct host↔host when both endpoints are reachable; otherwise stage then push). ``--media-method tar`` keeps the previous wipe-and-full-archive path; rsync failures fall back to tar once.
-- **Media storage resolution** — prefer merged ``docker compose config`` (follows ``include:``, expands ``${VAR}``) and match ``ops.restic.data_volume``, ``DJANGO_MEDIA_ROOT``, or ``/media`` / ``/django_media``. Fixes bind mounts like bero ``dev`` (``../../media:/django_media``) that the old ``/media``-only YAML parse missed.
+- **`dk transfer` media** — default to incremental `rsync --delete` (direct host↔host when both endpoints are reachable; otherwise stage then push). `--media-method tar` keeps the previous wipe-and-full-archive path; rsync failures fall back to tar once.
+- **Media storage resolution** — prefer merged `docker compose config` (follows `include:`, expands `${VAR}`) and match `ops.restic.data_volume`, `DJANGO_MEDIA_ROOT`, or `/media` / `/django_media`. Fixes bind mounts like bero `dev` (`../../media:/django_media`) that the old `/media`-only YAML parse missed.
 
 ## 0.9.10
 
@@ -75,7 +110,7 @@
 ### Fixed
 
 - **`compliance.license_files: []`** — empty list no longer falls back to `{frontend}/LICENSE`; only omitting the key applies that default.
-- **`dk transfer` destination `compose up -d`** — apply the same local-proxy compose override (`ports: !reset []` + shared network) as ``dk <env> up``, so local full/dev stacks no longer try to bind host :80/:443 while ``catalpa-local-proxy`` is running.
+- **`dk transfer` destination `compose up -d`** — apply the same local-proxy compose override (`ports: !reset []` + shared network) as `dk <env> up`, so local full/dev stacks no longer try to bind host :80/:443 while `catalpa-local-proxy` is running.
 
 ## 0.9.9
 
@@ -119,12 +154,12 @@
 
 ### Changed
 
-- Renamed the ``test`` console script to **``tests``** so it no longer collides with the POSIX shell builtin. ``test`` remains as a deprecated alias that prints a warning. Update invocations to ``uv run tests …`` / ``tests …``.
+- Renamed the `test` console script to **`tests`** so it no longer collides with the POSIX shell builtin. `test` remains as a deprecated alias that prints a warning. Update invocations to `uv run tests …` / `tests …`.
 
 ### Fixed
 
-- **`tests smoke`** — when ``local_proxy`` is enabled, run the same proxy sync + ``ports: !reset []`` compose override as ``dk <env> up``, so smoke no longer fails with ``Bind for 0.0.0.0:80 failed`` while ``catalpa-local-proxy`` owns host 80/443.
-- **`tests smoke`** — HTTPS ``site_origin`` probes trust the local-proxy CA (``~/.config/catalpa/local-proxy/ca-root.crt``), and smoke pytest inherits a combined ``SSL_CERT_FILE`` so urllib checks against ``*.localdev.temp.build`` no longer fail with ``CERTIFICATE_VERIFY_FAILED``.
+- **`tests smoke`** — when `local_proxy` is enabled, run the same proxy sync + `ports: !reset []` compose override as `dk <env> up`, so smoke no longer fails with `Bind for 0.0.0.0:80 failed` while `catalpa-local-proxy` owns host 80/443.
+- **`tests smoke`** — HTTPS `site_origin` probes trust the local-proxy CA (`~/.config/catalpa/local-proxy/ca-root.crt`), and smoke pytest inherits a combined `SSL_CERT_FILE` so urllib checks against `*.localdev.temp.build` no longer fail with `CERTIFICATE_VERIFY_FAILED`.
 
 ## 0.9.4
 
@@ -146,8 +181,8 @@
 
 ### Added
 
-- **`native.reset_db.restore_as_super`** — opt-in (default `false`) temporary superuser promotion for compose ``pg_restore`` / ``dk transfer``: reload with ``--role APP_USER`` instead of the ``postgis`` default ``--role postgres``. Skipped when ``pg_restore_args`` sets ``--role postgres``.
-- **`ops.post_db_restore.db_psql` / `ops.post_metabase_db_restore.db_psql`** — optional Postgres superuser SQL hooks run in the ``db`` container after each restore leg (`target: app` or `metabase`, `file:` repo-relative or in-container path). Runs before `manage_commands`.
+- **`native.reset_db.restore_as_super`** — opt-in (default `false`) temporary superuser promotion for compose `pg_restore` / `dk transfer`: reload with `--role APP_USER` instead of the `postgis` default `--role postgres`. Skipped when `pg_restore_args` sets `--role postgres`.
+- **`ops.post_db_restore.db_psql` / `ops.post_metabase_db_restore.db_psql`** — optional Postgres superuser SQL hooks run in the `db` container after each restore leg (`target: app` or `metabase`, `file:` repo-relative or in-container path). Runs before `manage_commands`.
 
 ### Changed
 
@@ -157,7 +192,7 @@
 
 - **Deployed HTTPS Caddy (staging/prod)** — `dk <env>` now injects `CADDY_SITE_ADDRESS` (and, where applicable, `CADDY_DJANGO_SITE_ADDRESS` / `CADDY_METABASE_SITE_ADDRESS`) as `https://` origins for remote envs (`docker_host: ssh://…`). Previously these were only set behind the local dev proxy, so deployed stacks fell back to the compose `http://…` defaults and Caddy never enabled automatic HTTPS (listening on `:80` only). `CADDY_DJANGO_SITE_ADDRESS` is set for bero stacks only (`paths.frontend: bero`); `CADDY_METABASE_SITE_ADDRESS` only when Metabase is actually routed (explicit `METABASE_ORIGIN` / `METABASE_SITE_ORIGIN`, a `stats` local-proxy role, a bero stack with Metabase fetch configured, or a second `site_origin`). Explicit `info.yaml` `env:` values always win. Local-proxy behavior (`http://` addresses) is unchanged.
 - **`dk <env> db restore` / `db pgrestore` / `transfer`** — merge `native.reset_db.pg_restore_args` from `tooling.yaml` into compose `pg_restore` (previously only `native reset-db` / `native pg-restore` honored those flags). Fixes restores that need `--role=postgres` for extension DDL in production dumps (e.g. PostGIS, `pg_stat_statements`).
-- **Compose `pg_restore` no longer injects `--no-comments` when `native.reset_db.postgis` is true** — PostGIS prep grants catalog tables to the app user. Opt in to ``native.reset_db.restore_as_super: true`` to temporarily promote ``APP_USER`` to superuser during compose restore, reload with ``--role APP_USER`` (unless ``pg_restore_args`` sets ``--role postgres``), then demote — preserving extension and dbsamizdat object comments without leaving app objects owned by ``postgres``.
+- **Compose `pg_restore` no longer injects `--no-comments` when `native.reset_db.postgis` is true** — PostGIS prep grants catalog tables to the app user. Opt in to `native.reset_db.restore_as_super: true` to temporarily promote `APP_USER` to superuser during compose restore, reload with `--role APP_USER` (unless `pg_restore_args` sets `--role postgres`), then demote — preserving extension and dbsamizdat object comments without leaving app objects owned by `postgres`.
 
 ## 0.9.1
 

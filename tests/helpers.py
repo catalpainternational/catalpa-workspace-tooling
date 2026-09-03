@@ -42,7 +42,7 @@ def parse_native_for_test(raw: dict | None) -> "NativeConfig":
         media_dir=None,
         fetch_db_dump="docker/dumps/app_db.custom",
         fetch_metabase_db_dump=None,
-        deploy=DeployPathsConfig(
+        deploy_optional=DeployPathsConfig(
             envs_dir="docker/envs",
             images_config="docker/images.yaml",
             default_compose="compose.yml",

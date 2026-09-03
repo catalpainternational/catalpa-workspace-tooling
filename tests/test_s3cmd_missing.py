@@ -39,6 +39,7 @@ def test_provision_exits_when_s3cmd_missing(
         FrontendDevConfig,
         ResetDbConfig,
         StartConfig,
+        TestConfig,
         OpsConfig,
         PathsConfig,
         PgbackrestOpsConfig,
@@ -69,7 +70,7 @@ def test_provision_exits_when_s3cmd_missing(
             media_dir=None,
             fetch_db_dump="d",
             fetch_metabase_db_dump=None,
-            deploy=DeployPathsConfig(
+            deploy_optional=DeployPathsConfig(
                 envs_dir="docker/envs",
                 images_config="i.yaml",
                 default_compose="c.yml",
@@ -78,7 +79,7 @@ def test_provision_exits_when_s3cmd_missing(
                 env_aliases={},
             ),
         ),
-        stack=StackConfig(
+        stack_optional=StackConfig(
             compose_project_default="app",
             services=StackServicesConfig(web="w", proxy="p", db="db"),
             images=StackImagesConfig(registry_key="r", components={"web": "w", "proxy": "p", "db": "db"}),
@@ -86,7 +87,7 @@ def test_provision_exits_when_s3cmd_missing(
             origin_env_keys=DEFAULT_ORIGIN_ENV_KEYS,
             build_placeholders=dict(DEFAULT_BUILD_PLACEHOLDERS),
         ),
-        ops=OpsConfig(
+        ops_optional=OpsConfig(
             install_prefix="/opt",
             config_dir="/etc",
             systemd_unit_prefix="a-",
@@ -151,6 +152,7 @@ def test_provision_exits_when_s3cmd_missing(
                 ports=(8000, 8080),
                 migrate=True,
             ),
+            test=TestConfig(group="test", frontend_script="test"),
         ),
         dev=DevConfig(
             site_origin_base=DEFAULT_DEV_SITE_ORIGIN_BASE,

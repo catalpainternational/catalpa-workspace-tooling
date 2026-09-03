@@ -117,6 +117,7 @@ def _main_impl() -> None:
         if exc.code == 0:
             raise
         envs = list_dk_env_names(config)
+        envs_dir = config.paths.deploy.envs_dir if config.has_deploy_paths else "docker/envs"
         first = argv[0] if argv else ""
         if first and first not in (
             "build",
@@ -134,14 +135,14 @@ def _main_impl() -> None:
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
                 f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk next-branch`, `dk worktree`, "
-                f"or a name with {config.paths.deploy.envs_dir}/<name>/info.yaml.",
+                f"or a name with {envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
             if envs:
                 print("Available environments:", ", ".join(envs), file=sys.stderr)
             else:
                 print(
-                    f"No environments found (add {config.paths.deploy.envs_dir}/<name>/info.yaml).",
+                    f"No environments found (add {envs_dir}/<name>/info.yaml).",
                     file=sys.stderr,
                 )
         raise

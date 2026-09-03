@@ -4,19 +4,19 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 
 ## Project usage status
 
-| Project      | Version | Status                      |
-| ------------ | ------- | --------------------------- |
-| Catalpa Bero | v1.0.0  | Production                  |
-| Catalpa Site | v1.0.0  | Production                  |
-| tvi          | v0.9.5  | Production                  |
-| jid          | v0.9.5  | Staging                     |
-| NCD          | v0.9.5  | Staging                     |
-| pas_indmo    | v0.9.5  | Production                  |
-| partisipa    | v0.9.1  | Dev (align_ttoling branch)  |
-| bilum        | v0.9.1  | Dev (roberto working on it) |
-| ambulancia   | v0.9.1  | Staging                     |
-| tempu        |         | Staging                     |
-| liga inan    |         | Dev                         |
+| Project      | Version | Status                                      |
+| ------------ | ------- | ------------------------------------------- |
+| Catalpa Bero | v1.0.0  | Production                                  |
+| Catalpa Site | v1.0.0  | Production                                  |
+| tvi          | v0.9.5  | Production                                  |
+| jid          | v0.9.5  | Staging                                     |
+| NCD          | v0.9.5  | Staging                                     |
+| pas_indmo    | v0.9.5  | Production                                  |
+| partisipa    | —       | Not adopted (evaluating; Podman/just stack) |
+| bilum        | v0.9.1  | Have a staging deployed with ~main          |
+| ambulancia   | v0.9.1  | Staging                                     |
+| tempu        |         | Staging                                     |
+| liga inan    |         | Dev                                         |
 
 ## Install
 
