@@ -169,6 +169,10 @@ def test_load_managed_deploy_applies_overlay(
     assert ctx.info["env"]["compose_project_name"] == overlay.compose_project_name
     assert ctx.env_add["COMPOSE_PROJECT_NAME"] == overlay.compose_project_name
     assert ctx.env_add["BERO_ORIGIN"] == overlay.site_origin
+    assert ctx.env_add["DJANGO_EXTRA_ORIGINS"] == (
+        "https://admin.minimal-dev-bar.localdev.temp.build, "
+        "https://stats.minimal-dev-bar.localdev.temp.build"
+    )
 
     from catalpa_tooling.local_proxy import local_proxy_routes, route_id_for_host
 

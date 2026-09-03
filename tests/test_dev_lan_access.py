@@ -96,6 +96,9 @@ def test_build_dev_lan_env_legacy(mock_detect: object) -> None:
     assert env["BERO_EXTRA_ORIGINS"] == (
         "http://192.168.1.42:9001,http://Mac.local:9001"
     )
+    assert env["DJANGO_EXTRA_ORIGINS"] == (
+        "http://192.168.1.42:9001,http://Mac.local:9001"
+    )
 
 
 @patch("catalpa_tooling.dev_lan_access.detect_dev_lan_ipv4", return_value=["192.168.1.42"])

@@ -323,7 +323,10 @@ def load_managed_deploy_context(
     if domain_s:
         env_add["DOMAIN"] = domain_s
 
-    from catalpa_tooling.caddy_site_addresses import apply_caddy_site_addresses
+    from catalpa_tooling.caddy_site_addresses import (
+        apply_caddy_site_addresses,
+        apply_django_caddy_site_hosts,
+    )
     from catalpa_tooling.local_proxy import local_proxy_enabled
 
     apply_caddy_site_addresses(
@@ -378,6 +381,7 @@ def load_managed_deploy_context(
         merge_keys = (
             "BERO_EXTRA_ALLOWED_HOSTS",
             "BERO_EXTRA_ORIGINS",
+            "DJANGO_EXTRA_ORIGINS",
             "DOMAIN",
             "VITE_EXTRA_ALLOWED_HOSTS",
         )
@@ -402,6 +406,9 @@ def load_managed_deploy_context(
         env_add.update(lan_env)
         if lan_env:
             print_dev_lan_urls(info)
+
+    # LAN origins are merged after the initial Caddy-address pass.
+    apply_django_caddy_site_hosts(env_add, force=True)
 
     try:
         storage_volumes = parse_storage_volumes_from_info(info, config)

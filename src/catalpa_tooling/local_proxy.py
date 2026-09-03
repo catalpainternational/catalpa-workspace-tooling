@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, TextIO
 from catalpa_tooling.local_proxy_assets import local_proxy_caddyfile_path
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import (
+    django_site_hosts_from_env,
     hostnames_from_origins,
     parse_site_origins_from_info,
     primary_site_origin_for_env,
@@ -326,11 +327,24 @@ def _expand_lan_proxy_routes(
     return out
 
 
+def _routing_env_dict(
+    info: dict[str, Any],
+    env_add: dict[str, str] | None,
+) -> dict[str, str]:
+    if env_add is not None:
+        return env_add
+    block = info.get("env")
+    if isinstance(block, dict):
+        return {str(key): str(value) for key, value in block.items() if value is not None}
+    return {}
+
+
 def local_proxy_routes(
     info: dict[str, Any],
     config: ProjectConfig,
     env_name: str,
     compose_project_name: str,
+    env_add: dict[str, str] | None = None,
 ) -> list[LocalProxyRoute]:
     """Return all proxy routes for this environment (derived hostnames → stack caddy:80)."""
     if not local_proxy_enabled(info):
@@ -338,8 +352,23 @@ def local_proxy_routes(
 
     upstream_dial = local_proxy_upstream_dial(config, compose_project_name, info)
     entries: list[LocalProxyRoute] = []
+    seen_hosts: set[str] = set()
     for origin in resolve_site_origins_for_env(info, config, env_name):
         host = hostnames_from_origins([origin])[0]
+        if host in seen_hosts:
+            continue
+        seen_hosts.add(host)
+        entries.append(
+            LocalProxyRoute(
+                route_id=route_id_for_host(config, env_name, host),
+                host=host,
+                upstream_dial=upstream_dial,
+            )
+        )
+    for host in django_site_hosts_from_env(_routing_env_dict(info, env_add)):
+        if host in seen_hosts:
+            continue
+        seen_hosts.add(host)
         entries.append(
             LocalProxyRoute(
                 route_id=route_id_for_host(config, env_name, host),
@@ -1033,7 +1062,13 @@ def sync_local_proxy_for_compose_action(
     compose_project_name = compose_project_name_from_env_add(
         env_add, info, config=config, env_name=env_name
     )
-    routes = local_proxy_routes(info, config, env_name, compose_project_name)
+    routes = local_proxy_routes(
+        info,
+        config,
+        env_name,
+        compose_project_name,
+        env_add=env_add,
+    )
     if not compose_args:
         return 0
 

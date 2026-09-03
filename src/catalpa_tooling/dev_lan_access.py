@@ -335,6 +335,7 @@ def build_dev_lan_env(
     return {
         "BERO_EXTRA_ALLOWED_HOSTS": ",".join(hosts),
         "BERO_EXTRA_ORIGINS": ",".join(origins),
+        "DJANGO_EXTRA_ORIGINS": ",".join(origins),
     }
 
 
