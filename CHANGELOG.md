@@ -47,7 +47,6 @@
 - `ProjectConfig.stack` / `.ops` and `PathsConfig.deploy` are now raising properties over the
   optional fields `stack_optional` / `ops_optional` / `deploy_optional`. Call sites are
   unchanged; only direct constructor calls need the new field names.
-  > > > > > > > origin/main
 
 ## 1.3.2
 
