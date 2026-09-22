@@ -1,6 +1,6 @@
 # Smoke / CI / functional tests (`tests ci`, `tests guest`, `tests functional`)
 
-Project-health and Playwright checks for Django + Docker Compose stacks. Tooling orchestrates the stack; your repo supplies tests under `{paths.frontend}/smoke/`.
+Project-health and Playwright checks for Django + Docker Compose stacks. Tooling orchestrates the stack; your repo supplies tests under `{paths.frontend}/smoke/` (the first `paths.frontend` entry, when several are declared).
 
 **Requires:** catalpa-workspace-tooling with `tests ci` / `tests guest` / `tests functional` (formerly `tests smoke`).
 
@@ -34,7 +34,7 @@ Ordered pipeline (implemented in `smoke_cli.run_smoke`):
 3. Wait for Postgres (`pg_isready`)
 4. **Empty migrate** on ephemeral `{dbname}_smoke_empty` via `docker compose run --rm --no-deps <web> ./manage.py …` (sets `DJANGO_DB` / `POSTGRES_DB`), then `manage check`, then drop — **never touches the primary DB**. Consumers must use `DJANGO_DB` for `DATABASES['default']['NAME']` (not `DJANGO_DB_NAME`).
 5. `makemigrations --check --dry-run` (same `compose run --no-deps`)
-6. **Frontend type-check + production build** — prefer `docker compose run --no-deps node pnpm run …` when a `node` service exists (image `node_modules`); otherwise host package manager under `paths.frontend`
+6. **Frontend type-check + production build, once per `paths.frontend` entry** — prefer `docker compose run --no-deps node pnpm run …` when a `node` service exists (image `node_modules`); otherwise host package manager. The `node` service builds the **primary** frontend only (its service name is fixed and wired to one directory), so any further frontend runs on the host. Package manager is resolved per directory. Stops at the first frontend that fails.
 
 ### Guest (`tests guest`)
 
@@ -78,7 +78,7 @@ Dev tests use `site_origin` from `docker/envs/dev/info.yaml` (port **901N**). Se
 |-------------|-------|-------|
 | `stack.healthcheck` | `tooling.yaml` | URL when app is healthy (bero: `/cms/`) |
 | `site_origin` | `docker/envs/dev/info.yaml` | HTTP probe + `SMOKE_FE_URL` |
-| `{paths.frontend}/smoke/` | e.g. `bero/smoke/` | Missing directory → failure |
+| `{paths.frontend}/smoke/` | e.g. `bero/smoke/` | First `paths.frontend` entry. Missing directory → failure |
 | `[dependency-groups].smoke` | consumer `pyproject.toml` | `pytest`, `pytest-playwright` |
 | Playwright browser (one-time) | host | `uv run playwright install chromium` |
 
@@ -120,7 +120,7 @@ Host `uv`/pnpm installs do **not** populate Docker BuildKit cache mounts (`/root
 
 ## Writing smoke tests
 
-Location: `{repo_root}/{paths.frontend}/smoke/`. Tooling sets **`SMOKE_FE_URL`**.
+Location: `{repo_root}/{paths.frontend}/smoke/` — the first `paths.frontend` entry; one suite per repo, since there is one `SMOKE_FE_URL`. Tooling sets **`SMOKE_FE_URL`**.
 
 Extra pytest args: `uv run tests guest -- -k pwa -vv`
 

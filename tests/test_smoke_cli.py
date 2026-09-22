@@ -378,3 +378,112 @@ def test_run_frontend_build_falls_back_to_host_without_node_service(
         compose_run.assert_not_called()
         host_run.assert_called_once()
         assert host_run.call_args.args[0] == "build"
+
+
+def _two_frontend_project(tmp_path):
+    """``minimal_project`` re-declared with two frontends, both with a build script.
+
+    ``web`` is the primary (compose ``node`` service, when one exists); ``admin``
+    is the extra that 1.3.2 and earlier could not reach at all.
+    """
+    from catalpa_tooling.config import load_project_config
+
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    manifest = tmp_path / "tooling.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "  frontend: frontend\n",
+            "  frontend:\n    - web\n    - admin\n",
+        ),
+        encoding="utf-8",
+    )
+    config = load_project_config(tmp_path)
+    for name in ("web", "admin"):
+        (tmp_path / name).mkdir(parents=True, exist_ok=True)
+        (tmp_path / name / "package.json").write_text(
+            '{"scripts":{"type-check":"tsc --noEmit","build":"webpack"}}',
+            encoding="utf-8",
+        )
+    return config
+
+
+def test_run_frontend_build_builds_every_declared_frontend(tmp_path) -> None:
+    config = _two_frontend_project(tmp_path)
+    with patch("catalpa_tooling.native_cli._run_pkg_script", return_value=0) as run_script:
+        assert _run_frontend_build(config) == 0
+        assert [(c.args[0], c.args[1].name) for c in run_script.call_args_list] == [
+            ("type-check", "web"),
+            ("build", "web"),
+            ("type-check", "admin"),
+            ("build", "admin"),
+        ]
+
+
+def test_run_frontend_build_stops_at_the_first_failing_frontend(tmp_path) -> None:
+    config = _two_frontend_project(tmp_path)
+    with patch("catalpa_tooling.native_cli._run_pkg_script", return_value=2) as run_script:
+        assert _run_frontend_build(config) == 2
+        # The primary's type-check failed, so nothing else ran — not its own
+        # build, and not the second frontend at all.
+        assert [c.args[0] for c in run_script.call_args_list] == ["type-check"]
+
+
+def test_run_frontend_build_resolves_package_manager_per_frontend(tmp_path) -> None:
+    """A second frontend may use a different package manager from the first."""
+    config = _two_frontend_project(tmp_path)
+    (tmp_path / "web" / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+    (tmp_path / "admin" / "yarn.lock").write_text("# yarn lockfile v1\n", encoding="utf-8")
+    with patch("catalpa_tooling.native_cli._run_pkg_script", return_value=0) as run_script:
+        assert _run_frontend_build(config) == 0
+        by_dir = {c.args[1].name: c.args[2] for c in run_script.call_args_list}
+        assert by_dir == {"web": "pnpm", "admin": "yarn"}
+
+
+def test_run_frontend_build_uses_compose_node_service_for_the_primary_only(tmp_path) -> None:
+    """The ``node`` service is wired to one directory, so extras run on the host.
+
+    Routing a second frontend through it would build the primary twice and report
+    it under the second one's name.
+    """
+    config = _two_frontend_project(tmp_path)
+    with (
+        patch(
+            "catalpa_tooling.smoke_cli._compose_service_names",
+            return_value=frozenset({"django", "node", "db"}),
+        ),
+        patch(
+            "catalpa_tooling.smoke_cli._run_frontend_script_in_compose",
+            return_value=0,
+        ) as compose_run,
+        patch("catalpa_tooling.native_cli._run_pkg_script", return_value=0) as host_run,
+    ):
+        assert (
+            _run_frontend_build(
+                config,
+                compose_file="compose.dev.yaml",
+                env_add={"COMPOSE_PROJECT_NAME": "x"},
+            )
+            == 0
+        )
+        assert [c.kwargs["script"] for c in compose_run.call_args_list] == [
+            "type-check",
+            "build",
+        ]
+        assert [(c.args[0], c.args[1].name) for c in host_run.call_args_list] == [
+            ("type-check", "admin"),
+            ("build", "admin"),
+        ]
+
+
+def test_run_frontend_build_skips_a_frontend_with_no_build_scripts(tmp_path) -> None:
+    """A declared directory with no type-check/build is skipped, not fatal."""
+    config = _two_frontend_project(tmp_path)
+    (tmp_path / "admin" / "package.json").write_text(
+        '{"scripts":{"dev":"vite"}}',
+        encoding="utf-8",
+    )
+    with patch("catalpa_tooling.native_cli._run_pkg_script", return_value=0) as run_script:
+        assert _run_frontend_build(config) == 0
+        assert [c.args[1].name for c in run_script.call_args_list] == ["web", "web"]

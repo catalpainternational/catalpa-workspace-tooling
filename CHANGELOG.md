@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Added
+
+- **`paths.frontend` accepts a list**, so a project with more than one SPA can gate all of them.
+  `tests ci` now runs type-check + production build once per declared directory, each labelled
+  with its path in the gate log, instead of building only the first. A project that shipped a
+  second frontend previously had to bolt an extra type-check/build step onto its own CI, which
+  meant that frontend had no build evidence in any local gate run — and so no measured bundle
+  size to compare against.
+
+  ```yaml
+  paths:
+    frontend:
+      - frontend_public     # primary
+      - frontend_portal
+  ```
+
+  A plain string keeps working and behaves exactly as before — same commands, same log wording.
+  Mirrors `paths.scripts`, which has taken a string or a list since 1.2.0.
+
+  **The first entry is the primary**, and everything that addresses a single frontend uses it:
+  `native frontend` / `native vite` (a dev server is one process), the `tests guest` smoke
+  directory (`{frontend}/smoke/`, one `SMOKE_FE_URL`), `CATALPA_FRONTEND_DIR` for `scripts/*.sh`,
+  `tests frontend`, and the `compliance.javascript.cwd` / `license_files` defaults. A project with
+  several frontends that wants them all scanned for licences sets `compliance.javascript.cwd`
+  explicitly, as before.
+
+  Two details worth knowing when adopting it:
+
+  - **The compose `node` service builds the primary frontend only.** Its service name is fixed and
+    a consumer's compose file wires it to one directory, so extra frontends always run on the host
+    package manager. Routing them through `node` would build the primary twice and report it under
+    the wrong name.
+  - **The package manager is resolved per directory**, from that directory's own `package.json`
+    `packageManager` and lockfiles, so a second frontend may use a different one.
+
+### Changed
+
+- **`is_bero_stack` matches `bero` anywhere in `paths.frontend`**, not just as the whole value.
+  A bero project that adds a second SPA keeps its `{$CADDY_DJANGO_SITE_ADDRESS}` admin-redirect
+  site block, and declaring the new SPA first does not silently drop it.
+
+### Internal
+
+- `PathsConfig.frontend` is now `tuple[str, ...]` rather than `str`, with `PathsConfig.frontend_primary`
+  for the string. `ProjectConfig.frontend_dir` is unchanged in name, type and meaning (it returns the
+  primary); `ProjectConfig.frontend_dirs` is new. Code constructing `PathsConfig` directly — test
+  helpers and fakes, mostly — must pass a tuple. Anything reading `config.paths.frontend` as a string
+  needs `frontend_primary`; note that iterating a bare string silently yields characters rather than
+  failing, which is what `is_bero_stack` did in review.
+
 ## 1.3.3
 
 ### Added

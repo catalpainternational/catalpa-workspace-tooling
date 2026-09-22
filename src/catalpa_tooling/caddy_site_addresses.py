@@ -36,12 +36,16 @@ if TYPE_CHECKING:
 
 
 def is_bero_stack(config: ProjectConfig) -> bool:
-    """True when this project embeds bero (``paths.frontend == 'bero'``).
+    """True when this project embeds bero (``bero`` among ``paths.frontend``).
 
     Only bero stacks ship the ``{$CADDY_DJANGO_SITE_ADDRESS}`` admin-redirect site block,
     so the Django Caddy address is bero-only.
+
+    Any declared frontend counts, not just the primary: a bero project that adds
+    a second SPA still ships the bero site block, and declaring the new one
+    first must not silently drop it.
     """
-    return config.paths.frontend.strip() == "bero"
+    return any(rel.strip() == "bero" for rel in config.paths.frontend)
 
 
 def _role_origin(

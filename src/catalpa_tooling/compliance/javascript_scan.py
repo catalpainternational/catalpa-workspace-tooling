@@ -458,7 +458,7 @@ def scan_javascript(
     config: ProjectConfig,
     js_config: ComplianceJavascriptConfig,
 ) -> tuple[list[CompliancePackage], list[ComplianceViolation]]:
-    cwd_rel = js_config.cwd or config.paths.frontend
+    cwd_rel = js_config.cwd or config.paths.frontend_primary
     cwd = config.repo_root / cwd_rel
     lock_path = cwd / js_config.lockfile
     source = f"javascript:{cwd_rel}"

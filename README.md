@@ -161,7 +161,7 @@ paths:
 - **`scripts/<name>.sh`** (not extension scripts) → `uv run scripts <kebab-name>` (e.g. `fetch_db.sh` → `scripts fetch-db`).
 - **`scripts/native-reset-db-post.sh`** — optional hook after `native reset-db`; older hook names deprecated.
 
-Scripts receive `CATALPA_REPO_ROOT`, `CATALPA_FRONTEND_DIR`, and optional Metabase fetch defaults (`FETCH_DB_SSH_HOST`, `FETCH_DB_OUTPUT`) from tooling when run via `uv run scripts …`.
+Scripts receive `CATALPA_REPO_ROOT`, `CATALPA_FRONTEND_DIR` (the first `paths.frontend` entry), and optional Metabase fetch defaults (`FETCH_DB_SSH_HOST`, `FETCH_DB_OUTPUT`) from tooling when run via `uv run scripts …`.
 
 For npm-based dev servers, source the bundled helper:
 
