@@ -160,6 +160,12 @@ def test_local_proxy_uses_http_addresses() -> None:
     allowed = env["BERO_EXTRA_ALLOWED_HOSTS"]
     assert "admin.ncd-dev.localdev.temp.build" in allowed
     assert "stats.ncd-dev.localdev.temp.build" in allowed
+    django_extra = env["DJANGO_EXTRA_ORIGINS"]
+    assert "admin.ncd-dev.localdev.temp.build" in django_extra
+    assert "stats.ncd-dev.localdev.temp.build" in django_extra
+    assert env["CADDY_DJANGO_SITE_HOSTS"] == (
+        "admin.ncd-dev.localdev.temp.build stats.ncd-dev.localdev.temp.build"
+    )
 
 
 def test_deployed_redirect_origins_injects_caddy_addresses() -> None:

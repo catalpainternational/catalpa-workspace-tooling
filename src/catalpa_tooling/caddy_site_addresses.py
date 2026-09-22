@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 from catalpa_tooling.site_origin import (
     derive_site_origin,
+    django_site_hosts_from_env,
+    format_caddy_site_hosts,
     hostnames_from_origins,
     local_proxy_role_names,
     parse_redirect_origins_from_info,
@@ -84,6 +86,7 @@ def _apply_local_proxy(
             env_add.setdefault(caddy_key, f"http://{role_host}")
     if extra_allowed:
         env_add.setdefault("BERO_EXTRA_ALLOWED_HOSTS", ", ".join(extra_allowed))
+        env_add.setdefault("DJANGO_EXTRA_ORIGINS", ", ".join(extra_allowed))
     env_add.setdefault("VITE_BEHIND_PROXY", "true")
     if "stats" in roles:
         env_add.setdefault(
@@ -174,6 +177,17 @@ def _apply_redirect_site_addresses(
     env_add.setdefault("CADDY_REDIRECT_SITE_ADDRESSES", value)
 
 
+def apply_django_caddy_site_hosts(env_add: dict[str, str], *, force: bool = False) -> None:
+    """Set Caddy's Django hosts from ``DJANGO_ORIGIN`` and its extra origins."""
+    if not force and (env_add.get("CADDY_DJANGO_SITE_HOSTS") or "").strip():
+        return
+    hosts = django_site_hosts_from_env(env_add)
+    if hosts:
+        env_add["CADDY_DJANGO_SITE_HOSTS"] = format_caddy_site_hosts(hosts)
+    elif force:
+        env_add.pop("CADDY_DJANGO_SITE_HOSTS", None)
+
+
 def apply_caddy_site_addresses(
     env_add: dict[str, str],
     *,
@@ -207,3 +221,4 @@ def apply_caddy_site_addresses(
         info=info,
         behind_local_proxy=behind_local_proxy,
     )
+    apply_django_caddy_site_hosts(env_add)
