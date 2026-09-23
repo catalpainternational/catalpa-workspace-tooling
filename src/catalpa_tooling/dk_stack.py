@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -93,10 +94,28 @@ def compose_yml_build(
     env_add: dict[str, str] | None = None,
     services: tuple[str, ...] | None = None,
 ) -> int:
-    """Run ``docker compose -f compose.yml build`` from repo root."""
+    """Run ``docker compose -f compose.yml build`` from repo root.
+
+    A generated label-only override stamps ``catalpa.*`` build labels onto the stack images so
+    ``stale_stack`` can tell which branch and commit they came from. It is passed as an extra
+    ``-f`` rather than committed to each project's compose file, so projects pick the behaviour
+    up by upgrading tooling alone.
+    """
+    from catalpa_tooling.stale_stack import write_label_override
+
     names = services if services else stack_build_services(config)
     compose_file = config.compose_prod
-    cmd = ["docker", "compose", "-f", compose_file, "build", *names]
+    label_override = write_label_override(config)
+    cmd = [
+        "docker",
+        "compose",
+        "-f",
+        compose_file,
+        "-f",
+        label_override,
+        "build",
+        *names,
+    ]
     run_env = os.environ.copy()
     if env_add:
         run_env.update(env_add)
@@ -109,6 +128,8 @@ def compose_yml_build(
         ).returncode
     finally:
         restore_controlling_tty()
+        with suppress(OSError):
+            os.unlink(label_override)
 
 
 def _compose_service_images(
