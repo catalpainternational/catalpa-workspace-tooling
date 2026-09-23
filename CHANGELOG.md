@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+### Added
+
+- **Stale local stack detection and auto-rebuild.** For **unpinned** managed envs
+  (`use_prepulled_registry` false — typically `dev` / `full`), `dk <env> …` now refuses to keep
+  using containers or images built from another branch or an older HEAD. On a mismatch it rebuilds
+  and, when the stack was already running, recreates; then it runs the command you asked for.
+  Pinned remote envs (`image_tag` set → pre-pulled) are untouched.
+
+  `COMPOSE_PROJECT_NAME` is fixed per env while `STACK_IMAGE_TAG` falls through to the git branch
+  name, so after a `git checkout` commands like `dk dev manage` or `dk full db restore` would
+  happily talk to the previous branch's stack — or, if that branch's tag was never built, fail deep
+  inside a restore with `manifest unknown`.
+
+  The image is the source of truth. Builds are stamped with `catalpa.git_sha` and
+  `catalpa.stack_image_tag`, and the check compares those labels against local git. No fingerprint
+  files, no persisted state.
+
+  **No changes are needed in your project's compose files.** Tooling generates a label-only compose
+  override and passes it as an extra `-f` at build time, so upgrading tooling is the entire
+  rollout. A project that declares its own `build.labels` keeps them — compose merges rather than
+  replaces.
+
+  The check is an **opt-out**, wired once in `handle_env_command` right after the deploy context
+  loads, so it covers `db restore`, `files restore`, `manage` and everything else without
+  enumerating subcommands. It skips pre-pulled envs, metadata and host-only commands
+  (`docker`, `zabbix`, `storage`, …), and teardown or read-only compose verbs
+  (`down`, `wipe`, `ps`, `logs`, `config`).
+
+  ```console
+  $ dk dev manage shell
+  Stale local stack — db: image was built for tag 'other-branch', checkout resolves to 'my-branch'
+  Rebuilding stack images to match the checkout …
+  ```
+
+  Escape hatch: `DK_SKIP_STALE_STACK=1`.
+
+  Cost: on the happy path a few `docker` inspects, sub-second locally. The first command after
+  upgrading pays one rebuild, because existing images carry no labels. Changing `catalpa.git_sha`
+  every commit does **not** bust the BuildKit layer cache — the labels are image-config metadata,
+  not `RUN` layers — so a rebuild after a small commit is typically seconds.
+
+  Two deliberate departures from the design in #61:
+
+  - **`--dry-run` reports staleness but does not rebuild.** The build guards this replaces did
+    build under `--dry-run`; a central hook that could burn fifteen minutes on a dry run is a
+    different proposition.
+  - **No running containers and no local image for the expected tag counts as _stale_**, not as
+    clean. "Nothing to compare against" means build. The original rule is exactly what would let
+    `dk dev db restore` proceed to `manifest unknown` with the stack down.
+
+  Caveats: uncommitted files do not move HEAD, so a dirty worktree alone triggers no rebuild —
+  `dev` bind-mounts still pick up code, but `full` needs an explicit rebuild for uncommitted baked
+  changes. The dev-only `node` service is not covered yet (#67).
+
 ### Fixed
 
 - **A missing stack image no longer reports itself as missing pgBackRest config.** The probe that

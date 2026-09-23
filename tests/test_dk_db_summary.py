@@ -1,4 +1,4 @@
-"""Regression: ``dk <env> db …`` deploy summary, and the ``db restore`` image build guard."""
+"""Regression: ``dk <env> db …`` deploy summary, and the stale-stack check before restore."""
 
 from __future__ import annotations
 
@@ -54,7 +54,9 @@ def test_db_restore_prints_deploy_summary_once(
         lambda _compose_file, env_add, **_kwargs: env_add,
     )
     monkeypatch.setattr(env_handlers, "run_unified_db_restore", lambda *_a, **_k: 0)
-    monkeypatch.setattr(env_handlers, "_ensure_local_stack_images_built", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        env_handlers, "ensure_stack_matches_checkout", lambda *_a, **_k: (0, None)
+    )
 
     ns = argparse.Namespace(
         env_name=env_name,
@@ -119,21 +121,22 @@ def _patch_env_handlers_for_restore(
     return config, env_name
 
 
-def test_db_restore_builds_stack_images_first(
+def test_db_restore_checks_the_stack_before_restoring(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_tooling: None
 ) -> None:
-    """`db restore` must build the db image before using it, as `init`/`configure` already do.
+    """`db restore` must go through the stale-stack check before using the db image.
 
-    Without this, an env with no pinned ``image_tag`` resolves ``STACK_IMAGE_TAG`` to the branch
+    Without it, an env with no pinned ``image_tag`` resolves ``STACK_IMAGE_TAG`` to the branch
     name; if that tag was never built the restore dies on ``manifest unknown`` partway through.
+    The check is central, so this covers the whole `db` family rather than `restore` alone.
     """
     config, env_name = _patch_env_handlers_for_restore(tmp_path, monkeypatch)
 
     order: list[str] = []
     monkeypatch.setattr(
         env_handlers,
-        "_ensure_local_stack_images_built",
-        lambda *_a, **_k: order.append("build") or 0,
+        "ensure_stack_matches_checkout",
+        lambda *_a, **_k: (order.append("ensure") or 0, None),
     )
     monkeypatch.setattr(
         env_handlers,
@@ -142,19 +145,21 @@ def test_db_restore_builds_stack_images_first(
     )
 
     assert env_handlers.handle_env_command(_restore_ns(env_name), config) == 0
-    assert order == ["build", "restore"]
+    assert order == ["ensure", "restore"]
 
 
-def test_db_restore_aborts_when_image_build_fails(
+def test_db_restore_aborts_when_stack_rebuild_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_tooling: None
 ) -> None:
-    """A failed build must stop the restore rather than let it run against a missing image."""
+    """A failed rebuild must stop the restore rather than let it run against a missing image."""
     config, env_name = _patch_env_handlers_for_restore(tmp_path, monkeypatch)
 
-    monkeypatch.setattr(env_handlers, "_ensure_local_stack_images_built", lambda *_a, **_k: 7)
+    monkeypatch.setattr(
+        env_handlers, "ensure_stack_matches_checkout", lambda *_a, **_k: (7, None)
+    )
 
     def _unreachable(*_a, **_k):
-        raise AssertionError("run_unified_db_restore ran after the image build failed")
+        raise AssertionError("run_unified_db_restore ran after the stack rebuild failed")
 
     monkeypatch.setattr(env_handlers, "run_unified_db_restore", _unreachable)
 
