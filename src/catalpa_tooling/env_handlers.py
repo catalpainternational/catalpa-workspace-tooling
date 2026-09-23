@@ -25,6 +25,7 @@ from catalpa_tooling.doctl_spaces_provision import (
     restic_write_configured,
 )
 from catalpa_tooling.managed_deploy_env import (
+    apply_worktree_overlay_for_env,
     load_managed_deploy_context,
     print_managed_deploy_header,
     resolve_compose_file_from_info,
@@ -431,8 +432,17 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if dry_run and _dry_run_exits_before_compose_env(peek) and env_command in (None, "compose"):
         if compose_file is None:
             return 1
+        # This exit skips the context load to avoid a SOPS decrypt, and the worktree overlay is
+        # applied in there — so the header used to describe the *main* env while the real run
+        # used the worktree's. `--dry-run` is the natural "which stack am I pointed at?" check,
+        # so answering with the wrong stack actively obstructed diagnosing #62.
+        ok, dry_run_info, _overlay, _applied = apply_worktree_overlay_for_env(
+            info, config.repo_root, env_name
+        )
+        if not ok:
+            return 1
         print_managed_deploy_header(
-            config, env_name, info, compose_file, tag_override=tag_override
+            config, env_name, dry_run_info, compose_file, tag_override=tag_override
         )
         return 0
 

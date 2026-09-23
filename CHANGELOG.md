@@ -58,6 +58,33 @@
 
 ### Fixed
 
+- **`dk worktree up` ran the *main* checkout's code in the worktree's stack** ([#62]). The stack
+  got the worktree's `COMPOSE_PROJECT_NAME`, its own volumes and its own hostname — and the main
+  checkout's source bind-mounted in. Every identity signal said "worktree"; only the mounts
+  disagreed, so the failure presented as "the change I just made doesn't show up", which people
+  reasonably misattribute to caching, migrations or their own code.
+
+  The cwd decided it. `_resolve_compose_file_from_info` returned a repo-relative path and
+  `_compose` never chdirs, so `-f compose.dev.yaml` resolved against the *process* cwd. Run from
+  the main checkout — the documented workflow, and what `dk worktree create` prints — that is the
+  main compose file, whose relative binds then point at the main tree. The module was already
+  internally inconsistent about this: `status` and `wipe` built an absolute path, `up` / `down` /
+  `restart` / `logs` did not.
+
+  Compose file paths are now absolute at the point of resolution, so every caller is cwd-
+  independent and the same command produces the same stack from anywhere. Worktree containers
+  created before this fix keep their wrong mounts until recreated; `dk worktree up` after
+  upgrading does that, since the changed bind source makes Compose recreate them.
+
+- **`dk worktree … --dry-run` reported the main env's identity** ([#62]). The early exit that
+  skips the SOPS decrypt also skipped the worktree overlay, so the output named the main env's
+  origin and omitted the `worktree overlay:` line entirely — nothing hinted a step had been
+  missed. `--dry-run` is the natural "which stack am I pointed at?" check, so this actively
+  obstructed diagnosing the mount bug above.
+
+- **`dk worktree up --dry-run` wrote `AGENTS.local.md`** ([#62]). A dry run now leaves the tree
+  alone; the refreshed content differs whenever the overlay or media path has moved.
+
 - **`dk worktree remove --wipe` now removes the worktree's `external:` volumes** ([#64]). Compose
   never deletes a volume declared `external: true` — it does not own what it did not create — so
   `down -v` left every one of them behind, including the seeded `postgres_data`. The command
@@ -146,6 +173,7 @@
   leftover file — a config nobody wrote, with no error anywhere.
 
 [#58]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/58
+[#62]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/62
 [#64]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/64
 
 ## 1.4.0
