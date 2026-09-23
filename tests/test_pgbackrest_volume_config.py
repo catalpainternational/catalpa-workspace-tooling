@@ -17,9 +17,12 @@ from catalpa_tooling.pgbackrest_volume_config import (
     ensure_postgres_data_volume,
     expected_pgbackrest_repo_settings,
     external_stack_volume_names,
+    materialize_configs,
     minimal_pgbackrest_baseline,
+    PgbackrestProbeUnavailable,
     pgbackrest_managed_conf_materialized,
     pgdata_volume_mount,
+    read_managed_pgbackrest_repo_settings,
     postgres_data_volume_name,
     remove_all_external_stack_volumes,
     remove_wipe_data_volumes,
@@ -355,6 +358,28 @@ class TestPgbackrestManagedConfMaterialized(unittest.TestCase):
     def test_false_in_none_mode(self) -> None:
         self.assertFalse(pgbackrest_managed_conf_materialized({}, config=_MINIMAL_CONFIG))
 
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_raises_when_docker_cannot_run_the_probe(self, mock_run: MagicMock) -> None:
+        """Exit 125 is docker failing to start, not an answer about the volume.
+
+        Reading it as "file absent" is what made a missing image report itself as missing
+        pgBackRest config.
+        """
+        mock_run.return_value = MagicMock(
+            returncode=125, stderr=b"docker: Error response from daemon: manifest unknown"
+        )
+        env = {"PGBR_S3_READ_STANZA": "main", "PGBR_S3_READ_BUCKET": "b"}
+        with self.assertRaises(PgbackrestProbeUnavailable) as ctx:
+            pgbackrest_managed_conf_materialized(env, config=_MINIMAL_CONFIG)
+        self.assertIn("manifest unknown", str(ctx.exception))
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_read_settings_raises_when_docker_cannot_run(self, mock_run: MagicMock) -> None:
+        """The `cat` probe conflated 125 with a real answer too."""
+        mock_run.return_value = MagicMock(returncode=125, stderr="no such image")
+        with self.assertRaises(PgbackrestProbeUnavailable):
+            read_managed_pgbackrest_repo_settings(_sample_read_env(), config=_MINIMAL_CONFIG)
+
 
 class TestParsePgbackrestManagedIni(unittest.TestCase):
     def test_parses_global_and_stanza(self) -> None:
@@ -505,6 +530,73 @@ class TestEnsurePgbackrestConfBeforeRestore(unittest.TestCase):
             0,
         )
         mock_mat_cfg.assert_called_once()
+
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.materialize_configs",
+        return_value=0,
+    )
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config.read_managed_pgbackrest_repo_settings",
+        side_effect=PgbackrestProbeUnavailable("could not run the check"),
+    )
+    @patch("catalpa_tooling.pgbackrest_volume_config.resolve_mode", return_value="read")
+    def test_unreadable_probe_aborts_without_rewriting_config(
+        self,
+        _mode: MagicMock,
+        _mock_read: MagicMock,
+        mock_mat_cfg: MagicMock,
+    ) -> None:
+        """When the probe cannot run, fail loudly — never offer to rewrite unread config.
+
+        The dangerous variant: a wrong-branch image makes the probe answer about the wrong
+        container, and good config gets silently overwritten.
+        """
+        rc = ensure_pgbackrest_conf_before_restore(
+            _sample_read_env(), skip_configure_confirm=True, config=_MINIMAL_CONFIG
+        )
+        self.assertEqual(rc, 1)
+        mock_mat_cfg.assert_not_called()
+
+
+class TestMaterializeConfigsClearsDropIns(unittest.TestCase):
+    @patch("catalpa_tooling.pgbackrest_volume_config._docker_run_rm")
+    @patch("catalpa_tooling.pgbackrest_volume_config._docker_run_cp")
+    @patch("catalpa_tooling.pgbackrest_volume_config._ensure_volume")
+    @patch("catalpa_tooling.pgbackrest_volume_config._docker_run_rm_other_confs")
+    def test_fails_when_stale_confs_cannot_be_cleared(
+        self,
+        mock_rm_others: MagicMock,
+        _mock_vol: MagicMock,
+        mock_cp: MagicMock,
+        _mock_rm: MagicMock,
+    ) -> None:
+        """A failure to clear stale ``*.conf`` drop-ins used to pass unnoticed.
+
+        pgBackRest then merges duplicate keys from the leftover file, which is silent and
+        produces a config nobody wrote.
+        """
+        mock_rm_others.return_value = 1
+        rc = materialize_configs(_sample_read_env(), dry_run=False, config=_MINIMAL_CONFIG)
+        self.assertEqual(rc, 1)
+        mock_cp.assert_not_called()
+
+    @patch("catalpa_tooling.pgbackrest_volume_config._docker_run_rm")
+    @patch("catalpa_tooling.pgbackrest_volume_config._docker_run_cp")
+    @patch("catalpa_tooling.pgbackrest_volume_config._ensure_volume")
+    @patch(
+        "catalpa_tooling.pgbackrest_volume_config._docker_run_rm_other_confs",
+        return_value=0,
+    )
+    def test_succeeds_when_clearing_works(
+        self,
+        _mock_rm_others: MagicMock,
+        _mock_vol: MagicMock,
+        mock_cp: MagicMock,
+        _mock_rm: MagicMock,
+    ) -> None:
+        rc = materialize_configs(_sample_read_env(), dry_run=False, config=_MINIMAL_CONFIG)
+        self.assertEqual(rc, 0)
+        mock_cp.assert_called()
 
 
 class TestRepoSettingsMatch(unittest.TestCase):

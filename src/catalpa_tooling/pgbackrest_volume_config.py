@@ -20,6 +20,33 @@ from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_targ
 # PG 18+ data directory when compose mounts ``pgdata:/var/lib/postgresql`` (not …/data).
 _PG18_PGDATA_RE = re.compile(r"^/var/lib/postgresql/\d+/")
 
+# ``docker run`` exits 125 when the CLI/daemon itself fails before the container starts:
+# image not found, daemon unreachable, dead SSH transport. The inner ``sh -c`` uses 1 for a
+# genuinely absent file, so 125 must never be read as an answer about volume contents.
+_DOCKER_CLI_FAILURE_RC = 125
+
+
+class PgbackrestProbeUnavailable(RuntimeError):
+    """A pgBackRest volume probe could not run, so its result says nothing about the volume."""
+
+
+def _raise_if_probe_unavailable(
+    proc: subprocess.CompletedProcess, *, image: str, what: str
+) -> None:
+    """Turn a ``docker run`` CLI failure into an explicit error instead of a false negative."""
+    if proc.returncode != _DOCKER_CLI_FAILURE_RC:
+        return
+    detail = (getattr(proc, "stderr", None) or b"")
+    if isinstance(detail, bytes):
+        detail = detail.decode("utf-8", "replace")
+    detail = detail.strip()
+    raise PgbackrestProbeUnavailable(
+        f"Could not {what}: `docker run` failed for image {image!r} "
+        f"(exit {_DOCKER_CLI_FAILURE_RC}). This says nothing about the volume contents — "
+        "the image is most likely missing or the Docker host is unreachable."
+        + (f"\n  {detail}" if detail else "")
+    )
+
 
 def postgres_pg1_path(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
     """Cluster data directory path inside the ``db`` container (pgBackRest ``pg1-path``)."""
@@ -184,6 +211,9 @@ def read_managed_pgbackrest_repo_settings(
         check=False,
         print_cmd=False,
     )
+    _raise_if_probe_unavailable(
+        r, image=image, what=f"read the managed pgBackRest drop-in from {vol_pgb!r}"
+    )
     if r.returncode != 0:
         return None
     return _parse_pgbackrest_managed_ini(r.stdout or "")
@@ -202,7 +232,10 @@ def describe_pgbackrest_conf_status(
         if conflict:
             return "credential conflict (WRITE and READ both set)"
         return "incomplete PGBR_S3_* credentials"
-    volume = read_managed_pgbackrest_repo_settings(env, config=config)
+    try:
+        volume = read_managed_pgbackrest_repo_settings(env, config=config)
+    except PgbackrestProbeUnavailable as e:
+        return f"volume config UNKNOWN — {e}"
     if volume is None:
         return "volume config missing (would run `db configure` before restore)"
     if repo_settings_match(volume, expected):
@@ -1027,10 +1060,10 @@ def _docker_run_rm_other_confs(
     docker_env: dict[str, str],
     *,
     image: str,
-) -> None:
+) -> int:
     """Remove other ``*.conf`` drop-ins so pgBackRest/Postgres do not merge duplicate keys."""
     keep = shlex.quote(keep_filename)
-    run_cmd(
+    return run_cmd(
         [
             "docker",
             "run",
@@ -1052,7 +1085,7 @@ def _docker_run_rm_other_confs(
         ],
         env=docker_env,
         check=False,
-    )
+    ).returncode
 
 
 def _docker_env_for_remote(env: dict[str, str]) -> dict[str, str]:
@@ -1329,7 +1362,9 @@ def pgbackrest_managed_conf_materialized(
         env=docker_env,
         capture_output=True,
         check=False,
-        print_cmd=False,
+    )
+    _raise_if_probe_unavailable(
+        r, image=image, what=f"check for the managed pgBackRest drop-in in {vol_pgb!r}"
     )
     return r.returncode == 0
 
@@ -1373,7 +1408,13 @@ def ensure_pgbackrest_conf_before_restore(
             print(missing_err, file=sys.stderr)
         return 1
 
-    volume = read_managed_pgbackrest_repo_settings(env, config=config)
+    try:
+        volume = read_managed_pgbackrest_repo_settings(env, config=config)
+    except PgbackrestProbeUnavailable as e:
+        # Never fall through to the "config is missing" branch below: that offers to rewrite
+        # config we were unable to read, which silently destroys a good drop-in.
+        print(f"pgBackRest restore: {e}", file=sys.stderr)
+        return 1
     if volume and repo_settings_match(volume, expected):
         return 0
 
@@ -1481,11 +1522,19 @@ def materialize_configs(
         log(f"pgBackRest: docker volume failed: {e}")
         return 1
 
+    def rm_other_confs_or_fail(volume: str, keep_filename: str) -> None:
+        """Failing to clear stale drop-ins leaves pgBackRest merging duplicate keys — never silent."""
+        rc = _docker_run_rm_other_confs(volume, keep_filename, docker_env, image=image)
+        if rc != 0:
+            raise subprocess.CalledProcessError(
+                rc, f"docker run (clear *.conf drop-ins in {volume})"
+            )
+
     try:
         if mode == "none":
-            _docker_run_rm_other_confs(vol_pg, postgres_conf, docker_env, image=image)
+            rm_other_confs_or_fail(vol_pg, postgres_conf)
             _docker_run_rm(vol_pg, postgres_conf, docker_env, image=image)
-            _docker_run_rm_other_confs(vol_pgb, pgbackrest_conf, docker_env, image=image)
+            rm_other_confs_or_fail(vol_pgb, pgbackrest_conf)
             _docker_run_cp(
                 vol_pgb,
                 pgbackrest_conf,
@@ -1504,11 +1553,11 @@ def materialize_configs(
 
         pg1 = postgres_pg1_path(env, config=config)
         pgbr_content = render_pgbackrest_ini(mode, vars_map, env, pg1_path=pg1)
-        _docker_run_rm_other_confs(vol_pgb, pgbackrest_conf, docker_env, image=image)
+        rm_other_confs_or_fail(vol_pgb, pgbackrest_conf)
         _docker_run_cp(vol_pgb, pgbackrest_conf, pgbr_content, docker_env, image=image)
 
         if mode == "write":
-            _docker_run_rm_other_confs(vol_pg, postgres_conf, docker_env, image=image)
+            rm_other_confs_or_fail(vol_pg, postgres_conf)
             _docker_run_cp(
                 vol_pg,
                 postgres_conf,

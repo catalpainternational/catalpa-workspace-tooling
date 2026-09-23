@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+### Added
+
+- **Stale local stack detection and auto-rebuild.** For **unpinned** managed envs
+  (`use_prepulled_registry` false — typically `dev` / `full`), `dk <env> …` now refuses to keep
+  using containers or images built from another branch or an older HEAD. On a mismatch it rebuilds
+  and, when the stack was already running, recreates; then it runs the command you asked for.
+  Pinned remote envs (`image_tag` set → pre-pulled) are untouched.
+
+  `COMPOSE_PROJECT_NAME` is fixed per env while `STACK_IMAGE_TAG` falls through to the git branch
+  name, so after a `git checkout` commands like `dk dev manage` or `dk full db restore` would
+  happily talk to the previous branch's stack — or, if that branch's tag was never built, fail deep
+  inside a restore with `manifest unknown`.
+
+  The image is the source of truth. Builds are stamped with `catalpa.git_sha` and
+  `catalpa.stack_image_tag`, and the check compares those labels against local git. No fingerprint
+  files, no persisted state.
+
+  **No changes are needed in your project's compose files.** Tooling generates a label-only compose
+  override and passes it as an extra `-f` at build time, so upgrading tooling is the entire
+  rollout. A project that declares its own `build.labels` keeps them — compose merges rather than
+  replaces.
+
+  The check is an **opt-out**, wired once in `handle_env_command` right after the deploy context
+  loads, so it covers `db restore`, `files restore`, `manage` and everything else without
+  enumerating subcommands. It skips pre-pulled envs, metadata and host-only commands
+  (`docker`, `zabbix`, `storage`, …), and teardown or read-only compose verbs
+  (`down`, `wipe`, `ps`, `logs`, `config`).
+
+  ```console
+  $ dk dev manage shell
+  Stale local stack — db: image was built for tag 'other-branch', checkout resolves to 'my-branch'
+  Rebuilding stack images to match the checkout …
+  ```
+
+  Escape hatch: `DK_SKIP_STALE_STACK=1`.
+
+  Cost: on the happy path a few `docker` inspects, sub-second locally. The first command after
+  upgrading pays one rebuild, because existing images carry no labels. Changing `catalpa.git_sha`
+  every commit does **not** bust the BuildKit layer cache — the labels are image-config metadata,
+  not `RUN` layers — so a rebuild after a small commit is typically seconds.
+
+  Two deliberate departures from the design in #61:
+
+  - **`--dry-run` reports staleness but does not rebuild.** The build guards this replaces did
+    build under `--dry-run`; a central hook that could burn fifteen minutes on a dry run is a
+    different proposition.
+  - **No running containers and no local image for the expected tag counts as _stale_**, not as
+    clean. "Nothing to compare against" means build. The original rule is exactly what would let
+    `dk dev db restore` proceed to `manifest unknown` with the stack down.
+
+  Caveats: uncommitted files do not move HEAD, so a dirty worktree alone triggers no rebuild —
+  `dev` bind-mounts still pick up code, but `full` needs an explicit rebuild for uncommitted baked
+  changes. The dev-only `node` service is not covered yet (#67).
+
 ### Fixed
 
 - **`dk worktree remove --wipe` now removes the worktree's `external:` volumes** ([#64]). Compose
@@ -17,6 +71,12 @@
   `dk dev wipe` is unchanged — that env stays reusable and `db configure` rewrites its conf
   volumes on the next `up`.
 
+  Every volume is attempted even if one cannot be removed (a container still using it, say), so
+  the report covers all five rather than stopping at the first problem. If any fail, the checkout
+  is kept and the command exits non-zero — stranding volumes behind a removed worktree is the
+  silent-orphan failure this fixes. Re-run once the volume is free; those already removed are
+  skipped.
+
   Built images tagged with the worktree's project name are still left behind; removing those is
   a separate decision.
 
@@ -26,10 +86,44 @@
   and `docker start` then failed with an opaque rootfs error — from an unrelated project, since
   the proxy is shared. `proxy up` now checks the bind source first and recreates the container
   when it has vanished. The local dev CA is persisted on the host and is kept, so nothing needs
-  re-trusting.
+  re-trusting. If removing the stale container fails, `proxy up` reports why and stops rather
+  than continuing into a "container name already in use" collision that hides the real cause.
 
   A mount pointing at a *different but still live* install is left alone: it is the same bundled
   asset, and recreating would make the shared proxy bounce between projects.
+
+- **A missing stack image no longer reports itself as missing pgBackRest config.** The probe that
+  checks the `pgbackrest_conf` volume for the managed drop-in runs a throwaway container from the
+  `db` image and read any non-zero exit as "the file is not there". `docker run` exits 125 when the
+  CLI or daemon fails *before* the container starts — image not found, daemon unreachable, dead SSH
+  transport — which is indistinguishable from the inner `sh -c` exiting 1 for a genuinely absent
+  file. So an env whose `STACK_IMAGE_TAG` resolved to a branch that was never built produced:
+
+  ```
+  pgBackRest restore: managed config is missing on the deploy host
+  ('<project>_pgbackrest_conf' has no 50-managed.conf with pg1-path).
+  ```
+
+  — and then offered to rewrite a `50-managed.conf` that was present and correct the whole time.
+  Exit 125 now raises `PgbackrestProbeUnavailable`, naming the unresolvable image, and
+  `db restore` / `db configure --stanza-create` abort instead of falling through to the rewrite
+  offer. The nastier variant this also closes: an image present but built from the wrong branch,
+  where the probe answers about the wrong container and good config is silently overwritten.
+
+  The probe also ran with `print_cmd=False`, so the first failing `docker run` was invisible and
+  the failure appeared to start at the write step. It is echoed now.
+
+- **`dk <env> db restore` builds the stack images first**, as `db init` and `db configure` already
+  did. The restore path reaches `materialize_configs` through
+  `ensure_pgbackrest_conf_before_restore` and runs volume operations from the `db` image, so on an
+  env with no pinned `image_tag` — where `STACK_IMAGE_TAG` falls back to the git branch name — it
+  died on `manifest unknown` partway through. Answering **y** to *"Run `db configure` now?"* from
+  inside `db restore` did the same work as `dk <env> db configure` but without the build, so one
+  succeeded and the other did not.
+
+- **A failure to clear stale `*.conf` drop-ins is no longer silent.** `_docker_run_rm_other_confs`
+  ignored its exit code, so a genuine failure left pgBackRest merging duplicate keys from a
+  leftover file — a config nobody wrote, with no error anywhere.
 
 [#58]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/58
 [#64]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/64

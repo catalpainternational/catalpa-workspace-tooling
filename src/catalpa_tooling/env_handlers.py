@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 import yaml
@@ -66,6 +67,12 @@ from catalpa_tooling.remote_deploy import (
     _top_level_zbx_env_from_info,
     _zabbix_env_defaults,
     resolve_deploy_env_name,
+)
+from catalpa_tooling.stale_stack import (
+    drop_no_build_when_stale,
+    ensure_stack_matches_checkout,
+    should_ensure_stack_checkout,
+    write_label_override,
 )
 from catalpa_tooling.restic_files import (
     merge_restic_verbose_from_cli,
@@ -184,6 +191,18 @@ def _ensure_stack_volumes(
     return ensure_external_stack_volumes(env_add, dry_run=dry_run, config=config)
 
 
+def _compose_args_may_build(compose_args: list[str]) -> bool:
+    """True when this compose invocation can build images (and so should stamp labels)."""
+    if not compose_args:
+        return True  # defaults to `up -d`
+    verb = compose_args[0]
+    if verb == "build":
+        return True
+    if verb != "up":
+        return False
+    return "--no-build" not in compose_args
+
+
 def _run_compose_path(
     ns: argparse.Namespace,
     config: ProjectConfig,
@@ -296,13 +315,27 @@ def _run_compose_path(
         print(str(e), file=sys.stderr)
         return 1
     extra_compose_files = merge_extra_compose_files(proxy_files, tls_files)
-    proc = _compose(
-        compose_file,
-        *compose_args,
-        env_add=env_add,
-        extra_compose_files=extra_compose_files,
-        check=False,
+    # Stamp catalpa.* build labels whenever this compose run may build, so `stale_stack` can tell
+    # which branch and commit the resulting images came from.
+    label_override = (
+        write_label_override(config) if _compose_args_may_build(compose_args) else None
     )
+    if label_override:
+        extra_compose_files = merge_extra_compose_files(
+            extra_compose_files, [label_override]
+        )
+    try:
+        proc = _compose(
+            compose_file,
+            *compose_args,
+            env_add=env_add,
+            extra_compose_files=extra_compose_files,
+            check=False,
+        )
+    finally:
+        if label_override:
+            with suppress(OSError):
+                os.unlink(label_override)
     if proc.returncode != 0:
         return proc.returncode
     if compose_args and compose_args[0] == "down":
@@ -425,6 +458,29 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     env_add = resolve_env_with_compose_project(
         compose_file, env_add, config=config, dk_env_name=env_name
     )
+
+    # One central check, before any branching on env_command, so `db restore`, `files restore`
+    # and `manage` are all covered without enumerating subcommands. Opt-out, not an allowlist.
+    if compose_file and should_ensure_stack_checkout(
+        env_command, compose_args, use_prepulled_registry=use_prepulled_registry
+    ):
+        # The compose path runs its own `up` moments later, so let it do the recreate rather
+        # than recreating every container twice.
+        caller_runs_up = env_command in (None, "compose") and (
+            not compose_args or compose_args[0] == "up"
+        )
+        rc, stale_reason = ensure_stack_matches_checkout(
+            config,
+            compose_file,
+            env_add,
+            use_prepulled_registry=use_prepulled_registry,
+            dry_run=dry_run,
+            recreate=not caller_runs_up,
+        )
+        if rc != 0:
+            return rc
+        if stale_reason is not None and caller_runs_up:
+            compose_args = drop_no_build_when_stale(compose_args)
 
     if env_command == "docker":
         return run_docker_passthrough(
@@ -714,13 +770,6 @@ def _handle_bkp_db(
             return rc
 
     if sub == "init":
-        rc = _ensure_local_stack_images_built(
-            config,
-            env_add,
-            use_prepulled_registry=use_prepulled_registry,
-        )
-        if rc != 0:
-            return rc
         img = postgres_image_from_env(env_add, config=config)
         print(f"Postgres image (volume ops / pgBackRest): {img}", file=sys.stderr)
         rc = run_bkp_db_init(
@@ -747,13 +796,6 @@ def _handle_bkp_db(
         )
 
     if sub == "configure":
-        rc = _ensure_local_stack_images_built(
-            config,
-            env_add,
-            use_prepulled_registry=use_prepulled_registry,
-        )
-        if rc != 0:
-            return rc
         img = postgres_image_from_env(env_add, config=config)
         print(f"Postgres image (volume ops / pgBackRest): {img}", file=sys.stderr)
         rc = materialize_configs(env_add, dry_run=False, postgres_image=img, config=config)
