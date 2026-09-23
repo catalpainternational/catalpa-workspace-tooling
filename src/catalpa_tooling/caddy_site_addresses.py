@@ -1,9 +1,14 @@
 """Inject Caddy site-block address env vars (``CADDY_*_SITE_ADDRESS``).
 
-Caddy site blocks in bero (and ambulancia) stacks key off ``CADDY_SITE_ADDRESS`` /
-``CADDY_DJANGO_SITE_ADDRESS`` / ``CADDY_METABASE_SITE_ADDRESS`` rather than the plain
-origin vars. Those compose defaults are ``http://…`` so, without injection, a deployed
-stack never turns on Caddy automatic HTTPS.
+Caddy site blocks key off ``CADDY_SITE_ADDRESS`` / ``CADDY_DJANGO_SITE_ADDRESS`` /
+``CADDY_METABASE_SITE_ADDRESS`` rather than the plain origin vars. Those compose defaults
+are ``http://…`` so, without injection, a deployed stack never turns on Caddy automatic
+HTTPS.
+
+Which addresses a stack gets follows from what it *declares*, never from what it is
+named: ``DJANGO_ORIGIN`` / ``METABASE_ORIGIN`` in ``info.yaml`` ``env:``, or a
+``local_proxy.roles`` entry. A project with no admin or stats host declared gets only the
+primary address.
 
 Optional ``redirect_origins`` in ``info.yaml`` become ``CADDY_REDIRECT_SITE_ADDRESSES``
 (space-separated) for a redirect-only Caddy site block — never mixed into ``DOMAIN`` or
@@ -35,19 +40,6 @@ from catalpa_tooling.site_origin import (
 
 if TYPE_CHECKING:
     from catalpa_tooling.config import ProjectConfig
-
-
-def is_bero_stack(config: ProjectConfig) -> bool:
-    """True when this project embeds bero (``bero`` among ``paths.frontend``).
-
-    Only bero stacks ship the ``{$CADDY_DJANGO_SITE_ADDRESS}`` admin-redirect site block,
-    so the Django Caddy address is bero-only.
-
-    Any declared frontend counts, not just the primary: a bero project that adds
-    a second SPA still ships the bero site block, and declaring the new one
-    first must not silently drop it.
-    """
-    return any(rel.strip() == "bero" for rel in config.paths.frontend)
 
 
 def _role_origin(
@@ -105,19 +97,19 @@ def _apply_deployed(
     config: ProjectConfig,
     env_name: str,
     site_origin: str,
-    site_origins: list[str],
 ) -> None:
-    """HTTPS Caddy addresses for remote staging/prod (Caddy terminates TLS itself)."""
+    """HTTPS Caddy addresses for remote staging/prod (Caddy terminates TLS itself).
+
+    Explicit-only: the admin site block appears when ``DJANGO_ORIGIN`` is declared, and
+    no ``admin.`` subdomain is invented for a stack that did not ask for one.
+    """
     if not site_origin:
         return
 
     env_add.setdefault("CADDY_SITE_ADDRESS", site_origin)
 
-    if is_bero_stack(config):
-        django_origin = env_add.get("DJANGO_ORIGIN")
-        if not django_origin:
-            django_origin = _role_origin(config, env_name, site_origin, "admin")
-            env_add.setdefault("DJANGO_ORIGIN", django_origin)
+    django_origin = env_add.get("DJANGO_ORIGIN")
+    if django_origin:
         env_add.setdefault("CADDY_DJANGO_SITE_ADDRESS", django_origin)
 
     metabase_origin = _deployed_metabase_origin(
@@ -126,7 +118,6 @@ def _apply_deployed(
         config=config,
         env_name=env_name,
         site_origin=site_origin,
-        site_origins=site_origins,
     )
     if metabase_origin:
         env_add.setdefault("CADDY_METABASE_SITE_ADDRESS", metabase_origin)
@@ -139,22 +130,21 @@ def _deployed_metabase_origin(
     config: ProjectConfig,
     env_name: str,
     site_origin: str,
-    site_origins: list[str],
 ) -> str | None:
     """Metabase site-block origin for a deployed stack, or None when Metabase isn't routed.
 
-    First matching signal wins; only explicit config / clear stack signals set the address
-    so non-Metabase projects never get a bogus ``CADDY_METABASE_SITE_ADDRESS``.
+    First matching signal wins, and both are explicit declarations, so a project that
+    never asked to publish Metabase cannot get a bogus ``CADDY_METABASE_SITE_ADDRESS``.
+
+    Note that ``native.fetch.databases.metabase`` is deliberately *not* a signal: it says
+    a Metabase database can be fetched for local work, not that Metabase is routed on a
+    public hostname.
     """
     explicit = env_add.get("METABASE_ORIGIN") or env_add.get("METABASE_SITE_ORIGIN")
     if explicit:
         return explicit
     if "stats" in local_proxy_role_names(info):
         return _role_origin(config, env_name, site_origin, "stats")
-    if is_bero_stack(config) and config.has_metabase_fetch():
-        return _role_origin(config, env_name, site_origin, "stats")
-    if not is_bero_stack(config) and len(site_origins) > 1:
-        return site_origins[1]
     return None
 
 
@@ -199,7 +189,6 @@ def apply_caddy_site_addresses(
     config: ProjectConfig,
     env_name: str,
     site_origin: str,
-    site_origins: list[str],
     behind_local_proxy: bool,
 ) -> None:
     """Populate ``CADDY_*_SITE_ADDRESS`` (and related origins) in ``env_add`` in place."""
@@ -218,7 +207,6 @@ def apply_caddy_site_addresses(
             config=config,
             env_name=env_name,
             site_origin=site_origin,
-            site_origins=site_origins,
         )
     _apply_redirect_site_addresses(
         env_add,
