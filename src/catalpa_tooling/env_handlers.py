@@ -792,6 +792,16 @@ def _handle_bkp_db(
         )
 
     if sub == "restore":
+        # The restore path reaches `materialize_configs` via `ensure_pgbackrest_conf_before_restore`
+        # and runs volume ops from the db image, so it needs the same guard as `init`/`configure`.
+        # Without it, an unbuilt branch tag surfaces as `manifest unknown` mid-restore.
+        rc = _ensure_local_stack_images_built(
+            config,
+            env_add,
+            use_prepulled_registry=use_prepulled_registry,
+        )
+        if rc != 0:
+            return rc
         return run_unified_db_restore(
             config,
             compose_file=compose_file,

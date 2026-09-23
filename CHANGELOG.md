@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A missing stack image no longer reports itself as missing pgBackRest config.** The probe that
+  checks the `pgbackrest_conf` volume for the managed drop-in runs a throwaway container from the
+  `db` image and read any non-zero exit as "the file is not there". `docker run` exits 125 when the
+  CLI or daemon fails *before* the container starts — image not found, daemon unreachable, dead SSH
+  transport — which is indistinguishable from the inner `sh -c` exiting 1 for a genuinely absent
+  file. So an env whose `STACK_IMAGE_TAG` resolved to a branch that was never built produced:
+
+  ```
+  pgBackRest restore: managed config is missing on the deploy host
+  ('<project>_pgbackrest_conf' has no 50-managed.conf with pg1-path).
+  ```
+
+  — and then offered to rewrite a `50-managed.conf` that was present and correct the whole time.
+  Exit 125 now raises `PgbackrestProbeUnavailable`, naming the unresolvable image, and
+  `db restore` / `db configure --stanza-create` abort instead of falling through to the rewrite
+  offer. The nastier variant this also closes: an image present but built from the wrong branch,
+  where the probe answers about the wrong container and good config is silently overwritten.
+
+  The probe also ran with `print_cmd=False`, so the first failing `docker run` was invisible and
+  the failure appeared to start at the write step. It is echoed now.
+
+- **`dk <env> db restore` builds the stack images first**, as `db init` and `db configure` already
+  did. The restore path reaches `materialize_configs` through
+  `ensure_pgbackrest_conf_before_restore` and runs volume operations from the `db` image, so on an
+  env with no pinned `image_tag` — where `STACK_IMAGE_TAG` falls back to the git branch name — it
+  died on `manifest unknown` partway through. Answering **y** to *"Run `db configure` now?"* from
+  inside `db restore` did the same work as `dk <env> db configure` but without the build, so one
+  succeeded and the other did not.
+
+- **A failure to clear stale `*.conf` drop-ins is no longer silent.** `_docker_run_rm_other_confs`
+  ignored its exit code, so a genuine failure left pgBackRest merging duplicate keys from a
+  leftover file — a config nobody wrote, with no error anywhere.
+
 ## 1.4.0
 
 ### Added

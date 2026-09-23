@@ -1,4 +1,4 @@
-"""Regression: ``dk <env> db …`` must not print the deploy summary twice."""
+"""Regression: ``dk <env> db …`` deploy summary, and the ``db restore`` image build guard."""
 
 from __future__ import annotations
 
@@ -54,6 +54,7 @@ def test_db_restore_prints_deploy_summary_once(
         lambda _compose_file, env_add, **_kwargs: env_add,
     )
     monkeypatch.setattr(env_handlers, "run_unified_db_restore", lambda *_a, **_k: 0)
+    monkeypatch.setattr(env_handlers, "_ensure_local_stack_images_built", lambda *_a, **_k: 0)
 
     ns = argparse.Namespace(
         env_name=env_name,
@@ -66,3 +67,95 @@ def test_db_restore_prints_deploy_summary_once(
     rc = env_handlers.handle_env_command(ns, config)
     assert rc == 0
     assert summary_calls == 1
+
+
+def _restore_ns(env_name: str) -> argparse.Namespace:
+    return argparse.Namespace(
+        env_name=env_name,
+        env_command="db",
+        db_command="restore",
+        pgbackrest_restore_args=[],
+        yes=True,
+        tag=None,
+    )
+
+
+def _patch_env_handlers_for_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> "tuple[object, str]":
+    """Minimal ``dk dev db restore`` wiring; returns (config, env_name)."""
+    env_name = "dev"
+    deploy_dir = tmp_path / "docker" / "envs" / env_name
+    deploy_dir.mkdir(parents=True)
+    info = {
+        "name": env_name,
+        "docker_host": "",
+        "site_origin": "http://example.test:9004",
+        "env": {},
+    }
+    (deploy_dir / "info.yaml").write_text(yaml.safe_dump(info), encoding="utf-8")
+    write_minimal_tooling_tree(tmp_path)
+    config = load_project_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(env_handlers, "resolve_compose_file_from_info", lambda *_: "compose.yml")
+    monkeypatch.setattr(
+        env_handlers,
+        "load_managed_deploy_context",
+        lambda *_a, **_k: SimpleNamespace(
+            env_add={},
+            docker_host="",
+            site_origin="http://example.test:9004",
+            use_prepulled_registry=False,
+            storage_volumes={},
+            info=info,
+        ),
+    )
+    monkeypatch.setattr(
+        env_handlers,
+        "resolve_env_with_compose_project",
+        lambda _compose_file, env_add, **_kwargs: env_add,
+    )
+    return config, env_name
+
+
+def test_db_restore_builds_stack_images_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_tooling: None
+) -> None:
+    """`db restore` must build the db image before using it, as `init`/`configure` already do.
+
+    Without this, an env with no pinned ``image_tag`` resolves ``STACK_IMAGE_TAG`` to the branch
+    name; if that tag was never built the restore dies on ``manifest unknown`` partway through.
+    """
+    config, env_name = _patch_env_handlers_for_restore(tmp_path, monkeypatch)
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        env_handlers,
+        "_ensure_local_stack_images_built",
+        lambda *_a, **_k: order.append("build") or 0,
+    )
+    monkeypatch.setattr(
+        env_handlers,
+        "run_unified_db_restore",
+        lambda *_a, **_k: order.append("restore") or 0,
+    )
+
+    assert env_handlers.handle_env_command(_restore_ns(env_name), config) == 0
+    assert order == ["build", "restore"]
+
+
+def test_db_restore_aborts_when_image_build_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_tooling: None
+) -> None:
+    """A failed build must stop the restore rather than let it run against a missing image."""
+    config, env_name = _patch_env_handlers_for_restore(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(env_handlers, "_ensure_local_stack_images_built", lambda *_a, **_k: 7)
+
+    def _unreachable(*_a, **_k):
+        raise AssertionError("run_unified_db_restore ran after the image build failed")
+
+    monkeypatch.setattr(env_handlers, "run_unified_db_restore", _unreachable)
+
+    assert env_handlers.handle_env_command(_restore_ns(env_name), config) == 7
