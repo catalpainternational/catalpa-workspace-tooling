@@ -37,7 +37,7 @@ from catalpa_tooling.restic_files import resolve_env_with_compose_project
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import primary_site_origin_from_info
 
-# Compose service that holds frontend deps (bero ``compose.dev.yaml`` ``node``).
+# Compose service that holds frontend deps (the ``node`` service in ``compose.dev.yaml``).
 _DEFAULT_NODE_SERVICE = "node"
 
 
@@ -427,8 +427,9 @@ def _resolve_db_owner(
     """Resolve the app DB role for ``CREATE DATABASE … OWNER``.
 
     ``DJANGO_DB_USER`` usually lives in compose ``env_file`` / container env, not in
-    ``info.yaml`` / credentials ``env_add``. Falling back to ``project.name`` (e.g.
-    ``catalpa_bero``) creates a non-existent role — probe the stack instead.
+    ``info.yaml`` / credentials ``env_add``. Falling back to ``project.name`` creates a
+    non-existent role whenever the DB user differs from the project slug — probe the
+    stack instead.
     """
     owner = _lookup_db_user(env_add, config)
     if owner:
@@ -799,9 +800,9 @@ def _run_one_frontend_build(
     the compose file (image already has ``node_modules``). Fall back to a host
     package-manager run for native setups without a node service.
 
-    Bero's webpack uses ``transpileOnly`` + ForkTsChecker; a bare ``webpack --mode=production``
-    can exit 0 despite TypeScript errors. Prefer an explicit ``type-check`` script
-    (``tsc --noEmit``), then ``build`` (which may also chain type-check).
+    A webpack build using ``transpileOnly`` + ForkTsChecker can exit 0 despite TypeScript
+    errors. Prefer an explicit ``type-check`` script (``tsc --noEmit``), then ``build``
+    (which may also chain type-check).
     """
     from catalpa_tooling.native_cli import _run_pkg_script
 
