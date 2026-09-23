@@ -132,7 +132,7 @@ class DeployPathsConfig:
 @dataclass(frozen=True)
 class PathsConfig:
     backend: str
-    frontend: str
+    frontend: tuple[str, ...]
     prototype: str | None
     scripts: tuple[str, ...]
     env_local: str
@@ -141,6 +141,16 @@ class PathsConfig:
     fetch_db_dump: str
     fetch_metabase_db_dump: str | None
     deploy_optional: DeployPathsConfig | None
+
+    @property
+    def frontend_primary(self) -> str:
+        """First ``paths.frontend`` entry — the one a single-frontend command means.
+
+        A dev server, one Playwright smoke suite, one ``CATALPA_FRONTEND_DIR``:
+        most commands address exactly one frontend, and that is the first
+        declared. Only the ``tests ci`` build gate fans out over all of them.
+        """
+        return self.frontend[0]
 
     @property
     def deploy(self) -> DeployPathsConfig:
@@ -609,7 +619,13 @@ class ProjectConfig:
 
     @property
     def frontend_dir(self) -> Path:
-        return self.repo_root / self.paths.frontend
+        """Primary frontend directory (first ``paths.frontend`` entry)."""
+        return self.repo_root / self.paths.frontend_primary
+
+    @property
+    def frontend_dirs(self) -> tuple[Path, ...]:
+        """All configured frontend directories (``paths.frontend`` string or list)."""
+        return tuple(self.repo_root / rel for rel in self.paths.frontend)
 
     @property
     def prototype_dir(self) -> Path | None:
@@ -939,24 +955,37 @@ def _parse_env_aliases(raw: Any) -> dict[str, str]:
     return out
 
 
-def _parse_scripts_paths(raw: Any) -> tuple[str, ...]:
-    """``paths.scripts``: single directory or ordered list (first wins on name clash)."""
+def _parse_path_list(raw: Any, *, field: str, required: bool = False) -> tuple[str, ...]:
+    """A ``paths.*`` key accepting a single directory or an ordered list.
+
+    Always returns a tuple, so callers never branch on the manifest's shape.
+    Order is meaningful: the first entry is the primary one (``scripts_dir``,
+    ``frontend_dir``), and for ``paths.scripts`` it is also the one that wins on
+    a script-name clash.
+    """
+    if raw is None and required:
+        raise ProjectConfigError(f"Missing required key: {field}")
     if isinstance(raw, str):
         s = raw.strip()
         if not s:
-            raise ProjectConfigError("paths.scripts must not be empty")
-        return (_validate_rel_path(s, field="paths.scripts"),)
+            raise ProjectConfigError(f"{field} must not be empty")
+        return (_validate_rel_path(s, field=field),)
     if isinstance(raw, list):
         if not raw:
-            raise ProjectConfigError("paths.scripts list must not be empty")
+            raise ProjectConfigError(f"{field} list must not be empty")
         out: list[str] = []
         for i, item in enumerate(raw):
             s = str(item).strip()
             if not s:
-                raise ProjectConfigError(f"Empty entry in paths.scripts[{i}]")
-            out.append(_validate_rel_path(s, field=f"paths.scripts[{i}]"))
+                raise ProjectConfigError(f"Empty entry in {field}[{i}]")
+            out.append(_validate_rel_path(s, field=f"{field}[{i}]"))
         return tuple(out)
-    raise ProjectConfigError("paths.scripts must be a string or list of strings")
+    raise ProjectConfigError(f"{field} must be a string or list of strings")
+
+
+def _parse_scripts_paths(raw: Any) -> tuple[str, ...]:
+    """``paths.scripts``: single directory or ordered list (first wins on name clash)."""
+    return _parse_path_list(raw, field="paths.scripts")
 
 
 def _db_name_from_dump_path(dump_rel: str, *, project_name: str) -> str:
@@ -1146,8 +1175,8 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
         backend=_validate_rel_path(
             _require_str(paths_raw, "backend", section="paths"), field="paths.backend"
         ),
-        frontend=_validate_rel_path(
-            _require_str(paths_raw, "frontend", section="paths"), field="paths.frontend"
+        frontend=_parse_path_list(
+            paths_raw.get("frontend"), field="paths.frontend", required=True
         ),
         prototype=(
             _validate_rel_path(p, field="paths.prototype")
@@ -1748,7 +1777,7 @@ def _parse_compliance(raw: Any, *, paths: PathsConfig) -> ComplianceConfig | Non
         raise ProjectConfigError("compliance must be a mapping")
     project_license = _require_str(raw, "project_license", section="compliance")
     if "license_files" not in raw:
-        license_files = (f"{paths.frontend}/LICENSE",)
+        license_files = (f"{paths.frontend_primary}/LICENSE",)
     else:
         license_files = _parse_string_list(
             raw.get("license_files"), field="compliance.license_files"
@@ -1772,7 +1801,7 @@ def _parse_compliance(raw: Any, *, paths: PathsConfig) -> ComplianceConfig | Non
     )
     javascript_raw = raw.get("javascript")
     javascript = (
-        _parse_compliance_javascript(javascript_raw, frontend=paths.frontend)
+        _parse_compliance_javascript(javascript_raw, frontend=paths.frontend_primary)
         if "javascript" in raw
         else None
     )
@@ -1801,7 +1830,7 @@ def _infer_compliance_config(
         license_files=(),
         python=None,
         javascript=ComplianceJavascriptConfig(
-            cwd=paths.frontend,
+            cwd=paths.frontend_primary,
             lockfile=lockfile,
             production_only=True,
         ),
@@ -1821,8 +1850,7 @@ def resolve_compliance_config(config: ProjectConfig) -> ComplianceConfig | None:
         return config.compliance
     from catalpa_tooling.compliance.javascript_scan import infer_javascript_lockfile
 
-    frontend_dir = config.repo_root / config.paths.frontend
-    lockfile = infer_javascript_lockfile(frontend_dir)
+    lockfile = infer_javascript_lockfile(config.frontend_dir)
     if lockfile is not None:
         return _infer_compliance_config(config.paths, lockfile=lockfile)
     return None

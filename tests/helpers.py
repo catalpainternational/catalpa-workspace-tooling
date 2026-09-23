@@ -34,7 +34,7 @@ def parse_native_for_test(raw: dict | None) -> "NativeConfig":
 
     paths = PathsConfig(
         backend="backend",
-        frontend="frontend",
+        frontend=("frontend",),
         prototype=None,
         scripts=("scripts",),
         env_local=".env.local",

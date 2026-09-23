@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import yaml
 
@@ -783,13 +784,16 @@ def _run_frontend_script_in_compose(
     ).returncode
 
 
-def _run_frontend_build(
+def _run_one_frontend_build(
     config: ProjectConfig,
+    frontend_dir: Path,
     *,
+    label: str,
+    allow_compose: bool,
     compose_file: str | None = None,
     env_add: dict[str, str] | None = None,
 ) -> int:
-    """Run frontend type-check (when present) then production ``build``.
+    """Type-check (when present) then production ``build`` for one frontend.
 
     Prefer ``docker compose run`` on the ``node`` service when that service exists in
     the compose file (image already has ``node_modules``). Fall back to a host
@@ -801,7 +805,6 @@ def _run_frontend_build(
     """
     from catalpa_tooling.native_cli import _run_pkg_script
 
-    frontend_dir = config.frontend_dir
     scripts = _frontend_package_scripts(frontend_dir)
     if not scripts.get("build") and not scripts.get("type-check"):
         print(
@@ -811,6 +814,8 @@ def _run_frontend_build(
         return 0
 
     frontend_cfg = config.native.frontend
+    # Resolved per directory: a second frontend may well use a different package
+    # manager, and the lockfile that decides it is the one in *that* directory.
     package_manager = resolve_frontend_package_manager(
         frontend_dir, configured=frontend_cfg.package_manager
     )
@@ -818,7 +823,7 @@ def _run_frontend_build(
 
     use_compose = False
     node_service = _DEFAULT_NODE_SERVICE
-    if compose_file is not None and env_add is not None:
+    if allow_compose and compose_file is not None and env_add is not None:
         if node_service in _compose_service_names(compose_file, env_add):
             use_compose = True
         else:
@@ -855,7 +860,7 @@ def _run_frontend_build(
     where = f"compose:{node_service}" if use_compose else "host"
     if scripts.get("type-check") and not build_chains_typecheck:
         print(
-            f"smoke: frontend type-check ({where} {package_manager} run type-check)",
+            f"smoke: {label} type-check ({where} {package_manager} run type-check)",
             file=sys.stderr,
         )
         rc = _run_script("type-check")
@@ -863,13 +868,56 @@ def _run_frontend_build(
             return rc
 
     if scripts.get("build"):
-        label = "type-check + webpack" if build_chains_typecheck else "webpack"
+        build_label = "type-check + webpack" if build_chains_typecheck else "webpack"
         print(
-            f"smoke: frontend production build "
-            f"({where} {package_manager} run build — {label})",
+            f"smoke: {label} production build "
+            f"({where} {package_manager} run build — {build_label})",
             file=sys.stderr,
         )
         return _run_script("build")
+    return 0
+
+
+def _run_frontend_build(
+    config: ProjectConfig,
+    *,
+    compose_file: str | None = None,
+    env_add: dict[str, str] | None = None,
+) -> int:
+    """Type-check and production-build every ``paths.frontend`` directory.
+
+    A project declaring one frontend (the common case, and the only shape before
+    1.4.0) behaves exactly as before. A project declaring several gets one
+    type-check + build per directory, each labelled with its path so the gate log
+    says which SPA a table belongs to — without that, a second frontend has no
+    measured build output at all.
+
+    **The compose ``node`` service is the primary frontend's only.** That service
+    name is hard-coded and a consumer's compose file wires it to one directory,
+    so running an extra frontend through it would build the primary twice and
+    report it under the wrong name. Extras always take the host path.
+
+    Stops at the first frontend that fails: a red gate halts the caller anyway,
+    and the failure the reader needs is the first one.
+    """
+    frontend_dirs = config.frontend_dirs
+    multiple = len(frontend_dirs) > 1
+    for index, frontend_dir in enumerate(frontend_dirs):
+        rel = config.paths.frontend[index]
+        rc = _run_one_frontend_build(
+            config,
+            frontend_dir,
+            # Keep the historic wording for a single-frontend project so existing
+            # gate logs stay greppable; name the directory once there are several.
+            label=f"frontend {rel}" if multiple else "frontend",
+            allow_compose=index == 0,
+            compose_file=compose_file,
+            env_add=env_add,
+        )
+        if rc != 0:
+            if multiple:
+                print(f"smoke: frontend {rel} failed (exit {rc})", file=sys.stderr)
+            return rc
     return 0
 
 

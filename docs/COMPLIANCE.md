@@ -17,7 +17,7 @@ License inventory, SBOM generation, and policy gate for **consumer repos** that 
 
 Pipeline (`compliance_cli.run_compliance`):
 
-1. Load `compliance:` from `tooling.yaml` (or infer JS-only mode when `paths.frontend/` has a JS lockfile)
+1. Load `compliance:` from `tooling.yaml` (or infer JS-only mode when `paths.frontend/` has a JS lockfile — the first entry, when several are declared)
 2. **Python** — `uv export` from configured lockfiles, then `pip-licenses` (host `compliance` group)
 3. **JavaScript** — require installed deps (`node_modules`, or Yarn `.yarn/cache`); fail with `javascript_install_required` if missing. Then scan `pnpm-lock.yaml` production closure (licenses from `node_modules`; fallback: `pnpm dlx license-checker`); legacy Yarn Berry `.yarn/cache` scan; npm via `npx license-checker`
 4. **Metadata** — required project license files exist; warn on `package.json` / `pyproject.toml` drift
@@ -55,7 +55,7 @@ flowchart TD
 | `compliance:` block | `tooling.yaml` |
 | `[dependency-groups].compliance` | **consumer repo root** `pyproject.toml` |
 | Python production lockfile | Path(s) under `compliance.python.lockfiles` (e.g. `{frontend}/docker/uv.lock`) |
-| JS lockfile | Under `compliance.javascript.cwd` (default: `paths.frontend`) |
+| JS lockfile | Under `compliance.javascript.cwd` (default: the first `paths.frontend` entry) |
 | **Frontend install** | `pnpm install` / `yarn install` / `npm install` in that cwd (`node_modules` present; Yarn Berry may use `.yarn/cache`). Missing install fails with `javascript_install_required` — not a flood of `UNKNOWN` licenses |
 | Project / platform license file(s) | `compliance.license_files` |
 | Font / bundled asset licenses | `compliance.bundled_assets` — **list** of `{ path, license_globs }` |
@@ -121,11 +121,11 @@ compliance:
     notices: compliance/THIRD_PARTY_NOTICES.md
 ```
 
-**`license_files`:** If the key is omitted, tooling requires `{paths.frontend}/LICENSE`. An explicit empty list (`license_files: []`) means no project license files are required (typical for proprietary apps that do not ship a `LICENSE` file).
+**`license_files`:** If the key is omitted, tooling requires `{paths.frontend}/LICENSE` (the first entry). An explicit empty list (`license_files: []`) means no project license files are required (typical for proprietary apps that do not ship a `LICENSE` file).
 
 **`allowed_packages`:** Case-insensitive package-name allowlist. Matching deps skip both `forbidden_spdx` and `warn_spdx` checks (use for first-party / Catalpa-owned packages that correctly report `LicenseRef-proprietary`). They still appear in SBOM and notices.
 
-When `compliance:` is omitted, tooling infers a **JS-only** minimal config if `paths.frontend/` contains `pnpm-lock.yaml`, `yarn.lock`, or `package-lock.json`. `pnpm-lock.yaml` is preferred when multiple lockfiles exist.
+When `compliance:` is omitted, tooling infers a **JS-only** minimal config if the first `paths.frontend` entry contains `pnpm-lock.yaml`, `yarn.lock`, or `package-lock.json`. One scan, one tree: a project with several frontends sets `compliance.javascript.cwd` explicitly. `pnpm-lock.yaml` is preferred when multiple lockfiles exist.
 
 ### Workspace / uv notes
 

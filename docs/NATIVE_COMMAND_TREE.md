@@ -27,7 +27,7 @@ native
 | Key | Role |
 |-----|------|
 | `paths.backend` | Django project dir (`uv run ./manage.py` cwd) |
-| `paths.frontend` | Frontend dir for `frontend` / `vite` (npm, yarn, or pnpm; nvm when `.nvmrc` present) |
+| `paths.frontend` | Frontend dir for `frontend` / `vite` (npm, yarn, or pnpm; nvm when `.nvmrc` present). A list is allowed; a dev server is one process, so these commands use the **first** entry |
 | `paths.env_local` | Loaded for `manage`, `runserver`, `reset-db`, `pg-restore` (e.g. `.env.local`) |
 | `paths.email_backend_dir` | Default `EMAIL_BACKEND_FOLDER` for host `manage` / `runserver` when unset |
 | `paths.media_dir` | Optional host media tree for `native runserver` / `manage` (`DJANGO_MEDIA_ROOT` when unset) |

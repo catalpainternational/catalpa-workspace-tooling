@@ -7,14 +7,17 @@ from types import SimpleNamespace
 from catalpa_tooling.caddy_site_addresses import apply_caddy_site_addresses, is_bero_stack
 
 
-def _config(frontend: str = "frontend", *, metabase: bool = False) -> object:
+def _config(*frontend: str, metabase: bool = False) -> object:
     """Lightweight stand-in exposing the attrs the helper reads.
+
+    ``paths.frontend`` is a tuple, as ``PathsConfig`` builds it — passing a bare
+    string here would make ``is_bero_stack`` iterate characters and quietly pass.
 
     Deployed tests always pass an explicit ``site_origin`` so the helper never needs the
     dev-hostname derivation (which requires a full ``ProjectConfig``).
     """
     return SimpleNamespace(
-        paths=SimpleNamespace(frontend=frontend),
+        paths=SimpleNamespace(frontend=frontend or ("frontend",)),
         has_metabase_fetch=lambda: metabase,
     )
 
@@ -42,6 +45,16 @@ def _deployed(
 def test_is_bero_stack() -> None:
     assert is_bero_stack(_config("bero"))  # type: ignore[arg-type]
     assert not is_bero_stack(_config("frontend"))  # type: ignore[arg-type]
+
+
+def test_is_bero_stack_finds_bero_beyond_the_primary_frontend() -> None:
+    """A bero project that adds a second SPA still ships the bero site block.
+
+    Declaring the new SPA first must not drop ``CADDY_DJANGO_SITE_ADDRESS``.
+    """
+    assert is_bero_stack(_config("bero", "frontend_vue"))  # type: ignore[arg-type]
+    assert is_bero_stack(_config("frontend_vue", "bero"))  # type: ignore[arg-type]
+    assert not is_bero_stack(_config("frontend_vue", "frontend_admin"))  # type: ignore[arg-type]
 
 
 def test_deployed_generic_sets_only_primary() -> None:

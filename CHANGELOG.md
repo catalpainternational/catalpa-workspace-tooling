@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- **`paths.frontend` accepts a list**, so a project with more than one SPA can gate all of them.
+  `tests ci` now runs type-check + production build once per declared directory, each labelled
+  with its path in the gate log, instead of building only the first. A project that shipped a
+  second frontend previously had to bolt an extra type-check/build step onto its own CI, which
+  meant that frontend had no build evidence in any local gate run — and so no measured bundle
+  size to compare against.
+
+  ```yaml
+  paths:
+    frontend:
+      - frontend_public     # primary
+      - frontend_portal
+  ```
+
+  A plain string keeps working and behaves exactly as before — same commands, same log wording.
+  Mirrors `paths.scripts`, which has taken a string or a list since 1.2.0.
+
+### Internal
+
+- `PathsConfig.frontend` is now `tuple[str, ...]` rather than `str`, with `PathsConfig.frontend_primary`
+  for the string. `ProjectConfig.frontend_dir` is unchanged in name, type and meaning (it returns the
+  primary); `ProjectConfig.frontend_dirs` is new. Code constructing `PathsConfig` directly — test
+  helpers and fakes, mostly — must pass a tuple. Anything reading `config.paths.frontend` as a string
+  needs `frontend_primary`; note that iterating a bare string silently yields characters rather than
+  failing, which is what `is_bero_stack` did in review.
 - **Generic Django multi-origin support** — tooling now preserves Bero's
   `BERO_EXTRA_ALLOWED_HOSTS` / `BERO_EXTRA_ORIGINS` contract while also injecting and
   merging `DJANGO_EXTRA_ORIGINS`. It derives `CADDY_DJANGO_SITE_HOSTS` and local-proxy

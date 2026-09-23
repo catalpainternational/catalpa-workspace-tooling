@@ -4,6 +4,15 @@ project:
 
 paths:
   backend: backend
+  # A single directory, or a list when the project ships more than one SPA:
+  #
+  #   frontend:
+  #     - frontend_public
+  #     - frontend_portal
+  #
+  # The first entry is the primary — it is what `native frontend` serves, where
+  # `tests guest` looks for `smoke/`, and what `CATALPA_FRONTEND_DIR` points at.
+  # `tests ci` type-checks and builds every entry.
   frontend: frontend
   scripts: scripts
   env_local: .env.local

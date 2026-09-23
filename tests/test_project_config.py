@@ -15,6 +15,11 @@ def test_load_minimal_project(minimal_project) -> None:
     assert minimal_project.backend_dir == minimal_project.repo_root / "backend"
     assert minimal_project.paths.scripts == ("scripts",)
     assert minimal_project.scripts_dir == minimal_project.repo_root / "scripts"
+    # A scalar `frontend:` still parses, and still means exactly one frontend.
+    assert minimal_project.paths.frontend == ("frontend",)
+    assert minimal_project.paths.frontend_primary == "frontend"
+    assert minimal_project.frontend_dir == minimal_project.repo_root / "frontend"
+    assert minimal_project.frontend_dirs == (minimal_project.repo_root / "frontend",)
     assert minimal_project.image_component("web") == "app-web"
     assert minimal_project.stack.compose_project_default == "app_compose"
     assert minimal_project.ops.restic.data_volume == "django_media"
@@ -128,6 +133,50 @@ ops:
     cfg = load_project_config(tmp_path)
     assert cfg.paths.scripts == ("scripts", "bero/docker/postgres/scripts")
     assert len(cfg.scripts_dirs) == 2
+
+
+def _project_with_frontend(tmp_path: Path, frontend_yaml: str):
+    """Load the minimal fixture with ``paths.frontend`` replaced by ``frontend_yaml``."""
+    write_minimal_tooling_tree(tmp_path)
+    manifest = tmp_path / "tooling.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("  frontend: frontend\n", frontend_yaml),
+        encoding="utf-8",
+    )
+    return load_project_config(tmp_path)
+
+
+def test_paths_frontend_accepts_list(tmp_path: Path, isolated_tooling: None) -> None:
+    """A project with two SPAs declares both; the first is the primary."""
+    cfg = _project_with_frontend(
+        tmp_path, "  frontend:\n    - frontend_public\n    - frontend_portal\n"
+    )
+    assert cfg.paths.frontend == ("frontend_public", "frontend_portal")
+    assert cfg.paths.frontend_primary == "frontend_public"
+    assert cfg.frontend_dir == cfg.repo_root / "frontend_public"
+    assert cfg.frontend_dirs == (
+        cfg.repo_root / "frontend_public",
+        cfg.repo_root / "frontend_portal",
+    )
+
+
+@pytest.mark.parametrize(
+    ("frontend_yaml", "message"),
+    [
+        ("  frontend:\n", "Missing required key: paths.frontend"),
+        ("  frontend: ''\n", "paths.frontend must not be empty"),
+        ("  frontend: []\n", "paths.frontend list must not be empty"),
+        ("  frontend:\n    - frontend_public\n    - ''\n", "Empty entry in paths.frontend[1]"),
+        ("  frontend:\n    - ../elsewhere\n", "Invalid relative path for paths.frontend[0]"),
+        ("  frontend: {a: b}\n", "paths.frontend must be a string or list of strings"),
+    ],
+)
+def test_paths_frontend_rejects_bad_shapes(
+    tmp_path: Path, isolated_tooling: None, frontend_yaml: str, message: str
+) -> None:
+    with pytest.raises(ProjectConfigError) as excinfo:
+        _project_with_frontend(tmp_path, frontend_yaml)
+    assert message in str(excinfo.value)
 
 
 def test_missing_required_key(tmp_path: Path, isolated_tooling: None) -> None:
