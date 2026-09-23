@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from catalpa_tooling import local_proxy
@@ -447,3 +449,95 @@ def test_proxy_status_lines_groups_multi_route_lan_under_same_env(
     lines = local_proxy.proxy_status_lines()
     assert lines.count("  catalpa-bero:") == 1
     assert lines.count("    dev:") == 1
+
+
+# --- issue #58: a stale Caddyfile bind source must not reach `docker start` -------------------
+
+
+def _mounts_json(source: str) -> str:
+    import json as _json
+
+    return _json.dumps(
+        [
+            {"Destination": "/data", "Source": "/home/u/.config/catalpa/local-proxy"},
+            {"Destination": local_proxy.CADDYFILE_CONTAINER_PATH, "Source": source},
+        ]
+    )
+
+
+def _stub_proxy_run(monkeypatch, tmp_path, *, mount_source: str):
+    """Record docker calls for ensure_proxy_running with an existing, stopped container."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=_mounts_json(mount_source))
+        return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
+    monkeypatch.setattr(local_proxy, "ensure_proxy_network", lambda **_: 0)
+    monkeypatch.setattr(local_proxy, "ensure_proxy_on_network", lambda **_: 0)
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "")
+    monkeypatch.setattr(local_proxy, "proxy_container_exists", lambda: True)
+    monkeypatch.setattr(local_proxy, "local_proxy_data_dir", lambda: tmp_path / "ca")
+
+    live = tmp_path / "venv" / "catalpa_tooling" / "local_proxy" / "Caddyfile"
+    live.parent.mkdir(parents=True)
+    live.write_text("# bundled\n", encoding="utf-8")
+    monkeypatch.setattr(local_proxy, "local_proxy_caddyfile_path", lambda: live)
+    return calls, live
+
+
+def test_ensure_proxy_running_recreates_when_caddyfile_mount_vanished(monkeypatch, tmp_path):
+    """#58: the venv that created the container is gone, so `docker start` would fail."""
+    gone = str(tmp_path / "old-venv" / "python3.12" / "catalpa_tooling" / "Caddyfile")
+    calls, live = _stub_proxy_run(monkeypatch, tmp_path, mount_source=gone)
+
+    assert local_proxy.ensure_proxy_running() == 0
+
+    verbs = [c[:3] for c in calls]
+    assert ["docker", "rm", "-f"] in verbs, "stale container must be removed, not started"
+    assert not any(c[:2] == ["docker", "start"] for c in calls), "must not `docker start` a stale container"
+    run_cmds = [c for c in calls if c[:2] == ["docker", "run"]]
+    assert len(run_cmds) == 1
+    assert f"{live}:/etc/caddy/Caddyfile:ro" in run_cmds[0], "recreated from the live install"
+
+
+def test_ensure_proxy_running_starts_container_when_mount_source_is_live(monkeypatch, tmp_path):
+    """A healthy stopped container is started in place — no churn for the shared proxy."""
+    live = tmp_path / "venv" / "catalpa_tooling" / "local_proxy" / "Caddyfile"
+    calls, _ = _stub_proxy_run(monkeypatch, tmp_path, mount_source=str(live))
+
+    assert local_proxy.ensure_proxy_running() == 0
+    assert any(c[:2] == ["docker", "start"] for c in calls)
+    assert not any(c[:3] == ["docker", "rm", "-f"] for c in calls)
+    assert not any(c[:2] == ["docker", "run"] for c in calls)
+
+
+def test_proxy_caddyfile_mount_is_stale_ignores_a_different_live_install(monkeypatch, tmp_path):
+    """Two projects sharing the machine-wide proxy must not make it bounce."""
+    other = tmp_path / "other-venv" / "Caddyfile"
+    other.parent.mkdir(parents=True)
+    other.write_text("# bundled\n", encoding="utf-8")
+    monkeypatch.setattr(local_proxy, "proxy_caddyfile_mount_source", lambda: str(other))
+    assert local_proxy.proxy_caddyfile_mount_is_stale() is False
+
+
+def test_proxy_caddyfile_mount_source_reads_the_bind(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        assert cmd[:2] == ["docker", "inspect"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=_mounts_json("/venv/Caddyfile"))
+
+    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
+    assert local_proxy.proxy_caddyfile_mount_source() == "/venv/Caddyfile"
+
+
+def test_proxy_caddyfile_mount_source_is_none_when_inspect_fails(monkeypatch):
+    monkeypatch.setattr(
+        local_proxy,
+        "run_cmd",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout=""),
+    )
+    assert local_proxy.proxy_caddyfile_mount_source() is None
+    assert local_proxy.proxy_caddyfile_mount_is_stale() is False

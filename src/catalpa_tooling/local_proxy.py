@@ -472,6 +472,48 @@ def proxy_container_exists() -> bool:
     return bool((result.stdout or "").strip())
 
 
+CADDYFILE_CONTAINER_PATH = "/etc/caddy/Caddyfile"
+
+
+def proxy_caddyfile_mount_source() -> str | None:
+    """Host path the existing proxy bind-mounts at ``/etc/caddy/Caddyfile``, if any."""
+    result = run_cmd(
+        ["docker", "inspect", LOCAL_PROXY_CONTAINER, "--format", "{{json .Mounts}}"],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        mounts = json.loads((result.stdout or "").strip() or "[]")
+    except json.JSONDecodeError:
+        return None
+    for mount in mounts or []:
+        if isinstance(mount, dict) and mount.get("Destination") == CADDYFILE_CONTAINER_PATH:
+            source = mount.get("Source")
+            return source if isinstance(source, str) else None
+    return None
+
+
+def proxy_caddyfile_mount_is_stale() -> bool:
+    """True when the existing proxy's Caddyfile bind source has vanished from the host.
+
+    The container is machine-wide but the mount is project-venv-specific
+    (``<install>/catalpa_tooling/local_proxy/Caddyfile``). Rebuilding a venv, moving a project or
+    a Python minor bump deletes that path, and ``docker start`` then fails with an opaque
+    "not a directory" rootfs error instead of anything actionable. See issue #58.
+
+    A source that merely points at a *different* live install is left alone: the bundled Caddyfile
+    is the same asset, and recreating would make the shared proxy bounce between projects.
+    """
+    source = proxy_caddyfile_mount_source()
+    if source is None:
+        return False
+    return not Path(source).is_file()
+
+
 def ensure_proxy_network(*, dry_run: bool = False) -> int:
     """Create the shared external network for project stacks and the dev proxy."""
     inspect = run_cmd(
@@ -560,11 +602,21 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         return 0
 
     if proxy_container_exists():
-        print(f"Starting existing container {LOCAL_PROXY_CONTAINER!r}...", file=sys.stderr)
-        start = run_cmd(["docker", "start", LOCAL_PROXY_CONTAINER], check=False)
-        if start.returncode != 0:
-            return start.returncode
-        return ensure_proxy_on_network(dry_run=dry_run)
+        if proxy_caddyfile_mount_is_stale():
+            stale = proxy_caddyfile_mount_source()
+            print(
+                f"Existing {LOCAL_PROXY_CONTAINER!r} bind-mounts a Caddyfile that no longer "
+                f"exists ({stale}); recreating it from {caddyfile}. "
+                "The local CA is persisted on the host and is kept.",
+                file=sys.stderr,
+            )
+            run_cmd(["docker", "rm", "-f", LOCAL_PROXY_CONTAINER], check=False)
+        else:
+            print(f"Starting existing container {LOCAL_PROXY_CONTAINER!r}...", file=sys.stderr)
+            start = run_cmd(["docker", "start", LOCAL_PROXY_CONTAINER], check=False)
+            if start.returncode != 0:
+                return start.returncode
+            return ensure_proxy_on_network(dry_run=dry_run)
 
     data_dir = local_proxy_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -866,20 +867,15 @@ def ensure_postgres_data_volume(
     return 0
 
 
-def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
-    """Remove external PGDATA and ``django_media`` volumes after ``compose down -v``.
-
-    Compose does not delete ``external:`` volumes; this finishes a destructive wipe of database
-    PGDATA and Django/Wagtail uploads. Uses the same ``DOCKER_HOST`` as other deploy volume ops.
-
-    Missing volumes (e.g. already removed) are treated as success.
-    """
+def _remove_volumes(
+    names: Sequence[str], env: dict[str, str], *, dry_run: bool = False
+) -> int:
+    """``docker volume rm`` each name; already-absent volumes count as success."""
     docker_env = _docker_env_for_remote(env)
-    targets = (
-        postgres_data_volume_name(env, config=config),
-        django_media_volume_name(env, config=config),
-    )
-    for name in targets:
+    for name in names:
+        if dry_run:
+            print(f"dry-run: docker volume rm {name}", file=sys.stderr)
+            continue
         r = run_cmd(
             ["docker", "volume", "rm", name],
             env=docker_env,
@@ -901,6 +897,42 @@ def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | Non
         )
         return 1
     return 0
+
+
+def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
+    """Remove external PGDATA and ``django_media`` volumes after ``compose down -v``.
+
+    Compose does not delete ``external:`` volumes; this finishes a destructive wipe of database
+    PGDATA and Django/Wagtail uploads. Uses the same ``DOCKER_HOST`` as other deploy volume ops.
+
+    The conf volumes are deliberately kept: the env is reusable, and ``db configure`` rewrites
+    them on the next ``up``. To destroy the whole namespace instead (an env that will never be
+    brought up again, e.g. a removed worktree), use :func:`remove_all_external_stack_volumes`.
+
+    Missing volumes (e.g. already removed) are treated as success.
+    """
+    return _remove_volumes(
+        (
+            postgres_data_volume_name(env, config=config),
+            django_media_volume_name(env, config=config),
+        ),
+        env,
+    )
+
+
+def remove_all_external_stack_volumes(
+    env: dict[str, str], *, config: ProjectConfig | None = None, dry_run: bool = False
+) -> int:
+    """Remove every ``external: true`` volume for this compose project after ``compose down -v``.
+
+    For a stack whose ``COMPOSE_PROJECT_NAME`` is being retired, the conf volumes
+    ``remove_wipe_data_volumes`` keeps are orphans too — nothing will ever mount them again.
+
+    Missing volumes (e.g. already removed) are treated as success.
+    """
+    return _remove_volumes(
+        external_stack_volume_names(env, config=config), env, dry_run=dry_run
+    )
 
 
 def _docker_run_volume_work_args() -> list[str]:

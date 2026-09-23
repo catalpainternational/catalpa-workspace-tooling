@@ -20,6 +20,7 @@ from catalpa_tooling.worktree import (
     worktree_context,
     worktree_create,
     worktree_list,
+    worktree_remove,
     worktree_seed,
     worktree_stack_status,
     worktree_status,
@@ -599,3 +600,62 @@ def test_cmd_worktree_dispatches_up(
     ns = argparse.Namespace(worktree_command="up", slug="feat", dry_run=False)
     assert cmd_worktree(ns, config) == 0
     assert called == ["feat"]
+
+
+# --- issue #64: `worktree remove --wipe` must not leave the external: volumes behind ----------
+
+
+def _wipe_recording_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A worktree plus recorders for the compose call and the volume removals."""
+    write_minimal_tooling_tree(tmp_path)
+    _write_dev_env(tmp_path)
+    _git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
+
+    compose_calls: list[tuple] = []
+
+    def fake_compose(*args, **kwargs):
+        compose_calls.append(args)
+        return subprocess.CompletedProcess(list(args), 0)
+
+    removed: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if list(cmd[:3]) == ["docker", "volume", "rm"]:
+            removed.append(cmd[3])
+            return subprocess.CompletedProcess(list(cmd), 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(list(cmd), 0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.worktree._compose", fake_compose)
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+    return config, compose_calls, removed
+
+
+def test_worktree_remove_wipe_removes_external_volumes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#64: `compose down -v` alone left PGDATA and the conf volumes orphaned."""
+    config, compose_calls, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+
+    assert compose_calls, "compose down -v must still run first"
+    assert "down" in compose_calls[0] and "-v" in compose_calls[0]
+
+    # Every external: volume for the retired project name, PGDATA included.
+    assert removed, "no docker volume rm issued — the external volumes would survive"
+    for expected in ("postgres_data", "django_media", "caddy_data", "postgres_conf", "pgbackrest_conf"):
+        assert any(name.endswith(expected) for name in removed), f"{expected} left behind: {removed}"
+
+
+def test_worktree_remove_wipe_dry_run_removes_nothing(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
+    assert removed == []

@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk worktree remove --wipe` now removes the worktree's `external:` volumes** ([#64]). Compose
+  never deletes a volume declared `external: true` — it does not own what it did not create — so
+  `down -v` left every one of them behind, including the seeded `postgres_data`. The command
+  reported success and the git worktree really was gone, so the orphans were only found by going
+  looking. `dk dev wipe` already closed this gap for PGDATA and media; the worktree path never
+  called it.
+
+  The worktree path removes **all five** external volumes (`postgres_data`, `django_media`,
+  `caddy_data`, `postgres_conf`, `pgbackrest_conf`), not just the two `dev wipe` removes: the
+  `COMPOSE_PROJECT_NAME` is being retired, so nothing will ever mount the conf volumes again.
+  `dk dev wipe` is unchanged — that env stays reusable and `db configure` rewrites its conf
+  volumes on the next `up`.
+
+  Built images tagged with the worktree's project name are still left behind; removing those is
+  a separate decision.
+
+- **`dk proxy up` recovers from a stale `catalpa-local-proxy`** ([#58]). The container is
+  machine-wide but it bind-mounts the bundled `Caddyfile` from whichever project venv created it.
+  Rebuilding that venv, moving the project or a Python minor bump (3.12 → 3.14) deletes the path,
+  and `docker start` then failed with an opaque rootfs error — from an unrelated project, since
+  the proxy is shared. `proxy up` now checks the bind source first and recreates the container
+  when it has vanished. The local dev CA is persisted on the host and is kept, so nothing needs
+  re-trusting.
+
+  A mount pointing at a *different but still live* install is left alone: it is the same bundled
+  asset, and recreating would make the shared proxy bounce between projects.
+
+[#58]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/58
+[#64]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/64
+
 ## 1.4.0
 
 ### Added
