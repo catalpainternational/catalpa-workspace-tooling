@@ -520,12 +520,15 @@ def worktree_up(
         if overlay.parent_repo_root
         else resolve_parent_repo_root(config)
     )
-    write_agents_local_md(
-        wt_root,
-        overlay,
-        parent_repo=parent,
-        media_path=media_dir_for_config(wt_config),
-    )
+    if not dry_run:
+        # `--dry-run` must not touch the tree: the refreshed content differs whenever the
+        # overlay or media path has moved, so a dry run could silently rewrite it.
+        write_agents_local_md(
+            wt_root,
+            overlay,
+            parent_repo=parent,
+            media_path=media_dir_for_config(wt_config),
+        )
 
     rc = ensure_proxy_running(dry_run=dry_run)
     if rc != 0:

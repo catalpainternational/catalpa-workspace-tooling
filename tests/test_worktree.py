@@ -704,3 +704,137 @@ def test_worktree_remove_wipe_dry_run_removes_nothing(
     config, _, removed = _wipe_recording_repo(tmp_path, monkeypatch)
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
     assert removed == []
+
+
+# --- issue #62: the worktree stack must run the worktree's code, whatever the cwd -------------
+
+
+def _worktree_with_stack(tmp_path: Path) -> tuple[object, Path]:
+    """A main checkout plus a real worktree checkout, both with a compose file."""
+    write_minimal_tooling_tree(tmp_path)
+    _write_dev_env(tmp_path)
+    _git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="mount_probe", dry_run=False, seed=False) == 0
+    return config, tmp_path / ".worktrees" / "mount_probe"
+
+
+@pytest.mark.parametrize("run_from", ["main", "worktree"])
+def test_worktree_up_targets_the_worktree_compose_file_from_any_cwd(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    run_from: str,
+) -> None:
+    """`dk worktree up` must not depend on the process cwd.
+
+    `_compose` never chdirs, so a repo-relative `-f` resolved against the caller's cwd. Driven
+    from the main checkout — the documented workflow — the worktree stack picked up the main
+    checkout's compose file and, through its relative binds, the main checkout's *source code*,
+    while COMPOSE_PROJECT_NAME still said "worktree". Silent, and every cheap identity signal
+    looked correct.
+    """
+    from catalpa_tooling.worktree import worktree_up
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    monkeypatch.chdir(tmp_path if run_from == "main" else wt_root)
+
+    compose_calls: list[str] = []
+
+    def fake_compose(compose_file, *args, **kwargs):
+        compose_calls.append(str(compose_file))
+        return subprocess.CompletedProcess([str(compose_file), *args], 0)
+
+    monkeypatch.setattr("catalpa_tooling.compose._compose", fake_compose)
+    monkeypatch.setattr("catalpa_tooling.env_handlers._compose", fake_compose)
+    monkeypatch.setattr("catalpa_tooling.local_proxy.ensure_proxy_running", lambda **_: 0)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_proxy_running", lambda **_: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.env_handlers.ensure_stack_matches_checkout", lambda *a, **k: (0, None)
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.env_handlers.sync_local_proxy_for_compose_action", lambda *a, **k: 0
+    )
+    monkeypatch.setattr("catalpa_tooling.env_handlers._ensure_stack_volumes", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.env_handlers._ensure_local_stack_images_built", lambda *a, **k: 0
+    )
+    monkeypatch.setattr("catalpa_tooling.env_handlers.materialize_configs", lambda *a, **k: 0)
+
+    assert worktree_up(config, slug="mount_probe", dry_run=False) == 0
+
+    assert compose_calls, "no compose invocation captured"
+    target = Path(compose_calls[0])
+    assert target.is_absolute(), f"relative -f resolves against cwd, not the worktree: {target}"
+    assert target == (wt_root / "compose.dev.yaml").resolve(), (
+        f"worktree stack pointed at {target}, not the worktree's own compose file"
+    )
+
+
+def test_resolve_compose_file_is_absolute_and_rooted_at_its_config(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    """The main checkout and a worktree must resolve to their *own* compose files."""
+    from catalpa_tooling.managed_deploy_env import resolve_compose_file_from_info
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    info = yaml.safe_load(
+        (tmp_path / "docker" / "envs" / "dev" / "info.yaml").read_text(encoding="utf-8")
+    )
+    wt_config = load_project_config(wt_root)
+
+    main_target = resolve_compose_file_from_info(info, config)
+    wt_target = resolve_compose_file_from_info(info, wt_config)
+
+    assert Path(main_target).is_absolute() and Path(wt_target).is_absolute()
+    assert Path(main_target) == (tmp_path / "compose.dev.yaml").resolve()
+    assert Path(wt_target) == (wt_root / "compose.dev.yaml").resolve()
+    assert main_target != wt_target, "both checkouts resolved to the same compose file"
+
+
+def test_worktree_up_dry_run_reports_the_worktree_identity(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """`--dry-run` is the natural "which stack am I pointed at?" check.
+
+    The early exit skips the context load to avoid a SOPS decrypt, and the overlay is applied in
+    there — so it answered with the *main* env's origin while the real run used the worktree's.
+    That actively obstructed diagnosing the mount bug above.
+    """
+    from catalpa_tooling.worktree import worktree_up
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_proxy_running", lambda **_: 0)
+
+    assert worktree_up(config, slug="mount_probe", dry_run=True) == 0
+
+    err = capsys.readouterr().err
+    assert "worktree overlay:" in err, "no hint that an overlay applies to this stack"
+    assert "app_compose_dev_mount_probe" in err
+    assert "minimal-dev-mount-probe.localdev.temp.build" in err
+
+
+def test_worktree_up_dry_run_does_not_write_agents_local(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run must not touch the tree; the refreshed content differs when paths have moved."""
+    from catalpa_tooling.worktree import worktree_up
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_proxy_running", lambda **_: 0)
+
+    agents = wt_root / AGENTS_LOCAL_NAME
+    agents.write_text("sentinel\n", encoding="utf-8")
+    before = agents.stat().st_mtime_ns
+
+    assert worktree_up(config, slug="mount_probe", dry_run=True) == 0
+
+    assert agents.read_text(encoding="utf-8") == "sentinel\n"
+    assert agents.stat().st_mtime_ns == before
