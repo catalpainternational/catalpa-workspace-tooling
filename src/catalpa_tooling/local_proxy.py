@@ -507,11 +507,83 @@ def proxy_caddyfile_mount_is_stale() -> bool:
 
     A source that merely points at a *different* live install is left alone: the bundled Caddyfile
     is the same asset, and recreating would make the shared proxy bounce between projects.
+
+    The path is resolved against *this* machine's filesystem, which is only the same filesystem
+    the mount refers to when the Docker engine is local. ``require_local_docker_endpoint`` is what
+    makes that true; without it a remote engine would give a false "stale" verdict here and
+    force-recreate a healthy shared proxy.
     """
     source = proxy_caddyfile_mount_source()
     if source is None:
         return False
     return not Path(source).is_file()
+
+
+_LOCAL_DOCKER_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def effective_docker_endpoint() -> str:
+    """The Docker endpoint this process would actually talk to.
+
+    Asks the Docker CLI, which resolves the whole precedence chain — ``DOCKER_HOST``, then
+    ``DOCKER_CONTEXT``, then the active context — rather than guessing from one env var. This
+    reads local config only, so it stays fast and does not hang on an unreachable endpoint.
+    """
+    proc = run_cmd(
+        ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        print_cmd=False,
+    )
+    if proc.returncode == 0 and (proc.stdout or "").strip():
+        return proc.stdout.strip()
+    return (os.environ.get("DOCKER_HOST") or "").strip()
+
+
+def docker_endpoint_is_local(endpoint: str) -> bool:
+    """True when ``endpoint`` is a Docker daemon on this machine.
+
+    Unknown schemes count as remote: the proxy binds host ports and host paths, so guessing wrong
+    in that direction is the expensive mistake.
+    """
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        return True  # default local socket
+    scheme, sep, _ = endpoint.partition("://")
+    if not sep:
+        return True  # a bare socket path
+    scheme = scheme.lower()
+    if scheme in ("unix", "npipe", "fd"):
+        return True
+    if scheme in ("tcp", "http", "https"):
+        from urllib.parse import urlparse
+
+        hostname = (urlparse(endpoint).hostname or "").lower()
+        return hostname in _LOCAL_DOCKER_HOSTNAMES
+    return False
+
+
+def require_local_docker_endpoint(*, action: str) -> int:
+    """0 when the Docker engine is local; 1 with an explanation when it is not.
+
+    The local proxy is a machine-wide dev convenience: it publishes ports 80/443 on *this*
+    machine, bind-mounts a Caddyfile from *this* filesystem, and terminates TLS with a CA trusted
+    by *this* machine's browsers. Pointed at a remote engine none of that holds, so every
+    operation is either meaningless or actively destructive to whatever runs there.
+    """
+    endpoint = effective_docker_endpoint()
+    if docker_endpoint_is_local(endpoint):
+        return 0
+    print(
+        f"dk proxy: refusing to {action} against a remote Docker engine ({endpoint}).\n"
+        "  The local dev proxy publishes ports 80/443 on this machine, bind-mounts its\n"
+        "  Caddyfile from this filesystem, and issues certificates for this machine's browsers.\n"
+        "  None of that applies to a remote engine.\n"
+        "  Unset DOCKER_HOST (or `docker context use` a local context) and retry.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def ensure_proxy_network(*, dry_run: bool = False) -> int:
@@ -581,6 +653,11 @@ def ensure_proxy_on_network(*, dry_run: bool = False) -> int:
 
 def ensure_proxy_running(*, dry_run: bool = False) -> int:
     """Start ``catalpa-local-proxy`` if it is not already running."""
+    # Guarded here rather than only in `dk proxy`, because `dk <env> up` and `worktree up` reach
+    # this too — and this is where the container gets recreated.
+    rc = require_local_docker_endpoint(action="start the local dev proxy")
+    if rc != 0:
+        return rc
     rc = ensure_proxy_network(dry_run=dry_run)
     if rc != 0:
         return rc
@@ -714,6 +791,9 @@ def wait_for_ca_root(*, timeout: float = 10.0, interval: float = 0.5) -> bool:
 
 def stop_proxy(*, dry_run: bool = False) -> int:
     """Stop and remove ``catalpa-local-proxy`` (does not delete the data volume)."""
+    rc = require_local_docker_endpoint(action="stop the local dev proxy")
+    if rc != 0:
+        return rc
     if not proxy_container_exists():
         if dry_run:
             print(f"dry-run: {LOCAL_PROXY_CONTAINER!r} is not present.", file=sys.stderr)

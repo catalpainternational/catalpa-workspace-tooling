@@ -576,3 +576,130 @@ def test_proxy_caddyfile_mount_source_is_none_when_inspect_fails(monkeypatch):
     )
     assert local_proxy.proxy_caddyfile_mount_source() is None
     assert local_proxy.proxy_caddyfile_mount_is_stale() is False
+
+
+# --- the local proxy is a local-machine feature: refuse a remote Docker engine ----------------
+
+
+@pytest.mark.parametrize(
+    "endpoint,is_local",
+    [
+        ("", True),  # default socket
+        ("unix:///var/run/docker.sock", True),
+        ("unix:///Users/x/.docker/run/docker.sock", True),
+        ("npipe:////./pipe/docker_engine", True),
+        ("/var/run/docker.sock", True),  # bare path, no scheme
+        ("tcp://localhost:2375", True),
+        ("tcp://127.0.0.1:2375", True),
+        ("tcp://[::1]:2375", True),
+        ("ssh://deploy@prod.example.com", False),
+        ("tcp://10.0.0.5:2375", False),
+        ("tcp://prod.example.com:2376", False),
+        ("weird://whatever", False),  # unknown scheme is remote: guessing wrong is expensive
+    ],
+)
+def test_docker_endpoint_is_local(endpoint, is_local) -> None:
+    assert local_proxy.docker_endpoint_is_local(endpoint) is is_local
+
+
+def test_effective_docker_endpoint_asks_the_docker_cli(monkeypatch) -> None:
+    """The CLI resolves DOCKER_HOST / DOCKER_CONTEXT / active context; one env var does not."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ssh://deploy@prod\n")
+
+    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    assert local_proxy.effective_docker_endpoint() == "ssh://deploy@prod"
+    assert seen[0][:3] == ["docker", "context", "inspect"]
+
+
+def test_effective_docker_endpoint_falls_back_to_env(monkeypatch) -> None:
+    """If the CLI cannot answer, do not block the user — fall back rather than guess remote."""
+    monkeypatch.setattr(
+        local_proxy,
+        "run_cmd",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom"),
+    )
+    monkeypatch.setenv("DOCKER_HOST", "ssh://deploy@prod")
+    assert local_proxy.effective_docker_endpoint() == "ssh://deploy@prod"
+    monkeypatch.delenv("DOCKER_HOST")
+    assert local_proxy.effective_docker_endpoint() == ""
+
+
+def _remote_endpoint(monkeypatch, endpoint: str = "ssh://deploy@prod") -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:3] == ["docker", "context", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=endpoint + "\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
+    return calls
+
+
+def test_ensure_proxy_running_refuses_a_remote_engine(monkeypatch, capsys) -> None:
+    """`dk <env> up` and `worktree up` reach this too, so the guard lives on the function.
+
+    Against a remote engine the staleness probe checks the wrong filesystem, so a healthy shared
+    proxy would be force-recreated with a Caddyfile path the engine does not have.
+    """
+    calls = _remote_endpoint(monkeypatch)
+    assert local_proxy.ensure_proxy_running() != 0
+    assert not any(c[:2] == ["docker", "run"] for c in calls)
+    assert not any(c[:3] == ["docker", "rm", "-f"] for c in calls)
+    err = capsys.readouterr().err
+    assert "remote Docker engine" in err and "ssh://deploy@prod" in err
+
+
+def test_stop_proxy_refuses_a_remote_engine(monkeypatch) -> None:
+    calls = _remote_endpoint(monkeypatch)
+    assert local_proxy.stop_proxy() != 0
+    assert not any(c[:2] == ["docker", "stop"] for c in calls)
+    assert not any(c[:3] == ["docker", "rm", "-f"] for c in calls)
+
+
+def test_local_engine_is_not_refused(monkeypatch) -> None:
+    _remote_endpoint(monkeypatch, endpoint="unix:///var/run/docker.sock")
+    assert local_proxy.require_local_docker_endpoint(action="test") == 0
+
+
+@pytest.mark.parametrize("sub", ["up", "down", "status", "trust", "ca"])
+def test_cmd_proxy_refuses_a_remote_engine(monkeypatch, sub) -> None:
+    """Every subcommand, read-only ones included: `status` would report on the wrong machine."""
+    import argparse
+
+    from catalpa_tooling import local_proxy_cli
+
+    monkeypatch.setattr(
+        local_proxy_cli,
+        "require_local_docker_endpoint",
+        lambda *, action: 1,
+    )
+    for name in ("ensure_proxy_running", "stop_proxy", "print_proxy_status"):
+        monkeypatch.setattr(
+            local_proxy_cli,
+            name,
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"{name} ran against a remote engine")),
+        )
+    ns = argparse.Namespace(proxy_command=sub, dry_run=False)
+    assert local_proxy_cli.cmd_proxy(ns) == 1
+
+
+def test_cmd_proxy_refuses_even_with_dry_run(monkeypatch, capsys) -> None:
+    """The endpoint is wrong, not the action — describing what it would do is not useful."""
+    import argparse
+
+    from catalpa_tooling import local_proxy_cli
+
+    _remote_endpoint(monkeypatch)
+    monkeypatch.setattr(
+        local_proxy_cli, "require_local_docker_endpoint", local_proxy.require_local_docker_endpoint
+    )
+    ns = argparse.Namespace(proxy_command="up", dry_run=True)
+    assert local_proxy_cli.cmd_proxy(ns) == 1
+    assert "refusing" in capsys.readouterr().err

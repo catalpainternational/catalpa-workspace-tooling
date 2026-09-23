@@ -89,6 +89,26 @@
   re-trusting. If removing the stale container fails, `proxy up` reports why and stops rather
   than continuing into a "container name already in use" collision that hides the real cause.
 
+- **`dk proxy` now refuses to operate against a remote Docker engine.** The local dev proxy
+  publishes ports 80/443 on *your* machine, bind-mounts its Caddyfile from *your* filesystem, and
+  issues certificates for *your* browsers — none of which holds for a remote engine, so every
+  operation there was either meaningless or destructive to whatever was running on it. With
+  `DOCKER_HOST` exported, the staleness check above compared the mount path against the local
+  filesystem while the container lived elsewhere, so a healthy shared proxy got force-recreated
+  pointing at a path the engine did not have.
+
+  The endpoint comes from `docker context inspect`, which resolves the full precedence chain
+  (`DOCKER_HOST`, then `DOCKER_CONTEXT`, then the active context) rather than reading one
+  variable. It is a local config lookup, so there is no latency and nothing hangs when the remote
+  is unreachable. `unix://`, `npipe://`, a bare socket path, and `tcp://` to
+  localhost/127.0.0.1/::1 count as local; `ssh://`, other `tcp://` hosts and unknown schemes do
+  not.
+
+  The guard sits on `ensure_proxy_running` / `stop_proxy` as well as the CLI, so the paths that
+  drive the proxy indirectly — `dk <env> up` and `dk worktree up` — are covered too. Read-only
+  subcommands refuse as well: `dk proxy status` against a remote engine reports on a container
+  that is not the proxy this machine uses, which is worse than no answer.
+
   A mount pointing at a *different but still live* install is left alone: it is the same bundled
   asset, and recreating would make the shared proxy bounce between projects.
 
