@@ -29,6 +29,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
     ensure_postgres_data_volume,
     expected_pgbackrest_repo_settings,
     materialize_configs,
+    PgbackrestProbeUnavailable,
     pgbackrest_managed_conf_materialized,
     pgbackrest_stanza_exists_in_repo,
     postgres_data_volume_name,
@@ -238,7 +239,13 @@ def run_bkp_db_stanza_create_flow(
     dk_env_name: str | None = None,
 ) -> int:
     """Materialize conf if needed, ensure PGDATA, skip when stanza exists, then ``stanza-create``."""
-    if not pgbackrest_managed_conf_materialized(env, config=config):
+    try:
+        conf_present = pgbackrest_managed_conf_materialized(env, config=config)
+    except PgbackrestProbeUnavailable as e:
+        # Rewriting config we could not read is worse than stopping.
+        print(f"pgBackRest stanza-create: {e}", file=sys.stderr)
+        return 1
+    if not conf_present:
         print(
             "pgBackRest stanza-create: materializing volume config from env …",
             file=sys.stderr,
