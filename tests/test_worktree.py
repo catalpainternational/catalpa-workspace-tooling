@@ -651,6 +651,51 @@ def test_worktree_remove_wipe_removes_external_volumes(
         assert any(name.endswith(expected) for name in removed), f"{expected} left behind: {removed}"
 
 
+def test_worktree_remove_wipe_attempts_every_volume_and_keeps_the_checkout(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """One stuck volume must not hide the rest, nor silently strand them.
+
+    The checkout is kept on purpose so the command can simply be re-run; removing it would
+    leave orphans nobody goes looking for, which is the failure #64 is about.
+    """
+    write_minimal_tooling_tree(tmp_path)
+    _write_dev_env(tmp_path)
+    _git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
+
+    attempted: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if list(cmd[:3]) == ["docker", "volume", "rm"]:
+            attempted.append(cmd[3])
+            if cmd[3].endswith("postgres_data"):  # the first one, and it is stuck
+                return subprocess.CompletedProcess(
+                    list(cmd), 1, stdout="", stderr="volume is in use - [abc123]"
+                )
+        return subprocess.CompletedProcess(list(cmd), 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+
+    wt = tmp_path / ".worktrees" / "ds_180"
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) != 0
+
+    for expected in ("postgres_data", "django_media", "caddy_data", "postgres_conf", "pgbackrest_conf"):
+        assert any(n.endswith(expected) for n in attempted), f"{expected} never attempted: {attempted}"
+    assert wt.is_dir(), "checkout must survive so the wipe can be re-run"
+    err = capsys.readouterr().err
+    assert "could not be removed" in err
+    assert "re-run" in err
+
+
 def test_worktree_remove_wipe_dry_run_removes_nothing(
     tmp_path: Path,
     isolated_tooling: None,

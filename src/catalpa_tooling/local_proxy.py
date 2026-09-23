@@ -610,7 +610,21 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
                 "The local CA is persisted on the host and is kept.",
                 file=sys.stderr,
             )
-            run_cmd(["docker", "rm", "-f", LOCAL_PROXY_CONTAINER], check=False)
+            removed = run_cmd(
+                ["docker", "rm", "-f", LOCAL_PROXY_CONTAINER],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if removed.returncode != 0:
+                # Falling through to `docker run --name` would report "container name already
+                # in use" and bury the real cause — the opaque-error problem this path fixes.
+                print(
+                    f"dk proxy up: could not remove the stale {LOCAL_PROXY_CONTAINER!r}: "
+                    f"{(removed.stderr or removed.stdout or '').strip()}",
+                    file=sys.stderr,
+                )
+                return removed.returncode
         else:
             print(f"Starting existing container {LOCAL_PROXY_CONTAINER!r}...", file=sys.stderr)
             start = run_cmd(["docker", "start", LOCAL_PROXY_CONTAINER], check=False)

@@ -1089,6 +1089,15 @@ def worktree_remove(
     if wipe and overlay is not None:
         rc = _wipe_worktree_stack(path, overlay, dry_run=dry_run)
         if rc != 0:
+            # Keep the checkout: removing it here would strand whatever the wipe could not
+            # clear, which is the silent-orphan failure this command exists to prevent.
+            # Every volume was attempted, so the output above is the complete picture.
+            print(
+                f"dk worktree remove: wipe incomplete; leaving {path} in place. "
+                "Clear the reported volumes (a container may still be using one), "
+                f"then re-run — already-removed volumes are skipped.",
+                file=sys.stderr,
+            )
             return rc
 
     result = _git(

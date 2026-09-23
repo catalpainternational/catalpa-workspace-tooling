@@ -570,14 +570,36 @@ class RemoveExternalStackVolumesTests(unittest.TestCase):
         )
 
     @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
-    def test_real_failure_stops_and_returns_1(self, mock_run: MagicMock) -> None:
+    def test_real_failure_returns_1(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(
             returncode=1, stdout="", stderr="volume is in use - [abc123]"
         )
         self.assertEqual(
             remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 1
         )
-        mock_run.assert_called_once()
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_one_stuck_volume_does_not_hide_the_others(self, mock_run: MagicMock) -> None:
+        """Every volume is attempted even when one fails.
+
+        Stopping at the first failure left the remaining volumes unexamined, so the user could
+        not tell whether they were orphaned too — in a command whose whole purpose is to leave
+        nothing behind unnoticed.
+        """
+        names = list(external_stack_volume_names(self._ENV, config=_MINIMAL_CONFIG))
+        stuck = names[0]
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[3] == stuck:
+                return MagicMock(returncode=1, stdout="", stderr="volume is in use - [abc]")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 1
+        )
+        attempted = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(attempted, names)
 
     @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
     def test_dry_run_removes_nothing(self, mock_run: MagicMock) -> None:

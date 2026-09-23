@@ -504,6 +504,41 @@ def test_ensure_proxy_running_recreates_when_caddyfile_mount_vanished(monkeypatc
     assert f"{live}:/etc/caddy/Caddyfile:ro" in run_cmds[0], "recreated from the live install"
 
 
+def test_ensure_proxy_running_surfaces_a_failed_removal(monkeypatch, tmp_path, capsys):
+    """A failed `docker rm -f` must not fall through to `docker run --name`.
+
+    Doing so reports "container name already in use" and buries the real cause — the exact
+    opaque-error problem this recreate path exists to fix.
+    """
+    gone = str(tmp_path / "old-venv" / "catalpa_tooling" / "Caddyfile")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=_mounts_json(gone))
+        if cmd[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="permission denied while trying to connect"
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
+    monkeypatch.setattr(local_proxy, "ensure_proxy_network", lambda **_: 0)
+    monkeypatch.setattr(local_proxy, "ensure_proxy_on_network", lambda **_: 0)
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "")
+    monkeypatch.setattr(local_proxy, "proxy_container_exists", lambda: True)
+    monkeypatch.setattr(local_proxy, "local_proxy_data_dir", lambda: tmp_path / "ca")
+    live = tmp_path / "venv" / "catalpa_tooling" / "local_proxy" / "Caddyfile"
+    live.parent.mkdir(parents=True)
+    live.write_text("# bundled\n", encoding="utf-8")
+    monkeypatch.setattr(local_proxy, "local_proxy_caddyfile_path", lambda: live)
+
+    assert local_proxy.ensure_proxy_running() != 0
+    assert not any(c[:2] == ["docker", "run"] for c in calls), "must not race a name collision"
+    assert "permission denied" in capsys.readouterr().err
+
+
 def test_ensure_proxy_running_starts_container_when_mount_source_is_live(monkeypatch, tmp_path):
     """A healthy stopped container is started in place — no churn for the shared proxy."""
     live = tmp_path / "venv" / "catalpa_tooling" / "local_proxy" / "Caddyfile"
