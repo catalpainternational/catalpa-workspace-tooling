@@ -58,6 +58,60 @@
 
 ### Fixed
 
+- **`dk worktree remove --wipe` now removes the worktree's `external:` volumes** ([#64]). Compose
+  never deletes a volume declared `external: true` — it does not own what it did not create — so
+  `down -v` left every one of them behind, including the seeded `postgres_data`. The command
+  reported success and the git worktree really was gone, so the orphans were only found by going
+  looking. `dk dev wipe` already closed this gap for PGDATA and media; the worktree path never
+  called it.
+
+  The worktree path removes **all five** external volumes (`postgres_data`, `django_media`,
+  `caddy_data`, `postgres_conf`, `pgbackrest_conf`), not just the two `dev wipe` removes: the
+  `COMPOSE_PROJECT_NAME` is being retired, so nothing will ever mount the conf volumes again.
+  `dk dev wipe` is unchanged — that env stays reusable and `db configure` rewrites its conf
+  volumes on the next `up`.
+
+  Every volume is attempted even if one cannot be removed (a container still using it, say), so
+  the report covers all five rather than stopping at the first problem. If any fail, the checkout
+  is kept and the command exits non-zero — stranding volumes behind a removed worktree is the
+  silent-orphan failure this fixes. Re-run once the volume is free; those already removed are
+  skipped.
+
+  Built images tagged with the worktree's project name are still left behind; removing those is
+  a separate decision.
+
+- **`dk proxy up` recovers from a stale `catalpa-local-proxy`** ([#58]). The container is
+  machine-wide but it bind-mounts the bundled `Caddyfile` from whichever project venv created it.
+  Rebuilding that venv, moving the project or a Python minor bump (3.12 → 3.14) deletes the path,
+  and `docker start` then failed with an opaque rootfs error — from an unrelated project, since
+  the proxy is shared. `proxy up` now checks the bind source first and recreates the container
+  when it has vanished. The local dev CA is persisted on the host and is kept, so nothing needs
+  re-trusting. If removing the stale container fails, `proxy up` reports why and stops rather
+  than continuing into a "container name already in use" collision that hides the real cause.
+
+- **`dk proxy` now refuses to operate against a remote Docker engine.** The local dev proxy
+  publishes ports 80/443 on *your* machine, bind-mounts its Caddyfile from *your* filesystem, and
+  issues certificates for *your* browsers — none of which holds for a remote engine, so every
+  operation there was either meaningless or destructive to whatever was running on it. With
+  `DOCKER_HOST` exported, the staleness check above compared the mount path against the local
+  filesystem while the container lived elsewhere, so a healthy shared proxy got force-recreated
+  pointing at a path the engine did not have.
+
+  The endpoint comes from `docker context inspect`, which resolves the full precedence chain
+  (`DOCKER_HOST`, then `DOCKER_CONTEXT`, then the active context) rather than reading one
+  variable. It is a local config lookup, so there is no latency and nothing hangs when the remote
+  is unreachable. `unix://`, `npipe://`, a bare socket path, and `tcp://` to
+  localhost/127.0.0.1/::1 count as local; `ssh://`, other `tcp://` hosts and unknown schemes do
+  not.
+
+  The guard sits on `ensure_proxy_running` / `stop_proxy` as well as the CLI, so the paths that
+  drive the proxy indirectly — `dk <env> up` and `dk worktree up` — are covered too. Read-only
+  subcommands refuse as well: `dk proxy status` against a remote engine reports on a container
+  that is not the proxy this machine uses, which is worse than no answer.
+
+  A mount pointing at a *different but still live* install is left alone: it is the same bundled
+  asset, and recreating would make the shared proxy bounce between projects.
+
 - **A missing stack image no longer reports itself as missing pgBackRest config.** The probe that
   checks the `pgbackrest_conf` volume for the managed drop-in runs a throwaway container from the
   `db` image and read any non-zero exit as "the file is not there". `docker run` exits 125 when the
@@ -90,6 +144,9 @@
 - **A failure to clear stale `*.conf` drop-ins is no longer silent.** `_docker_run_rm_other_confs`
   ignored its exit code, so a genuine failure left pgBackRest merging duplicate keys from a
   leftover file — a config nobody wrote, with no error anywhere.
+
+[#58]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/58
+[#64]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/64
 
 ## 1.4.0
 

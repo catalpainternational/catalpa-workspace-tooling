@@ -87,7 +87,10 @@ dk worktree remove <slug> [--wipe] [--dry-run] [-y]
 - **status / context** — stack status (`running` / `stopped` / `unknown`) and agent-oriented identity.
 - **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus host `media/` copy.
 - **remove** — git worktree remove only (stack may keep running).
-- **remove --wipe** — also `compose down -v` for the remapped project (destroys that worktree’s Docker volumes).
+- **remove --wipe** — also `compose down -v` for the remapped project, then removes the
+  `external:` volumes Compose will not touch (`postgres_data`, `django_media`, `caddy_data`,
+  `postgres_conf`, `pgbackrest_conf`). Destroys that worktree’s database and uploads — there is
+  no undo. Built images tagged with the worktree’s project name are left in place.
 
 ## Agents
 

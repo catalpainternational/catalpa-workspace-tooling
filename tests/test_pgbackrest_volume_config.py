@@ -24,6 +24,8 @@ from catalpa_tooling.pgbackrest_volume_config import (
     pgdata_volume_mount,
     read_managed_pgbackrest_repo_settings,
     postgres_data_volume_name,
+    remove_all_external_stack_volumes,
+    remove_wipe_data_volumes,
     postgres_image_from_env,
     render_pgbackrest_ini,
     render_postgres_archive_conf,
@@ -625,6 +627,90 @@ class TestPgdataVolumeMount(unittest.TestCase):
         self.assertEqual(
             pgdata_volume_mount("/var/lib/postgresql/data"),
             "/var/lib/postgresql/data",
+        )
+
+
+class RemoveExternalStackVolumesTests(unittest.TestCase):
+    """Issue #64: Compose never deletes ``external:`` volumes, so a wipe must finish the job."""
+
+    _ENV = {"COMPOSE_PROJECT_NAME": "swlt_dev_ds_180"}
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_removes_every_external_volume(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 0
+        )
+        removed = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(
+            removed, list(external_stack_volume_names(self._ENV, config=_MINIMAL_CONFIG))
+        )
+        # The reported orphans, by name — PGDATA above all.
+        self.assertIn("swlt_dev_ds_180_postgres_data", removed)
+        self.assertIn("swlt_dev_ds_180_caddy_data", removed)
+        self.assertIn("swlt_dev_ds_180_pgbackrest_conf", removed)
+        for call in mock_run.call_args_list:
+            self.assertEqual(call[0][0][:3], ["docker", "volume", "rm"])
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_missing_volume_is_success(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Error: No such volume: x"
+        )
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 0
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_real_failure_returns_1(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="volume is in use - [abc123]"
+        )
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 1
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_one_stuck_volume_does_not_hide_the_others(self, mock_run: MagicMock) -> None:
+        """Every volume is attempted even when one fails.
+
+        Stopping at the first failure left the remaining volumes unexamined, so the user could
+        not tell whether they were orphaned too — in a command whose whole purpose is to leave
+        nothing behind unnoticed.
+        """
+        names = list(external_stack_volume_names(self._ENV, config=_MINIMAL_CONFIG))
+        stuck = names[0]
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[3] == stuck:
+                return MagicMock(returncode=1, stdout="", stderr="volume is in use - [abc]")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 1
+        )
+        attempted = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(attempted, names)
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_dry_run_removes_nothing(self, mock_run: MagicMock) -> None:
+        self.assertEqual(
+            remove_all_external_stack_volumes(
+                self._ENV, config=_MINIMAL_CONFIG, dry_run=True
+            ),
+            0,
+        )
+        mock_run.assert_not_called()
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_dev_wipe_still_keeps_the_conf_volumes(self, mock_run: MagicMock) -> None:
+        """``dev wipe`` leaves a reusable env; only ``remove_all_*`` destroys the namespace."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        self.assertEqual(remove_wipe_data_volumes(self._ENV, config=_MINIMAL_CONFIG), 0)
+        removed = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(
+            removed, ["swlt_dev_ds_180_postgres_data", "swlt_dev_ds_180_django_media"]
         )
 
 

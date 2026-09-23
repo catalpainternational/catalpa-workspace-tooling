@@ -23,6 +23,7 @@ from catalpa_tooling.pgbackrest_db import (
     run_pg_dump_to_file,
     run_pg_restore,
 )
+from catalpa_tooling.pgbackrest_volume_config import remove_all_external_stack_volumes
 from catalpa_tooling.restic_files import resolve_env_with_compose_project
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.worktree_overlay import (
@@ -997,7 +998,12 @@ def _wipe_worktree_stack(
     *,
     dry_run: bool = False,
 ) -> int:
-    """``compose down -v`` for the remapped project in the worktree checkout."""
+    """``compose down -v`` plus the ``external:`` volumes Compose will not touch.
+
+    Compose never deletes a volume declared ``external: true`` — it does not own what it did not
+    create — so ``down -v`` alone leaves the worktree's PGDATA, media and conf volumes behind for
+    a project name that no longer has a checkout. See issue #64.
+    """
     try:
         wt_config = load_project_config(worktree_root)
     except Exception as exc:
@@ -1025,7 +1031,7 @@ def _wipe_worktree_stack(
             f"(COMPOSE_PROJECT_NAME={overlay.compose_project_name})",
             file=sys.stderr,
         )
-        return 0
+        return remove_all_external_stack_volumes(env_r, config=wt_config, dry_run=True)
     result = _compose(
         compose_abs,
         "down",
@@ -1034,7 +1040,9 @@ def _wipe_worktree_stack(
         check=False,
         env_add=env_r,
     )
-    return result.returncode
+    if result.returncode != 0:
+        return result.returncode
+    return remove_all_external_stack_volumes(env_r, config=wt_config)
 
 
 def worktree_remove(
@@ -1081,6 +1089,15 @@ def worktree_remove(
     if wipe and overlay is not None:
         rc = _wipe_worktree_stack(path, overlay, dry_run=dry_run)
         if rc != 0:
+            # Keep the checkout: removing it here would strand whatever the wipe could not
+            # clear, which is the silent-orphan failure this command exists to prevent.
+            # Every volume was attempted, so the output above is the complete picture.
+            print(
+                f"dk worktree remove: wipe incomplete; leaving {path} in place. "
+                "Clear the reported volumes (a container may still be using one), "
+                f"then re-run — already-removed volumes are skipped.",
+                file=sys.stderr,
+            )
             return rc
 
     result = _git(
