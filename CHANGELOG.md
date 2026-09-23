@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.4.0
+
 ### Added
 
 - **`paths.frontend` accepts a list**, so a project with more than one SPA can gate all of them.
