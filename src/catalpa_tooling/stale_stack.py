@@ -17,7 +17,7 @@ editing their own compose files.
 
 Scope: the services in ``stack_build_services`` (db / web / proxy) — exactly the set
 ``_ensure_local_stack_images_built`` can rebuild. The dev-only ``node`` service is deliberately
-excluded; reporting it stale would produce a rebuild path that cannot fix it. See issue #66.
+excluded; reporting it stale would produce a rebuild path that cannot fix it. See issue #67.
 """
 
 from __future__ import annotations

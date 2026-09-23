@@ -54,7 +54,7 @@
 
   Caveats: uncommitted files do not move HEAD, so a dirty worktree alone triggers no rebuild —
   `dev` bind-mounts still pick up code, but `full` needs an explicit rebuild for uncommitted baked
-  changes. The dev-only `node` service is not covered yet (#66).
+  changes. The dev-only `node` service is not covered yet (#67).
 
 ### Fixed
 
