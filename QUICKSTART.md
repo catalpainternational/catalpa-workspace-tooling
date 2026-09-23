@@ -104,7 +104,7 @@ Start from [tests/fixtures/minimal_project/tooling.yaml](tests/fixtures/minimal_
 | `project.name`                                 | Slug for droplet names (`{name}-{env}`) and default localdev hostnames. | Prefer hyphens; underscores become hyphens on DigitalOcean. |
 | `project.root_marker`                          | File that must exist at repo root (usually `pyproject.toml`).           |                                                             |
 | `paths.backend`                                | Django project dir for `native manage` / `runserver`.                   |                                                             |
-| `paths.frontend`                               | Frontend dir for `native frontend` and smoke tests.                     | Bero stacks use `bero`.                                     |
+| `paths.frontend`                               | Frontend dir for `native frontend` and smoke tests.                     | String or ordered list; the first entry is primary.         |
 | `paths.scripts`                                | One directory or an **ordered list** (earlier wins on name clash).      |                                                             |
 | `paths.env_local`                              | Host env file for `native` (not `dk`).                                  |                                                             |
 | `paths.email_backend_dir`                      | Default `EMAIL_BACKEND_FOLDER` for host Django.                         |                                                             |
@@ -323,7 +323,7 @@ storage:
 
 ### Postgres image and `pgbackrest.conf`
 
-Tooling materializes stanza / `pg1-path` / S3 into the **`pgbackrest_conf` volume** (`/etc/pgbackrest/conf.d/…`). The file baked into the Postgres image is only for process paths the `postgres` user can write (`lock-path`, `log-path`, `spool-path`) plus comments. **Do not set `pg1-path` (or `repo1-*`) in the image file** — that duplicates the drop-in and pgBackRest exits `[031]`. Create and `chown` those lock/log/spool directories in the Dockerfile. Consumer examples: bero / Indmo `docker/postgres/pgbackrest.conf`.
+Tooling materializes stanza / `pg1-path` / S3 into the **`pgbackrest_conf` volume** (`/etc/pgbackrest/conf.d/…`). The file baked into the Postgres image is only for process paths the `postgres` user can write (`lock-path`, `log-path`, `spool-path`) plus comments. **Do not set `pg1-path` (or `repo1-*`) in the image file** — that duplicates the drop-in and pgBackRest exits `[031]`. Create and `chown` those lock/log/spool directories in the Dockerfile. See a consumer's `docker/postgres/pgbackrest.conf` for a worked example.
 
 `dk <env> db restore` / `files restore` are for backups **this stack** wrote. To load an Ansible-era or package-install cluster, use a custom-format dump (`db pgrestore` / `db restore --dumps`) and `dk fetch media` + `files push` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)).
 

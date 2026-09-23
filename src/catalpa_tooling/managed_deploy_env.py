@@ -358,7 +358,6 @@ def load_managed_deploy_context(
         config=config,
         env_name=env_name,
         site_origin=site_origin,
-        site_origins=site_origins_list,
         behind_local_proxy=local_proxy_enabled(info),
     )
 
