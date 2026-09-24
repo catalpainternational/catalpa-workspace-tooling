@@ -211,8 +211,14 @@ def test_ensure_worktree_gitignore(tmp_path: Path) -> None:
 
 
 def test_worktree_create_list_remove_git(
-    tmp_path: Path, isolated_tooling: None
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # `remove` now stops the stack, so without this the test would shell out to a real
+    # `docker compose down` and depend on a running daemon.
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
     write_minimal_tooling_tree(tmp_path)
     _write_dev_env(tmp_path)
     _git_init_commit(tmp_path)
@@ -704,6 +710,71 @@ def test_worktree_remove_wipe_dry_run_removes_nothing(
     config, _, removed = _wipe_recording_repo(tmp_path, monkeypatch)
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
     assert removed == []
+
+
+# --- `remove` without --wipe must still stop the stack ----------------------------------------
+
+
+def test_worktree_remove_stops_the_stack_but_keeps_volumes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Retiring the checkout must not leave containers running for a project nothing can name.
+
+    Volumes are a different question: the user did not ask for the data to go, so it stays —
+    but the command says so, and says how to reclaim it.
+    """
+    config, compose_calls, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", yes=True) == 0
+
+    assert compose_calls, "no compose call — the stack would be left running"
+    assert "down" in compose_calls[0]
+    assert "-v" not in compose_calls[0], "plain remove must not destroy volumes"
+    assert removed == [], f"plain remove must not delete volumes, removed {removed}"
+    assert not (tmp_path / ".worktrees" / "ds_180").exists()
+
+    err = capsys.readouterr().err
+    assert "--wipe" in err, "must point at the flag that would have reclaimed the volumes"
+    assert "docker volume rm" in err, "must give a reclaim command for the kept volumes"
+
+
+def test_worktree_remove_keep_stack_preserves_the_old_behaviour(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The escape hatch for anyone who was relying on remove leaving the stack up."""
+    config, compose_calls, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", keep_stack=True, yes=True) == 0
+
+    assert compose_calls == [], f"--keep-stack must not touch the stack, got {compose_calls}"
+    assert removed == []
+    assert not (tmp_path / ".worktrees" / "ds_180").exists()
+
+
+def test_worktree_remove_keeps_the_checkout_when_the_stack_will_not_stop(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed `down` must not retire the checkout — that is how orphans are born."""
+    write_minimal_tooling_tree(tmp_path)
+    _write_dev_env(tmp_path)
+    _git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 1),
+    )
+
+    assert worktree_remove(config, slug="ds_180", yes=True) != 0
+    assert (tmp_path / ".worktrees" / "ds_180").is_dir(), "checkout must survive a failed down"
 
 
 # --- issue #62: the worktree stack must run the worktree's code, whatever the cwd -------------

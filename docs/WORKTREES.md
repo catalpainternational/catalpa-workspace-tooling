@@ -79,18 +79,25 @@ dk worktree context [slug] [--json]
 dk worktree list
 dk worktree info [slug]
 dk worktree seed [slug] [--db|--media] [--from DIR] [--dry-run] [-y]
-dk worktree remove <slug> [--wipe] [--dry-run] [-y]
+dk worktree remove <slug> [--wipe] [--keep-stack] [--dry-run] [-y]
 ```
 
 - **create** — worktree + overlay + `AGENTS.local.md` + submodule init; seeds DB + host media from the main checkout's base env by default (`--no-seed` to skip). Pass **`--up`** to proxy + compose up after create.
 - **up / down / restart / logs** — remapped compose lifecycle via the worktree overlay (volumes kept on `down`).
 - **status / context** — stack status (`running` / `stopped` / `unknown`) and agent-oriented identity.
 - **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus host `media/` copy.
-- **remove** — git worktree remove only (stack may keep running).
-- **remove --wipe** — also `compose down -v` for the remapped project, then removes the
-  `external:` volumes Compose will not touch (`postgres_data`, `django_media`, `caddy_data`,
-  `postgres_conf`, `pgbackrest_conf`). Destroys that worktree’s database and uploads — there is
-  no undo. Built images tagged with the worktree’s project name are left in place.
+- **remove** — `compose down` for the remapped project, then git worktree remove. **Volumes are
+  kept**; the command prints how to reclaim them. Since 1.4.1: before that, the stack was left
+  running for a project name that no longer had a checkout.
+- **remove --wipe** — the same, but `compose down -v`, then removes the `external:` volumes
+  Compose will not touch (`postgres_data`, `django_media`, `caddy_data`, `postgres_conf`,
+  `pgbackrest_conf`). Destroys that worktree’s database and uploads — there is no undo. Built
+  images tagged with the worktree’s project name are left in place.
+- **remove --keep-stack** — the pre-1.4.1 behaviour: retire the checkout and leave the stack up.
+  Mostly useful when the Docker daemon is not running and you want the checkout gone anyway.
+
+If the teardown fails, the checkout is deliberately **kept** so the command can be re-run —
+removing it would strand whatever could not be cleared under a name nothing can look up.
 
 ## Agents
 

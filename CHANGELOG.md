@@ -56,6 +56,32 @@
   `dev` bind-mounts still pick up code, but `full` needs an explicit rebuild for uncommitted baked
   changes. The dev-only `node` service is not covered yet (#67).
 
+### Changed
+
+- **`dk worktree remove` now stops the worktree's stack** before retiring the checkout. It used to
+  remove the git worktree and leave the containers running under a `COMPOSE_PROJECT_NAME` that
+  nothing could look up any more — `dk worktree context` needs the checkout to tell you the
+  project name, so the stack became effectively anonymous the moment it was orphaned.
+
+  This is the half of [#64] that `--wipe` did not cover. That fix made `--wipe` finish the job;
+  the *default* path still leaked, and it is the path people take when they want to keep the
+  data.
+
+  **Volumes are still kept without `--wipe`** — the user did not ask for the database to go. But
+  the command now says what survived and how to reclaim it, rather than leaving it to be found by
+  `docker volume ls` months later:
+
+  ```console
+  $ dk worktree remove ds_180 -y
+  Removed worktree 'ds_180' (/repo/.worktrees/ds_180)
+  Its volumes are kept (use --wipe to remove them). To reclaim later:
+    docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=app_dev_ds_180)
+  ```
+
+  A failed teardown keeps the checkout, so the command can simply be re-run — the same rule
+  `--wipe` already followed. If the Docker daemon is not running and you want the checkout gone
+  regardless, **`--keep-stack`** restores the old behaviour.
+
 ### Fixed
 
 - **`dk worktree up` ran the *main* checkout's code in the worktree's stack** ([#62]). The stack

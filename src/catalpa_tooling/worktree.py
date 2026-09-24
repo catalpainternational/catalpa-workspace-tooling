@@ -995,27 +995,34 @@ def worktree_info(config: ProjectConfig, *, slug: str | None = None) -> int:
     return 0
 
 
-def _wipe_worktree_stack(
+def _teardown_worktree_stack(
     worktree_root: Path,
     overlay: WorktreeOverlay,
     *,
+    remove_volumes: bool,
     dry_run: bool = False,
 ) -> int:
-    """``compose down -v`` plus the ``external:`` volumes Compose will not touch.
+    """``compose down`` for the remapped project; with ``remove_volumes``, its volumes too.
 
-    Compose never deletes a volume declared ``external: true`` — it does not own what it did not
-    create — so ``down -v`` alone leaves the worktree's PGDATA, media and conf volumes behind for
-    a project name that no longer has a checkout. See issue #64.
+    Both of ``remove``'s modes come through here, because the difference between them is only
+    whether the data goes. Retiring the checkout without stopping the stack is not one of the
+    modes: the containers outlive the only thing that could name them.
+
+    With ``remove_volumes``, this also sweeps the ``external:`` volumes. Compose never deletes
+    one — it does not own what it did not create — so ``down -v`` alone leaves the worktree's
+    PGDATA, media and conf volumes behind for a project name that no longer has a checkout.
+    See issue #64.
     """
+    label = "dk worktree remove --wipe" if remove_volumes else "dk worktree remove"
     try:
         wt_config = load_project_config(worktree_root)
     except Exception as exc:
-        print(f"dk worktree remove --wipe: cannot load tooling at {worktree_root}: {exc}", file=sys.stderr)
+        print(f"{label}: cannot load tooling at {worktree_root}: {exc}", file=sys.stderr)
         return 1
     ctx = load_managed_deploy_context(wt_config, overlay.base_env)
     if ctx is None:
         print(
-            "dk worktree remove --wipe: could not load deploy context "
+            f"{label}: could not load deploy context "
             f"(is {overlay.base_env!r} configured?).",
             file=sys.stderr,
         )
@@ -1028,23 +1035,26 @@ def _wipe_worktree_stack(
     )
     env_r["COMPOSE_PROJECT_NAME"] = overlay.compose_project_name
     compose_abs = str((wt_config.repo_root / ctx.compose_file).resolve())
+    down_args = ["down", "-v", "--remove-orphans"] if remove_volumes else ["down", "--remove-orphans"]
     if dry_run:
         print(
-            f"dry-run: docker compose -f {compose_abs} down -v "
+            f"dry-run: docker compose -f {compose_abs} {' '.join(down_args)} "
             f"(COMPOSE_PROJECT_NAME={overlay.compose_project_name})",
             file=sys.stderr,
         )
+        if not remove_volumes:
+            return 0
         return remove_all_external_stack_volumes(env_r, config=wt_config, dry_run=True)
     result = _compose(
         compose_abs,
-        "down",
-        "-v",
-        "--remove-orphans",
+        *down_args,
         check=False,
         env_add=env_r,
     )
     if result.returncode != 0:
         return result.returncode
+    if not remove_volumes:
+        return 0
     return remove_all_external_stack_volumes(env_r, config=wt_config)
 
 
@@ -1053,6 +1063,7 @@ def worktree_remove(
     *,
     slug: str,
     wipe: bool = False,
+    keep_stack: bool = False,
     dry_run: bool = False,
     yes: bool = False,
 ) -> int:
@@ -1084,21 +1095,27 @@ def worktree_remove(
         prompt = f"Type {clean!r} to confirm remove"
         if wipe:
             prompt += " (and wipe Docker volumes)"
+        elif keep_stack:
+            prompt += " (leaving its stack running)"
+        else:
+            prompt += " (and stop its stack, keeping volumes)"
         prompt += ": "
         if input(prompt).strip() != clean:
             print("dk worktree remove: cancelled.", file=sys.stderr)
             return 1
 
-    if wipe and overlay is not None:
-        rc = _wipe_worktree_stack(path, overlay, dry_run=dry_run)
+    if overlay is not None and not keep_stack:
+        rc = _teardown_worktree_stack(path, overlay, remove_volumes=wipe, dry_run=dry_run)
         if rc != 0:
-            # Keep the checkout: removing it here would strand whatever the wipe could not
+            # Keep the checkout: removing it here would strand whatever the teardown could not
             # clear, which is the silent-orphan failure this command exists to prevent.
             # Every volume was attempted, so the output above is the complete picture.
             print(
-                f"dk worktree remove: wipe incomplete; leaving {path} in place. "
-                "Clear the reported volumes (a container may still be using one), "
-                f"then re-run — already-removed volumes are skipped.",
+                f"dk worktree remove: teardown incomplete; leaving {path} in place. "
+                "Clear the reported containers or volumes (something may still be using one), "
+                "then re-run — anything already removed is skipped. "
+                "If the Docker daemon is simply not running, --keep-stack removes the "
+                "checkout and leaves the stack for later.",
                 file=sys.stderr,
             )
             return rc
@@ -1122,6 +1139,18 @@ def worktree_remove(
             )
             return result.returncode or 1
     print(f"Removed worktree {clean!r} ({path})", file=sys.stderr)
+    if overlay is not None and not wipe:
+        # The checkout is gone, so nothing will name this project again. Say what survived and
+        # how to reclaim it, rather than leaving it to be found by `docker volume ls` months
+        # later — that discovery gap is the whole complaint behind issue #64.
+        project = overlay.compose_project_name
+        what = "Its stack is still running, with its volumes" if keep_stack else "Its volumes are kept"
+        print(
+            f"{what} (use --wipe to remove them). To reclaim later:\n"
+            f"  docker volume rm $(docker volume ls -q "
+            f"--filter label=com.docker.compose.project={project})",
+            file=sys.stderr,
+        )
     return 0
 
 
