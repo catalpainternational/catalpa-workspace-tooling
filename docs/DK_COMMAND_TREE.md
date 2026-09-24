@@ -35,7 +35,8 @@ dk
 │   ├── list
 │   ├── info [slug]
 │   ├── seed [slug] [--db|--media] # copy main dev DB + host media (slug from main checkout)
-│   └── remove <slug> [--wipe]     # git worktree remove; --wipe → down -v + external: volumes
+│   └── remove <slug> [--wipe] [--keep-stack]  # down + git worktree remove; --wipe also drops
+│                                  # volumes (external: included); --keep-stack leaves it up
 │
 # Global (before subcommand):
 #   dk --worktree <slug> | -W <slug>  …   # target .worktrees/<slug> without cd

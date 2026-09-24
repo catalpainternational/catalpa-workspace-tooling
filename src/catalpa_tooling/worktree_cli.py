@@ -183,13 +183,18 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
 
     p_remove = sub.add_parser(
         "remove",
-        help="Remove a git worktree (optionally wipe its Docker volumes).",
+        help="Remove a git worktree and stop its stack (optionally wipe its Docker volumes).",
     )
     p_remove.add_argument("slug", help="Worktree slug under .worktrees/.")
     p_remove.add_argument(
         "--wipe",
         action="store_true",
-        help="Also compose down -v for the remapped compose project.",
+        help="Also remove the stack's volumes, including external ones (destroys its database).",
+    )
+    p_remove.add_argument(
+        "--keep-stack",
+        action="store_true",
+        help="Leave the stack running after removing the checkout (the pre-1.4.1 behaviour).",
     )
     p_remove.add_argument("--dry-run", action="store_true", help="Show actions without running.")
     p_remove.add_argument(
@@ -283,6 +288,7 @@ def cmd_worktree(ns: argparse.Namespace, config: ProjectConfig) -> int:
             config,
             slug=ns.slug,
             wipe=bool(ns.wipe),
+            keep_stack=bool(ns.keep_stack),
             dry_run=bool(ns.dry_run),
             yes=bool(ns.yes),
         )
