@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.4.1
+
 ### Added
 
 - **Stale local stack detection and auto-rebuild.** For **unpinned** managed envs
