@@ -273,8 +273,9 @@ def _patch_rebuild(monkeypatch: pytest.MonkeyPatch, reason) -> list[str]:
     class _Proc:
         returncode = 0
 
-    def fake_compose(_compose_file, *args, **_kwargs):
-        actions.append(f"compose {' '.join(args)}")
+    def fake_compose(_compose_file, *args, **kwargs):
+        extra = kwargs.get("extra_compose_files") or []
+        actions.append(f"compose {' '.join(args)}" + (f" +{','.join(extra)}" if extra else ""))
         return _Proc()
 
     monkeypatch.setattr(compose_mod, "_compose", fake_compose)
@@ -300,7 +301,24 @@ def test_running_stack_is_recreated(config, monkeypatch: pytest.MonkeyPatch) -> 
         config, "compose.yml", _env(), use_prepulled_registry=False
     )
     assert rc == 0
-    assert actions == ["build", "compose up -d --build"]
+    assert actions == ["build", "compose up -d"]
+
+
+def test_recreate_keeps_the_env_overrides(config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recreating without the local proxy override publishes caddy's own ports 80/443, which the
+    machine-wide proxy already holds, so the stack fails to come back.
+    """
+    reason = stale_stack.StaleReason("db", "tag drift", containers_running=True)
+    actions = _patch_rebuild(monkeypatch, reason)
+    rc, _ = stale_stack.ensure_stack_matches_checkout(
+        config,
+        "compose.yml",
+        _env(),
+        use_prepulled_registry=False,
+        extra_compose_files=["/tmp/proxy-override.yaml"],
+    )
+    assert rc == 0
+    assert actions == ["build", "compose up -d +/tmp/proxy-override.yaml"]
 
 
 def test_recreate_false_leaves_the_up_to_the_caller(
