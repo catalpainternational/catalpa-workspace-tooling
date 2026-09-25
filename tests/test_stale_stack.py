@@ -273,8 +273,9 @@ def _patch_rebuild(monkeypatch: pytest.MonkeyPatch, reason) -> list[str]:
     class _Proc:
         returncode = 0
 
-    def fake_compose(_compose_file, *args, **_kwargs):
-        actions.append(f"compose {' '.join(args)}")
+    def fake_compose(_compose_file, *args, **kwargs):
+        extra = kwargs.get("extra_compose_files") or []
+        actions.append(f"compose {' '.join(args)}" + (f" +{','.join(extra)}" if extra else ""))
         return _Proc()
 
     monkeypatch.setattr(compose_mod, "_compose", fake_compose)
@@ -300,7 +301,24 @@ def test_running_stack_is_recreated(config, monkeypatch: pytest.MonkeyPatch) -> 
         config, "compose.yml", _env(), use_prepulled_registry=False
     )
     assert rc == 0
-    assert actions == ["build", "compose up -d --build"]
+    assert actions == ["build", "compose up -d"]
+
+
+def test_recreate_keeps_the_env_overrides(config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recreating without the local proxy override publishes caddy's own ports 80/443, which the
+    machine-wide proxy already holds, so the stack fails to come back.
+    """
+    reason = stale_stack.StaleReason("db", "tag drift", containers_running=True)
+    actions = _patch_rebuild(monkeypatch, reason)
+    rc, _ = stale_stack.ensure_stack_matches_checkout(
+        config,
+        "compose.yml",
+        _env(),
+        use_prepulled_registry=False,
+        extra_compose_files=["/tmp/proxy-override.yaml"],
+    )
+    assert rc == 0
+    assert actions == ["build", "compose up -d +/tmp/proxy-override.yaml"]
 
 
 def test_recreate_false_leaves_the_up_to_the_caller(
@@ -328,6 +346,29 @@ def test_failed_build_aborts(config, monkeypatch: pytest.MonkeyPatch) -> None:
         config, "compose.yml", _env(), use_prepulled_registry=False
     )
     assert rc == 3
+
+
+def test_rebuild_builds_the_env_compose_file(config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check reads images from the env's compose file, so the rebuild must build from it too.
+
+    Building the production file instead leaves the dev images stale and costs a full production
+    build on every new commit.
+    """
+    reason = stale_stack.StaleReason("db", "tag drift", containers_running=False)
+    _patch_rebuild(monkeypatch, reason)
+    import catalpa_tooling.remote_deploy as remote_deploy_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_build(*_a, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(remote_deploy_mod, "_ensure_local_stack_images_built", fake_build)
+    stale_stack.ensure_stack_matches_checkout(
+        config, "compose.dev.yml", _env(), use_prepulled_registry=False
+    )
+    assert seen["compose_file"] == "compose.dev.yml"
 
 
 def test_dry_run_reports_without_rebuilding(
@@ -385,6 +426,32 @@ def test_compose_yml_build_passes_the_label_override(
     assert cmd.count("-f") == 2
     assert LABEL_GIT_SHA in str(seen["override_text"])
     assert not Path(str(seen["override_path"])).exists()  # temp file cleaned up
+
+
+@pytest.mark.parametrize(
+    ("compose_file", "expected"), [(None, "compose.yml"), ("compose.dev.yml", "compose.dev.yml")]
+)
+def test_compose_yml_build_uses_the_given_compose_file(
+    config, monkeypatch: pytest.MonkeyPatch, compose_file, expected
+) -> None:
+    """`dk build` keeps building the production file; local envs build their own."""
+    import catalpa_tooling.dk_stack as dk_stack
+
+    seen: dict[str, list[str]] = {}
+
+    class _Proc:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        seen["cmd"] = list(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(dk_stack, "run_cmd", fake_run)
+    monkeypatch.setattr(dk_stack, "restore_controlling_tty", lambda: None)
+
+    assert dk_stack.compose_yml_build(config, env_add={}, compose_file=compose_file) == 0
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-f") + 1] == expected
 
 
 def test_compose_path_stamps_labels_only_when_it_may_build() -> None:

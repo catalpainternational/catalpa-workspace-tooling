@@ -239,6 +239,7 @@ def _run_compose_path(
             config,
             env_add,
             use_prepulled_registry=use_prepulled_registry,
+            compose_file=compose_file,
         )
         if rc != 0:
             return rc
@@ -479,6 +480,15 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         caller_runs_up = env_command in (None, "compose") and (
             not compose_args or compose_args[0] == "up"
         )
+        try:
+            recreate_files = (
+                []
+                if caller_runs_up
+                else local_proxy_extra_compose_files(info, config, env_name, env_add, ["up"])
+            )
+        except LocalProxyConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
         rc, stale_reason = ensure_stack_matches_checkout(
             config,
             compose_file,
@@ -486,6 +496,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             use_prepulled_registry=use_prepulled_registry,
             dry_run=dry_run,
             recreate=not caller_runs_up,
+            extra_compose_files=recreate_files,
         )
         if rc != 0:
             return rc
