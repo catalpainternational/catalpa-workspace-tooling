@@ -12,6 +12,13 @@
   The pre-`up` build now uses the env's compose file; `dk build` and `dk push` still build the
   production one.
 
+- **A stale stack comes back behind the local proxy.** When a command such as `dk dev db restore`
+  found the running stack out of date, it rebuilt and recreated the containers without the local
+  proxy override, so `caddy` tried to publish ports 80/443 that `dk proxy` already holds and the
+  stack stayed half-down. The recreate also ran `up --build` without the label override, which
+  could retag the fresh images unlabelled and make the next command rebuild again. It now recreates
+  with the proxy override and without a second build.
+
 ## 1.4.1
 
 ### Added
