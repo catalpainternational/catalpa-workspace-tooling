@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk dev up` builds the images it is about to run.** Before starting a local stack, and when
+  rebuilding a stale one, tooling built the production compose file (`paths.deploy.default_compose`)
+  even when the env runs a different one (`info.yaml` `compose_file`, usually `compose.dev.yaml`).
+  Projects whose dev file builds different targets paid for a full production build on every new
+  commit, and the stale check, which reads the env's file, could keep finding the dev images stale.
+  The pre-`up` build now uses the env's compose file; `dk build` and `dk push` still build the
+  production one.
+
 ## 1.4.1
 
 ### Added

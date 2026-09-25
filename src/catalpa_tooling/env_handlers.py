@@ -239,6 +239,7 @@ def _run_compose_path(
             config,
             env_add,
             use_prepulled_registry=use_prepulled_registry,
+            compose_file=compose_file,
         )
         if rc != 0:
             return rc

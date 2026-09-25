@@ -281,7 +281,10 @@ def ensure_stack_matches_checkout(
 
     print("Rebuilding stack images to match the checkout …", file=sys.stderr)
     rc = _ensure_local_stack_images_built(
-        config, env_add, use_prepulled_registry=use_prepulled_registry
+        config,
+        env_add,
+        use_prepulled_registry=use_prepulled_registry,
+        compose_file=compose_file,
     )
     if rc != 0:
         return rc, reason
