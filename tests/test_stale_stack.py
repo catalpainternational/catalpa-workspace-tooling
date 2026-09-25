@@ -330,6 +330,29 @@ def test_failed_build_aborts(config, monkeypatch: pytest.MonkeyPatch) -> None:
     assert rc == 3
 
 
+def test_rebuild_builds_the_env_compose_file(config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check reads images from the env's compose file, so the rebuild must build from it too.
+
+    Building the production file instead leaves the dev images stale and costs a full production
+    build on every new commit.
+    """
+    reason = stale_stack.StaleReason("db", "tag drift", containers_running=False)
+    _patch_rebuild(monkeypatch, reason)
+    import catalpa_tooling.remote_deploy as remote_deploy_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_build(*_a, **kwargs):
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(remote_deploy_mod, "_ensure_local_stack_images_built", fake_build)
+    stale_stack.ensure_stack_matches_checkout(
+        config, "compose.dev.yml", _env(), use_prepulled_registry=False
+    )
+    assert seen["compose_file"] == "compose.dev.yml"
+
+
 def test_dry_run_reports_without_rebuilding(
     config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -385,6 +408,32 @@ def test_compose_yml_build_passes_the_label_override(
     assert cmd.count("-f") == 2
     assert LABEL_GIT_SHA in str(seen["override_text"])
     assert not Path(str(seen["override_path"])).exists()  # temp file cleaned up
+
+
+@pytest.mark.parametrize(
+    ("compose_file", "expected"), [(None, "compose.yml"), ("compose.dev.yml", "compose.dev.yml")]
+)
+def test_compose_yml_build_uses_the_given_compose_file(
+    config, monkeypatch: pytest.MonkeyPatch, compose_file, expected
+) -> None:
+    """`dk build` keeps building the production file; local envs build their own."""
+    import catalpa_tooling.dk_stack as dk_stack
+
+    seen: dict[str, list[str]] = {}
+
+    class _Proc:
+        returncode = 0
+
+    def fake_run(cmd, **_kwargs):
+        seen["cmd"] = list(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(dk_stack, "run_cmd", fake_run)
+    monkeypatch.setattr(dk_stack, "restore_controlling_tty", lambda: None)
+
+    assert dk_stack.compose_yml_build(config, env_add={}, compose_file=compose_file) == 0
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-f") + 1] == expected
 
 
 def test_compose_path_stamps_labels_only_when_it_may_build() -> None:
