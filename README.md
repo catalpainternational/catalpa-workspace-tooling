@@ -280,13 +280,13 @@ Top-level **`domain`** (string or list) is still accepted but deprecated; prefer
 
 ### `redirect_origins` in `info.yaml`
 
-Optional **`redirect_origins`** (hostname, URL, or YAML list) declares hosts that should terminate TLS and permanently redirect to the primary `site_origin` / `BERO_ORIGIN` — for example `www.` or alternate TLDs. They are **not** app origins:
+Optional **`redirect_origins`** (hostname, URL, or YAML list) declares hosts that should terminate TLS and permanently redirect to the primary `site_origin` — for example `www.` or alternate TLDs. They are **not** app origins:
 
 | Compose env                     | Value                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------- |
 | `CADDY_REDIRECT_SITE_ADDRESSES` | Space-separated Caddy site addresses (deployed: `https://…`; behind local proxy: `http://…`) |
 
-Redirect hosts are included in `dk <env> host` DNS verify/sync alongside `site_origin`, but are **not** added to `DOMAIN`, `BERO_EXTRA_ALLOWED_HOSTS`, or `CADDY_SITE_ADDRESS`. Do not list the same host under both `site_origin` and `redirect_origins`. Stack Caddy must define a redirect site block that consumes `CADDY_REDIRECT_SITE_ADDRESSES` (bero support lands separately).
+Redirect hosts are included in `dk <env> host` DNS verify/sync alongside `site_origin`, but are **not** added to `DOMAIN`, `BERO_EXTRA_ALLOWED_HOSTS`, or `CADDY_SITE_ADDRESS`. Do not list the same host under both `site_origin` and `redirect_origins`. Stack Caddy must define a redirect site block that consumes `CADDY_REDIRECT_SITE_ADDRESSES`.
 
 ```yaml
 site_origin: https://example.org

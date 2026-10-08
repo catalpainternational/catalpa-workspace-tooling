@@ -202,7 +202,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             dest="submodule_path",
             default=None,
             metavar="PATH",
-            help="Operate inside this submodule path (e.g. bero).",
+            help="Operate inside this submodule path (e.g. the frontend submodule).",
         )
         p.add_argument(
             "--execute",
