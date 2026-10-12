@@ -116,6 +116,7 @@ def _prepare_compose_up(
             ctx.config,
             env_add,
             use_prepulled_registry=ctx.use_prepulled_registry,
+            compose_file=compose_file,
         )
     if rc != 0:
         return rc

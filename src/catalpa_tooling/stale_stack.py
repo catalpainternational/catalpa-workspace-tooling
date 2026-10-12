@@ -254,12 +254,14 @@ def ensure_stack_matches_checkout(
     use_prepulled_registry: bool,
     dry_run: bool = False,
     recreate: bool = True,
+    extra_compose_files: list[str] | None = None,
 ) -> tuple[int, StaleReason | None]:
     """Rebuild stack images when they no longer match the checkout.
 
     Returns ``(returncode, reason)``; a non-zero return aborts the original command. ``recreate``
     is False when the caller runs its own ``compose up`` straight afterwards, so the containers
-    are not recreated twice.
+    are not recreated twice. ``extra_compose_files`` are the overrides a normal ``up`` of this
+    env adds (the local proxy's), so recreated containers come back the way ``up`` starts them.
     """
     from catalpa_tooling.compose import _compose
     from catalpa_tooling.remote_deploy import _ensure_local_stack_images_built
@@ -281,15 +283,25 @@ def ensure_stack_matches_checkout(
 
     print("Rebuilding stack images to match the checkout …", file=sys.stderr)
     rc = _ensure_local_stack_images_built(
-        config, env_add, use_prepulled_registry=use_prepulled_registry
+        config,
+        env_add,
+        use_prepulled_registry=use_prepulled_registry,
+        compose_file=compose_file,
     )
     if rc != 0:
         return rc, reason
 
     if reason.containers_running and recreate:
         print("Recreating running containers …", file=sys.stderr)
+        # No --build: the images were just built with their labels, and a second build here
+        # without the label override would retag them unlabelled.
         rc = _compose(
-            compose_file, "up", "-d", "--build", check=False, env_add=env_add
+            compose_file,
+            "up",
+            "-d",
+            check=False,
+            env_add=env_add,
+            extra_compose_files=extra_compose_files,
         ).returncode
         return rc, reason
     return 0, reason
