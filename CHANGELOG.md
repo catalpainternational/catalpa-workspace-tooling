@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.4.3
+
 ### Fixed
 
 - **`dk dev up` builds the images it is about to run.** Before starting a local stack, and when
