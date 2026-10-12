@@ -64,13 +64,43 @@ class GhcrCleanupPlan:
 
 
 def _parse_registry_owner(registry: str) -> str:
+    """Return the GitHub org/user that owns packages for ``registry``."""
+    return _parse_registry(registry)[0]
+
+
+def _parse_registry(registry: str) -> tuple[str, str]:
+    """Return ``(owner, package_namespace)`` for a GHCR image registry URL.
+
+    Nested registries like ``ghcr.io/org/swlt_ws2`` publish packages named
+    ``swlt_ws2/swlt-django`` (not bare ``swlt-django``). Flat registries
+    ``ghcr.io/org`` leave ``package_namespace`` empty.
+    """
     reg = registry.strip().rstrip("/")
-    if reg.startswith("ghcr.io/"):
-        path = reg.removeprefix("ghcr.io/").strip("/")
-        if not path:
-            raise ValueError(f"invalid image_registry (missing owner): {registry!r}")
-        return path.split("/")[0]
-    raise ValueError(f"image_registry must start with ghcr.io/: {registry!r}")
+    if not reg.startswith("ghcr.io/"):
+        raise ValueError(f"image_registry must start with ghcr.io/: {registry!r}")
+    path = reg.removeprefix("ghcr.io/").strip("/")
+    if not path:
+        raise ValueError(f"invalid image_registry (missing owner): {registry!r}")
+    parts = path.split("/")
+    owner = parts[0]
+    namespace = "/".join(parts[1:])
+    return owner, namespace
+
+
+def _qualify_package_names(names: tuple[str, ...], namespace: str) -> tuple[str, ...]:
+    """Prefix bare component names with the registry namespace when nested."""
+    if not namespace:
+        return names
+    qualified: list[str] = []
+    for name in names:
+        text = str(name).strip()
+        if not text:
+            continue
+        if "/" in text:
+            qualified.append(text)
+        else:
+            qualified.append(f"{namespace}/{text}")
+    return tuple(qualified)
 
 
 def _parse_older_than(raw: str) -> timedelta:
@@ -191,7 +221,7 @@ def resolve_ghcr_cleanup_plan(
             f"Set {config.stack.images.registry_key} in {config.paths.deploy.images_config} "
             "before running clean-images"
         )
-    owner = _parse_registry_owner(registry)
+    owner, package_namespace = _parse_registry(registry)
 
     cleanup_cfg = images_config.get("ghcr_cleanup") or {}
     if not isinstance(cleanup_cfg, dict):
@@ -222,6 +252,8 @@ def resolve_ghcr_cleanup_plan(
         package_list = tuple(config.stack.images.components.values())
     else:
         package_list = packages
+
+    package_list = _qualify_package_names(package_list, package_namespace)
 
     if not package_list:
         raise ValueError("No stack image packages configured in tooling.yaml")

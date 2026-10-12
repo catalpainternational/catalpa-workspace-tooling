@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.4.2
+
+### Fixed
+
+- **`dk clean-images` nested GHCR package names.** Registries like
+  `ghcr.io/org/swlt_ws2` publish packages as `swlt_ws2/swlt-django`. Cleanup now
+  qualifies component names with that namespace so the Packages API no longer
+  404s on nested registries (flat `ghcr.io/org` registries are unchanged).
+
 ## 1.4.1
 
 ### Added
