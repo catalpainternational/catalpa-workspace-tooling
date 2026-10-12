@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.4.2
+
 ### Fixed
 
 - **`dk clean-images` nested GHCR package names.** Registries like
