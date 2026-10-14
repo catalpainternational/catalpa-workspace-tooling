@@ -484,6 +484,39 @@ def test_run_frontend_build_skips_a_frontend_with_no_build_scripts(tmp_path) -> 
         assert _run_frontend_build(config) == 0
         assert [c.args[1].name for c in run_script.call_args_list] == ["web", "web"]
 
+def test_run_smoke_refuses_inside_a_worktree(
+    tmp_path, isolated_tooling, capsys
+) -> None:
+    """`tests ci` in a worktree would recreate its caddy on host port 80 (#77)."""
+    from catalpa_tooling.config import load_project_config
+    from catalpa_tooling.worktree_overlay import WorktreeOverlay, write_worktree_overlay
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    write_worktree_overlay(
+        tmp_path,
+        WorktreeOverlay(
+            version=1,
+            slug="img337",
+            base_env="dev",
+            compose_project_name="app_compose_dev_img337",
+            site_origin="https://minimal-dev-img337.localdev.temp.build",
+            parent_repo_root="/main/checkout",
+            branch="worktree/img337",
+        ),
+    )
+    config = load_project_config(tmp_path)
+
+    with patch("catalpa_tooling.smoke_cli._resolve_deploy_context") as resolve:
+        assert run_smoke(config, no_up=True, log_prefix="ci") == 2
+        resolve.assert_not_called()
+
+    err = capsys.readouterr().err
+    assert "not worktree-aware" in err
+    assert "img337" in err
+    assert "/main/checkout" in err
+
+
 def test_run_frontend_build_host_fallback_requires_node_modules(
     minimal_project, capsys
 ) -> None:
