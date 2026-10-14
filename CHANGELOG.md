@@ -22,6 +22,29 @@
   Nothing is installed automatically.
   ([#80](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/80))
 
+- **`dk worktree seed` copies the media the stack actually serves.** It copied one host
+  directory to another (`<repo>/media` → `<worktree>/media`). A Docker project serves media from
+  a named volume, so the copy never reached the new stack: every photograph on a freshly seeded
+  worktree rendered as alt text. Seeding now resolves both sides' **media storage** — the named
+  volume (honouring compose `name:` and `ops.restic.data_volume`) or the host bind — and copies
+  between them with the same rsync/tar machinery `dk transfer` uses. The destination volume is
+  pre-created with Compose labels first, so a later `compose up` does not warn about a volume it
+  did not create. The copy replaces whatever the destination held, and takes the whole storage,
+  Wagtail originals and renditions together, from the same source stack as the database dump, so
+  image rows and the files they point at stay consistent.
+  ([#88](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/88))
+
+- **Seed steps report what they actually did.** `worktree seed: media copy done.` printed even
+  when the copy had been skipped a line earlier, and the run always ended `worktree seed:
+  complete.` Each step now records its outcome and the final line summarises them — e.g.
+  `worktree seed: complete (db: restored; media: skipped, source volume swlt_dev_django_media is
+  empty or missing)`. A source with no media is legitimate, so that case stays exit 0.
+  `--dry-run` prints both resolved storages.
+
+- **`seeded` in `dk worktree context` is volume-aware.** It looked only at the host media tree,
+  so it reported `false` for every volume-based project however well seeded. It now reads the
+  worktree's resolved media storage.
+
 ### Changed
 
 - **`tests ci` / `tests guest` / `tests functional` refuse to run inside a worktree.** None of

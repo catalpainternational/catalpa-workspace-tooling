@@ -9,9 +9,10 @@ import pytest
 import yaml
 
 from catalpa_tooling.cli.dk_argv import peel_worktree_flag
-from catalpa_tooling.config import load_project_config
+from catalpa_tooling.config import ProjectConfig as ProjectConfigT, load_project_config
 from catalpa_tooling.dk_cli import _load_config_for_argv
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
+from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
 from catalpa_tooling.worktree import (
     AGENTS_LOCAL_NAME,
     ensure_worktree_gitignore,
@@ -63,6 +64,43 @@ def _write_dev_env(repo: Path) -> None:
             "credentials_optional_envs:\n      - local\n      - dev\n",
         )
         (repo / "tooling.yaml").write_text(tooling, encoding="utf-8")
+
+
+def _patch_media_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[dict],
+    *,
+    source_has_content: bool | None = True,
+    transfer_rc: int = 0,
+) -> tuple[MediaStorage, MediaStorage]:
+    """Stand in for the volume machinery: resolve, probe and transfer.
+
+    Returns the ``(source, destination)`` storages the patched resolver hands out. The
+    destination carries the worktree's compose project, which is what the copy has to reach.
+    """
+    src_media = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_django_media")
+    dst_media = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_feat_a_django_media")
+
+    def fake_resolve(*, compose_file, env, config, repo_root=None):
+        project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+        return dst_media if project.endswith("_feat_a") else src_media
+
+    monkeypatch.setattr("catalpa_tooling.worktree.resolve_media_storage", fake_resolve)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.media_storage_has_content",
+        lambda storage, env, **k: source_has_content,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._ensure_destination_media_volume",
+        lambda *a, **k: None,
+    )
+
+    def fake_transfer(src_env, dst_env, **kwargs):
+        calls.append({"src_env": src_env, "dst_env": dst_env, **kwargs})
+        return transfer_rc
+
+    monkeypatch.setattr("catalpa_tooling.worktree.run_transfer_media", fake_transfer)
+    return src_media, dst_media
 
 
 def _git_init_commit(repo: Path) -> None:
@@ -233,22 +271,27 @@ def test_worktree_create_list_remove_git(
     assert worktree_list(config) == 0
 
     wt_config = load_project_config(wt)
-    (tmp_path / "media").mkdir()
-    (tmp_path / "media" / "x.txt").write_text("hi", encoding="utf-8")
+    assert media_dir_for_config(wt_config) == wt / "media"
+
+    # Media is a stack-to-stack copy now; the storages and the transfer are covered in
+    # their own tests below, so here just confirm the step wiring runs end to end.
+    src_media, dst_media = _patch_media_transfer(monkeypatch, calls := [])
     assert worktree_seed(
         wt_config, do_db=False, do_media=True, dry_run=True, yes=True
     ) == 0
+    assert calls == []
     assert worktree_seed(
         wt_config, do_db=False, do_media=True, dry_run=False, yes=True
     ) == 0
-    assert (wt / "media" / "x.txt").read_text(encoding="utf-8") == "hi"
-    assert media_dir_for_config(wt_config) == wt / "media"
+    assert len(calls) == 1
+    assert calls[0]["src_media"] == src_media
+    assert calls[0]["dst_media"] == dst_media
 
-    (wt / "media" / "x.txt").unlink()
+    calls.clear()
     assert worktree_seed(
         config, slug="feat_a", do_db=False, do_media=True, dry_run=False, yes=True
     ) == 0
-    assert (wt / "media" / "x.txt").read_text(encoding="utf-8") == "hi"
+    assert len(calls) == 1
 
     from catalpa_tooling.worktree import worktree_remove
 
@@ -518,7 +561,7 @@ def test_worktree_context_json_shape(
         lambda *a, **k: "running",
     )
     monkeypatch.setattr(
-        "catalpa_tooling.worktree._media_dir_seeded",
+        "catalpa_tooling.worktree._media_seeded",
         lambda *a, **k: True,
     )
     monkeypatch.setattr(
@@ -909,3 +952,142 @@ def test_worktree_up_dry_run_does_not_write_agents_local(
 
     assert agents.read_text(encoding="utf-8") == "sentinel\n"
     assert agents.stat().st_mtime_ns == before
+
+
+def _seedable_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slug: str = "feat-a"
+) -> tuple[ProjectConfigT, Path]:
+    """Main checkout with one worktree, and `_compose` stubbed out."""
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
+    write_minimal_tooling_tree(tmp_path)
+    _write_dev_env(tmp_path)
+    _git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug=slug, dry_run=False, seed=False) == 0
+    return config, tmp_path / ".worktrees" / sanitize_worktree_slug(slug)
+
+
+def test_worktree_seed_media_copies_between_volumes(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy reaches the stack's named volume, not a host directory (#88)."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    src_media, dst_media = _patch_media_transfer(monkeypatch, calls)
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["src_media"] == src_media
+    assert call["dst_media"] == dst_media
+    # The destination env must name the worktree's compose project, or the copy lands
+    # in the main checkout's volume.
+    assert call["dst_env"]["COMPOSE_PROJECT_NAME"] == "app_compose_dev_feat_a"
+    assert call["src_env"]["COMPOSE_PROJECT_NAME"] != "app_compose_dev_feat_a"
+    # The staging directory lives under the session tmpdir and is cleaned up afterwards.
+    assert call["media_dir"].name == "media"
+    assert not call["media_dir"].exists()
+
+
+def test_worktree_seed_skips_an_empty_source_without_failing(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A project with no media is legitimate: skip, say so, exit 0 (#88)."""
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    _patch_media_transfer(monkeypatch, calls, source_has_content=False)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "skipped" in err
+    assert "app_compose_dev_django_media" in err
+    assert "media copy done" not in err
+
+
+def test_worktree_seed_summary_reports_each_step(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The final line is built from the outcomes, not asserted (#88)."""
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [], source_has_content=False)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "worktree seed: complete (db: not requested; media: skipped" in err
+
+    _patch_media_transfer(monkeypatch, [], source_has_content=True)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._seed_database",
+        lambda *a, **k: (0, "restored"),
+    )
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "worktree seed: complete (db: restored; media: copied volume " in err
+
+
+def test_worktree_seed_dry_run_prints_both_storages(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    _patch_media_transfer(monkeypatch, calls)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, dry_run=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "volume app_compose_dev_django_media" in err
+    assert "volume app_compose_dev_feat_a_django_media" in err
+    assert calls == []
+
+
+def test_worktree_seed_media_failure_is_fatal(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [], transfer_rc=3)
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 3
+
+
+def test_media_seeded_reads_the_stack_volume(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`seeded` used to read the host tree, so a volume project always reported false."""
+    from catalpa_tooling.worktree import _media_seeded
+
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    del config
+    wt_config = load_project_config(wt)
+    overlay = load_worktree_overlay(wt)
+    assert overlay is not None
+
+    storage = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_feat_a_django_media")
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._worktree_media_storage",
+        lambda *a, **k: (storage, {"COMPOSE_PROJECT_NAME": "app_compose_dev_feat_a"}),
+    )
+
+    # The host tree is empty either way; only the volume decides.
+    for has_content, expected in ((True, True), (False, False), (None, False)):
+        monkeypatch.setattr(
+            "catalpa_tooling.worktree.media_storage_has_content",
+            lambda s, e, **k: has_content,
+        )
+        assert _media_seeded(wt_config, overlay) is expected

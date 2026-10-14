@@ -65,7 +65,7 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
     p_create.add_argument(
         "--no-seed",
         action="store_true",
-        help="Skip seeding DB + host media from the main checkout's base env.",
+        help="Skip seeding DB + media from the main checkout's base env.",
     )
     p_create.add_argument(
         "--up",
@@ -206,7 +206,7 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
 
     p_seed = sub.add_parser(
         "seed",
-        help="Copy DB + host media from the main checkout's base env into a worktree.",
+        help="Copy DB + media from the main checkout's base env into a worktree.",
     )
     p_seed.add_argument(
         "slug",
@@ -222,7 +222,7 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
     p_seed.add_argument(
         "--media",
         action="store_true",
-        help="Select the host media leg (default: both unless only --db).",
+        help="Select the media leg — the stack's media volume or bind (default: both unless only --db).",
     )
     p_seed.add_argument(
         "--from",
