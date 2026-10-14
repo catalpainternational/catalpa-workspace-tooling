@@ -834,6 +834,17 @@ def _run_one_frontend_build(
                 file=sys.stderr,
             )
 
+    if not use_compose and not (frontend_dir / "node_modules").is_dir():
+        # The compose path gets node_modules from the image; the host path assumes them.
+        # Without this the first script dies on a missing binary (`vue-tsc: command not
+        # found`), which points at the wrong thing entirely. See issue #80.
+        print(
+            f"smoke: {frontend_dir / 'node_modules'} missing — run "
+            f"`{package_manager} install --frozen-lockfile` in {frontend_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
     def _run_script(script: str) -> int:
         if use_compose:
             assert compose_file is not None and env_add is not None
