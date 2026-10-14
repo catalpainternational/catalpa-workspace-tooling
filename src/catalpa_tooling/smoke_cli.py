@@ -922,6 +922,27 @@ def _run_frontend_build(
     return 0
 
 
+def _refuse_inside_worktree(config: ProjectConfig, *, log_prefix: str) -> int:
+    """Return 2 (with a message) when ``config`` points at a worktree checkout."""
+    from catalpa_tooling.worktree_overlay import load_worktree_overlay
+
+    try:
+        overlay = load_worktree_overlay(config.repo_root)
+    except Exception:
+        # A marker we cannot read is not a reason to refuse; the main checkout has none.
+        return 0
+    if overlay is None:
+        return 0
+    print(
+        f"tests {log_prefix}: is not worktree-aware yet; run it from the main checkout "
+        f"(would recreate worktree {overlay.slug!r}'s caddy on host port 80, which the "
+        "shared local proxy holds, leaving every later `dk --worktree` command failing). "
+        f"Main checkout: {overlay.parent_repo_root or '..'}",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def run_smoke(
     config: ProjectConfig,
     *,
@@ -943,7 +964,15 @@ def run_smoke(
 
     Functional (``functional=True``): skip the gate; wait for HTTP and run pytest
     (typically ``-m elearning``).
+
+    Refuses to run inside a worktree (exit 2): none of these modes applies the worktree
+    overlay, so an ``up`` here would recreate the worktree's containers from the base env's
+    compose config and publish host port 80 — which the shared local proxy already holds.
+    See issue #77.
     """
+    rc = _refuse_inside_worktree(config, log_prefix=log_prefix)
+    if rc != 0:
+        return rc
     pytest_args = list(pytest_args or [])
     if not guest:
         functional = _resolve_functional(
