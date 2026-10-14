@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **`tests ci` / `tests guest` / `tests functional` refuse to run inside a worktree.** None of
+  them applied the worktree overlay, so an `up` from a worktree recreated that worktree's
+  containers from the base env's compose config and tried to publish host port 80 — which the
+  shared `catalpa-local-proxy` holds. The worktree's caddy was left `created`, and every later
+  `dk --worktree <slug> …` failed with an unrelated-looking error. They now print what is wrong
+  and exit 2. Honouring the overlay properly is still open as an enhancement.
+  ([#77](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/77))
+
 ## 1.4.3
 
 ### Fixed
