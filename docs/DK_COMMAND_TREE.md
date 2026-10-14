@@ -34,7 +34,7 @@ dk
 │   ├── context [slug] [--json]    # agent identity; refreshes AGENTS.local.md
 │   ├── list
 │   ├── info [slug]
-│   ├── seed [slug] [--db|--media] # copy main dev DB + host media (slug from main checkout)
+│   ├── seed [slug] [--db|--media] # copy main dev DB + media storage (slug from main checkout)
 │   └── remove <slug> [--wipe] [--keep-stack]  # down + git worktree remove; --wipe also drops
 │                                  # volumes (external: included); --keep-stack leaves it up
 │

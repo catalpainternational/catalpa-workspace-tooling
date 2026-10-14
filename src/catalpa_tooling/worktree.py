@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -16,6 +17,13 @@ from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig, load_project_config
 from catalpa_tooling.local_proxy import ensure_proxy_running
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
+from catalpa_tooling.media_storage import (
+    MediaStorage,
+    MediaStorageError,
+    MediaStorageKind,
+    resolve_media_storage,
+)
+from catalpa_tooling.media_transfer import run_transfer_media
 from catalpa_tooling.pgbackrest_db import (
     compose_pg_restore_extras_for_config,
     ensure_db_service_running,
@@ -343,15 +351,102 @@ def write_agents_local_md(
     (worktree_root / AGENTS_LOCAL_NAME).write_text(text, encoding="utf-8")
 
 
-def _media_dir_seeded(config: ProjectConfig) -> bool:
-    """True when the host media tree has at least one file."""
-    media = media_dir_for_config(config)
-    if not media.is_dir():
-        return False
+SEED_ALPINE_IMAGE = "alpine:3.21"
+
+
+def _merged_docker_env(env: dict[str, str]) -> dict[str, str]:
+    out = os.environ.copy()
+    for key, value in env.items():
+        if value is not None:
+            out[key] = str(value)
+    return out
+
+
+def _bind_dir_has_content(path: Path) -> bool:
     try:
-        next(media.rglob("*"))
-        return True
-    except StopIteration:
+        return path.is_dir() and any(path.iterdir())
+    except OSError:
+        return False
+
+
+def media_storage_has_content(
+    storage: MediaStorage,
+    env: dict[str, str],
+    *,
+    alpine_image: str = SEED_ALPINE_IMAGE,
+) -> bool | None:
+    """True / False, or ``None`` when Docker could not answer.
+
+    A bind mount is read directly. A named volume needs a container to look inside, because
+    its mountpoint is inside the Docker VM on macOS and Windows.
+    """
+    if storage.kind is MediaStorageKind.BIND:
+        return _bind_dir_has_content(Path(storage.location))
+
+    from catalpa_tooling.dk_transfer import _docker_volume_exists
+
+    if not _docker_volume_exists(storage.location, env):
+        return False
+    result = run_cmd(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{storage.location}:/data:ro",
+            alpine_image,
+            "sh",
+            "-c",
+            "ls -A /data | head -n 1",
+        ],
+        env=_merged_docker_env(env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    if result.returncode != 0:
+        return None
+    return bool((result.stdout or "").strip())
+
+
+def _worktree_media_storage(
+    wt_config: ProjectConfig,
+    overlay: WorktreeOverlay,
+) -> tuple[MediaStorage, dict[str, str]] | None:
+    """Resolve the worktree stack's media storage and the env that addresses it."""
+    resolved = _worktree_compose_env(wt_config, overlay)
+    if resolved is None:
+        return None
+    compose_abs, env_r = resolved
+    try:
+        storage = resolve_media_storage(
+            compose_file=compose_abs,
+            env=env_r,
+            config=wt_config,
+        )
+    except MediaStorageError:
+        return None
+    return storage, env_r
+
+
+def _media_seeded(wt_config: ProjectConfig, overlay: WorktreeOverlay) -> bool:
+    """True when the media the worktree's stack actually serves has content.
+
+    For a Docker project that is a named volume, not the host tree under the checkout —
+    reading the host tree reported ``false`` for every volume project. See issue #88.
+    """
+    try:
+        resolved = _worktree_media_storage(wt_config, overlay)
+    except Exception:
+        return False
+    if resolved is None:
+        return False
+    storage, env_r = resolved
+    try:
+        return media_storage_has_content(storage, env_r) is True
+    except Exception:
         return False
 
 
@@ -662,7 +757,7 @@ def worktree_context(
         "compose_project_name": overlay.compose_project_name,
         "site_origin": overlay.site_origin,
         "status": worktree_stack_status(wt_config, overlay),
-        "seeded": _media_dir_seeded(wt_config),
+        "seeded": _media_seeded(wt_config, overlay),
     }
 
     if as_json:
@@ -715,7 +810,7 @@ def worktree_create(
 ) -> int:
     """Create a git worktree under ``.worktrees/<slug>`` with a worktree overlay.
 
-    By default seeds DB + host media from the main checkout's ``base_env``
+    By default seeds DB + media from the main checkout's ``base_env``
     (pass ``seed=False`` / ``--no-seed`` to skip).
     """
     if load_worktree_overlay(config.repo_root) is not None:
@@ -1154,34 +1249,153 @@ def worktree_remove(
     return 0
 
 
-def _copy_host_media(src: Path, dst: Path, *, dry_run: bool = False) -> int:
-    if dry_run:
-        print(f"dry-run: copy media {src} → {dst}", file=sys.stderr)
-        return 0
-    if not src.is_dir():
+def _ensure_destination_media_volume(
+    dst_media: MediaStorage,
+    dst_r: dict[str, str],
+    *,
+    dest_config: ProjectConfig,
+    dst_ctx: Any,
+    base_env: str,
+) -> None:
+    """Pre-create the destination volume with Compose labels.
+
+    ``docker run -v name:/data`` would create it unlabelled, and the next ``compose up``
+    then warns that the volume was not created by Compose. This is the same ensure the
+    deploy path runs, so it also covers ``external:`` volumes and host-storage binds.
+    """
+    if dst_media.kind is not MediaStorageKind.VOLUME:
+        return
+    from catalpa_tooling.dk_transfer import _docker_volume_exists
+
+    if _docker_volume_exists(dst_media.location, dst_r):
+        return
+    from catalpa_tooling.env_handlers import _ensure_stack_volumes
+
+    rc = _ensure_stack_volumes(
+        dest_config,
+        base_env,
+        dst_ctx.info,
+        dst_r,
+        dst_ctx.storage_volumes,
+    )
+    if rc != 0:
+        # Not fatal: the transfer still works, the volume is just unlabelled until the
+        # next `ensure_volumes`. Say so rather than failing a seed that would succeed.
         print(
-            f"worktree seed: source media dir missing ({src}); skipping media copy.",
+            f"worktree seed: could not pre-create {dst_media.location!r} with compose "
+            "labels; continuing (run `dk <env> ensure_volumes` if compose complains).",
             file=sys.stderr,
         )
-        dst.mkdir(parents=True, exist_ok=True)
-        return 0
-    dst.mkdir(parents=True, exist_ok=True)
-    # Prefer rsync when available for incremental copy.
-    if shutil.which("rsync"):
-        result = run_cmd(
-            ["rsync", "-a", "--delete", f"{src}/", f"{dst}/"],
-            check=False,
-            print_cmd=True,
+
+
+def _seed_media(
+    src_r: dict[str, str],
+    dst_r: dict[str, str],
+    *,
+    src_media: MediaStorage,
+    dst_media: MediaStorage,
+    dest_config: ProjectConfig,
+    dest_overlay: WorktreeOverlay,
+    dst_ctx: Any,
+    base_env: str,
+    media_dir: Path,
+) -> tuple[int, str]:
+    """Copy the source stack's media storage onto the worktree's. Returns ``(rc, outcome)``."""
+    del dest_overlay  # identity is already in the header line
+    has_content = media_storage_has_content(src_media, src_r)
+    if has_content is False:
+        return 0, f"skipped, source {src_media.describe()} is empty or missing"
+    if has_content is None:
+        print(
+            f"worktree seed: could not read source {src_media.describe()}; "
+            "attempting the copy anyway.",
+            file=sys.stderr,
         )
-        return result.returncode
-    if dst.exists():
-        for child in dst.iterdir():
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-    return 0
+
+    _ensure_destination_media_volume(
+        dst_media,
+        dst_r,
+        dest_config=dest_config,
+        dst_ctx=dst_ctx,
+        base_env=base_env,
+    )
+
+    media_dir.mkdir(parents=True, exist_ok=True)
+    rc = run_transfer_media(
+        src_r,
+        dst_r,
+        src_media=src_media,
+        dst_media=dst_media,
+        media_dir=media_dir,
+        config=dest_config,
+    )
+    if rc != 0:
+        return rc, f"failed copying {src_media.describe()} → {dst_media.describe()}"
+    return 0, f"copied {src_media.describe()} → {dst_media.describe()}"
+
+
+def _seed_database(
+    src_compose: str,
+    src_r: dict[str, str],
+    dst_compose: str,
+    dst_r: dict[str, str],
+    *,
+    src_config: ProjectConfig,
+    dest_config: ProjectConfig,
+    base_env: str,
+    dump_path: Path,
+) -> tuple[int, str]:
+    """``pg_dump`` the source stack and restore it into the worktree's. ``(rc, outcome)``."""
+    rc = ensure_db_service_running(
+        src_compose,
+        src_r,
+        config=src_config,
+        dk_env_name=base_env,
+    )
+    if rc != 0:
+        print(
+            f"worktree seed: could not ensure source `{base_env}` db service is running.",
+            file=sys.stderr,
+        )
+        return rc, "failed, source db would not start"
+    rc = ensure_db_service_running(
+        dst_compose,
+        dst_r,
+        config=dest_config,
+        dk_env_name=base_env,
+    )
+    if rc != 0:
+        print(
+            f"worktree seed: could not ensure destination `{base_env}` db service is running.",
+            file=sys.stderr,
+        )
+        return rc, "failed, destination db would not start"
+
+    print("worktree seed: pg_dump (source) …", file=sys.stderr)
+    rc = run_pg_dump_to_file(src_compose, src_r, dump_path)
+    if rc != 0:
+        return rc, "failed during pg_dump"
+    print("worktree seed: drop + recreate app database (destination) …", file=sys.stderr)
+    rc = run_drop_create_app_database(
+        dst_compose,
+        dst_r,
+        postgis=dest_config.native.reset_db.postgis,
+    )
+    if rc != 0:
+        return rc, "failed recreating the destination database"
+    print("worktree seed: pg_restore (destination) …", file=sys.stderr)
+    rc = run_pg_restore(
+        dst_compose,
+        dst_r,
+        compose_pg_restore_extras_for_config(
+            dest_config,
+            ["--file", str(dump_path)],
+        ),
+        config=dest_config,
+    )
+    if rc != 0:
+        return rc, "failed during pg_restore"
+    return 0, "restored"
 
 
 def worktree_seed(
@@ -1194,10 +1408,19 @@ def worktree_seed(
     dry_run: bool = False,
     yes: bool = False,
 ) -> int:
-    """Copy DB + host media from the main checkout's ``dev`` stack into a worktree.
+    """Copy DB + media from the main checkout's ``dev`` stack into a worktree.
 
     From the main checkout: ``dk worktree seed <slug>``.
     From inside a worktree (or with ``dk --worktree <slug>``): ``dk worktree seed``.
+
+    Media is copied between the two stacks' **media storages** — the named volume a Docker
+    project serves from, or its host bind — not between host directories, which never reached
+    the stack. The whole storage is copied, Wagtail originals and renditions together, from the
+    same source stack as the DB dump, so image rows and the files they point at stay consistent.
+    The copy replaces whatever the destination held.
+
+    Every step reports what it actually did, and the final line summarises those outcomes. A
+    source with no media is legitimate: the step is recorded as skipped and the exit code stays 0.
     """
     dest_config = config
     if slug:
@@ -1251,11 +1474,62 @@ def worktree_seed(
     )
     print(f"  steps: db={do_db} media={do_media}", file=sys.stderr)
 
+    # Both steps need the resolved compose context, so load it once up front: the media step
+    # copies between the stacks the DB step dumps and restores, not between host trees.
+    src_ctx = load_managed_deploy_context(src_config, base_env, apply_worktree=False)
+    if src_ctx is None:
+        print(
+            f"worktree seed: could not load source deploy context for `{base_env}`.",
+            file=sys.stderr,
+        )
+        return 1
+    dst_ctx = load_managed_deploy_context(dest_config, base_env, apply_worktree=True)
+    if dst_ctx is None:
+        print(
+            f"worktree seed: could not load destination deploy context for `{base_env}`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    src_r = resolve_env_with_compose_project(
+        src_ctx.compose_file,
+        src_ctx.env_add,
+        config=src_config,
+        dk_env_name=base_env,
+    )
+    dst_r = resolve_env_with_compose_project(
+        dst_ctx.compose_file,
+        dst_ctx.env_add,
+        config=dest_config,
+        dk_env_name=base_env,
+    )
+    dst_r["COMPOSE_PROJECT_NAME"] = dest_overlay.compose_project_name
+    src_compose = str((src_config.repo_root / src_ctx.compose_file).resolve())
+    dst_compose = str((dest_config.repo_root / dst_ctx.compose_file).resolve())
+
+    src_media: MediaStorage | None = None
+    dst_media: MediaStorage | None = None
+    if do_media:
+        try:
+            src_media = resolve_media_storage(
+                compose_file=src_compose,
+                env=src_r,
+                config=src_config,
+            )
+            dst_media = resolve_media_storage(
+                compose_file=dst_compose,
+                env=dst_r,
+                config=dest_config,
+            )
+        except MediaStorageError as exc:
+            print(f"worktree seed: {exc}", file=sys.stderr)
+            return 1
+
     if dry_run:
         if do_media:
+            assert src_media is not None and dst_media is not None
             print(
-                f"dry-run: media {media_dir_for_config(src_config)} → "
-                f"{media_dir_for_config(dest_config)}",
+                f"dry-run: media {src_media.describe()} → {dst_media.describe()}",
                 file=sys.stderr,
             )
         if do_db:
@@ -1280,107 +1554,56 @@ def worktree_seed(
             print("worktree seed: cancelled.", file=sys.stderr)
             return 1
 
-    if do_media:
-        rc = _copy_host_media(
-            media_dir_for_config(src_config),
-            media_dir_for_config(dest_config),
-            dry_run=False,
-        )
-        if rc != 0:
-            return rc
-        print("worktree seed: media copy done.", file=sys.stderr)
+    outcomes: dict[str, str] = {
+        "db": "not requested",
+        "media": "not requested",
+    }
 
-    if do_db:
-        src_ctx = load_managed_deploy_context(
-            src_config, base_env, apply_worktree=False
-        )
-        if src_ctx is None:
-            return 1
-        dst_ctx = load_managed_deploy_context(
-            dest_config, base_env, apply_worktree=True
-        )
-        if dst_ctx is None:
-            return 1
+    def _summary() -> str:
+        return "; ".join(f"{step}: {outcomes[step]}" for step in ("db", "media"))
 
-        src_r = resolve_env_with_compose_project(
-            src_ctx.compose_file,
-            src_ctx.env_add,
-            config=src_config,
-            dk_env_name=base_env,
+    parent = dest_config.repo_root / dest_config.ops.transfer_workdir
+    parent.mkdir(parents=True, exist_ok=True)
+    session = Path(
+        tempfile.mkdtemp(
+            prefix=f"worktree_seed_{dest_overlay.slug}_",
+            dir=str(parent),
         )
-        dst_r = resolve_env_with_compose_project(
-            dst_ctx.compose_file,
-            dst_ctx.env_add,
-            config=dest_config,
-            dk_env_name=base_env,
-        )
-        dst_r["COMPOSE_PROJECT_NAME"] = dest_overlay.compose_project_name
-        src_compose = str((src_config.repo_root / src_ctx.compose_file).resolve())
-        dst_compose = str((dest_config.repo_root / dst_ctx.compose_file).resolve())
-
-        rc = ensure_db_service_running(
-            src_compose,
-            src_r,
-            config=src_config,
-            dk_env_name=base_env,
-        )
-        if rc != 0:
-            print(
-                f"worktree seed: could not ensure source `{base_env}` db service is running.",
-                file=sys.stderr,
+    )
+    try:
+        if do_media:
+            assert src_media is not None and dst_media is not None
+            rc, outcomes["media"] = _seed_media(
+                src_r,
+                dst_r,
+                src_media=src_media,
+                dst_media=dst_media,
+                dest_config=dest_config,
+                dest_overlay=dest_overlay,
+                dst_ctx=dst_ctx,
+                base_env=base_env,
+                media_dir=session / "media",
             )
-            return rc
-        rc = ensure_db_service_running(
-            dst_compose,
-            dst_r,
-            config=dest_config,
-            dk_env_name=base_env,
-        )
-        if rc != 0:
-            print(
-                f"worktree seed: could not ensure destination `{base_env}` db service "
-                "is running.",
-                file=sys.stderr,
-            )
-            return rc
-
-        parent = dest_config.repo_root / dest_config.ops.transfer_workdir
-        parent.mkdir(parents=True, exist_ok=True)
-        session = Path(
-            tempfile.mkdtemp(
-                prefix=f"worktree_seed_{dest_overlay.slug}_",
-                dir=str(parent),
-            )
-        )
-        dump_path = session / "pg.dump"
-        try:
-            print("worktree seed: pg_dump (source) …", file=sys.stderr)
-            rc = run_pg_dump_to_file(src_compose, src_r, dump_path)
             if rc != 0:
                 return rc
-            print("worktree seed: drop + recreate app database (destination) …", file=sys.stderr)
-            rc = run_drop_create_app_database(
+            print(f"worktree seed: media {outcomes['media']}.", file=sys.stderr)
+
+        if do_db:
+            rc, outcomes["db"] = _seed_database(
+                src_compose,
+                src_r,
                 dst_compose,
                 dst_r,
-                postgis=dest_config.native.reset_db.postgis,
+                src_config=src_config,
+                dest_config=dest_config,
+                base_env=base_env,
+                dump_path=session / "pg.dump",
             )
             if rc != 0:
                 return rc
-            print("worktree seed: pg_restore (destination) …", file=sys.stderr)
-            rc = run_pg_restore(
-                dst_compose,
-                dst_r,
-                compose_pg_restore_extras_for_config(
-                    dest_config,
-                    ["--file", str(dump_path)],
-                ),
-                config=dest_config,
-            )
-            if rc != 0:
-                return rc
-            print("worktree seed: database done.", file=sys.stderr)
-        finally:
-            shutil.rmtree(session, ignore_errors=True)
+            print(f"worktree seed: database {outcomes['db']}.", file=sys.stderr)
+    finally:
+        shutil.rmtree(session, ignore_errors=True)
 
-    print("worktree seed: complete.", file=sys.stderr)
+    print(f"worktree seed: complete ({_summary()}).", file=sys.stderr)
     return 0

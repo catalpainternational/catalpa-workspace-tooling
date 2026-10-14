@@ -61,7 +61,7 @@ When `.catalpa-worktree.yaml` is present and you run `dk <base_env>` (default `b
 - Rewrites role / Caddy origins (`admin.*`, `stats.*`, etc.) from the new primary
 - **Does not** remap remote envs (`docker_host: ssh://…`)
 
-`dk full`, `staging`, `prod` are unchanged. Host `media/` for `dk dev` is already per-checkout (bind mount); seed copies that tree from the main checkout.
+`dk full`, `staging`, `prod` are unchanged. Media is seeded between the two stacks' **media storages** — the named volume a Docker project serves from, or its host bind — so the copy reaches the stack rather than a host directory the stack never mounts.
 
 **Proxy:** `dk worktree up` ensures the shared reverse proxy and registers remapped routes on compose `up`. Main and worktree stacks get distinct hostnames and upstreams.
 
@@ -82,10 +82,10 @@ dk worktree seed [slug] [--db|--media] [--from DIR] [--dry-run] [-y]
 dk worktree remove <slug> [--wipe] [--keep-stack] [--dry-run] [-y]
 ```
 
-- **create** — worktree + overlay + `AGENTS.local.md` + submodule init; seeds DB + host media from the main checkout's base env by default (`--no-seed` to skip). Pass **`--up`** to proxy + compose up after create.
+- **create** — worktree + overlay + `AGENTS.local.md` + submodule init; seeds DB + media from the main checkout's base env by default (`--no-seed` to skip). Pass **`--up`** to proxy + compose up after create.
 - **up / down / restart / logs** — remapped compose lifecycle via the worktree overlay (volumes kept on `down`).
 - **status / context** — stack status (`running` / `stopped` / `unknown`) and agent-oriented identity.
-- **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus host `media/` copy.
+- **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus a copy of that stack's media storage (volume or bind) onto the worktree's. The media copy replaces whatever the destination held, and takes Wagtail originals and renditions together from the same source stack as the dump, so image rows and files stay consistent. A source with no media is skipped, not an error; the final line reports what each step did.
 - **remove** — `compose down` for the remapped project, then git worktree remove. **Volumes are
   kept**; the command prints how to reclaim them. Since 1.4.1: before that, the stack was left
   running for a project name that no longer had a checkout.
