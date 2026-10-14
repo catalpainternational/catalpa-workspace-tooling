@@ -182,15 +182,37 @@ def run_unified_db_restore(
     env_add: dict[str, str],
     env_name: str,
     force_dumps: bool = False,
+    archive_path: Path | None = None,
     dry_run: bool = False,
     skip_confirm: bool = False,
     extra_pgbackrest_args: Sequence[str] | None = None,
     extra_pg_restore_args: Sequence[str] | None = None,
 ) -> int:
-    """Restore local env DB from pgBackRest or configured custom-format dumps."""
+    """Restore local env DB from pgBackRest or configured custom-format dumps.
+
+    ``archive_path`` restores the app database from that one ``pg_dump -Fc`` archive and
+    implies ``force_dumps``: the configured dumps are not consulted, and the Metabase leg
+    is skipped because the archive names a single database.
+    """
     restore_extra = list(extra_pgbackrest_args or [])
     while restore_extra and restore_extra[0] == "--":
         restore_extra.pop(0)
+
+    if archive_path is not None:
+        if dry_run:
+            print(
+                f"dry-run: would restore app DB from {archive_path}",
+                file=sys.stderr,
+            )
+            return 0
+        return run_compose_app_dump_restore(
+            config,
+            compose_file=compose_file,
+            env_add=env_add,
+            env_name=env_name,
+            archive_path=archive_path,
+            extra_pg_restore_args=extra_pg_restore_args,
+        )
 
     if force_dumps:
         rc = _ensure_local_dumps(config, auto_fetch=False)

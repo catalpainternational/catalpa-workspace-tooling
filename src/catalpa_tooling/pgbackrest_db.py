@@ -325,7 +325,7 @@ def _pg_restore_owner_acl_extras(extras: Sequence[str]) -> list[str]:
 
 
 def pg_restore_compose_extras(extras: Sequence[str] | None = None) -> list[str]:
-    """``pg_restore`` flags for compose restore (``dk transfer``, ``bkp_db pgrestore``)."""
+    """``pg_restore`` flags for compose restore (``dk transfer``, ``db restore``)."""
     return _pg_restore_owner_acl_extras(list(extras or ()))
 
 
@@ -470,13 +470,13 @@ def pg_restore_extras_with_default_archive(
     path = default_archive.expanduser()
     if not path.is_file() or path.stat().st_size == 0:
         print(
-            f"bkp_db pgrestore: no dump at {path} — fetch one first "
+            f"db restore: no dump at {path} — fetch one first "
             "(e.g. `uv run native fetch db`) or pass `--file PATH`.",
             file=sys.stderr,
         )
         return xs
     resolved = path.resolve()
-    print(f"bkp_db pgrestore: using default archive {resolved}", file=sys.stderr)
+    print(f"db restore: using default archive {resolved}", file=sys.stderr)
     return ["--file", str(resolved), *xs]
 
 
@@ -652,7 +652,7 @@ def run_drop_create_app_database(
     Runs ``dropdb --force`` (PostgreSQL 13+) so existing connections are terminated, then
     ``createdb -O "$APP_USER"``. When ``postgis`` is true (``tooling.yaml`` ``native.reset_db.postgis``),
     PostGIS is pre-created and its catalog tables are granted to the app user before
-    ``pg_restore``. Used by ``dk transfer`` and ``bkp_db pgrestore``.
+    ``pg_restore``. Used by ``dk transfer`` and ``db restore``.
     """
     merged = _merged_process_env(env)
     psql_body = _drop_create_app_database_psql_block(postgis=postgis)
@@ -745,8 +745,8 @@ def run_pg_restore(
                 print(
                     "pg_restore: stdin is not a pg_dump -Fc archive "
                     f"(expected {_PG_DUMP_CUSTOM_MAGIC!r} at the start). "
-                    "Re-dump with `dk <env> bkp_db pgdump` and redirect only pg_dump to the file, "
-                    "or use `bkp_db pgrestore --file /path/to.dump`.",
+                    "Re-dump with `dk <env> db pgdump` and redirect only pg_dump to the file, "
+                    "or use `db restore --file /path/to.dump`.",
                     file=sys.stderr,
                 )
                 if head:

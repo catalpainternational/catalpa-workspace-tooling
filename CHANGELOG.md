@@ -13,6 +13,15 @@
   ([#76](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/76),
   [#83](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/83))
 
+- **`tests ci` says what is wrong when host `node_modules` is missing.** On the host fallback
+  path — taken by any project whose compose has no `node` service, including every
+  multi-`paths.frontend` project — the frontend build ran the package script without checking
+  that dependencies were installed, so a fresh checkout failed with a missing-binary error
+  (`vue-tsc: command not found`) that pointed at the wrong thing. It now fails with
+  ``smoke: <dir>/node_modules missing — run `<pm> install --frozen-lockfile` in <dir>``.
+  Nothing is installed automatically.
+  ([#80](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/80))
+
 - **`dk worktree seed` copies the media the stack actually serves.** It copied one host
   directory to another (`<repo>/media` → `<worktree>/media`). A Docker project serves media from
   a named volume, so the copy never reached the new stack: every photograph on a freshly seeded
@@ -45,6 +54,23 @@
   `dk --worktree <slug> …` failed with an unrelated-looking error. They now print what is wrong
   and exit 2. Honouring the overlay properly is still open as an enhancement.
   ([#77](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/77))
+
+### Removed
+
+- **`dk <env> db pgrestore` / `bkp_db pgrestore`.** `db restore` covers the same ground:
+  `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured)
+  without consulting pgBackRest or auto-fetching, and the new `--file PATH` restores the app
+  database from one custom-format archive. Both start `db` if needed, drop and recreate the app
+  database first, honour `native.reset_db.postgis` / `restore_as_super` / `pg_restore_args`, and
+  run the `ops.post_db_restore` hooks. Replace `db pgrestore --file X` with `db restore --file X`,
+  and bare `db pgrestore` with `db restore --dumps`.
+  ([#42](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/42))
+
+### Added
+
+- **`dk <env> db restore --file PATH`** restores the app database from a single `pg_dump -Fc`
+  archive. It implies `--dumps`, skips the Metabase leg (one archive names one database), and
+  works with `--dry-run`.
 
 ## 1.4.3
 
