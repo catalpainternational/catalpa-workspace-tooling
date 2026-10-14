@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk <env> build <service>` and `dk <env> compose build …` no longer crash in
+  `merge_extra_compose_files`.** The helper returned `None` for an empty result but could not
+  accept `None` as an argument, so any compose run that may build — where the caller merges the
+  label override into its own already-merged list — died with
+  `TypeError: 'NoneType' object is not iterable` before reaching docker. It now skips empty
+  groups, which makes it safe to call on its own output.
+  ([#76](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/76),
+  [#83](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/83))
+
 ## 1.4.3
 
 ### Fixed
