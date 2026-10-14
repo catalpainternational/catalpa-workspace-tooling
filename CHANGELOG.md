@@ -13,6 +13,15 @@
   ([#76](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/76),
   [#83](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/83))
 
+- **`tests ci` says what is wrong when host `node_modules` is missing.** On the host fallback
+  path — taken by any project whose compose has no `node` service, including every
+  multi-`paths.frontend` project — the frontend build ran the package script without checking
+  that dependencies were installed, so a fresh checkout failed with a missing-binary error
+  (`vue-tsc: command not found`) that pointed at the wrong thing. It now fails with
+  ``smoke: <dir>/node_modules missing — run `<pm> install --frozen-lockfile` in <dir>``.
+  Nothing is installed automatically.
+  ([#80](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/80))
+
 ### Changed
 
 - **`tests ci` / `tests guest` / `tests functional` refuse to run inside a worktree.** None of
@@ -22,15 +31,6 @@
   `dk --worktree <slug> …` failed with an unrelated-looking error. They now print what is wrong
   and exit 2. Honouring the overlay properly is still open as an enhancement.
   ([#77](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/77))
-
-- **`tests ci` says what is wrong when host `node_modules` is missing.** On the host fallback
-  path — taken by any project whose compose has no `node` service, including every
-  multi-`paths.frontend` project — the frontend build ran the package script without checking
-  that dependencies were installed, so a fresh checkout failed with a missing-binary error
-  (`vue-tsc: command not found`) that pointed at the wrong thing. It now fails with
-  ``smoke: <dir>/node_modules missing — run `<pm> install --frozen-lockfile` in <dir>``.
-  Nothing is installed automatically.
-  ([#80](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/80))
 
 ## 1.4.3
 
