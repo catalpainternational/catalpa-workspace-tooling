@@ -188,18 +188,17 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `version` | `pgbackrest version` in db container |
 | `backup full\|incr\|diff` | Online backup (db running) |
 | `pgdump [args…]` | `pg_dump` via compose |
-| `pgrestore [--file ARCHIVE] [args…]` | Restore from custom-format dump (`paths.fetch_db_dump` when stdin is a TTY and `--file` omitted; starts `db` if needed; drop/recreate app DB first; when `native.reset_db.postgis` is true, PostGIS is pre-created and catalog tables are granted to the app user; compose restore defaults to `--role postgres` unless `native.reset_db.restore_as_super` is true or `pg_restore_args` sets `--role`) |
-| `restore [pgBackRest args…]` | Offline pgBackRest restore of **this stack’s** backups (`--dry-run` prints stanza, repo path, and compose command). Not for Ansible/Debian package clusters — use `pgrestore` / `restore --dumps` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)). |
+| `restore [--dumps] [--file ARCHIVE] [pgBackRest args…]` | `--file ARCHIVE` restores the app DB from that custom-format dump; `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured) without consulting pgBackRest or auto-fetching. Either way `db` is started if needed, the app DB is dropped and recreated first, and when `native.reset_db.postgis` is true PostGIS is pre-created and its catalog tables granted to the app user (compose restore defaults to `--role postgres` unless `native.reset_db.restore_as_super` is true or `pg_restore_args` sets `--role`). With neither flag: offline pgBackRest restore of **this stack’s** backups (`--dry-run` prints stanza, repo path, and compose command). Not for Ansible/Debian package clusters — use `restore --dumps` / `restore --file` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)). |
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
 
 Offline restore may require global `dk --yes` when not attached to a TTY.
 
-After a successful **`restore`** or **`pgrestore`**, the tooling may run project-configured hooks (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …` or the relevant SQL file.
+After a successful **`restore`**, the tooling may run project-configured hooks (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …` or the relevant SQL file.
 
 ## Post-restore hooks (`ops.post_db_restore` / `ops.post_metabase_db_restore`)
 
-Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`dk <env> db restore`, `bkp_db pgrestore`, `dk transfer` DB leg).
+Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`dk <env> db restore`, `dk transfer` DB leg).
 
 **App database** (`ops.post_db_restore`) runs after the main `pg_restore`. **Metabase database** (`ops.post_metabase_db_restore`) runs only when `paths.fetch_metabase_db_dump` is configured and the metabase leg restores successfully.
 
@@ -271,8 +270,8 @@ Cross-cutting config (where values live, service vs container name, compose proj
 | `info` shows `missing stanza path` after `init` skipped stanza-create | Broken or empty S3 repo prefix; clear repo path or fix credentials, then re-run `bkp_db configure stanza-create` (tooling only skips when `info` reports `status: ok`). |
 | `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
 | `[031]: option 'pg1-path' cannot be set multiple times` | Image `/etc/pgbackrest.conf` (or `/etc/pgbackrest/pgbackrest.conf`) also sets `pg1-path`. Tooling already writes it in `conf.d`. Remove it from the image file; keep only lock/log/spool. See [QUICKSTART.md](QUICKSTART.md#postgres-image-and-pgbackrestconf). |
-| `could not load $PGDATA/pg_hba.conf` after `db restore` | Source backup is a Debian/Ubuntu **package** cluster (HBA lives under `/etc/postgresql/`, not in PGDATA). Do not pgBackRest-restore that onto this image. Use `pg_dump -Fc` + `dk <env> db pgrestore` or `db restore --dumps`. Recreate `postgres_data` first if the volume already has the broken restore. |
-| `dk <env> db restore` used pgBackRest when you wanted a dump | Complete `pgbr_s3_read_*` / `pgbr_s3_write_*` select the pgBackRest path. Force dumps with `--dumps`, or call `db pgrestore --file …`. |
+| `could not load $PGDATA/pg_hba.conf` after `db restore` | Source backup is a Debian/Ubuntu **package** cluster (HBA lives under `/etc/postgresql/`, not in PGDATA). Do not pgBackRest-restore that onto this image. Use `pg_dump -Fc` + `dk <env> db restore --file` or `db restore --dumps`. Recreate `postgres_data` first if the volume already has the broken restore. |
+| `dk <env> db restore` used pgBackRest when you wanted a dump | Complete `pgbr_s3_read_*` / `pgbr_s3_write_*` select the pgBackRest path. Force dumps with `--dumps`, or call `db restore --file …`. |
 | `invalid checkpoint record` / `could not locate required checkpoint record` after restore | Often an **online** deploy backup with no WAL archive chain in the repo (`pgbackrest info` shows `wal archive min/max: none present`). Wipe `postgres_data`, restore from an **offline** full backup, or pass `dk <env> db restore -- --type=immediate --archive-mode=off`. Re-create deploy backups with Postgres stopped (see `upgrade_postgres` `backup.sh`). |
 | `dk <env> db restore -- …` passes invalid option `--` to pgBackRest | Omit the `--` separator, or upgrade tooling (leading `--` is stripped before invoke). |
 | Restore uses wrong S3 `repo1-path` after editing credentials | Volume config was stale; run `dk <env> db restore --dry-run` to compare volume vs env, then `dk <env> db configure` or accept the restore prompt to re-materialize. |

@@ -33,18 +33,14 @@ from catalpa_tooling.managed_deploy_env import (
 from catalpa_tooling.media_pull import run_pull_media
 from catalpa_tooling.media_rsync import resolve_push_media_source, run_push_media_rsync
 from catalpa_tooling.pgbackrest_db import (
-    compose_pg_restore_extras_for_config,
     db_service_responds,
-    ensure_db_service_running,
     run_backup as run_pgbackrest_backup_online,
     run_bkp_db_init,
     run_bkp_db_stanza_create_flow,
     run_check_online,
     run_configure_verify_online_check,
-    run_drop_create_app_database,
     run_info,
     run_pg_dump,
-    run_pg_restore,
     run_version,
 )
 from catalpa_tooling.pgbackrest_volume_config import (
@@ -55,7 +51,6 @@ from catalpa_tooling.pgbackrest_volume_config import (
     run_pgbackrest_verify,
     should_materialize_for_compose,
 )
-from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.remote_deploy import (
     _confirm_deploy_wipe,
     _dry_run_exits_before_compose_env,
@@ -855,12 +850,14 @@ def _handle_bkp_db(
         )
 
     if sub == "restore":
+        archive_file = getattr(ns, "archive_file", None)
         return run_unified_db_restore(
             config,
             compose_file=compose_file,
             env_add=env_add,
             env_name=env_name,
             force_dumps=bool(getattr(ns, "restore_from_dumps", False)),
+            archive_path=Path(archive_file).expanduser() if archive_file else None,
             dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
             skip_confirm=bool(ns.yes),
             extra_pgbackrest_args=list(getattr(ns, "pgbackrest_restore_args", None) or []),
@@ -898,43 +895,6 @@ def _handle_bkp_db(
             )
             return 1
         return run_pg_dump(compose_file, env_add, list(getattr(ns, "pg_dump_args", None) or []))
-
-    if sub == "pgrestore":
-        extras = list(getattr(ns, "pg_restore_args", None) or [])
-        if getattr(ns, "archive_file", None):
-            extras = ["--file", str(ns.archive_file), *extras]
-        restore_extras = compose_pg_restore_extras_for_config(
-            config,
-            extras,
-            default_archive=config.fetch_db_dump_path,
-        )
-        if "--file" not in restore_extras and sys.stdin.isatty():
-            return 1
-        rc = ensure_db_service_running(
-            compose_file, env_add, config=config, dk_env_name=env_name
-        )
-        if rc != 0:
-            return rc
-        print(
-            "bkp_db pgrestore: replacing app database with an empty database before restore …",
-            file=sys.stderr,
-        )
-        rc = run_drop_create_app_database(
-            compose_file,
-            env_add,
-            postgis=config.native.reset_db.postgis,
-        )
-        if rc != 0:
-            return rc
-        rc = run_pg_restore(compose_file, env_add, restore_extras, config=config)
-        if rc != 0:
-            return rc
-        return run_post_db_restore_manage_commands(
-            config,
-            compose_file=compose_file,
-            env_add=env_add,
-            env_name=env_name,
-        )
 
     print(f"Unknown db subcommand: {sub!r}", file=sys.stderr)
     return 1

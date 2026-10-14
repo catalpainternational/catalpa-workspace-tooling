@@ -32,6 +32,23 @@
   and exit 2. Honouring the overlay properly is still open as an enhancement.
   ([#77](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/77))
 
+### Removed
+
+- **`dk <env> db pgrestore` / `bkp_db pgrestore`.** `db restore` covers the same ground:
+  `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured)
+  without consulting pgBackRest or auto-fetching, and the new `--file PATH` restores the app
+  database from one custom-format archive. Both start `db` if needed, drop and recreate the app
+  database first, honour `native.reset_db.postgis` / `restore_as_super` / `pg_restore_args`, and
+  run the `ops.post_db_restore` hooks. Replace `db pgrestore --file X` with `db restore --file X`,
+  and bare `db pgrestore` with `db restore --dumps`.
+  ([#42](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/42))
+
+### Added
+
+- **`dk <env> db restore --file PATH`** restores the app database from a single `pg_dump -Fc`
+  archive. It implies `--dumps`, skips the Metabase leg (one archive names one database), and
+  works with `--dry-run`.
+
 ## 1.4.3
 
 ### Fixed

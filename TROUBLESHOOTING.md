@@ -122,7 +122,7 @@ docker exec <project>-db-1 grep '^pg1-path=' /etc/pgbackrest/conf.d/*.conf
 For those sources: `pg_dump -Fc` on the old host, place the archive at `paths.fetch_db_dump` (and Metabase at `paths.fetch_metabase_db_dump` if used), then:
 
 ```bash
-uv run dk <env> db pgrestore --file docker/dumps/app.custom   # app DB only
+uv run dk <env> db restore --file docker/dumps/app.custom   # app DB only
 # or both configured dumps (never pgBackRest; never auto-fetch):
 uv run dk <env> db restore --dumps
 ```
@@ -151,7 +151,7 @@ See [README_RESTIC.md](README_RESTIC.md#ansible--host-path-snapshots).
 | `PGDATA still missing after starting \`db\``            | `ops.pgbackrest.pg1_path` vs real `PGDATA` (see §3.E)                                  |
 | `[031]: option 'pg1-path' cannot be set multiple times` | Image `pgbackrest.conf` also sets `pg1-path` (see §3.E)                                |
 | `could not load …/pg_hba.conf` after `db restore`       | pgBackRest from a Debian/non-Docker source (see §3.H); use dumps                       |
-| `dk <env> db restore` ran pgBackRest instead of a dump  | Complete `pgbr_s3_*` keys; pass `--dumps` or use `db pgrestore`                        |
+| `dk <env> db restore` ran pgBackRest instead of a dump  | Complete `pgbr_s3_*` keys; pass `--dumps` or `--file PATH`                             |
 | `no snapshot found` / `lchown` on `files restore`       | Ansible/host-path restic snapshot (see §3.H); use `dk fetch media` + `files push`      |
 | `Could not discover a unique db container`              | Stack up? One Postgres? Set `pgbr_db_container`                                        |
 | Stale S3 path / stanza after editing credentials        | Re-run `dk <env> db configure`; compare with `db restore --dry-run`                    |
