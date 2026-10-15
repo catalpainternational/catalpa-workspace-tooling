@@ -307,6 +307,29 @@ For local Docker environments (no `docker_host`), projects may enable a **machin
 | Local dev HTTPS proxy (`local_proxy`, CA trust, `dk proxy`) | [README_DEV_PROXY.md](README_DEV_PROXY.md)   |
 | LAN access from phones/tablets (sslip.io)                   | [README_LAN_ACCESS.md](README_LAN_ACCESS.md) |
 
+### Choosing the container engine (`docker_host` / `docker_host_from_env`)
+
+Three `dk` paths resolve the engine differently, and the difference is only visible when you run more than one engine on the machine:
+
+| Command                                | Engine it uses                                                                   |
+| -------------------------------------- | --------------------------------------------------------------------------------- |
+| `dk <env> …`                           | `docker_host` from `docker/envs/<env>/info.yaml`; unset means the default socket |
+| `dk build`, `dk push`                  | Whatever the shell exports (`DOCKER_HOST`, `docker context`)                     |
+| `dk proxy …`                           | Whatever the shell exports — it has no environment to read                       |
+
+So with `DOCKER_HOST` exported to a second local engine, `dk build` builds there while `dk dev up` runs on the default Docker socket. Both succeed; the stack just runs images the build never produced.
+
+To put one environment on the engine the shell names, opt it in:
+
+```yaml
+# docker/envs/dev/info.yaml
+docker_host_from_env: true
+```
+
+`dk dev` then takes `DOCKER_HOST` from the environment (falling back to the default socket when it is unset), and the local proxy, LAN access, and volume helpers follow it too. The opt-in is per environment on purpose — a `DOCKER_HOST` left over in a shell must not be able to redirect `dk prod`. Setting `docker_host_from_env` alongside a `docker_host` is a config error rather than a precedence puzzle.
+
+Where it is not set and the shell disagrees with the environment, `dk <env>` prints a note naming both engines; it still uses the environment's.
+
 ### Host storage (`storage` in `info.yaml`)
 
 Compose data volumes use stable Docker names (`name: ${COMPOSE_PROJECT_NAME}_…`). Two independent choices:
