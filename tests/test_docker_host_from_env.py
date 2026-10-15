@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context, resolve_docker_host
@@ -78,6 +80,34 @@ def test_context_pins_default_socket_over_ambient(
     assert ctx is not None
     assert ctx.docker_host == ""
     assert ctx.env_add["DOCKER_HOST"] == ""
+
+
+def test_context_pins_remote_host_over_ambient(
+    minimal_project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deploy env's `docker_host` must beat the shell, or `dk prod` lands on the wrong engine."""
+    import catalpa_tooling.ssh_known_hosts as ssh_known_hosts
+
+    monkeypatch.setattr(
+        ssh_known_hosts, "ensure_ssh_known_host_for_docker_host", lambda *a, **k: 0
+    )
+    # `local` is the fixture's only credentials-optional env; the remote `docker_host` is
+    # what makes this a deploy env for the purposes of engine resolution.
+    _write_env(
+        minimal_project,
+        "local",
+        "name: local\ncredentials_decrypt_optional: true\n"
+        "docker_host: ssh://root@deploy.example.org\n",
+    )
+    monkeypatch.setenv("DOCKER_HOST", PODMAN)
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.docker_host == "ssh://root@deploy.example.org"
+    assert ctx.env_add["DOCKER_HOST"] == "ssh://root@deploy.example.org"
+    # env_add is merged *over* a copy of the process env by every docker call site,
+    # so the pin is what the subprocess actually sees.
+    merged = {**dict(os.environ), **ctx.env_add}
+    assert merged["DOCKER_HOST"] == "ssh://root@deploy.example.org"
 
 
 def test_context_inherits_ambient_on_opt_in(
