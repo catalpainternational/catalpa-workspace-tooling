@@ -703,3 +703,69 @@ def test_cmd_proxy_refuses_even_with_dry_run(monkeypatch, capsys) -> None:
     ns = argparse.Namespace(proxy_command="up", dry_run=True)
     assert local_proxy_cli.cmd_proxy(ns) == 1
     assert "refusing" in capsys.readouterr().err
+
+
+def test_stack_engine_env_overrides_ambient_docker_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The proxy follows the stack's engine, not whatever the shell exports (#96)."""
+    monkeypatch.setenv("DOCKER_HOST", "unix:///tmp/some-other-engine.sock")
+
+    with local_proxy.stack_engine_env({"DOCKER_HOST": ""}):
+        assert local_proxy.os.environ["DOCKER_HOST"] == ""
+
+    assert local_proxy.os.environ["DOCKER_HOST"] == "unix:///tmp/some-other-engine.sock"
+
+
+def test_stack_engine_env_restores_unset_docker_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+
+    with local_proxy.stack_engine_env({"DOCKER_HOST": "ssh://root@example"}):
+        assert local_proxy.os.environ["DOCKER_HOST"] == "ssh://root@example"
+
+    assert "DOCKER_HOST" not in local_proxy.os.environ
+
+
+def test_stack_engine_env_leaves_ambient_alone_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``dk proxy`` has no environment context, so the ambient engine is kept."""
+    monkeypatch.setenv("DOCKER_HOST", "unix:///tmp/ambient.sock")
+
+    for env_add in (None, {}, {"SITE_ORIGIN": "https://x.test"}):
+        with local_proxy.stack_engine_env(env_add):
+            assert local_proxy.os.environ["DOCKER_HOST"] == "unix:///tmp/ambient.sock"
+
+
+def test_sync_for_compose_action_looks_for_proxy_on_the_stack_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    minimal_config: ProjectConfig,
+) -> None:
+    """Regression for #96: ``dk dev up`` must not probe a second engine for the proxy."""
+    monkeypatch.setenv("DOCKER_HOST", "unix:///tmp/some-other-engine.sock")
+    seen: list[str | None] = []
+
+    def _record(**_: object) -> int:
+        seen.append(local_proxy.os.environ.get("DOCKER_HOST"))
+        return 0
+
+    monkeypatch.setattr(local_proxy, "ensure_proxy_network", _record)
+    monkeypatch.setattr(local_proxy, "ensure_proxy_running", _record)
+    monkeypatch.setattr(local_proxy, "wait_for_proxy_admin", lambda **_: True)
+    monkeypatch.setattr(local_proxy, "upsert_route", lambda *a, **k: 0)
+    monkeypatch.setattr(local_proxy, "print_local_proxy_url", lambda *a, **k: None)
+    monkeypatch.setattr(local_proxy, "print_ca_trust_hint", lambda *a, **k: None)
+
+    rc = local_proxy.sync_local_proxy_for_compose_action(
+        _DEV_INFO,
+        minimal_config,
+        "dev",
+        ["up", "-d"],
+        {"DOCKER_HOST": "", "compose_project_name": "ambulancia_dev"},
+    )
+
+    assert rc == 0
+    assert seen == ["", ""]
+    assert local_proxy.os.environ["DOCKER_HOST"] == "unix:///tmp/some-other-engine.sock"
