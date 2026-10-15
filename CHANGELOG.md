@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.5.0
+
 ### Fixed
 
 - **`dk <env>` no longer sends the stack and the local proxy to different container
