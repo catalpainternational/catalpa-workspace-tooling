@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **`dk <env>` no longer sends the stack and the local proxy to different container
+  engines.** The stack is pinned per environment via `DOCKER_HOST` in `env_add`, but the
+  local-proxy helpers built their own `docker` argv and inherited the ambient environment
+  instead. With a `DOCKER_HOST` exported to a second local engine — Podman, or OrbStack
+  alongside Docker Desktop — one `dk dev up` put the stack on the local daemon, failed to
+  find `catalpa-local-proxy` on the *other* engine, and tried to create a second proxy
+  against host ports the first one already held
+  (`listen tcp 127.0.0.1:2019: bind: address already in use`), stranding a `Created`
+  container. The proxy now follows the engine the stack is using. Standalone `dk proxy`
+  has no environment context and still uses the ambient engine, guarded as before; remote
+  `ssh://` endpoints were already refused by `require_local_docker_endpoint`.
+  ([#96](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/96))
+
 - **`dk <env> build <service>` and `dk <env> compose build …` no longer crash in
   `merge_extra_compose_files`.** The helper returned `None` for an empty result but could not
   accept `None` as an argument, so any compose run that may build — where the caller merges the

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import os
@@ -1192,6 +1193,32 @@ def local_proxy_extra_compose_files(
     return [str(override)]
 
 
+@contextlib.contextmanager
+def stack_engine_env(env_add: dict[str, str] | None):
+    """Point this process's ``docker`` calls at the engine the stack is using.
+
+    The proxy helpers build their own argv and inherit the ambient environment, while
+    ``dk <env>`` pins ``DOCKER_HOST`` per environment in ``env_add`` (empty for a local env).
+    Without this, one command addresses two engines: the stack on the local daemon and the
+    proxy on whatever ``DOCKER_HOST`` the shell exports, so the proxy is looked for on an
+    engine that does not have it and a second one is created against already-bound host ports.
+
+    Standalone ``dk proxy`` has no environment context and keeps using the ambient engine.
+    """
+    if env_add is None or "DOCKER_HOST" not in env_add:
+        yield
+        return
+    previous = os.environ.get("DOCKER_HOST")
+    os.environ["DOCKER_HOST"] = str(env_add["DOCKER_HOST"])
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("DOCKER_HOST", None)
+        else:
+            os.environ["DOCKER_HOST"] = previous
+
+
 def sync_local_proxy_for_compose_action(
     info: dict[str, Any],
     config: ProjectConfig,
@@ -1219,40 +1246,41 @@ def sync_local_proxy_for_compose_action(
         return 0
 
     verb = compose_args[0]
-    if verb == "up":
-        rc = ensure_proxy_network(dry_run=dry_run)
-        if rc != 0:
-            return rc
-        rc = ensure_proxy_running(dry_run=dry_run)
-        if rc != 0:
-            return rc
-        if not dry_run and not wait_for_proxy_admin():
-            print(
-                "Local proxy admin API did not become ready; retry `dk proxy up` "
-                "or re-run once the proxy is up.",
-                file=sys.stderr,
-            )
-            return 1
-        for entry in routes:
-            rc = upsert_route(
-                entry.route_id,
-                entry.host,
-                entry.upstream_dial,
-                upstream_host_header=entry.upstream_host_header,
-                dry_run=dry_run,
-            )
+    with stack_engine_env(env_add):
+        if verb == "up":
+            rc = ensure_proxy_network(dry_run=dry_run)
             if rc != 0:
                 return rc
-        print_local_proxy_url(info, config, env_name)
-        print_ca_trust_hint(env_name)
-        return 0
+            rc = ensure_proxy_running(dry_run=dry_run)
+            if rc != 0:
+                return rc
+            if not dry_run and not wait_for_proxy_admin():
+                print(
+                    "Local proxy admin API did not become ready; retry `dk proxy up` "
+                    "or re-run once the proxy is up.",
+                    file=sys.stderr,
+                )
+                return 1
+            for entry in routes:
+                rc = upsert_route(
+                    entry.route_id,
+                    entry.host,
+                    entry.upstream_dial,
+                    upstream_host_header=entry.upstream_host_header,
+                    dry_run=dry_run,
+                )
+                if rc != 0:
+                    return rc
+            print_local_proxy_url(info, config, env_name)
+            print_ca_trust_hint(env_name)
+            return 0
 
-    if verb == "down":
-        rc = 0
-        for entry in routes:
-            route_rc = remove_route(entry.route_id, dry_run=dry_run)
-            if route_rc != 0:
-                rc = route_rc
-        return rc
+        if verb == "down":
+            rc = 0
+            for entry in routes:
+                route_rc = remove_route(entry.route_id, dry_run=dry_run)
+                if route_rc != 0:
+                    rc = route_rc
+            return rc
 
     return 0
