@@ -1,4 +1,8 @@
-"""Tests for ``bkp_db pgrestore`` default archive and ``ensure_db_service_running``."""
+"""Tests for the ``db restore`` default archive and ``ensure_db_service_running``.
+
+These cover the helpers shared by ``dk <env> db restore`` and ``dk transfer``; the
+``db pgrestore`` subcommand they were written for was removed in 1.5.0 (#42).
+"""
 
 from __future__ import annotations
 
@@ -115,3 +119,65 @@ def test_ensure_db_starts_service_when_down() -> None:
         assert ensure_db_service_running("compose.yml", {}) == 0
 
     assert calls[0][4:8] == ["up", "-d", "db", "--wait"]
+
+
+def test_db_restore_file_restores_that_archive_and_runs_hooks(minimal_project) -> None:
+    """``db restore --file`` is what replaced ``db pgrestore --file`` (#42)."""
+    from catalpa_tooling.db_restore import run_unified_db_restore
+
+    archive = Path(minimal_project.repo_root) / "one.custom"
+    archive.write_bytes(b"PGDMP" + b"\x00" * 64)
+    order: list[str] = []
+
+    with (
+        patch(
+            "catalpa_tooling.db_restore.ensure_db_service_running",
+            return_value=0,
+        ),
+        patch(
+            "catalpa_tooling.db_restore.run_drop_create_app_database",
+            side_effect=lambda *a, **k: (order.append("drop_create") or 0),
+        ),
+        patch(
+            "catalpa_tooling.db_restore.run_pg_restore",
+            side_effect=lambda *a, **k: (order.append("pg_restore") or 0),
+        ) as pg_restore,
+        patch(
+            "catalpa_tooling.db_restore.run_post_db_restore_manage_commands",
+            side_effect=lambda *a, **k: (order.append("hooks") or 0),
+        ),
+        patch("catalpa_tooling.db_restore.run_restore_offline") as offline,
+    ):
+        rc = run_unified_db_restore(
+            minimal_project,
+            compose_file="compose.yml",
+            env_add={},
+            env_name="dev",
+            archive_path=archive,
+        )
+
+    assert rc == 0
+    assert order == ["drop_create", "pg_restore", "hooks"]
+    # pgBackRest is never consulted, even if its credentials were complete.
+    offline.assert_not_called()
+    extras = pg_restore.call_args.args[2]
+    assert "--file" in extras
+    assert extras[extras.index("--file") + 1] == str(archive)
+
+
+def test_db_restore_file_dry_run_runs_nothing(minimal_project, capsys) -> None:
+    from catalpa_tooling.db_restore import run_unified_db_restore
+
+    archive = Path(minimal_project.repo_root) / "one.custom"
+    with patch("catalpa_tooling.db_restore.run_compose_app_dump_restore") as restore:
+        rc = run_unified_db_restore(
+            minimal_project,
+            compose_file="compose.yml",
+            env_add={},
+            env_name="dev",
+            archive_path=archive,
+            dry_run=True,
+        )
+    assert rc == 0
+    restore.assert_not_called()
+    assert str(archive) in capsys.readouterr().err

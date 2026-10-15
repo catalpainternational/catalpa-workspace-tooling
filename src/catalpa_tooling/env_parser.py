@@ -174,16 +174,19 @@ def _attach_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> N
         p_pgdump = sub.add_parser("pgdump", help="pg_dump custom-format archive to stdout.")
         p_pgdump.add_argument("pg_dump_args", nargs=argparse.REMAINDER)
 
-        p_pgrestore = sub.add_parser("pgrestore", help="pg_restore into app database.")
-        p_pgrestore.add_argument("--file", dest="archive_file", default=None, metavar="PATH")
-        p_pgrestore.add_argument("pg_restore_args", nargs=argparse.REMAINDER)
-
         p_restore = sub.add_parser("restore", help="Offline pgBackRest restore.")
         p_restore.add_argument(
             "--dumps",
             action="store_true",
             dest="restore_from_dumps",
             help="Restore from local custom-format dumps only (never pgBackRest; never auto-fetch).",
+        )
+        p_restore.add_argument(
+            "--file",
+            dest="archive_file",
+            default=None,
+            metavar="PATH",
+            help="Restore the app database from this pg_dump -Fc archive (implies --dumps).",
         )
         p_restore.add_argument(
             "--dry-run",

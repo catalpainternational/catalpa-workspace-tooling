@@ -34,7 +34,7 @@ dk
 │   ├── context [slug] [--json]    # agent identity; refreshes AGENTS.local.md
 │   ├── list
 │   ├── info [slug]
-│   ├── seed [slug] [--db|--media] # copy main dev DB + host media (slug from main checkout)
+│   ├── seed [slug] [--db|--media] # copy main dev DB + media storage (slug from main checkout)
 │   └── remove <slug> [--wipe] [--keep-stack]  # down + git worktree remove; --wipe also drops
 │                                  # volumes (external: included); --keep-stack leaves it up
 │
@@ -94,8 +94,7 @@ dk
     │   ├── version
     │   ├── backup full|incr|diff
     │   ├── pgdump
-    │   ├── pgrestore
-    │   └── restore [--dumps] [--dry-run] [pgBackRest args…]
+    │   └── restore [--dumps] [--file PATH] [--dry-run] [pgBackRest args…]
     │
     ├── compose …                  # explicit passthrough (tab completion); e.g. compose up -d
     ├── docker …                   # passthrough to docker CLI (same DOCKER_HOST/env); e.g. docker volume ls
@@ -124,7 +123,7 @@ Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `hos
 
 `db` / `files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 
-After a successful DB restore (`db restore`, `db pgrestore`, or `transfer` with `--db`), optional `ops.post_db_restore` / `ops.post_metabase_db_restore` hooks in `tooling.yaml` run project follow-ups: `db_psql` (superuser SQL in the `db` container), then `manage_commands` on the web service (default: none). See [README_PGBACKREST.md](../README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
+After a successful DB restore (`db restore` or `transfer` with `--db`), optional `ops.post_db_restore` / `ops.post_metabase_db_restore` hooks in `tooling.yaml` run project follow-ups: `db_psql` (superuser SQL in the `db` container), then `manage_commands` on the web service (default: none). See [README_PGBACKREST.md](../README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
 
 Any other first argument is passed to `docker compose` (e.g. `up`, `down`, `ps`, `logs`, `exec`).
 

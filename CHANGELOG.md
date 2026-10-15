@@ -2,6 +2,89 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk <env>` no longer sends the stack and the local proxy to different container
+  engines.** The stack is pinned per environment via `DOCKER_HOST` in `env_add`, but the
+  local-proxy helpers built their own `docker` argv and inherited the ambient environment
+  instead. With a `DOCKER_HOST` exported to a second local engine — Podman, or OrbStack
+  alongside Docker Desktop — one `dk dev up` put the stack on the local daemon, failed to
+  find `catalpa-local-proxy` on the *other* engine, and tried to create a second proxy
+  against host ports the first one already held
+  (`listen tcp 127.0.0.1:2019: bind: address already in use`), stranding a `Created`
+  container. The proxy now follows the engine the stack is using. Standalone `dk proxy`
+  has no environment context and still uses the ambient engine, guarded as before; remote
+  `ssh://` endpoints were already refused by `require_local_docker_endpoint`.
+  ([#96](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/96))
+
+- **`dk <env> build <service>` and `dk <env> compose build …` no longer crash in
+  `merge_extra_compose_files`.** The helper returned `None` for an empty result but could not
+  accept `None` as an argument, so any compose run that may build — where the caller merges the
+  label override into its own already-merged list — died with
+  `TypeError: 'NoneType' object is not iterable` before reaching docker. It now skips empty
+  groups, which makes it safe to call on its own output.
+  ([#76](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/76),
+  [#83](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/83))
+
+- **`tests ci` says what is wrong when host `node_modules` is missing.** On the host fallback
+  path — taken by any project whose compose has no `node` service, including every
+  multi-`paths.frontend` project — the frontend build ran the package script without checking
+  that dependencies were installed, so a fresh checkout failed with a missing-binary error
+  (`vue-tsc: command not found`) that pointed at the wrong thing. It now fails with
+  ``smoke: <dir>/node_modules missing — run `<pm> install --frozen-lockfile` in <dir>``.
+  Nothing is installed automatically.
+  ([#80](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/80))
+
+- **`dk worktree seed` copies the media the stack actually serves.** It copied one host
+  directory to another (`<repo>/media` → `<worktree>/media`). A Docker project serves media from
+  a named volume, so the copy never reached the new stack: every photograph on a freshly seeded
+  worktree rendered as alt text. Seeding now resolves both sides' **media storage** — the named
+  volume (honouring compose `name:` and `ops.restic.data_volume`) or the host bind — and copies
+  between them with the same rsync/tar machinery `dk transfer` uses. The destination volume is
+  pre-created with Compose labels first, so a later `compose up` does not warn about a volume it
+  did not create. The copy replaces whatever the destination held, and takes the whole storage,
+  Wagtail originals and renditions together, from the same source stack as the database dump, so
+  image rows and the files they point at stay consistent.
+  ([#88](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/88))
+
+- **Seed steps report what they actually did.** `worktree seed: media copy done.` printed even
+  when the copy had been skipped a line earlier, and the run always ended `worktree seed:
+  complete.` Each step now records its outcome and the final line summarises them — e.g.
+  `worktree seed: complete (db: restored; media: skipped, source volume swlt_dev_django_media is
+  empty or missing)`. A source with no media is legitimate, so that case stays exit 0.
+  `--dry-run` prints both resolved storages.
+
+- **`seeded` in `dk worktree context` is volume-aware.** It looked only at the host media tree,
+  so it reported `false` for every volume-based project however well seeded. It now reads the
+  worktree's resolved media storage.
+
+### Changed
+
+- **`tests ci` / `tests guest` / `tests functional` refuse to run inside a worktree.** None of
+  them applied the worktree overlay, so an `up` from a worktree recreated that worktree's
+  containers from the base env's compose config and tried to publish host port 80 — which the
+  shared `catalpa-local-proxy` holds. The worktree's caddy was left `created`, and every later
+  `dk --worktree <slug> …` failed with an unrelated-looking error. They now print what is wrong
+  and exit 2. Honouring the overlay properly is still open as an enhancement.
+  ([#77](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/77))
+
+### Removed
+
+- **`dk <env> db pgrestore` / `bkp_db pgrestore`.** `db restore` covers the same ground:
+  `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured)
+  without consulting pgBackRest or auto-fetching, and the new `--file PATH` restores the app
+  database from one custom-format archive. Both start `db` if needed, drop and recreate the app
+  database first, honour `native.reset_db.postgis` / `restore_as_super` / `pg_restore_args`, and
+  run the `ops.post_db_restore` hooks. Replace `db pgrestore --file X` with `db restore --file X`,
+  and bare `db pgrestore` with `db restore --dumps`.
+  ([#42](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/42))
+
+### Added
+
+- **`dk <env> db restore --file PATH`** restores the app database from a single `pg_dump -Fc`
+  archive. It implies `--dumps`, skips the Metabase leg (one archive names one database), and
+  works with `--dry-run`.
+
 ## 1.4.3
 
 ### Fixed
