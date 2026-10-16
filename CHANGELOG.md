@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- **`docker_host_from_env` in `docker/envs/<env>/info.yaml` lets one environment follow the
+  shell's `DOCKER_HOST`.** `dk <env>` pins the engine from `info.yaml` — for a local env that
+  pin is the empty string, which sends compose to the default Docker socket — while
+  `dk build`, `dk push` and `dk proxy` inherit whatever the shell exports. Running a stack on
+  a second local engine (Podman, OrbStack beside Docker Desktop) therefore built images on one
+  engine and ran them on the other, silently, and the only workaround was to hard-code a
+  machine-specific socket path into a shared `info.yaml`. Setting `docker_host_from_env: true`
+  makes that env inherit the shell's engine instead. Inheritance stays opt-in and per
+  environment: a stale `DOCKER_HOST` must never be able to redirect a deploy env. Setting it
+  alongside a `docker_host` is a config error. Where it is *not* set and the shell disagrees
+  with the env, `dk <env>` now says so instead of quietly winning.
+  ([#94](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/94))
+
 ## 1.5.0
 
 ### Fixed

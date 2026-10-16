@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -64,6 +65,79 @@ def _resolve_image_registry(info: dict, images_config: dict, config: ProjectConf
             return ""
         return str(raw).rstrip("/")
     return _image_registry_from_config(images_config, config)
+
+
+INFO_DOCKER_HOST_FROM_ENV = "docker_host_from_env"
+
+
+def _docker_host_from_env_opt_in(info: dict) -> bool:
+    """``docker_host_from_env`` in info.yaml — opt this env into the shell's ``DOCKER_HOST``."""
+    raw = info.get(INFO_DOCKER_HOST_FROM_ENV, False)
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
+def resolve_docker_host(
+    info: dict,
+    env_name: str,
+    *,
+    environ: dict[str, str] | None = None,
+) -> tuple[str, bool] | None:
+    """Engine for ``dk <env>``: ``(docker_host, came_from_environment)``, or None on bad config.
+
+    ``dk <env>`` pins ``DOCKER_HOST`` from info.yaml, while ``dk build`` / ``dk push`` / ``dk proxy``
+    inherit whatever the shell exports. For a local env (no ``docker_host``) the pin is the empty
+    string, which sends compose to the default Docker socket even when the shell says otherwise —
+    so the same repo can build images on one engine and run them on another with no warning.
+
+    Making ``dk <env>`` inherit unconditionally would be worse: a ``DOCKER_HOST`` left over in a
+    shell would silently redirect *every* env, deploy envs included. So inheritance is opt-in per
+    environment, and the mismatch is reported rather than resolved when it is not.
+    """
+    environ = dict(os.environ) if environ is None else environ
+    pinned = str(info.get("docker_host", "") or "").strip()
+    ambient = str(environ.get("DOCKER_HOST", "") or "").strip()
+    opt_in = _docker_host_from_env_opt_in(info)
+
+    if opt_in and pinned:
+        print(
+            f"docker/envs/{env_name}/info.yaml sets both docker_host ({pinned!r}) and "
+            f"{INFO_DOCKER_HOST_FROM_ENV}: true. Remove one — a pinned engine and an inherited "
+            "one cannot both apply.",
+            file=sys.stderr,
+        )
+        return None
+
+    if opt_in:
+        if ambient:
+            print(
+                f"DOCKER_HOST={ambient} inherited from the environment "
+                f"({INFO_DOCKER_HOST_FROM_ENV}: true in docker/envs/{env_name}/info.yaml).",
+                file=sys.stderr,
+            )
+            return ambient, True
+        return "", False
+
+    if ambient and ambient != pinned:
+        where = (
+            f"docker_host in docker/envs/{env_name}/info.yaml"
+            if pinned
+            else "the default Docker socket"
+        )
+        lines = [
+            f"Note: this shell exports DOCKER_HOST={ambient}, but `dk {env_name}` uses {where}.",
+            "      `dk build`, `dk push` and `dk proxy` follow the shell, so they would act on a "
+            "different engine than this stack.",
+        ]
+        if not pinned:
+            lines.append(
+                f"      Set `{INFO_DOCKER_HOST_FROM_ENV}: true` in docker/envs/{env_name}/info.yaml "
+                "to run this env on the engine the shell names."
+            )
+        print("\n".join(lines), file=sys.stderr)
+
+    return pinned, False
 
 
 def _resolve_compose_file_from_info(info: dict, config: ProjectConfig) -> str | None:
@@ -248,7 +322,15 @@ def load_managed_deploy_context(
     site_origins_list = resolve_site_origins_for_env(info, config, env_name)
     site_origin = site_origins_list[0] if site_origins_list else ""
     site_origins = tuple(site_origins_list)
-    docker_host = info.get("docker_host", "")
+    resolved = resolve_docker_host(info, env_name)
+    if resolved is None:
+        return None
+    docker_host, docker_host_from_env = resolved
+    if docker_host_from_env:
+        # Downstream readers (local proxy, LAN access, dc-backup routing) ask `info` for the
+        # engine, not this function. Record the inherited value so every one of them agrees.
+        info = dict(info)
+        info["docker_host"] = docker_host
     dc_backup_docker_host = str(info.get("dc_backup_docker_host", "") or "").strip()
 
     from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host

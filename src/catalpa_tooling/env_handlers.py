@@ -29,6 +29,7 @@ from catalpa_tooling.managed_deploy_env import (
     load_managed_deploy_context,
     print_managed_deploy_header,
     resolve_compose_file_from_info,
+    resolve_docker_host,
 )
 from catalpa_tooling.media_pull import run_pull_media
 from catalpa_tooling.media_rsync import resolve_push_media_source, run_push_media_rsync
@@ -437,6 +438,13 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         )
         if not ok:
             return 1
+        # Same reason: answer "which engine am I pointed at?" with the one the real run would use.
+        resolved = resolve_docker_host(dry_run_info, env_name)
+        if resolved is None:
+            return 1
+        if resolved[1]:
+            dry_run_info = dict(dry_run_info)
+            dry_run_info["docker_host"] = resolved[0]
         print_managed_deploy_header(
             config, env_name, dry_run_info, compose_file, tag_override=tag_override
         )
