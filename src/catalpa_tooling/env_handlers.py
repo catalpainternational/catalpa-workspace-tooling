@@ -315,7 +315,9 @@ def _run_compose_path(
     # Stamp catalpa.* build labels whenever this compose run may build, so `stale_stack` can tell
     # which branch and commit the resulting images came from.
     label_override = (
-        write_label_override(config) if _compose_args_may_build(compose_args) else None
+        write_label_override(config, compose_file, env_add)
+        if _compose_args_may_build(compose_args)
+        else None
     )
     if label_override:
         extra_compose_files = merge_extra_compose_files(

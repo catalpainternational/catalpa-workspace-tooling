@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A second compose service building a stack image no longer leaves the stack permanently
+  stale.** The `catalpa.*` build labels were stamped onto `stack_build_services` — the three
+  roles `db` / `web` / `proxy` — which assumes one building service per stack image. A project
+  that points a second service at the app image, a one-shot `migrate` being the common case,
+  breaks that assumption without doing anything exotic: compose builds the tag once per service
+  in a single `up --build` and the last build owns it, so when the unlabelled definition won,
+  the image came out with no `catalpa.*` labels at all. `stale_stack` then reported
+  `image carries no catalpa.* build labels (built outside dk)` about an image dk had built
+  moments earlier, on **every** run, and rebuilt the stack every time with no way to converge.
+  Worse than the wasted pass: the check could never answer "current" for such a project, so a
+  real staleness event had nowhere to show up. The label override's targets are now derived
+  from the resolved compose config — every service whose `image:` is a stack image and which
+  carries a `build:` — rather than from the three role names. Projects need no compose change.
+  Where the config cannot be resolved the targets fall back to the three roles, so the previous
+  behaviour is the floor.
+  ([#99](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/99))
+
+### Added
+
+- **`dk` says when more than one compose service builds the same stack image.** Labels were one
+  casualty of the last-build-wins behaviour above; they are not the only one. Nothing in a
+  compose file merges two service definitions of one tag, so whatever the losing definition
+  carried is dropped silently — including `platform:`, which tooling does not own and cannot
+  fix. That is how
+  [swlt_ws2#886](https://github.com/catalpainternational/swlt_ws2/issues/886) happened: only
+  one of two builders was pinned to `linux/amd64`, the unpinned build won on an Apple Silicon
+  host, and the service then refused to start against its own pin with "does not provide the
+  specified platform". `dk` now prints a one-line note naming the image and the services that
+  build it, once per command, so the situation is visible at the point of confusion rather than
+  after a debugging session.
+  ([#99](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/99))
+
 ## 1.5.0
 
 ### Fixed
