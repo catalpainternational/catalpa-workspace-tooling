@@ -67,6 +67,7 @@ from catalpa_tooling.remote_deploy import (
 from catalpa_tooling.stale_stack import (
     drop_no_build_when_stale,
     ensure_stack_matches_checkout,
+    pre_up_build_is_redundant,
     should_ensure_stack_checkout,
     write_label_override,
 )
@@ -212,6 +213,7 @@ def _run_compose_path(
     site_origin: str,
     docker_host: str,
     storage_volumes: dict,
+    stack_images_already_built: bool = False,
 ) -> int:
     repo_root = config.repo_root
     dry_run = bool(getattr(ns, "dry_run", False))
@@ -230,14 +232,21 @@ def _run_compose_path(
         )
         if rc != 0:
             return rc
-        rc = _ensure_local_stack_images_built(
-            config,
-            env_add,
-            use_prepulled_registry=use_prepulled_registry,
-            compose_file=compose_file,
-        )
-        if rc != 0:
-            return rc
+        # The central stale-stack hook makes this build redundant whichever way it answered:
+        # either the images already matched the checkout, or it rebuilt them with the identical
+        # `_ensure_local_stack_images_built` call a moment ago. Only `materialize_configs`
+        # below depends on the result, and the caller has confirmed the db image is here. See
+        # #75; compose's own `--build` on the `up` still runs, so a changed Dockerfile at an
+        # unchanged SHA is still rebuilt.
+        if not stack_images_already_built:
+            rc = _ensure_local_stack_images_built(
+                config,
+                env_add,
+                use_prepulled_registry=use_prepulled_registry,
+                compose_file=compose_file,
+            )
+            if rc != 0:
+                return rc
         rc = materialize_configs(
             env_add,
             dry_run=False,
@@ -467,6 +476,11 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         compose_file, env_add, config=config, dk_env_name=env_name
     )
 
+    # False unless the central hook below both ran and left the stack images in a known-good
+    # state. Defaulting to False means every path that does not reach the hook — a pinned
+    # pre-pulled env, DK_SKIP_STALE_STACK=1, a dry run — keeps building exactly as before.
+    stack_images_already_built = False
+
     # One central check, before any branching on env_command, so `db restore`, `files restore`
     # and `manage` are all covered without enumerating subcommands. Opt-out, not an allowlist.
     if compose_file and should_ensure_stack_checkout(
@@ -499,6 +513,9 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             return rc
         if stale_reason is not None and caller_runs_up:
             compose_args = drop_no_build_when_stale(compose_args)
+        stack_images_already_built = pre_up_build_is_redundant(
+            config, compose_file, env_add, dry_run=dry_run
+        )
 
     if env_command == "docker":
         return run_docker_passthrough(
@@ -642,6 +659,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         site_origin=site_origin,
         docker_host=docker_host,
         storage_volumes=ctx.storage_volumes,
+        stack_images_already_built=stack_images_already_built,
     )
 
 

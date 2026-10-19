@@ -21,6 +21,22 @@
   behaviour is the floor.
   ([#99](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/99))
 
+- **`dk <env> up` no longer builds the stack images twice.** Every `up` on an unpinned env ran
+  `_ensure_local_stack_images_built` — a full `docker compose build` of db / web / proxy —
+  before going on to the `up`, which compose then runs with its own injected `--build`. The
+  first of those is redundant whichever way the stale-stack hook answered a moment earlier:
+  either the images already matched the checkout, or the hook rebuilt them with that very same
+  call. It is now skipped in that case, which halves the build passes on the inner-loop
+  command and leaves a genuine rebuild something you can actually see in the output.
+  Compose's own `--build` on the `up` still runs, so a Dockerfile edited at an unchanged
+  commit is still rebuilt — the labels carry the *committed* SHA and would not have noticed.
+  The skip additionally requires the db image to be present locally, which the label check
+  does not establish: it is satisfied by a matching running *container* without ever looking
+  for the image, and `materialize_configs` runs one-off containers from that image before the
+  `up` could build it. Pinned pre-pulled envs, `DK_SKIP_STALE_STACK=1`, a dry run, and a
+  failed `git rev-parse` all keep building exactly as before.
+  ([#75](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/75))
+
 ### Added
 
 - **`dk` says when more than one compose service builds the same stack image.** Labels were one

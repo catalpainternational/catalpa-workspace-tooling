@@ -260,6 +260,57 @@ def _inspect_labels(ref: str, env_add: dict[str, str], *, kind: str) -> dict[str
     return {str(k): str(v) for k, v in parsed.items()}
 
 
+def stack_db_image_present(
+    config: ProjectConfig, compose_file: str, env_add: dict[str, str]
+) -> bool:
+    """True when the resolved ``db`` image exists on this engine.
+
+    The pre-``up`` build is what puts it there on a first run, and ``materialize_configs``
+    runs one-off containers from it (``pgbackrest_volume_config.py``) *before* compose's own
+    ``--build`` gets a chance to. So anything that skips that build has to assert this rather
+    than infer it from the staleness answer: the label check is satisfied by a matching running
+    *container* without ever looking for the image, so an untagged-but-running db would
+    otherwise send ``docker run`` to the registry for a tag only ever built locally. See #75.
+    """
+    resolved = _compose_config(config, compose_file, env_add)
+    spec = (resolved.get("services") or {}).get(config.stack_service("db"))
+    if not isinstance(spec, dict):
+        return False
+    image_ref = str(spec.get("image") or "").strip()
+    if not image_ref:
+        return False
+    return _inspect_labels(image_ref, env_add, kind="image") is not None
+
+
+def pre_up_build_is_redundant(
+    config: ProjectConfig,
+    compose_file: str,
+    env_add: dict[str, str],
+    *,
+    dry_run: bool,
+) -> bool:
+    """True when ``ensure_stack_matches_checkout`` has already settled the stack images.
+
+    Call this only where that hook has just run and returned success. It left the images in a
+    known-good state either way: they matched the checkout, or it rebuilt them with the very
+    same ``_ensure_local_stack_images_built`` call the pre-``up`` build would make. What it
+    does *not* establish is that the db image is on this engine, which is a separate premise
+    — hence the check. A dry run reports without rebuilding, so it proves nothing. See #75.
+
+    ``stack_images_match_checkout`` returns ``None`` for two different things: "the images
+    match" and "there is nothing to compare against", the second when ``git rev-parse`` fails
+    and ``VITE_GIT_SHA`` comes back empty. Only the first is a verification, so the same two
+    values are required here rather than inferred from a bare ``None``.
+    """
+    if dry_run:
+        return False
+    if not (env_add.get("STACK_IMAGE_TAG") or "").strip():
+        return False
+    if not (env_add.get("VITE_GIT_SHA") or "").strip():
+        return False
+    return stack_db_image_present(config, compose_file, env_add)
+
+
 def _running_container_id(
     config: ProjectConfig, compose_file: str, env_add: dict[str, str], service: str
 ) -> str | None:
