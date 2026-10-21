@@ -64,7 +64,6 @@
   build it, once per command, so the situation is visible at the point of confusion rather than
   after a debugging session.
   ([#99](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/99))
->>>>>>> origin/dev-1.6.0
 
 ## 1.5.0
 
