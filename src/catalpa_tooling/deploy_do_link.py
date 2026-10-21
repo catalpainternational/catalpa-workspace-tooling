@@ -651,6 +651,7 @@ def _cmd_env_host_manual(
         remote_rc = _probe_manual_hosts_remote(
             docker_host=value,
             dc_backup_docker_host=backup_host or None,
+            env_name=env_name,
         )
 
     if dns_rc != 0:
@@ -707,8 +708,10 @@ def parse_timedatectl_status(text: str) -> TimedatectlInfo:
     return TimedatectlInfo(timezone=tz, ntp_synchronized=ntp, system_clock_synchronized=sys_clock)
 
 
-def _probe_one_host_remote(label: str, docker_host_url: str) -> TimedatectlInfo | None:
-    """SSH reachability + timedatectl; return clock info or None if unreachable."""
+def _probe_one_host_remote(
+    label: str, docker_host_url: str, *, env_name: str
+) -> TimedatectlInfo | None:
+    """SSH reachability, timedatectl and Docker log rotation; clock info or None if unreachable."""
     from catalpa_tooling.dc_backup.ssh_install import remote_run_capture
     from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
     from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
@@ -764,6 +767,13 @@ def _probe_one_host_remote(label: str, docker_host_url: str) -> TimedatectlInfo 
             f"(check timedatectl on the host).",
             file=sys.stderr,
         )
+
+    from catalpa_tooling.docker_logging import probe_host_logging, report_host_logging
+
+    # Advisory like the clock check: an uncapped container log fills the disk (#109).
+    log_status = probe_host_logging(ssh)
+    if log_status is not None:
+        report_host_logging(label, log_status, env_name=env_name)
     return info
 
 
@@ -771,12 +781,15 @@ def _probe_manual_hosts_remote(
     *,
     docker_host: str,
     dc_backup_docker_host: str | None,
+    env_name: str,
 ) -> int:
     """Probe app (+ optional backup) hosts; advisory clock warnings; 0 unless SSH hard-fail."""
-    app_info = _probe_one_host_remote("app", docker_host)
+    app_info = _probe_one_host_remote("app", docker_host, env_name=env_name)
     backup_info: TimedatectlInfo | None = None
     if dc_backup_docker_host:
-        backup_info = _probe_one_host_remote("dc_backup", dc_backup_docker_host)
+        backup_info = _probe_one_host_remote(
+            "dc_backup", dc_backup_docker_host, env_name=env_name
+        )
 
     if (
         app_info
@@ -984,6 +997,7 @@ def cmd_env_host(
         return _probe_manual_hosts_remote(
             docker_host=configured_host or docker_host,
             dc_backup_docker_host=backup or None,
+            env_name=env_name,
         )
     return 0
 

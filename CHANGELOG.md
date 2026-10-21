@@ -23,6 +23,18 @@
   are left as they were.
   ([#124](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/124))
 
+- **Provisioned hosts now rotate container logs.** The droplet bootstrap wrote no
+  `/etc/docker/daemon.json`, so every host ran Docker's default `json-file` driver with no
+  size cap. Logs from long-lived containers (db, redis, caddy, backup), which are rarely
+  recreated, grew until the disk filled. The bootstrap now sets the `local` driver with
+  `max-size: 20m`, `max-file: 5` (about 100 MB per container) before Docker first starts.
+  For hosts provisioned earlier, `dk <env> host logging` checks the daemon and names each
+  container that still logs without a cap. `--apply` merges the setting into `daemon.json`,
+  validates the file and restarts docker, and `--target backup` covers
+  `dc_backup_docker_host`. `dk <env> host --check-remote` reports the same thing as a
+  warning. Runbook: TROUBLESHOOTING.md § Container log rotation.
+  ([#109](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/109))
+
 ## 1.6.0
 
 ### Fixed
