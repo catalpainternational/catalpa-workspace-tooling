@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from catalpa_tooling.cli.completion import activate, argcomplete_active
 from catalpa_tooling.cli.dk_argv import (
