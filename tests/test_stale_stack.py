@@ -13,8 +13,10 @@ from catalpa_tooling.stale_stack import (
     LABEL_GIT_SHA,
     LABEL_IMAGE_TAG,
     SKIP_ENV_VAR,
+    _co_builders,
     drop_no_build_when_stale,
     label_override_yaml,
+    label_target_services,
     should_ensure_stack_checkout,
     stack_images_match_checkout,
     write_label_override,
@@ -150,6 +152,127 @@ def test_write_label_override_is_outside_the_repo(config, tmp_path: Path) -> Non
         assert "services:" in path.read_text(encoding="utf-8")
     finally:
         path.unlink(missing_ok=True)
+
+
+# --- second builders of a stack image tag (#99) -------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_builder_warnings():
+    """The warning is deduplicated per process, which would make test order significant."""
+    stale_stack._warned_images.clear()
+
+
+def _stack_services(config, *, web_image: str = f"reg/web:{TAG}") -> dict:
+    out = {
+        config.stack_service(r): _build_service(f"reg/{r}:{TAG}")
+        for r in ("db", "proxy")
+    }
+    out[config.stack_service("web")] = _build_service(web_image)
+    return out
+
+
+def test_one_builder_per_tag_finds_nothing(config) -> None:
+    """The premise of every test below: a normal stack has no co-builders to report.
+
+    Without this, a `_co_builders` that returned everything would pass the tests that follow.
+    """
+    resolved = {"services": _stack_services(config)}
+    assert _co_builders(resolved, ("db", "web", "proxy")) == {}
+    assert _co_builders(resolved, stale_stack.stack_build_services(config)) == {}
+
+
+def test_a_second_building_service_on_the_web_tag_is_found(config) -> None:
+    """The swlt_ws2 shape: a one-shot `migrate` sharing the app image."""
+    web = config.stack_service("web")
+    services = _stack_services(config)
+    services["migrate"] = _build_service(f"reg/web:{TAG}")
+    found = _co_builders({"services": services}, stale_stack.stack_build_services(config))
+    assert found == {f"reg/web:{TAG}": sorted([web, "migrate"])}
+
+
+def test_an_image_only_second_service_is_not_a_co_builder(config) -> None:
+    """It runs the tag, it does not produce it — so it cannot strip the labels."""
+    services = _stack_services(config)
+    services["migrate"] = {"image": f"reg/web:{TAG}"}  # no build section
+    assert _co_builders({"services": services}, stale_stack.stack_build_services(config)) == {}
+
+
+def test_a_builder_of_an_unrelated_tag_is_not_a_co_builder(config) -> None:
+    """Only services building a *stack* image matter; `node` and friends are untouched."""
+    services = _stack_services(config)
+    services["node"] = _build_service("reg/node:dev")
+    assert _co_builders({"services": services}, stale_stack.stack_build_services(config)) == {}
+
+
+def test_label_targets_fall_back_to_the_stack_roles(config) -> None:
+    """No compose file to resolve means exactly the previous behaviour, not an error."""
+    assert label_target_services(config) == stale_stack.stack_build_services(config)
+
+
+def test_label_targets_fall_back_when_compose_config_fails(
+    config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A docker that is down or a compose file that will not resolve must not break the build."""
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(stale_stack, "run_cmd", lambda *_a, **_k: _Proc())
+    assert label_target_services(config, "compose.yml", _env()) == (
+        stale_stack.stack_build_services(config)
+    )
+
+
+def test_label_targets_include_the_second_builder(
+    config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    services = _stack_services(config)
+    services["migrate"] = _build_service(f"reg/web:{TAG}")
+    _fake_docker(monkeypatch, services=services, labels={})
+    targets = label_target_services(config, "compose.yml", _env())
+    assert set(targets) == set(stale_stack.stack_build_services(config)) | {"migrate"}
+
+
+def test_the_override_stamps_the_second_builder_too(
+    config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of the whole change: migrate's build carries the labels, so whichever
+    build lands last on that tag, the image keeps them."""
+    services = _stack_services(config)
+    services["migrate"] = _build_service(f"reg/web:{TAG}")
+    _fake_docker(monkeypatch, services=services, labels={})
+    text = label_override_yaml(config, label_target_services(config, "compose.yml", _env()))
+    assert "  migrate:\n    build:\n      labels:\n" in text
+    assert text.count("build:") == 4
+
+
+def test_multiple_builders_are_reported_once(
+    config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """`platform:` is the key this does not fix — tooling does not own it — so say so.
+
+    Once per process, not once per compose invocation: a single `dk dev up` resolves twice.
+    """
+    services = _stack_services(config)
+    services["migrate"] = _build_service(f"reg/web:{TAG}")
+    _fake_docker(monkeypatch, services=services, labels={})
+    label_target_services(config, "compose.yml", _env())
+    label_target_services(config, "compose.yml", _env())
+    err = capsys.readouterr().err
+    assert err.count(f"reg/web:{TAG}") == 1
+    assert "migrate" in err and "platform:" in err
+
+
+def test_nothing_is_reported_for_a_single_builder(
+    config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Otherwise the note would be background noise on every project, every run."""
+    _fake_docker(monkeypatch, services=_stack_services(config), labels={})
+    label_target_services(config, "compose.yml", _env())
+    assert capsys.readouterr().err == ""
 
 
 # --- detection --------------------------------------------------------------------------

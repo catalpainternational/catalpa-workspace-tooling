@@ -10,6 +10,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from catalpa_tooling.config import DEFAULT_PGBR_PG1_PATH, ProjectConfig
@@ -196,7 +197,7 @@ def read_managed_pgbackrest_repo_settings(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -404,9 +405,49 @@ def _db_volumes_with_compose_keys(
     )
 
 
-def _compose_db_platform_args() -> list[str]:
-    """Match ``compose.yml`` ``db`` service ``platform: linux/amd64`` for one-off ``docker run``."""
-    return ["--platform", "linux/amd64"]
+# What these helpers asked for unconditionally before #111. Kept as the fallback so a
+# project that still pins amd64 sees byte-identical commands, including when the image
+# is not present locally and nothing can be inspected.
+_LEGACY_DB_PLATFORM = "linux/amd64"
+
+
+@lru_cache(maxsize=32)
+def _image_platform(image: str, docker_host: str) -> str:
+    """``<os>/<arch>`` of ``image`` as it exists on this engine; legacy default if unknown.
+
+    #111: these one-off ``docker run`` helpers hardcoded ``linux/amd64``, which is correct
+    only while every consumer project pins that platform. Asking the image keeps a pinned
+    project identical and lets an unpinned one run native instead of failing with
+    ``manifest unknown`` on an image that is present and correct.
+
+    ``docker_host`` is part of the cache key, not just context: the same tag can be a
+    different architecture on a local engine and on a remote ``ssh://`` one.
+    """
+    env = dict(os.environ)
+    if docker_host:
+        env["DOCKER_HOST"] = docker_host
+    r = run_cmd(
+        ["docker", "image", "inspect", image, "--format", "{{.Os}}/{{.Architecture}}"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        print_cmd=False,
+    )
+    if r.returncode != 0:
+        return _LEGACY_DB_PLATFORM
+    platform = (r.stdout or "").strip().splitlines()[0].strip() if (r.stdout or "").strip() else ""
+    # A malformed or partial value is worse than the old constant — fall back rather than
+    # hand docker something it will reject.
+    if platform.count("/") != 1 or platform.startswith("/") or platform.endswith("/"):
+        return _LEGACY_DB_PLATFORM
+    return platform
+
+
+def _compose_db_platform_args(image: str, docker_env: dict[str, str]) -> list[str]:
+    """Match the platform of the image being run for one-off ``docker run`` (#111)."""
+    platform = _image_platform(image, (docker_env.get("DOCKER_HOST") or "").strip())
+    return ["--platform", platform]
 
 
 def _docker_run_s3_network_args(env: dict[str, str]) -> list[str]:
@@ -431,7 +472,7 @@ def _pgdata_has_control_file(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -981,10 +1022,10 @@ def remove_all_external_stack_volumes(
     )
 
 
-def _docker_run_volume_work_args() -> list[str]:
+def _docker_run_volume_work_args(image: str, docker_env: dict[str, str]) -> list[str]:
     """One-off volume writes use the db image (often USER postgres) against root-owned named volumes."""
     return [
-        *_compose_db_platform_args(),
+        *_compose_db_platform_args(image, docker_env),
         "--user",
         "0",
     ]
@@ -1009,7 +1050,7 @@ def _docker_run_cp(
             "run",
             "--rm",
             "-i",
-            *_docker_run_volume_work_args(),
+            *_docker_run_volume_work_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -1040,7 +1081,7 @@ def _docker_run_rm(
             "docker",
             "run",
             "--rm",
-            *_docker_run_volume_work_args(),
+            *_docker_run_volume_work_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -1068,7 +1109,7 @@ def _docker_run_rm_other_confs(
             "docker",
             "run",
             "--rm",
-            *_docker_run_volume_work_args(),
+            *_docker_run_volume_work_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -1210,7 +1251,7 @@ def pgbackrest_stanza_exists_in_repo(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             *_docker_run_s3_network_args(env),
             "--entrypoint",
             "pgbackrest",
@@ -1242,7 +1283,7 @@ def pgbackrest_stanza_exists_in_repo(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "pgbackrest",
             "-v",
@@ -1308,7 +1349,7 @@ def run_pgbackrest_stanza_create(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             *_docker_run_s3_network_args(env),
             "--entrypoint",
             "/bin/sh",
@@ -1350,7 +1391,7 @@ def pgbackrest_managed_conf_materialized(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
