@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **`dk push` no longer ships images without checking their architecture.** The build is a
+  plain `docker compose build` and took the platform entirely from the consumer's `platform:`
+  keys, with nothing afterwards verifying what came out. That assumption does not hold on
+  every engine: against Podman's Docker-compat API compose silently drops the platform and
+  builds native, so `dk push` from such a host built arm64 images, tagged them, pushed them
+  and attached SBOMs without a word — and the failure surfaced later on an amd64 server as
+  containers that would not start. Built stack images are now inspected between build and
+  tag. An image that does not match its service's declared `platform:` fails the push, naming
+  the image, what was asked for and what was built; `dk push` runs unattended in CI, where a
+  warning would scroll past. A service that declares no platform warns instead, naming the
+  architecture being pushed, since the local host's architecture is not a safe default for a
+  deploy artifact.
+  ([#114](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/114))
+
 - **`dk --worktree <slug>` no longer crashes when run from inside another worktree.**
   `dk_cli` used `Path` to build the label it prints when the target worktree is not relative
   to the current repo root — the case that arises precisely when the cwd is itself a worktree —
@@ -43,6 +57,19 @@
   `up` could build it. Pinned pre-pulled envs, `DK_SKIP_STALE_STACK=1`, a dry run, and a
   failed `git rev-parse` all keep building exactly as before.
   ([#75](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/75))
+
+- **pgBackRest one-off `docker run` helpers no longer assume the consumer pins
+  `linux/amd64`.** `_compose_db_platform_args` returned a hardcoded `--platform
+  linux/amd64` — its docstring said it matched the `db` service's platform, but a constant
+  cannot match anything. A project whose dev stack does not pin amd64 builds a correct
+  native image and then fails on its own image with
+  `docker: Error response from daemon: manifest unknown`, because `dk` asks for a platform
+  that image does not provide and the fallback pull finds no such manifest. The helpers now
+  take the platform from the image they are about to run (`docker image inspect`, cached per
+  image and engine, since one tag can differ between a local daemon and a remote `ssh://`
+  one). A project that still pins amd64 gets byte-identical commands, and the previous
+  constant remains the fallback whenever the image cannot be inspected.
+  ([#111](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/111))
 
 ### Added
 

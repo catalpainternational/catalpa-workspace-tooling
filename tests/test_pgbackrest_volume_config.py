@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, patch
 
 from catalpa_tooling.config import load_project_config
 from catalpa_tooling.pgbackrest_volume_config import (
+    _compose_db_platform_args,
+    _docker_run_volume_work_args,
+    _image_platform,
     PgbackrestRepoSettings,
     caddy_data_volume_name,
     conflict_error_message,
@@ -711,6 +714,91 @@ class RemoveExternalStackVolumesTests(unittest.TestCase):
         removed = [c[0][0][3] for c in mock_run.call_args_list]
         self.assertEqual(
             removed, ["swlt_dev_ds_180_postgres_data", "swlt_dev_ds_180_django_media"]
+        )
+
+
+class TestDbImagePlatformArgs(unittest.TestCase):
+    """#111: one-off ``docker run`` helpers must match the image, not a hardcoded amd64."""
+
+    def setUp(self) -> None:
+        _image_platform.cache_clear()
+
+    def tearDown(self) -> None:
+        _image_platform.cache_clear()
+
+    @staticmethod
+    def _inspect(stdout: str, returncode: int = 0) -> MagicMock:
+        return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_amd64_image_keeps_the_legacy_flag(self, mock_run: MagicMock) -> None:
+        """A project that still pins amd64 must see the exact command it saw before #111."""
+        mock_run.return_value = self._inspect("linux/amd64\n")
+        self.assertEqual(
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/amd64"],
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_arm64_image_requests_arm64(self, mock_run: MagicMock) -> None:
+        """An unpinned project builds native; asking for amd64 is what broke it."""
+        mock_run.return_value = self._inspect("linux/arm64\n")
+        self.assertEqual(
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/arm64"],
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_inspect_failure_falls_back_to_legacy(self, mock_run: MagicMock) -> None:
+        """Image absent locally: keep the old constant rather than change behaviour."""
+        mock_run.return_value = self._inspect("", returncode=1)
+        self.assertEqual(
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/amd64"],
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_malformed_inspect_output_falls_back(self, mock_run: MagicMock) -> None:
+        """Never hand docker a value it will reject."""
+        for junk in ("", "garbage", "linux/", "/amd64", "a/b/c"):
+            with self.subTest(junk=junk):
+                _image_platform.cache_clear()
+                mock_run.return_value = self._inspect(junk)
+                self.assertEqual(
+                    _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+                    ["--platform", "linux/amd64"],
+                )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_docker_host_is_part_of_the_cache_key(self, mock_run: MagicMock) -> None:
+        """The same tag can be a different arch on a local engine and a remote ssh:// one."""
+        mock_run.side_effect = [
+            self._inspect("linux/arm64\n"),
+            self._inspect("linux/amd64\n"),
+        ]
+        local = _compose_db_platform_args("ghcr.io/x/pg:tag", {})
+        remote = _compose_db_platform_args(
+            "ghcr.io/x/pg:tag", {"DOCKER_HOST": "ssh://root@example"}
+        )
+        self.assertEqual(local, ["--platform", "linux/arm64"])
+        self.assertEqual(remote, ["--platform", "linux/amd64"])
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_repeated_calls_inspect_once(self, mock_run: MagicMock) -> None:
+        """Eight call sites share one answer per (image, engine)."""
+        mock_run.return_value = self._inspect("linux/amd64\n")
+        for _ in range(5):
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {})
+        self.assertEqual(mock_run.call_count, 1)
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_volume_work_args_keep_user_root(self, mock_run: MagicMock) -> None:
+        """Threading the image through must not disturb the --user 0 the helpers rely on."""
+        mock_run.return_value = self._inspect("linux/arm64\n")
+        self.assertEqual(
+            _docker_run_volume_work_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/arm64", "--user", "0"],
         )
 
 
