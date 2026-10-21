@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- **pgBackRest one-off `docker run` helpers no longer assume the consumer pins
+  `linux/amd64`.** `_compose_db_platform_args` returned a hardcoded `--platform
+  linux/amd64` — its docstring said it matched the `db` service's platform, but a constant
+  cannot match anything. A project whose dev stack does not pin amd64 builds a correct
+  native image and then fails on its own image with
+  `docker: Error response from daemon: manifest unknown`, because `dk` asks for a platform
+  that image does not provide and the fallback pull finds no such manifest. The helpers now
+  take the platform from the image they are about to run (`docker image inspect`, cached per
+  image and engine, since one tag can differ between a local daemon and a remote `ssh://`
+  one). A project that still pins amd64 gets byte-identical commands, and the previous
+  constant remains the fallback whenever the image cannot be inspected.
+  ([#111](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/111))
+
 ## 1.5.0
 
 ### Fixed
