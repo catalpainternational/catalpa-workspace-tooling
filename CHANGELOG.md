@@ -18,6 +18,13 @@
   deploy artifact.
   ([#114](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/114))
 
+- **`dk --worktree <slug>` no longer crashes when run from inside another worktree.**
+  `dk_cli` used `Path` to build the label it prints when the target worktree is not relative
+  to the current repo root — the case that arises precisely when the cwd is itself a worktree —
+  but never imported it, so the fallback raised `NameError` instead of printing a path. Any
+  `dk --worktree` / `-W` command issued from one worktree against another hit it.
+  ([#104](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/104))
+
 - **`dk worktree remove --dry-run` no longer says it removed a worktree it did not touch.**
   The confirmation line ran unconditionally after the `git worktree remove`, so a preview
   ended with `Removed worktree '<slug>' (…)` while `git worktree list` still showed it. That
