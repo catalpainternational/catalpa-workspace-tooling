@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.0
+
 ### Fixed
 
 - **A mistyped `dk <env>` subcommand no longer starts the stack.** Any first token that was
