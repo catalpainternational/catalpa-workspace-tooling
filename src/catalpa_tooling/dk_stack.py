@@ -103,13 +103,14 @@ def compose_yml_build(
     A generated label-only override stamps ``catalpa.*`` build labels onto the stack images so
     ``stale_stack`` can tell which branch and commit they came from. It is passed as an extra
     ``-f`` rather than committed to each project's compose file, so projects pick the behaviour
-    up by upgrading tooling alone.
+    up by upgrading tooling alone. Its targets are derived from the resolved config, so any
+    other service building a stack image is stamped too (issue #99).
     """
     from catalpa_tooling.stale_stack import write_label_override
 
     names = services if services else stack_build_services(config)
     compose_file = compose_file or config.compose_prod
-    label_override = write_label_override(config)
+    label_override = write_label_override(config, compose_file, env_add)
     cmd = [
         "docker",
         "compose",
