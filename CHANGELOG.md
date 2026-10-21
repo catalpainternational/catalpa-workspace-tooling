@@ -18,6 +18,13 @@
   deploy artifact.
   ([#114](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/114))
 
+- **`dk --worktree <slug>` no longer crashes when run from inside another worktree.**
+  `dk_cli` used `Path` to build the label it prints when the target worktree is not relative
+  to the current repo root — the case that arises precisely when the cwd is itself a worktree —
+  but never imported it, so the fallback raised `NameError` instead of printing a path. Any
+  `dk --worktree` / `-W` command issued from one worktree against another hit it.
+  ([#104](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/104))
+
 - **A second compose service building a stack image no longer leaves the stack permanently
   stale.** The `catalpa.*` build labels were stamped onto `stack_build_services` — the three
   roles `db` / `web` / `proxy` — which assumes one building service per stack image. A project
