@@ -12,6 +12,8 @@ from catalpa_tooling.cli.dk_argv import (
     normalize_dk_env_argv,
     normalize_dk_root_argv,
     peel_worktree_flag,
+    unknown_env_subcommand,
+    unknown_env_subcommand_message,
 )
 from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.config import ProjectConfig, load_project_config
@@ -55,6 +57,11 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
             raise SystemExit(0)
         if is_implicit_compose_argv(root_argv) and not argcomplete_active():
             return build_implicit_compose_namespace(root_argv)
+        if not argcomplete_active():
+            unknown = unknown_env_subcommand(root_argv)
+            if unknown is not None:
+                print(unknown_env_subcommand_message(first, unknown), file=sys.stderr)
+                raise SystemExit(2)
         return parser.parse_args(env_argv)
 
     return parser.parse_args(root_argv)

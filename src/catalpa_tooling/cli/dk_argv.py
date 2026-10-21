@@ -27,6 +27,52 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+# Docker Compose verbs that ``dk <env> <verb> …`` forwards to compose.
+#
+# A first token that is neither one of these nor a ``SPECIAL_ENV_COMMANDS`` entry is a typo,
+# not passthrough. It used to fall through to implicit compose anyway, and an *empty*
+# passthrough defaults to ``up -d`` — so mistyping a subcommand started or recreated the
+# stack instead of reporting the mistake (#85). ``dk dev context`` was the reported case:
+# ``context`` is a ``dk worktree`` subcommand, and typing it against an env brought the
+# stack up.
+#
+# Deliberately generous: every verb compose accepts belongs here, because the cost of
+# omitting one is refusing a command that used to work.
+COMPOSE_VERBS: frozenset[str] = frozenset(
+    {
+        "attach",
+        "build",
+        "config",
+        "cp",
+        "create",
+        "down",
+        "events",
+        "exec",
+        "images",
+        "kill",
+        "logs",
+        "ls",
+        "pause",
+        "port",
+        "ps",
+        "pull",
+        "push",
+        "restart",
+        "rm",
+        "run",
+        "scale",
+        "start",
+        "stats",
+        "stop",
+        "top",
+        "unpause",
+        "up",
+        "version",
+        "wait",
+        "watch",
+    }
+)
+
 
 def peel_worktree_flag(argv: list[str]) -> tuple[str | None, list[str]]:
     """Strip ``--worktree SLUG`` / ``-W SLUG`` / ``--worktree=SLUG`` from argv.
@@ -140,7 +186,9 @@ def is_implicit_compose_argv(argv: list[str]) -> bool:
         return True
     first = rest[0]
     if first not in SPECIAL_ENV_COMMANDS:
-        return True
+        # Only a real compose verb is passthrough; anything else falls through to argparse,
+        # which reports the mistake rather than silently running `up -d` (#85).
+        return first in COMPOSE_VERBS
     if first == "host" and len(rest) >= 2 and rest[1] == "create":
         return False
     if first == "db" and len(rest) >= 2 and rest[1] == "configure":
@@ -148,6 +196,43 @@ def is_implicit_compose_argv(argv: list[str]) -> bool:
     if first == "bkp_db" and len(rest) >= 2 and rest[1] == "configure":
         return False
     return False
+
+
+def unknown_env_subcommand(argv: list[str]) -> str | None:
+    """First token of ``dk <env> …`` when it is neither a dk subcommand nor a compose verb.
+
+    ``None`` when the argv is fine. Used to report the mistake with both sets of valid names:
+    argparse alone lists only its own subparser choices, so a user who mistyped would be shown
+    a list with no ``up`` or ``logs`` in it and could reasonably conclude those were invalid
+    too (#85).
+    """
+    if not argv or argv[0].startswith("-") or len(argv) == 1:
+        return None
+    normalized = normalize_dk_env_argv(argv)
+    if normalized == ["--help"]:
+        return None
+    _, rest = _split_env_flags(normalized[1:])
+    if not rest:
+        return None
+    first = rest[0]
+    if first.startswith("-"):
+        return None
+    if first in SPECIAL_ENV_COMMANDS or first in COMPOSE_VERBS:
+        return None
+    return first
+
+
+def unknown_env_subcommand_message(env_name: str, token: str) -> str:
+    """Error text naming both the dk subcommands and the compose verbs that are valid."""
+    dk_names = ", ".join(sorted(SPECIAL_ENV_COMMANDS))
+    compose_names = ", ".join(sorted(COMPOSE_VERBS))
+    return (
+        f"dk {env_name}: unknown subcommand {token!r}.\n"
+        f"  dk subcommands: {dk_names}\n"
+        f"  compose verbs:  {compose_names}\n"
+        f"  Bare `dk {env_name}` runs `up -d`, so an unrecognised subcommand is refused here\n"
+        "  rather than starting the stack."
+    )
 
 
 def build_implicit_compose_namespace(argv: list[str]) -> argparse.Namespace:

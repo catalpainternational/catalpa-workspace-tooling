@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **A mistyped `dk <env>` subcommand no longer starts the stack.** Any first token that was
+  not a known dk subcommand fell through to implicit compose passthrough, and an empty
+  passthrough defaults to `up -d` — so typing a command that does not exist brought the
+  stack up or recreated it. `dk dev context` was the reported case: `context` is a
+  `dk worktree` subcommand, and aiming it at an environment started that environment.
+  Passthrough is now limited to actual compose verbs, and anything else is refused with a
+  message naming both vocabularies — the dk subcommands *and* the compose verbs — because
+  argparse alone would have listed only its own choices, leaving out `up` and `logs` and
+  implying they were invalid too.
+  ([#85](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/85))
+
 - **`dk push` no longer ships images without checking their architecture.** The build is a
   plain `docker compose build` and took the platform entirely from the consumer's `platform:`
   keys, with nothing afterwards verifying what came out. That assumption does not hold on
