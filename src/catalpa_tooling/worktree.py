@@ -1233,7 +1233,11 @@ def worktree_remove(
                 file=sys.stderr,
             )
             return result.returncode or 1
-    print(f"Removed worktree {clean!r} ({path})", file=sys.stderr)
+    # Under --dry-run nothing was removed, and the swlt wave procedure reads this output to
+    # decide whether to run the real --wipe. Claiming a removal that did not happen is the
+    # one thing a preview must not do (#108).
+    verb = "Would remove" if dry_run else "Removed"
+    print(f"{verb} worktree {clean!r} ({path})", file=sys.stderr)
     if overlay is not None and not wipe:
         # The checkout is gone, so nothing will name this project again. Say what survived and
         # how to reclaim it, rather than leaving it to be found by `docker volume ls` months

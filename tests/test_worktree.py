@@ -755,6 +755,33 @@ def test_worktree_remove_wipe_dry_run_removes_nothing(
     assert removed == []
 
 
+def test_worktree_remove_dry_run_does_not_claim_it_removed_anything(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """#108: `--dry-run` is read as a preview of a real `--wipe`; it must not report a removal."""
+    config, _, _ = _wipe_recording_repo(tmp_path, monkeypatch)
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
+    err = capsys.readouterr().err
+    assert "Would remove worktree" in err
+    assert "Removed worktree" not in err
+
+
+def test_worktree_remove_without_dry_run_still_reports_the_removal(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    config, _, _ = _wipe_recording_repo(tmp_path, monkeypatch)
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "Removed worktree" in err
+    assert "Would remove worktree" not in err
+
+
 # --- `remove` without --wipe must still stop the stack ----------------------------------------
 
 
