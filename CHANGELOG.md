@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **`dk worktree remove --dry-run` no longer says it removed a worktree it did not touch.**
+  The confirmation line ran unconditionally after the `git worktree remove`, so a preview
+  ended with `Removed worktree '<slug>' (…)` while `git worktree list` still showed it. That
+  output is read to decide whether to run the real `--wipe`, which makes a false claim of
+  removal the one thing it must not make. A dry run now says `Would remove worktree …`.
+  ([#108](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/108))
+
 - **A second compose service building a stack image no longer leaves the stack permanently
   stale.** The `catalpa.*` build labels were stamped onto `stack_build_services` — the three
   roles `db` / `web` / `proxy` — which assumes one building service per stack image. A project
