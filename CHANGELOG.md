@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **`dk push` no longer ships images without checking their architecture.** The build is a
+  plain `docker compose build` and took the platform entirely from the consumer's `platform:`
+  keys, with nothing afterwards verifying what came out. That assumption does not hold on
+  every engine: against Podman's Docker-compat API compose silently drops the platform and
+  builds native, so `dk push` from such a host built arm64 images, tagged them, pushed them
+  and attached SBOMs without a word — and the failure surfaced later on an amd64 server as
+  containers that would not start. Built stack images are now inspected between build and
+  tag. An image that does not match its service's declared `platform:` fails the push, naming
+  the image, what was asked for and what was built; `dk push` runs unattended in CI, where a
+  warning would scroll past. A service that declares no platform warns instead, naming the
+  architecture being pushed, since the local host's architecture is not a safe default for a
+  deploy artifact.
+  ([#114](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/114))
+
 - **A second compose service building a stack image no longer leaves the stack permanently
   stale.** The `catalpa.*` build labels were stamped onto `stack_build_services` — the three
   roles `db` / `web` / `proxy` — which assumes one building service per stack image. A project
