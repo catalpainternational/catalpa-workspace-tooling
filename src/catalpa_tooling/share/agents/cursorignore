@@ -1,12 +1,7 @@
 # catalpa-workspace-tooling — Cursor agent guardrails (consumer repos)
 #
-# Setup:
-#   cp scripts/cursorignore.template .cursorignore
-#   mkdir -p .cursor/rules
-#   cp scripts/cursor-rules/secrets-and-agents.mdc .cursor/rules/
-#   cp scripts/cursor-rules/remote-environments.mdc .cursor/rules/
-#
-# See docs/AGENTS_AND_SECRETS.md
+# Installed and kept current by `uv run setup-agents`, with .cursor/rules/.
+# See docs/AGENTS_AND_SECRETS.md in catalpa-workspace-tooling.
 
 # Secrets and local env — keep out of agent context (SOPS ciphertext still safer omitted).
 docker/envs/**/credentials.yaml

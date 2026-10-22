@@ -8,36 +8,53 @@ The tooling itself does **not** upload secrets to Catalpa or third parties. Risk
 
 ## Recommended setup (every consumer repo)
 
-Copy the templates from this package (or from an existing consumer such as JID):
+Install the agent files from the tooling version the project uses:
 
 ```bash
-# From a catalpa-workspace-tooling checkout (adjust path):
-cp /path/to/catalpa-workspace-tooling/scripts/cursorignore.template .cursorignore
-mkdir -p .cursor/rules
-cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/secrets-and-agents.mdc .cursor/rules/
-cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/remote-environments.mdc .cursor/rules/
-# Optional — smoke test hints for agents (Django compose consumers):
-cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/smoke-tests.mdc .cursor/rules/
-# Optional — parallel git worktrees:
-cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/worktrees.mdc .cursor/rules/
-# Optional — skill for running the local stack (Claude Code reads .claude/skills, Cursor .cursor/skills):
-mkdir -p .claude/skills .cursor/skills
-cp -R /path/to/catalpa-workspace-tooling/scripts/agent-skills/dk-stack .claude/skills/
-ln -s ../../.claude/skills/dk-stack .cursor/skills/dk-stack
+uv run setup-agents            # install or update
+uv run setup-agents --status   # present / managed / current per file; exits 1 unless all are
+uv run setup-agents --dry-run  # show what would change
+uv run setup-agents --remove   # remove the files setup-agents manages
 ```
+
+Then commit what it wrote, so every contributor's agent gets the same guardrails. Run it again after
+bumping the tooling: `--status` reports any file the new version would change.
+
+The rules and `.cursorignore` are always installed. Optional rules and skills are chosen in
+`tooling.yaml`:
+
+```yaml
+agents:
+  rules: [worktrees, smoke-tests]   # optional rules; default none
+  skills: [dk-stack]                # default [dk-stack]; [] for none
+```
+
+Removing a name later removes the file it installed. Skills go in `.claude/skills/<name>/`, read by
+Claude Code, with a `.cursor/skills/<name>` symlink to the same directory for Cursor.
 
 | File | Purpose |
 |------|---------|
-| [`.cursorignore`](../scripts/cursorignore.template) | Excludes credential and env files from agent indexing |
-| [`secrets-and-agents.mdc`](../scripts/cursor-rules/secrets-and-agents.mdc) | No decrypt/show of SOPS or env secrets |
-| [`remote-environments.mdc`](../scripts/cursor-rules/remote-environments.mdc) | No `dk staging`/`prod`, push, transfer, `clean-images --apply`, or fetch-from-prod without user confirmation |
-| [`smoke-tests.mdc`](../scripts/cursor-rules/smoke-tests.mdc) | Optional — `tests smoke` setup and when to run after tooling bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
-| [`worktrees.mdc`](../scripts/cursor-rules/worktrees.mdc) | Optional — `dk worktree` for isolated local worktrees ([WORKTREES.md](WORKTREES.md)) |
-| [`dk-stack` skill](../scripts/agent-skills/dk-stack/SKILL.md) | Optional — how an agent brings up, reaches and checks the local `dk dev` stack. Project specifics go in the consumer's own `run-app` skill beside it |
+| [`.cursorignore`](../src/catalpa_tooling/share/agents/cursorignore) | Excludes credential and env files from agent indexing |
+| [`secrets-and-agents.mdc`](../src/catalpa_tooling/share/agents/rules/secrets-and-agents.mdc) | No decrypt/show of SOPS or env secrets |
+| [`remote-environments.mdc`](../src/catalpa_tooling/share/agents/rules/remote-environments.mdc) | No `dk staging`/`prod`, push, transfer, `clean-images --apply`, or fetch-from-prod without user confirmation |
+| [`smoke-tests.mdc`](../src/catalpa_tooling/share/agents/rules/smoke-tests.mdc) | Optional (`smoke-tests`) — `tests smoke` setup and when to run after tooling bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
+| [`worktrees.mdc`](../src/catalpa_tooling/share/agents/rules/worktrees.mdc) | Optional (`worktrees`) — `dk worktree` for isolated local worktrees ([WORKTREES.md](WORKTREES.md)) |
+| [`oss-compliance.mdc`](../src/catalpa_tooling/share/agents/rules/oss-compliance.mdc) | Optional (`oss-compliance`) — `tests compliance` after dependency bumps ([COMPLIANCE.md](COMPLIANCE.md)) |
+| [`dk-stack` skill](../src/catalpa_tooling/share/agents/skills/dk-stack/SKILL.md) | Default skill — how an agent brings up, reaches and checks the local `dk dev` stack. Project specifics go in the consumer's own `run-app` skill beside it |
 
-Each worktree checkout also gets a gitignored **`AGENTS.local.md`** at its root (from `create`; refreshed on `dk worktree up` / `context`) with slug-specific origins and command hints. Copy `worktrees.mdc` into `.cursor/rules/` when using parallel worktrees.
+### Managed files
 
-Commit all three required paths (and optional rules for smoke tests / worktrees) to the application repository so all contributors get the same guardrails.
+Each file `setup-agents` writes carries a line saying so (an HTML comment after the frontmatter
+in `.mdc` and `SKILL.md`, a `#` comment in `.cursorignore`). Those files are the tooling's: local
+edits are overwritten on the next run. To keep a local version, delete that line. The file is then
+the project's, and `setup-agents` leaves it alone unless run with `--force`.
+
+A file that already exists without the line is left alone too, unless it is identical to the
+bundled copy (a rule copied by hand from the same version), in which case it is adopted. Copies
+from an older version need `--force` once. A real directory where a skill's `.cursor/skills`
+symlink would go is never replaced.
+
+Each worktree checkout also gets a gitignored **`AGENTS.local.md`** at its root (from `create`; refreshed on `dk worktree up` / `context`) with slug-specific origins and command hints. Add `worktrees` to `agents.rules` when using parallel worktrees.
 
 ## Local vs remote environments
 
