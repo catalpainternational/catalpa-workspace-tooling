@@ -26,6 +26,9 @@
 
 ### Fixed
 
+- **`dk worktree context --json` prints only JSON on stdout.** The `$ git rev-parse …` lines
+  it echoed while gathering the payload went to stdout ahead of the JSON, so `| jq` and
+  `json.loads` failed on it. They now go to stderr.
 - **An env named like a top-level command no longer hijacks it.** An env such as `digoc`
   already got no `dk <env>` subparser, but `dk digoc droplets list` was still routed as an env
   command and refused as an unknown subcommand. `worktree` and `context` are now reserved too.

@@ -1161,3 +1161,27 @@ def test_marker_without_base_fields_still_loads(tmp_path: Path) -> None:
     overlay = load_worktree_overlay(tmp_path)
     assert overlay is not None
     assert overlay.base_ref is None and overlay.base_commit is None
+
+
+def test_worktree_context_json_stdout_is_only_json(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ctx", dry_run=False, seed=False) == 0
+    monkeypatch.setattr("catalpa_tooling.worktree.worktree_stack_status", lambda *a, **k: "stopped")
+    monkeypatch.setattr("catalpa_tooling.worktree._media_seeded", lambda *a, **k: False)
+    capsys.readouterr()
+
+    # real _git_head_info: its ``$ git rev-parse …`` echoes must not reach stdout
+    assert worktree_context(config, slug="ctx", as_json=True) == 0
+    out = capsys.readouterr()
+    import json
+
+    assert json.loads(out.out)["branch"] == "worktree/ctx"
+    assert "$ git rev-parse" in out.err

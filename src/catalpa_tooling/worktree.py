@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -761,11 +762,38 @@ def worktree_context(
     as_json: bool = False,
 ) -> int:
     """Print worktree identity for humans or agents (``--json``)."""
-    try:
-        wt_root, overlay, wt_config = _resolve_worktree(config, slug)
-    except WorktreeOverlayError as exc:
-        print(f"dk worktree context: {exc}", file=sys.stderr)
-        return 1
+    # Under --json, stdout must be only the JSON: send the helpers' ``$ git …`` echoes to stderr.
+    quiet = contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext()
+    with quiet:
+        try:
+            payload = _worktree_context_payload(config, slug)
+        except WorktreeOverlayError as exc:
+            print(f"dk worktree context: {exc}", file=sys.stderr)
+            return 1
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"slug: {payload['slug']}")
+    print(f"worktree: {payload['worktree']}")
+    print(f"parent_repo_root: {payload['parent_repo_root']}")
+    print(f"branch: {payload['branch'] or '-'}")
+    print(f"head_commit: {payload['head_commit'] or '-'}")
+    print(f"base_ref: {payload['base_ref'] or '-'}")
+    print(f"base_commit: {payload['base_commit'] or '-'}")
+    print(f"base_env: {payload['base_env']}")
+    print(f"compose_project_name: {payload['compose_project_name']}")
+    print(f"site_origin: {payload['site_origin']}")
+    print(f"status: {payload['status']}")
+    print(f"seeded: {payload['seeded']}")
+    print(f"agents_local: {Path(payload['worktree']) / AGENTS_LOCAL_NAME}")
+    return 0
+
+
+def _worktree_context_payload(config: ProjectConfig, slug: str | None) -> dict[str, Any]:
+    """Resolve the worktree, refresh ``AGENTS.local.md``, and gather ``dk worktree context``."""
+    wt_root, overlay, wt_config = _resolve_worktree(config, slug)
 
     parent = (
         Path(overlay.parent_repo_root).resolve()
@@ -794,25 +822,7 @@ def worktree_context(
         "status": worktree_stack_status(wt_config, overlay),
         "seeded": _media_seeded(wt_config, overlay),
     }
-
-    if as_json:
-        print(json.dumps(payload, indent=2))
-        return 0
-
-    print(f"slug: {payload['slug']}")
-    print(f"worktree: {payload['worktree']}")
-    print(f"parent_repo_root: {payload['parent_repo_root']}")
-    print(f"branch: {payload['branch'] or '-'}")
-    print(f"head_commit: {payload['head_commit'] or '-'}")
-    print(f"base_ref: {payload['base_ref'] or '-'}")
-    print(f"base_commit: {payload['base_commit'] or '-'}")
-    print(f"base_env: {payload['base_env']}")
-    print(f"compose_project_name: {payload['compose_project_name']}")
-    print(f"site_origin: {payload['site_origin']}")
-    print(f"status: {payload['status']}")
-    print(f"seeded: {payload['seeded']}")
-    print(f"agents_local: {wt_root / AGENTS_LOCAL_NAME}")
-    return 0
+    return payload
 
 
 def list_worktree_overlays(main_root: Path) -> list[tuple[Path, WorktreeOverlay | None]]:
