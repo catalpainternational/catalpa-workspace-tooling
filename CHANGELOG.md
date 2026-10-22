@@ -6,7 +6,7 @@
 
 - **A `dk-stack` agent skill for consumer repos.** `scripts/agent-skills/dk-stack/SKILL.md`
   tells an agent how to bring up and reach the local `dk dev` stack, in the main checkout or
-  a worktree: where names and origins come from, waiting for the URL instead of `ps`, the
+  a worktree: read names and origins from `dk context --json`, wait for the URL instead of `ps`, the
   worktree traps (`--base-branch` defaults to `HEAD`, seeding copies main's data, one
   hostname and no host-port remap), and not claiming a UI check without a browser. It
   collects what swlt_ws2's `run-app` skill had learned about the tooling, so projects copy
