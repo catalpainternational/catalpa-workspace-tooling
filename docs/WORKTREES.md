@@ -28,6 +28,7 @@ uv run dk --worktree my_feature dev manage migrate
 | `dk --worktree <slug> …` / `dk -W <slug> …` | Retarget any `dk` command at `.worktrees/<slug>` (process `chdir` only — no shell direnv) |
 | `dk worktree up/down/restart/logs/status` | Lifecycle for the remapped stack without spelling `dev up -d` |
 | `dk worktree context [--json]` | Agent/human identity (refreshes `AGENTS.local.md`) |
+| `dk context [--json]` | Every env's origins and compose project, plus the worktree's `base_ref`/`base_commit`; also works in the main checkout |
 | `dk worktree seed <slug>` | Re-seed that worktree from main without entering it |
 
 Examples:
@@ -58,6 +59,12 @@ When `.catalpa-worktree.yaml` is present and you run `dk <base_env>` (default `b
 
 - Remaps `COMPOSE_PROJECT_NAME` → `{compose_project_default}_dev_{slug}`
 - Remaps `site_origin` → `https://{project}-dev-{slug}.{site_origin_base}`
+
+`create` also records what a new branch was cut from: `base_ref` (the branch or tag name;
+`--base-branch` defaults to `HEAD`, which resolves to the main checkout's current branch) and
+`base_commit`. Neither is recorded when `--branch` names a branch that already exists, or for
+worktrees created before this was added. `base_ref` is omitted when `HEAD` was detached.
+`dk context` and `dk worktree context` report both.
 - Rewrites role / Caddy origins (`admin.*`, `stats.*`, etc.) from the new primary
 - **Does not** remap remote envs (`docker_host: ssh://…`)
 

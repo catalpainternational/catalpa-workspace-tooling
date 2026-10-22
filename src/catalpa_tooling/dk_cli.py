@@ -17,6 +17,7 @@ from catalpa_tooling.cli.dk_argv import (
 )
 from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.config import ProjectConfig, load_project_config
+from catalpa_tooling.context_cli import cmd_context
 from catalpa_tooling.local_compose import _cmd_build
 from catalpa_tooling.build_push import _cmd_push
 from catalpa_tooling.clean_images import clean_images
@@ -25,6 +26,7 @@ from catalpa_tooling.dk_fetch import cmd_fetch
 from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.doctl_cli import dispatch_digoc
 from catalpa_tooling.env_handlers import handle_env_command
+from catalpa_tooling.env_parser import RESERVED_DK_TOP_COMMANDS
 from catalpa_tooling.local_proxy_cli import cmd_proxy
 from catalpa_tooling.cut_release import cut_release_beta, cut_release_final, next_branch
 from catalpa_tooling.remote_deploy import list_dk_env_names, list_deploy_env_names, resolve_deploy_env_name
@@ -41,7 +43,8 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
         raise SystemExit(1)
 
     first = root_argv[0]
-    envs = set(list_dk_env_names(config))
+    # An env named like a top-level command gets no subparser (env_parser), so never route to it.
+    envs = set(list_dk_env_names(config)) - RESERVED_DK_TOP_COMMANDS
 
     if first in envs:
         env_argv = normalize_dk_env_argv(root_argv)
@@ -138,12 +141,13 @@ def _main_impl() -> None:
             "cut-release",
             "next-branch",
             "worktree",
+            "context",
         ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
                 f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk next-branch`, `dk worktree`, "
-                f"or a name with {envs_dir}/<name>/info.yaml.",
+                f"`dk context`, or a name with {envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
             if envs:
@@ -225,6 +229,8 @@ def _main_impl() -> None:
         )
     if cmd == "worktree":
         sys.exit(cmd_worktree(ns, config))
+    if cmd == "context":
+        sys.exit(cmd_context(ns, config))
 
     if getattr(ns, "env_name", None):
         sys.exit(handle_env_command(ns, config))

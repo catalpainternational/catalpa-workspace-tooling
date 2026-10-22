@@ -35,35 +35,7 @@ from catalpa_tooling.worktree_overlay import (
     sanitize_worktree_slug,
     write_worktree_overlay,
 )
-from tests.helpers import write_minimal_tooling_tree
-
-
-def _write_dev_env(repo: Path) -> None:
-    env_dir = repo / "docker" / "envs" / "dev"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    (repo / "compose.dev.yaml").write_text("services: {}\n", encoding="utf-8")
-    info = {
-        "compose_file": "compose.dev.yaml",
-        "credentials_decrypt_optional": True,
-        "site_origin": "https://minimal-dev.localdev.temp.build",
-        "local_proxy": {"roles": ["admin", "stats"]},
-        "env": {
-            "compose_project_name": "app_compose_dev",
-            "bero_origin": "https://minimal-dev.localdev.temp.build",
-            "django_origin": "https://admin.minimal-dev.localdev.temp.build",
-            "metabase_origin": "https://stats.minimal-dev.localdev.temp.build",
-            "caddy_site_address": "http://minimal-dev.localdev.temp.build",
-            "postgres_password": "dev",
-        },
-    }
-    (env_dir / "info.yaml").write_text(yaml.safe_dump(info), encoding="utf-8")
-    tooling = (repo / "tooling.yaml").read_text(encoding="utf-8")
-    if "credentials_optional_envs:" in tooling and "- dev" not in tooling:
-        tooling = tooling.replace(
-            "credentials_optional_envs:\n      - local\n",
-            "credentials_optional_envs:\n      - local\n      - dev\n",
-        )
-        (repo / "tooling.yaml").write_text(tooling, encoding="utf-8")
+from tests.helpers import git_init_commit, write_dev_env, write_minimal_tooling_tree
 
 
 def _patch_media_transfer(
@@ -103,19 +75,6 @@ def _patch_media_transfer(
     return src_media, dst_media
 
 
-def _git_init_commit(repo: Path) -> None:
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
-
-
 def test_sanitize_worktree_slug() -> None:
     assert sanitize_worktree_slug("My-Feature") == "my_feature"
     assert sanitize_worktree_slug("foo_bar") == "foo_bar"
@@ -143,7 +102,7 @@ def test_peel_worktree_flag() -> None:
 
 def test_build_and_apply_overlay(tmp_path: Path, isolated_tooling: None) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     config = load_project_config(tmp_path)
     overlay = build_worktree_overlay(
         config, slug="foo", base_env="dev", parent_repo_root=tmp_path
@@ -191,7 +150,7 @@ def test_load_managed_deploy_applies_overlay(
     tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     config = load_project_config(tmp_path)
     overlay = build_worktree_overlay(config, slug="bar", parent_repo_root=tmp_path)
     write_worktree_overlay(tmp_path, overlay)
@@ -258,8 +217,8 @@ def test_worktree_create_list_remove_git(
         lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
     )
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
 
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="feat-a", dry_run=False, seed=False) == 0
@@ -305,12 +264,12 @@ def test_worktree_create_inits_submodules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     (tmp_path / ".gitmodules").write_text(
         '[submodule "bero"]\n\tpath = bero\n\turl = https://example.com/bero.git\n',
         encoding="utf-8",
     )
-    _git_init_commit(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
 
     calls: list[tuple[str, ...]] = []
@@ -389,12 +348,12 @@ def test_worktree_create_dry_run_mentions_submodules(
     tmp_path: Path, isolated_tooling: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     (tmp_path / ".gitmodules").write_text('[submodule "bero"]\npath = bero\n', encoding="utf-8")
     bero = tmp_path / "bero"
     bero.mkdir()
     (bero / ".git").mkdir()
-    _git_init_commit(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="dry", dry_run=True, seed=False) == 0
     err = capsys.readouterr().err
@@ -410,8 +369,8 @@ def test_worktree_create_seeds_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
 
     seed_calls: list[dict] = []
@@ -448,8 +407,8 @@ def test_worktree_create_dry_run_prints_seed(
     tmp_path: Path, isolated_tooling: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="dry-seed", dry_run=True, init_submodules=False) == 0
     err = capsys.readouterr().err
@@ -462,8 +421,8 @@ def test_resolve_worktree_root_and_retarget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="onboarding", dry_run=False, seed=False) == 0
     wt = resolve_worktree_root(tmp_path, "onboarding")
@@ -495,8 +454,8 @@ def test_worktree_create_writes_agents_local(
     tmp_path: Path, isolated_tooling: None
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="agents", dry_run=False, seed=False) == 0
     wt = tmp_path / ".worktrees" / "agents"
@@ -514,8 +473,8 @@ def test_worktree_create_bring_up_calls_worktree_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
 
     up_calls: list[dict] = []
@@ -551,8 +510,8 @@ def test_worktree_context_json_shape(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="ctx", dry_run=False, seed=False) == 0
 
@@ -579,6 +538,8 @@ def test_worktree_context_json_shape(
     assert payload["seeded"] is True
     assert payload["compose_project_name"] == "app_compose_dev_ctx"
     assert payload["base_env"] == "dev"
+    assert payload["base_ref"]
+    assert payload["base_commit"]
     assert "head_commit" in payload
     assert "worktree" in payload
 
@@ -590,8 +551,8 @@ def test_list_and_status_tolerate_docker_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="nodocker", dry_run=False, seed=False) == 0
 
@@ -636,7 +597,7 @@ def test_cmd_worktree_dispatches_up(
     from catalpa_tooling.worktree_cli import cmd_worktree
 
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     config = load_project_config(tmp_path)
 
     called: list[str] = []
@@ -657,8 +618,8 @@ def test_cmd_worktree_dispatches_up(
 def _wipe_recording_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A worktree plus recorders for the compose call and the volume removals."""
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
 
@@ -712,8 +673,8 @@ def test_worktree_remove_wipe_attempts_every_volume_and_keeps_the_checkout(
     leave orphans nobody goes looking for, which is the failure #64 is about.
     """
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
 
@@ -833,8 +794,8 @@ def test_worktree_remove_keeps_the_checkout_when_the_stack_will_not_stop(
 ) -> None:
     """A failed `down` must not retire the checkout — that is how orphans are born."""
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
 
@@ -853,8 +814,8 @@ def test_worktree_remove_keeps_the_checkout_when_the_stack_will_not_stop(
 def _worktree_with_stack(tmp_path: Path) -> tuple[object, Path]:
     """A main checkout plus a real worktree checkout, both with a compose file."""
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="mount_probe", dry_run=False, seed=False) == 0
     return config, tmp_path / ".worktrees" / "mount_probe"
@@ -990,8 +951,8 @@ def _seedable_worktree(
         lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
     )
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug=slug, dry_run=False, seed=False) == 0
     return config, tmp_path / ".worktrees" / sanitize_worktree_slug(slug)
@@ -1118,3 +1079,85 @@ def test_media_seeded_reads_the_stack_volume(
             lambda s, e, **k: has_content,
         )
         assert _media_seeded(wt_config, overlay) is expected
+
+
+def _rev_parse(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_worktree_create_records_base_ref_and_commit(
+    tmp_path: Path, isolated_tooling: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    main_branch = _rev_parse(tmp_path, "--abbrev-ref", "HEAD")
+    subprocess.run(["git", "branch", "release-x"], cwd=tmp_path, check=True)
+    config = load_project_config(tmp_path)
+
+    assert worktree_create(config, slug="from-head", dry_run=False, seed=False) == 0
+    assert worktree_create(
+        config, slug="from-rel", base_branch="release-x", dry_run=False, seed=False
+    ) == 0
+
+    head = load_worktree_overlay(tmp_path / ".worktrees" / "from_head")
+    assert head is not None
+    assert head.base_ref == main_branch  # HEAD resolves to the checked-out branch
+    assert head.base_commit == _rev_parse(tmp_path, "HEAD")
+    rel = load_worktree_overlay(tmp_path / ".worktrees" / "from_rel")
+    assert rel is not None
+    assert rel.base_ref == "release-x"
+    assert rel.base_commit == _rev_parse(tmp_path, "release-x")
+
+
+def test_worktree_create_detached_base_records_commit_only(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    sha = _rev_parse(tmp_path, "HEAD")
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=tmp_path, check=True)
+
+    assert worktree_create(
+        load_project_config(tmp_path), slug="det", dry_run=False, seed=False
+    ) == 0
+    overlay = load_worktree_overlay(tmp_path / ".worktrees" / "det")
+    assert overlay is not None
+    assert overlay.base_ref is None
+    assert overlay.base_commit == sha
+
+
+def test_worktree_create_existing_branch_records_no_base(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    subprocess.run(["git", "branch", "worktree/old"], cwd=tmp_path, check=True)
+
+    assert worktree_create(
+        load_project_config(tmp_path), slug="old", dry_run=False, seed=False
+    ) == 0
+    raw = yaml.safe_load((tmp_path / ".worktrees" / "old" / ".catalpa-worktree.yaml").read_text())
+    assert "base_ref" not in raw and "base_commit" not in raw
+
+
+def test_marker_without_base_fields_still_loads(tmp_path: Path) -> None:
+    (tmp_path / ".catalpa-worktree.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "slug": "legacy",
+                "base_env": "dev",
+                "compose_project_name": "app_compose_dev_legacy",
+                "site_origin": "https://minimal-dev-legacy.localdev.temp.build",
+            }
+        ),
+        encoding="utf-8",
+    )
+    overlay = load_worktree_overlay(tmp_path)
+    assert overlay is not None
+    assert overlay.base_ref is None and overlay.base_commit is None

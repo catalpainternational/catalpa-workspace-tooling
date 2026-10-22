@@ -38,6 +38,9 @@ dk
 │   └── remove <slug> [--wipe] [--keep-stack]  # down + git worktree remove; --wipe also drops
 │                                  # volumes (external: included); --keep-stack leaves it up
 │
+├── context [--env NAME] [--json] [--status]  # every env's origins, compose project, local/remote;
+│                                  # worktree branch + base; config only unless --status
+│
 # Global (before subcommand):
 #   dk --worktree <slug> | -W <slug>  …   # target .worktrees/<slug> without cd
 │
@@ -114,6 +117,7 @@ dk
 | `cut-release` | Cut final or beta `v*` tags (`final` / `beta`; see [CUT_RELEASE.md](CUT_RELEASE.md)) |
 | `next-branch` | Open next `dev-*` line from a final `v*` tip (see [CUT_RELEASE.md](CUT_RELEASE.md)) |
 | `worktree` | Isolated git worktrees under `.worktrees/` for parallel local `dk dev` (see [WORKTREES.md](WORKTREES.md)). Global `--worktree`/`-W <slug>` retargets any `dk` command from the main checkout. |
+| `context` | What an agent needs before touching the stack: every origin, compose project and web service per env, local vs remote, and inside a worktree its branch and what it was cut from. Reads config only (no SOPS, ssh or docker); `--status` adds `docker ps` for local envs. `--json` output carries `"schema": 1`. Works in the main checkout and in worktrees. |
 
 ## `<env>` only
 

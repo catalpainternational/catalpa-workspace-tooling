@@ -476,6 +476,39 @@ def _git_head_info(worktree_root: Path) -> tuple[str | None, str | None]:
     return branch, head
 
 
+def _resolve_start_ref(main_root: Path, start_ref: str) -> tuple[str | None, str | None]:
+    """Return ``(base_ref, base_commit)`` for ``start_ref`` in the main checkout.
+
+    ``base_ref`` is the symbolic name (``HEAD`` resolves to the checked-out branch);
+    ``None`` when detached or unresolvable.
+    """
+    base_ref: str | None = None
+    base_commit: str | None = None
+    name = _git(
+        "rev-parse",
+        "--abbrev-ref",
+        start_ref,
+        cwd=main_root,
+        check=False,
+        capture=True,
+    )
+    if name.returncode == 0:
+        resolved = name.stdout.strip()
+        base_ref = resolved if resolved and resolved != "HEAD" else None
+    rev = _git(
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        f"{start_ref}^{{commit}}",
+        cwd=main_root,
+        check=False,
+        capture=True,
+    )
+    if rev.returncode == 0:
+        base_commit = rev.stdout.strip() or None
+    return base_ref, base_commit
+
+
 def _resolve_worktree(
     config: ProjectConfig,
     slug: str | None = None,
@@ -753,6 +786,8 @@ def worktree_context(
         "parent_repo_root": str(parent.resolve()),
         "branch": branch or overlay.branch,
         "head_commit": head_commit,
+        "base_ref": overlay.base_ref,
+        "base_commit": overlay.base_commit,
         "base_env": overlay.base_env,
         "compose_project_name": overlay.compose_project_name,
         "site_origin": overlay.site_origin,
@@ -769,6 +804,8 @@ def worktree_context(
     print(f"parent_repo_root: {payload['parent_repo_root']}")
     print(f"branch: {payload['branch'] or '-'}")
     print(f"head_commit: {payload['head_commit'] or '-'}")
+    print(f"base_ref: {payload['base_ref'] or '-'}")
+    print(f"base_commit: {payload['base_commit'] or '-'}")
     print(f"base_env: {payload['base_env']}")
     print(f"compose_project_name: {payload['compose_project_name']}")
     print(f"site_origin: {payload['site_origin']}")
@@ -880,10 +917,14 @@ def worktree_create(
     if not dry_run:
         worktrees_dir(main_root).mkdir(parents=True, exist_ok=True)
 
+    # Record what a new branch was cut from; an existing branch ignores start_ref.
+    base_ref: str | None = None
+    base_commit: str | None = None
     if _branch_exists(main_root, branch_name):
         git_args = ["worktree", "add", str(dest), branch_name]
     else:
         git_args = ["worktree", "add", "-b", branch_name, str(dest), start_ref]
+        base_ref, base_commit = _resolve_start_ref(main_root, start_ref)
 
     result = _git(*git_args, cwd=main_root, check=False, dry_run=dry_run)
     if result.returncode != 0:
@@ -926,6 +967,8 @@ def worktree_create(
         base_env=base_env,
         parent_repo_root=main_root,
         branch=branch_name,
+        base_ref=base_ref,
+        base_commit=base_commit,
     )
     if dry_run:
         print(f"dry-run: write {dest / WORKTREE_MARKER_NAME}", file=sys.stderr)
