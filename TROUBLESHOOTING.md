@@ -213,4 +213,5 @@ Optional `--check-remote` SSHes to `docker_host` and `dc_backup_docker_host` (wh
 | [README_SYSTEMD.md](README_SYSTEMD.md)                                                     | Timers and host env files                          |
 | [README_DC_BACKUP.md](README_DC_BACKUP.md)                                                 | Private Garage / CA / `DOCKER_ADD_HOST`            |
 | [docs/DK_COMMAND_TREE.md](docs/DK_COMMAND_TREE.md)                                         | Command map                                        |
+| [docs/PODMAN.md](docs/PODMAN.md)                                                           | Rootless Podman on Linux, SELinux, port 443 clash  |
 | [tests/fixtures/indmo_reference_tooling.yaml](tests/fixtures/indmo_reference_tooling.yaml) | Full `tooling.yaml` example                        |
