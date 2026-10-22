@@ -4,6 +4,20 @@
 
 ### Added
 
+- **`dk context` reports a project's envs for agents, from the main checkout or a worktree.**
+  For each env it gives every origin (role hosts and `DJANGO_EXTRA_ORIGINS` included), the
+  compose project, and whether it's local or remote. It also gives the web service, and inside a
+  worktree, the branch and what it was cut from. It reads config only, with no SOPS, ssh or
+  docker, so it's safe to call first. `--status` adds the containers of each local env, and
+  `--env NAME` narrows to one env. `--json` output is versioned (`"schema": 1`).
+  `dk worktree context --json` stays, but only works inside a worktree and gives one origin;
+  `dk dev --dry-run` prints only the first.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+- **`dk worktree create` records what a new worktree was cut from.** `.catalpa-worktree.yaml`
+  now carries `base_ref` and `base_commit`. `--base-branch` defaults to `HEAD`, so before this
+  a worktree cut from a stale checkout gave no sign of it.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
 - **`dk` runs on rootless Podman on Linux.** [docs/PODMAN.md](docs/PODMAN.md) covers the
   setup (docker CLI pointed at the Podman socket, low ports) and the two things that stop a
   first run on Fedora: SELinux blocking unlabelled bind mounts, and the local proxy clashing
@@ -12,6 +26,12 @@
 
 ### Fixed
 
+- **`dk worktree context --json` prints only JSON on stdout.** The `$ git rev-parse …` lines
+  it echoed while gathering the payload went to stdout ahead of the JSON, so `| jq` and
+  `json.loads` failed on it. They now go to stderr.
+- **An env named like a top-level command no longer hijacks it.** An env such as `digoc`
+  already got no `dk <env>` subparser, but `dk digoc droplets list` was still routed as an env
+  command and refused as an unknown subcommand. `worktree` and `context` are now reserved too.
 - **`dk <env> db restore` no longer drops the database when it is run without a TTY.**
   Without a terminal on stdin, the restore didn't use the configured dump. It read the
   archive from stdin instead. It also dropped the app database before checking that archive,

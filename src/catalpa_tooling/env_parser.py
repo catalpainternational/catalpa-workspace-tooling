@@ -53,6 +53,8 @@ RESERVED_DK_TOP_COMMANDS = frozenset(
         "proxy",
         "cut-release",
         "next-branch",
+        "worktree",
+        "context",
     }
 )
 
