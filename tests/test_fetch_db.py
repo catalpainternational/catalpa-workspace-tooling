@@ -203,11 +203,7 @@ def test_unified_restore_auto_fetch_invokes_fetch(
     assert called == ["fetch"]
 
 
-def test_metabase_dump_restore_runs_hooks_after_pgrestore(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    isolated_tooling: None,
-) -> None:
+def _write_tooling_with_metabase(tmp_path: Path) -> None:
     _write_tooling(tmp_path)
     text = (tmp_path / "tooling.yaml").read_text(encoding="utf-8")
     text = text.replace(
@@ -220,6 +216,14 @@ def test_metabase_dump_restore_runs_hooks_after_pgrestore(
         "      metabase:\n        db_name: metabase_db\n        via: ssh_native\n",
     )
     (tmp_path / "tooling.yaml").write_text(text, encoding="utf-8")
+
+
+def test_metabase_dump_restore_runs_hooks_after_pgrestore(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_tooling: None,
+) -> None:
+    _write_tooling_with_metabase(tmp_path)
     cfg = load_project_config(tmp_path)
     _valid_dump(cfg.fetch_metabase_db_dump_path)
     order: list[str] = []
@@ -249,3 +253,35 @@ def test_metabase_dump_restore_runs_hooks_after_pgrestore(
     )
     assert rc == 0
     assert order == ["pgrestore", "hooks"]
+
+
+def test_restore_refuses_before_drop_when_metabase_dump_is_bad(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_tooling: None,
+) -> None:
+    """A bad Metabase dump must not cost the app DB: both are checked before any drop (#124)."""
+    _write_tooling_with_metabase(tmp_path)
+    cfg = load_project_config(tmp_path)
+    _valid_dump(cfg.fetch_db_dump_path)
+    cfg.fetch_metabase_db_dump_path.write_bytes(b"-- PostgreSQL database dump\n")
+    dropped: list[str] = []
+
+    for name in ("run_drop_create_app_database", "run_drop_create_metabase_database"):
+        monkeypatch.setattr(
+            f"catalpa_tooling.db_restore.{name}",
+            lambda *a, _n=name, **k: (dropped.append(_n) or 0),
+        )
+    monkeypatch.setattr(
+        "catalpa_tooling.db_restore.ensure_db_service_running",
+        lambda *a, **k: 0,
+    )
+
+    rc = run_unified_db_restore(
+        cfg,
+        compose_file="compose.yml",
+        env_add={},
+        env_name="dev",
+    )
+    assert rc == 1
+    assert dropped == []

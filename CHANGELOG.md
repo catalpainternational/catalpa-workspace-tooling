@@ -13,12 +13,67 @@
   it instead of rewriting it. Install steps in
   [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
   ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+- **`dk context` reports a project's envs for agents, from the main checkout or a worktree.**
+  For each env it gives every origin (role hosts and `DJANGO_EXTRA_ORIGINS` included), the
+  compose project, and whether it's local or remote. It also gives the web service, and inside a
+  worktree, the branch and what it was cut from. It reads config only, with no SOPS, ssh or
+  docker, so it's safe to call first. `--status` adds the containers of each local env, and
+  `--env NAME` narrows to one env. `--json` output is versioned (`"schema": 1`).
+  `dk worktree context --json` stays, but only works inside a worktree and gives one origin;
+  `dk dev --dry-run` prints only the first.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+- **`dk worktree create` records what a new worktree was cut from.** `.catalpa-worktree.yaml`
+  now carries `base_ref` and `base_commit`. `--base-branch` defaults to `HEAD`, so before this
+  a worktree cut from a stale checkout gave no sign of it.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
 
 - **`dk` runs on rootless Podman on Linux.** [docs/PODMAN.md](docs/PODMAN.md) covers the
   setup (docker CLI pointed at the Podman socket, low ports) and the two things that stop a
   first run on Fedora: SELinux blocking unlabelled bind mounts, and the local proxy clashing
   with another proxy already on port 443.
   ([#55](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/55))
+
+### Fixed
+
+- **`dk worktree context --json` prints only JSON on stdout.** The `$ git rev-parse …` lines
+  it echoed while gathering the payload went to stdout ahead of the JSON, so `| jq` and
+  `json.loads` failed on it. They now go to stderr.
+- **An env named like a top-level command no longer hijacks it.** An env such as `digoc`
+  already got no `dk <env>` subparser, but `dk digoc droplets list` was still routed as an env
+  command and refused as an unknown subcommand. `worktree` and `context` are now reserved too.
+- **`dk <env> db restore` no longer drops the database when it is run without a TTY.**
+  Without a terminal on stdin, the restore didn't use the configured dump. It read the
+  archive from stdin instead. It also dropped the app database before checking that archive,
+  so `dk dev db restore --dumps` from a script or CI job emptied the database and then
+  failed with "stdin is not a pg_dump -Fc archive". The restore now always reads the file
+  given by `--file` or the configured dump, whether or not a TTY is attached. It checks each
+  archive it is about to restore before dropping anything: the app dump, and the Metabase
+  dump when configured. A missing or non-`pg_dump -Fc` file is refused, and both databases
+  are left as they were.
+  ([#124](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/124))
+
+- **`dk <env> manage` can run as the image's app user instead of root.** It used
+  `docker compose exec` with no `--user`. Images that drop privileges in the entrypoint
+  (no `USER` line; `runuser`/`gosu`) never go through that entrypoint on `exec`, so every
+  manage command ran as root. Files it wrote to mounted volumes were then root-owned, and the
+  app hit `PermissionError` on them later. Pre-creating upload directories can't cover dated
+  or per-instance `upload_to` paths. The new optional `stack.manage_user` in `tooling.yaml`
+  is passed as `--user` to `dk <env> manage` and to the post-restore `manage_commands`
+  hooks. `dk <env> manage --user USER …` overrides it for one call. Smoke-test
+  `compose run` is unchanged, because it goes through the entrypoint already.
+  ([#86](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/86))
+
+- **Provisioned hosts now rotate container logs.** The droplet bootstrap wrote no
+  `/etc/docker/daemon.json`, so every host ran Docker's default `json-file` driver with no
+  size cap. Logs from long-lived containers (db, redis, caddy, backup), which are rarely
+  recreated, grew until the disk filled. The bootstrap now sets the `local` driver with
+  `max-size: 20m`, `max-file: 5` (about 100 MB per container) before Docker first starts.
+  For hosts provisioned earlier, `dk <env> host logging` checks the daemon and names each
+  container that still logs without a cap. `--apply` merges the setting into `daemon.json`,
+  validates the file and restarts docker, and `--target backup` covers
+  `dc_backup_docker_host`. `dk <env> host --check-remote` reports the same thing as a
+  warning. Runbook: TROUBLESHOOTING.md § Container log rotation.
+  ([#109](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/109))
 
 ## 1.6.0
 

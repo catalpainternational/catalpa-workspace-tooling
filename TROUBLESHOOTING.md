@@ -160,6 +160,7 @@ See [README_RESTIC.md](README_RESTIC.md#ansible--host-path-snapshots).
 | Native host DB vs Docker DB confusion                   | `.env.local` for `native`; `dk <env>` for compose — different configs                  |
 | `host create` finished but SSH / DNS / lookup fails     | [§ Host create and DNS](#host-create-and-dns)                                          |
 | 403 from `doctl` / droplet in the wrong DO project      | [README.md](README.md#digitalocean-pat-scopes)                                         |
+| Deploy host disk filling up                             | `dk <env> host logging`; [§ Container log rotation](#container-log-rotation)           |
 
 ---
 
@@ -196,7 +197,34 @@ After `host create` or `host --write`, tooling registers the deploy host’s SSH
 
 If doctl is available but no matching droplet exists and `docker_host` is already set, `dk <env> host` uses the same manual status path (no `host create` hint) and notes that `digitalocean.disabled: true` opts out of doctl permanently. Without doctl but with `docker_host` set, behavior matches the disabled path.
 
-Optional `--check-remote` SSHes to `docker_host` and `dc_backup_docker_host` (when set): BatchMode reachability plus `timedatectl` (timezone and NTP). Timezone mismatch between app and backup hosts, or NTP not synchronized, prints a soft warning; exit stays 0 unless SSH itself fails hard.
+Optional `--check-remote` SSHes to `docker_host` and `dc_backup_docker_host` (when set): BatchMode reachability, `timedatectl` (timezone and NTP), and Docker log rotation (see [Container log rotation](#container-log-rotation)). Timezone mismatch between app and backup hosts, NTP not synchronized, or uncapped container logs print a soft warning; exit stays 0 unless SSH itself fails hard.
+
+### Container log rotation
+
+Docker's own default is the `json-file` log driver with **no size cap**: each container's stdout/stderr grows under `/var/lib/docker/containers/` until the container is recreated. App containers reset on every deploy, but long-lived ones (db, redis, caddy, backup) are often never recreated, and their logs can fill the disk.
+
+Droplets made by `dk <env> host create` (or `dk digoc droplets create`) get `/etc/docker/daemon.json` from the bootstrap before Docker first starts:
+
+```json
+{ "log-driver": "local", "log-opts": { "max-size": "20m", "max-file": "5" } }
+```
+
+**Why `local`:** it rotates and compresses, and `docker logs` / `docker compose logs` read it the same way they read `json-file`. The difference is only for tools that read the raw `*-json.log` files on the host; nothing in this tooling does.
+
+**What a project can rely on:** per container, up to 5 files of 20 MB (about 100 MB on disk). Older lines are dropped. Anything that must be kept longer needs a real log shipper, not `docker logs`.
+
+**Hosts provisioned before this change** (or any non-DO host):
+
+| Step | Command |
+| ---- | ------- |
+| Check | `dk <env> host logging` (exit 1 if the daemon or any container is uncapped), or `dk <env> host --check-remote` (advisory) |
+| Preview | `dk <env> --dry-run host logging --apply` |
+| Apply | `dk <env> host logging --apply` (`--target backup` for `dc_backup_docker_host`) |
+| Recreate containers once | `dk <env> up -d --force-recreate` |
+
+`--apply` keeps any other keys already in `daemon.json`, replaces `log-driver` / `log-opts`, checks the new file with `dockerd --validate` before installing it, and backs up the old file next to it (`daemon.json.bak-<timestamp>`). It then runs `systemctl restart docker`, which **restarts every container on the host** (brief outage), so it asks you to type the env name (or pass `-y`). `daemon.json` only applies to containers *created* after that restart; the check names the containers that still log without a cap until they are recreated.
+
+Manual check on the host: `docker info --format '{{.LoggingDriver}}'`, `cat /etc/docker/daemon.json`, `df -h /`.
 
 **Caveats:** public DNS uses the machine’s resolver (VPN, `/etc/hosts`, caching). A CDN or proxy in front of the origin can make the public check fail while DO API records are correct. Token 403s: [README.md](README.md#digitalocean-pat-scopes).
 
