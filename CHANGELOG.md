@@ -4,6 +4,38 @@
 
 ### Added
 
+- **Claude Code gets the same agent guardrails as Cursor.** It reads neither `.cursor/rules/`
+  nor `.cursorignore`, so until now the secrets and remote-environment rules reached only
+  Cursor. `setup-agents` now also writes each rule as `.claude/rules/<rule>.md`, converted
+  from the same source (Cursor `globs` become Claude `paths`). It also adds a `Read(...)`
+  deny rule for each `.cursorignore` pattern to `.claude/settings.json`: the project's own
+  `.cursorignore` if it has taken it over, otherwise the bundled one. It merges into the
+  project's file and records the entries it added in `.claude/setup-agents.json`, so
+  `--remove` and later upgrades take out only those. The deny rules are not a full
+  exclusion: Claude Code doesn't apply them to every shell command, and they can't carve out
+  `.env.example`. [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) covers both.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
+- **`uv run setup-agents` installs and updates the agent files.** It writes `.cursorignore`,
+  the Cursor rules and the `dk-stack` skill from the installed tooling version, replacing the
+  manual `cp` from a tooling checkout. Optional rules and skills are chosen under `agents:` in
+  `tooling.yaml`. `--status` exits 1 when any file is missing or would change, so a
+  tooling bump shows which agent files are out of date, as `setup-vscode --status` does for
+  tasks. Installed files carry a managed line. A file without it is the project's own and is
+  left alone unless `--force` is used, except that a hand-copied file identical to the bundled
+  one is adopted. The bundled sources moved from `scripts/cursor-rules/`,
+  `scripts/cursorignore.template` and `scripts/agent-skills/` to
+  `src/catalpa_tooling/share/agents/`, so installing no longer needs a tooling checkout.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
+- **A `dk-stack` agent skill for consumer repos.** `src/catalpa_tooling/share/agents/skills/dk-stack/SKILL.md`
+  tells an agent how to bring up and reach the local `dk dev` stack, in the main checkout or
+  a worktree: read names and origins from `dk context --json`, wait for the URL instead of `ps`, the
+  worktree traps (`--base-branch` defaults to `HEAD`, seeding copies main's data, one
+  hostname and no host-port remap), and not claiming a UI check without a browser. It
+  collects what swlt_ws2's `run-app` skill had learned about the tooling, so projects copy
+  it instead of rewriting it. `setup-agents` installs it by default.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
 - **`dk context` reports a project's envs for agents, from the main checkout or a worktree.**
   For each env it gives every origin (role hosts and `DJANGO_EXTRA_ORIGINS` included), the
   compose project, and whether it's local or remote. It also gives the web service, and inside a

@@ -6,8 +6,8 @@
 #   uv run setup-shell                 # once per machine (direnv hook + completion)
 #   direnv allow
 #
-# Also recommended: scripts/cursorignore.template → .cursorignore and
-# scripts/cursor-rules/*.mdc → .cursor/rules/ (see docs/AGENTS_AND_SECRETS.md).
+# Also recommended: `uv run setup-agents` for .cursorignore, .cursor/rules/ and agent
+# skills (see docs/AGENTS_AND_SECRETS.md).
 #
 # Pick ONE variant below (delete the other).
 

@@ -205,4 +205,4 @@ Project checklists and copyleft registers live in each consumer repo (`docs/OSS_
 ## Related docs
 
 - Smoke tests (similar host-dep pattern): [docs/SMOKE_TESTS.md](SMOKE_TESTS.md)
-- Cursor agent rule template: `scripts/cursor-rules/oss-compliance.mdc`
+- Cursor agent rule: `oss-compliance` under `agents.rules`, installed by `uv run setup-agents` ([AGENTS_AND_SECRETS.md](AGENTS_AND_SECRETS.md))
