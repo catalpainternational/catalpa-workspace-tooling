@@ -57,6 +57,9 @@ def _print_status() -> int:
     print(f"repo: {status.repo_root}")
     for e in status.entries:
         rel = e.path.relative_to(status.repo_root)
+        if e.owned:
+            print(f"{rel}: owned by the project (no managed marker; left alone)")
+            continue
         print(f"{rel}: present={e.present} managed={e.managed} current={e.current}")
     print(f"ready: {status.ready}")
     return 0 if status.ready else 1
@@ -65,8 +68,8 @@ def _print_status() -> int:
 def _print_skipped(plan: AgentsSetupPlan) -> None:
     for path in plan.skipped:
         print(
-            f"setup-agents: left {path.relative_to(plan.repo_root)} alone: it exists without "
-            "the managed marker (--force replaces it).",
+            f"setup-agents: left {path.relative_to(plan.repo_root)} alone: the project owns it "
+            "(no managed marker; --force replaces it).",
             file=sys.stderr,
         )
 

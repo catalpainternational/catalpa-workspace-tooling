@@ -129,7 +129,10 @@ def test_unmanaged_file_left_alone_without_force(
     assert own in plan.skipped
     apply_setup(plan)
     assert own.read_text(encoding="utf-8") == "my own\n"
-    assert not inspect_status().ready
+    # the project owns it: not a failure, and reported as such
+    status = inspect_status()
+    assert status.ready
+    assert [e.path for e in status.entries if e.owned] == [own]
 
     apply_setup(plan_setup(force=True))
     assert MANAGED_MARKER in own.read_text(encoding="utf-8")
@@ -207,3 +210,22 @@ def test_dry_run_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     apply_setup(plan_setup(), dry_run=True)
     assert not (tmp_path / ".cursorignore").exists()
     assert not (tmp_path / ".cursor").exists()
+
+
+def test_deleting_the_marker_keeps_the_file_and_status_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    apply_setup(plan_setup())
+    rule = tmp_path / ".cursor/rules/secrets-and-agents.mdc"
+    kept = "\n".join(
+        line for line in rule.read_text(encoding="utf-8").splitlines() if MANAGED_MARKER not in line
+    ) + "\nlocal addition\n"
+    rule.write_text(kept, encoding="utf-8")
+
+    assert rule in plan_setup().skipped
+    assert inspect_status().ready
+
+    rule.unlink()  # a missing file is still a failure
+    assert not inspect_status().ready

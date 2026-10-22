@@ -12,13 +12,16 @@ Install the agent files from the tooling version the project uses:
 
 ```bash
 uv run setup-agents            # install or update
-uv run setup-agents --status   # present / managed / current per file; exits 1 unless all are
+uv run setup-agents --status   # per file: current, outdated, missing, or owned by the project; exits 1 if any are outdated or missing
 uv run setup-agents --dry-run  # show what would change
 uv run setup-agents --remove   # remove the files setup-agents manages
 ```
 
 Then commit what it wrote, so every contributor's agent gets the same guardrails. Run it again after
 bumping the tooling: `--status` reports any file the new version would change.
+
+To keep a local version of a managed file, delete its marker line. `setup-agents` then leaves the
+file alone, and `--status` reports it as owned by the project rather than failing on it.
 
 The rules and `.cursorignore` are always installed. Optional rules and skills are chosen in
 `tooling.yaml`:
