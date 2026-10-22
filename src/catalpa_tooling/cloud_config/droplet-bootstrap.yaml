@@ -36,6 +36,18 @@ write_files:
       Unattended-Upgrade::Origins-Pattern {
           "origin=Docker,archive=${distro_codename}";
       };
+  # Written before Docker is installed, so dockerd's first start already uses it and every
+  # container gets a capped, rotated log. Keep in sync with catalpa_tooling.docker_logging.
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "local",
+        "log-opts": {
+          "max-size": "20m",
+          "max-file": "5"
+        }
+      }
 runcmd:
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc

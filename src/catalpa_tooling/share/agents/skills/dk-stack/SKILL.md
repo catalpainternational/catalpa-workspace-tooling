@@ -11,37 +11,46 @@ files, services, hostnames — is configured in `tooling.yaml` and
 `docker/envs/<env>/info.yaml`. Read values from there or from the tooling
 rather than guessing them.
 
-**Local envs only.** `dev` and `full` are local. Any env whose `info.yaml` sets
-`docker_host` (normally `staging`, `prod`) is a remote server: do not run any
-`dk` command against it, and do not run fetches that read from it
+**Local envs only.** `dk context` (below) marks each env `"location": "local"`
+or `"remote"`. A remote env (normally `staging`, `prod`) is a server: do not
+run any `dk` command against it, and do not run fetches that read from it
 (`native fetch`, `dk <remote> db pgdump`), unless the user confirms target and
 action. See `.cursor/rules/remote-environments.mdc`.
 
 ## Which checkout are you in?
 
-Every name — compose project, container names, URL — differs between the main
-checkout and each worktree. Ask the tooling:
+Every name — compose project, container names, URLs — differs between the main
+checkout and each worktree. Ask the tooling, before anything else:
 
 ```bash
-uv run dk worktree context --json        # inside a worktree (or: context <slug> from the main checkout)
-uv run dk dev --dry-run ps               # either: prints DOCKER_HOST and the primary SITE_ORIGIN
+uv run dk context --json                 # main checkout or worktree
+uv run dk -W <slug> context --json       # a worktree, from the main checkout
+uv run dk context --env dev --status     # one env, plus which of its containers are running
 ```
 
-`context --json` returns `slug, worktree, parent_repo_root, branch,
-head_commit, base_env, compose_project_name, site_origin, status, seeded`. Two
-traps in it:
+It only reads config (no secrets, ssh or docker unless `--status`), so it is
+safe to run first. Read from it:
 
-- `branch` is the worktree's own branch and `base_env` is the Docker env
-  (`dev`). Neither is the git branch the worktree was cut from.
-  `dk worktree create --base-branch` defaults to `HEAD`, so a worktree created
-  from a stale checkout starts stale and looks healthy. Pass
-  `--base-branch origin/<trunk>` explicitly.
-- It refreshes the worktree's gitignored `AGENTS.local.md`, which has the
-  same facts for a human.
+- `checkout`: `"main"` or `"worktree"`.
+- `envs[]`: per env, `origins` (every hostname it serves; use these, not a
+  guessed URL), `compose_project`, `location` (`local` / `remote`),
+  `local_proxy`, and `worktree_overlay` (true when this checkout's worktree
+  remaps that env).
+- `web_service`: the compose service `dk … manage` execs into.
+- `worktree` (null in the main checkout): `slug`, `branch`, `head_commit`, and
+  `base_ref` / `base_commit`, what the worktree was cut from. `branch` is the
+  worktree's own branch, not its base. Both base fields are null for worktrees
+  created before the tooling recorded them, or from a branch that already
+  existed. If `base_ref` is behind its upstream, the worktree started stale.
 
-In the main checkout, origins are listed under `site_origin` in
-`docker/envs/dev/info.yaml`. A project can have more than one; `--dry-run`
-prints only the first.
+`uv run dk worktree context --json` also reports a worktree's `status` and
+whether it was `seeded`. It refreshes the gitignored `AGENTS.local.md`, which
+has the same facts for a human.
+
+If `dk context` is an unknown command, the project's tooling is older than
+it: use `dk worktree context --json` in a worktree, and `site_origin` in
+`docker/envs/<env>/info.yaml` in the main checkout (`dk dev --dry-run` prints
+only the first origin).
 
 ## Start, wait, stop
 
@@ -62,7 +71,7 @@ service has a healthcheck, so wait for the URL to answer rather than for
 `ps` to look right:
 
 ```bash
-curl -sk -o /dev/null -w '%{http_code}\n' <site_origin>/
+curl -sk -o /dev/null -w '%{http_code}\n' <origin>/   # an origin from dk context
 ```
 
 If the browser rejects the certificate, the local CA needs trusting once per
@@ -81,11 +90,15 @@ uv run dk worktree remove <slug>         # stops the stack, keeps volumes; print
   It does not migrate: run `uv run dk --worktree <slug> dev manage migrate`.
 - `--up` brings up the new worktree's stack, not main's (fixed in 1.4.1).
 - `remove --wipe` destroys that worktree's database. Confirm with the user.
+- `--base-branch` defaults to `HEAD`, the main checkout's current branch,
+  however stale it is. Pass `--base-branch origin/<trunk>` explicitly.
 - The overlay gives a worktree **one** primary hostname
-  (`<project>-dev-<slug>.<base>`) and does **not** remap ports a compose file
-  publishes on the host. A project that serves several hostnames, or publishes
-  a host port (a debugger, a database), may not work in a worktree. Check
-  its `run-app` skill.
+  (`<project>-dev-<slug>.<base>`, plus role hosts such as `admin.`), and does
+  **not** remap ports a compose file publishes on the host. A project that
+  serves several sites loses all but the first in a worktree; compare
+  `dk context` `origins` in the worktree with the main checkout's. A project
+  that publishes a host port (a debugger, a database) may not work in a
+  worktree either. Check its `run-app` skill.
 - `tests ci`, `tests guest` and `tests functional` refuse to run inside a
   worktree (since 1.5.0) and say to run them from the main checkout.
 

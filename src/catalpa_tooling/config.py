@@ -190,6 +190,10 @@ class StackConfig:
     healthcheck: StackHealthcheckConfig
     origin_env_keys: tuple[str, ...]
     build_placeholders: dict[str, str]
+    # User for `docker compose exec … ./manage.py`. exec skips the entrypoint, so images that
+    # drop privileges there (runuser/gosu, no USER line) would otherwise run manage as root
+    # and leave root-owned files on mounted volumes (#86). None: the image's default user.
+    manage_user: str | None = None
 
 
 # PG 18+ official image layout (see catalpa-postgres-entrypoint.sh); override via tooling.yaml pg1_path.
@@ -1286,7 +1290,17 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
         ),
         origin_env_keys=origin_keys,
         build_placeholders=_parse_build_placeholders(stack_raw.get("build_placeholders")),
+        manage_user=_parse_manage_user(stack_raw),
     )
+
+
+def _parse_manage_user(stack_raw: dict[str, Any]) -> str | None:
+    user = _optional_str(stack_raw, "manage_user")
+    if user is not None and any(ch.isspace() for ch in user):
+        raise ProjectConfigError(
+            f"stack.manage_user must be a user name or uid[:gid] (got {user!r})"
+        )
+    return user
 
 
 def _parse_spaces(spaces_raw: dict[str, Any]) -> SpacesConfig:

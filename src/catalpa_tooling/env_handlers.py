@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from catalpa_tooling.compose import _compose, run_docker_passthrough
+from catalpa_tooling.compose import _compose, manage_exec_args, run_docker_passthrough
 from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
@@ -416,6 +416,17 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 tail,
                 global_dry_run=dry_run,
             )
+        if getattr(ns, "host_command", None) == "logging":
+            from catalpa_tooling.docker_logging import cmd_host_logging
+
+            return cmd_host_logging(
+                config,
+                env_name,
+                target=ns.target,
+                apply=bool(ns.apply),
+                dry_run=dry_run,
+                yes=bool(ns.yes),
+            )
         if ns.write and ns.sync_dns:
             print("cannot use --write and --sync-dns together", file=sys.stderr)
             return 2
@@ -603,10 +614,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             return 1
         return _compose(
             compose_file,
-            "exec",
-            config.stack_service("web"),
-            "./manage.py",
-            *manage_args,
+            *manage_exec_args(config, manage_args, tty=True, user=getattr(ns, "user", None)),
             env_add=env_add,
         ).returncode
 

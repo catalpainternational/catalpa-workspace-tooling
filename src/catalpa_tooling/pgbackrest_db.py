@@ -332,13 +332,10 @@ def pg_restore_compose_extras(extras: Sequence[str] | None = None) -> list[str]:
 def compose_pg_restore_extras_for_config(
     config: ProjectConfig,
     extras: Sequence[str] | None = None,
-    *,
-    default_archive: Path | None = None,
 ) -> list[str]:
     """Merge ``native.reset_db.pg_restore_args`` with CLI extras for compose ``pg_restore``."""
-    merged = [*config.native.reset_db.pg_restore_args, *(extras or ())]
     return pg_restore_compose_extras(
-        pg_restore_extras_with_default_archive(merged, default_archive),
+        [*config.native.reset_db.pg_restore_args, *(extras or ())],
     )
 
 
@@ -455,29 +452,18 @@ fi
 """
 
 
-def pg_restore_extras_with_default_archive(
-    extras: Sequence[str] | None,
-    default_archive: Path | None,
-) -> list[str]:
-    """Return ``pg_restore`` CLI extras, using ``default_archive`` when stdin is a TTY and no ``--file``."""
-    xs = list(extras or ())
-    if "--file" in xs:
-        return xs
-    if not sys.stdin.isatty():
-        return xs
-    if default_archive is None:
-        return xs
-    path = default_archive.expanduser()
-    if not path.is_file() or path.stat().st_size == 0:
-        print(
-            f"db restore: no dump at {path} — fetch one first "
-            "(e.g. `uv run native fetch db`) or pass `--file PATH`.",
-            file=sys.stderr,
+def pg_dump_archive_error(path: Path) -> str | None:
+    """Return why ``path`` is not a usable ``pg_dump -Fc`` archive, or ``None`` when it is."""
+    if not path.is_file():
+        return f"not a file: {path}"
+    with open(path, "rb") as f:
+        magic = f.read(5)
+    if magic != _PG_DUMP_CUSTOM_MAGIC:
+        return (
+            f"{path} does not look like a pg_dump -Fc archive "
+            f"(expected {_PG_DUMP_CUSTOM_MAGIC!r} at the start)."
         )
-        return xs
-    resolved = path.resolve()
-    print(f"db restore: using default archive {resolved}", file=sys.stderr)
-    return ["--file", str(resolved), *xs]
+    return None
 
 
 def run_info(compose_file: str, env: dict[str, str]) -> int:
@@ -725,19 +711,11 @@ def run_pg_restore(
                 print("pg_restore: --file requires a path", file=sys.stderr)
                 return 1
             path = Path(extras[i + 1]).expanduser()
-            if not path.is_file():
-                print(f"pg_restore: not a file: {path}", file=sys.stderr)
+            err = pg_dump_archive_error(path)
+            if err:
+                print(f"pg_restore: {err}", file=sys.stderr)
                 return 1
             extras = extras[:i] + extras[i + 2 :]
-            with open(path, "rb") as f:
-                magic = f.read(5)
-            if magic != _PG_DUMP_CUSTOM_MAGIC:
-                print(
-                    f"pg_restore: {path} does not look like a pg_dump -Fc archive "
-                    f"(expected {_PG_DUMP_CUSTOM_MAGIC!r} at the start).",
-                    file=sys.stderr,
-                )
-                return 1
             host_archive = path
         else:
             head = sys.stdin.buffer.read(5)
