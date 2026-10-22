@@ -173,6 +173,31 @@ route for that hostname (see section 3). To check hot reload, `touch` a Python f
 `.scss` file. The django log should show `… changed, reloading.` and the webpack log
 `compiled successfully`.
 
+## 6. Performance
+
+Measured on this setup with prod data loaded, warm, median of 15 requests through all
+three proxies (edge, dk's proxy, the stack's Caddy):
+
+| page | dev (runserver + debugpy) | full (gunicorn) |
+| --- | --- | --- |
+| homepage | 154 ms | 118 ms |
+| `/careers/` | 87 ms | 50 ms |
+| `/admin/login/` | 58 ms | 18 ms |
+| one image | 10 ms | 6 ms |
+
+Nothing here is slow because of Podman. Files on bind mounts send real change events, so
+webpack rebuilds on save and sits at 0.05% CPU while idle. The host is amd64, so builds
+need no emulation, and a cold `dk full up -d` takes about 3 minutes.
+
+The one idle cost belongs to the project. Without a file-watching library installed,
+Django's runserver checks every watched file once a second. For catalpa-site that is 3,099
+files, 95% of them template and translation folders inside installed packages, and each
+check takes about 90 ms. So dev Django uses about 9–11% of a core while doing nothing, on
+any engine, and once more for each worktree stack. A watcher that uses change events
+(`pywatchman` with watchman, or `django-watchfiles`) would remove that cost on Linux. On
+macOS with Podman, though, Django would then stop reloading, because those events do not
+cross the VM boundary (#94). So switch it on per machine, not for everyone.
+
 ## Known gaps
 
 - dk's own `docker run` helpers and the project compose files do not label mounts for
