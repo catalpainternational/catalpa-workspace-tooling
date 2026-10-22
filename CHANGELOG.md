@@ -10,6 +10,19 @@
   with another proxy already on port 443.
   ([#55](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/55))
 
+### Fixed
+
+- **`dk <env> db restore` no longer drops the database when it is run without a TTY.**
+  Without a terminal on stdin, the restore didn't use the configured dump. It read the
+  archive from stdin instead. It also dropped the app database before checking that archive,
+  so `dk dev db restore --dumps` from a script or CI job emptied the database and then
+  failed with "stdin is not a pg_dump -Fc archive". The restore now always reads the file
+  given by `--file` or the configured dump, whether or not a TTY is attached. It checks each
+  archive it is about to restore before dropping anything: the app dump, and the Metabase
+  dump when configured. A missing or non-`pg_dump -Fc` file is refused, and both databases
+  are left as they were.
+  ([#124](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/124))
+
 ## 1.6.0
 
 ### Fixed

@@ -147,17 +147,13 @@ dk full files push --yes                                         # 14 s, into th
 ```
 
 Files that rsync adds under an SELinux-labelled `media/` take that label too, so no further
-`chcon` is needed. The other routes stop on problems unrelated to Podman:
+`chcon` is needed. One other route stops on a problem unrelated to Podman:
 
 - **`native fetch db` and `dk fetch db` (catalpa-site).** Both fall back to the old fetch
   script, which connects to `native.fetch_media.legacy.ssh_host`. For catalpa-site that host
   (`site-production.catalpa.build`) no longer resolves. dk then waits 2 minutes and reports
   that SSH "may still be starting on the new droplet". `dk prod db pgdump` reads from the
   `docker_host` in the prod `info.yaml` instead.
-- **`dk <env> db restore --dumps` run without a terminal** (a script, CI or an agent).
-  It replaces the database with an empty one, then reads the dump from stdin rather than
-  from the configured path, and stops with "stdin is not a pg_dump -Fc archive". The
-  database is left empty. Pass `--file PATH` instead.
 
 ## 5. Check it works
 
