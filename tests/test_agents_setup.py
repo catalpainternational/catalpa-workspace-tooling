@@ -192,6 +192,33 @@ def test_real_directory_in_place_of_link_is_kept(
     assert (own / "SKILL.md").read_text(encoding="utf-8") == "project copy\n"
 
 
+def test_aliased_skills_dir_is_not_double_linked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``.claude/skills`` symlinked straight at ``.cursor/skills`` (swlt's layout, #129).
+
+    Writing a skill's files here lands them under ``.cursor/skills`` already, so the usual
+    ``.cursor/skills/<skill>`` -> ``../../.claude/skills/<skill>`` link would be self-referential
+    and, worse, collide with the directory the write just created.
+    """
+    _write_repo(tmp_path)
+    (tmp_path / ".cursor/skills").mkdir(parents=True)
+    (tmp_path / ".claude").mkdir(parents=True)
+    (tmp_path / ".claude/skills").symlink_to("../.cursor/skills", target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+
+    skill = tmp_path / ".claude/skills/dk-stack/SKILL.md"
+    assert skill.is_file()
+    assert not (tmp_path / ".cursor/skills/dk-stack").is_symlink()
+    assert inspect_status().ready
+
+    # Reruns stay idempotent instead of crashing on the now-existing directory.
+    apply_setup(plan_setup())
+    assert inspect_status().ready
+
+
 def test_remove_only_managed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_repo(tmp_path)
     monkeypatch.chdir(tmp_path)

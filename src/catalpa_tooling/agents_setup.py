@@ -213,6 +213,26 @@ def _skill_link(root: Path, skill: str) -> ManagedLink:
     )
 
 
+def _skills_dirs_alias(root: Path) -> bool:
+    """True when ``.claude/skills`` and ``.cursor/skills`` already resolve to the same directory.
+
+    Some repos point one at the other directly. The per-skill symlink this module normally
+    creates would then be a no-op at best; at worst, writing a skill's files into the aliased
+    ``.claude/skills`` materializes a real directory at the exact path the link wants to occupy,
+    and ``os.symlink`` raises ``FileExistsError`` since the plan was computed before the write.
+    """
+    claude_dir = root / CLAUDE_SKILLS_DIR
+    cursor_dir = root / CURSOR_SKILLS_DIR
+    try:
+        return (
+            claude_dir.is_dir()
+            and cursor_dir.is_dir()
+            and claude_dir.resolve() == cursor_dir.resolve()
+        )
+    except OSError:
+        return False
+
+
 def _rule_files(root: Path, rule: str) -> list[ManagedFile]:
     rel = RULES_DIR / f"{rule}.mdc"
     cursor = _managed_file(root, rel, _bundle().joinpath("rules", rel.name))
@@ -330,9 +350,11 @@ def _desired(root: Path, config: ProjectConfig) -> tuple[list[ManagedFile], list
     for r in selected_rules(config):
         wanted += _rule_files(root, r)
     links: list[ManagedLink] = []
+    alias = _skills_dirs_alias(root)
     for skill in selected_skills(config):
         wanted += _skill_files(root, skill)
-        links.append(_skill_link(root, skill))
+        if not alias:
+            links.append(_skill_link(root, skill))
     return wanted, links
 
 
@@ -341,9 +363,11 @@ def _all_known(root: Path) -> tuple[list[ManagedFile], list[ManagedLink]]:
     for r in REQUIRED_RULES + OPTIONAL_RULES:
         known += _rule_files(root, r)
     links: list[ManagedLink] = []
+    alias = _skills_dirs_alias(root)
     for skill in SKILLS:
         known += _skill_files(root, skill)
-        links.append(_skill_link(root, skill))
+        if not alias:
+            links.append(_skill_link(root, skill))
     return known, links
 
 
