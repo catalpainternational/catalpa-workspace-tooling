@@ -128,6 +128,7 @@ Override the manifest path with `TOOLING_CONFIG=/path/to/tooling.yaml` if needed
 | `stack.healthcheck`                   | Service + URL for smoke / wait-for-healthy.                                               |                                                                                              |
 | `stack.origin_env_keys`               | Optional; defaults include `SITE_ORIGIN`, `DJANGO_ORIGIN`, `BERO_ORIGIN`.                 |                                                                                              |
 | `stack.build_placeholders`            | Dummy secrets so `dk build` / `dk push` can interpolate Compose without real credentials. |                                                                                              |
+| `stack.manage_user`                   | Optional; user (`django` or `uid:gid`) for `exec … ./manage.py`.                          | Set it when the image has no `USER` and drops privileges in its entrypoint. See below.        |
 
 ### `ops` (backups, systemd, transfer)
 
@@ -242,6 +243,7 @@ Declare three **roles** in `tooling.yaml` and use those exact Compose service na
 
 - **`db`** — Postgres. `dk <env> db …`, `dk transfer`, and `tests ci` exec this service. Give it a healthcheck (`pg_isready`). Keep the service name stable (`db` is the usual choice).
 - **`web`** — the container that has `./manage.py` on `PATH` / `WORKDIR` (`dk <env> manage`, post-restore hooks, smoke empty-migrate). Extra workers (`listen`, `migrate` oneshot) can share the same image; only the role name is special.
+  - `dk <env> manage` and the post-restore `manage_commands` use `docker compose exec`, which **skips the entrypoint**. If your image has no `USER` line and drops privileges in the entrypoint (`runuser`, `gosu`, `su-exec`), those commands run as **root**. Any file they write to a mounted volume (uploads, generated documents) is then root-owned, and the app fails on it later with `PermissionError`. Set `stack.manage_user` to the app user so they run as that user. For a one-off that really needs another user: `dk <env> manage --user root …`.
 - **`proxy`** — Caddy (or equivalent) listening on **container port 80**. The machine-wide local proxy attaches this service to `catalpa-local-proxy-net` and strips published host ports. Dev backends (Vite, runserver) stay **internal**; Caddy is the only front door.
 
 You may add redis, Metabase, `node`, oneshots, etc. They are invisible to role-based commands unless you wire them in scripts.

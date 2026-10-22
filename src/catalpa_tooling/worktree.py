@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -476,6 +477,39 @@ def _git_head_info(worktree_root: Path) -> tuple[str | None, str | None]:
     return branch, head
 
 
+def _resolve_start_ref(main_root: Path, start_ref: str) -> tuple[str | None, str | None]:
+    """Return ``(base_ref, base_commit)`` for ``start_ref`` in the main checkout.
+
+    ``base_ref`` is the symbolic name (``HEAD`` resolves to the checked-out branch);
+    ``None`` when detached or unresolvable.
+    """
+    base_ref: str | None = None
+    base_commit: str | None = None
+    name = _git(
+        "rev-parse",
+        "--abbrev-ref",
+        start_ref,
+        cwd=main_root,
+        check=False,
+        capture=True,
+    )
+    if name.returncode == 0:
+        resolved = name.stdout.strip()
+        base_ref = resolved if resolved and resolved != "HEAD" else None
+    rev = _git(
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        f"{start_ref}^{{commit}}",
+        cwd=main_root,
+        check=False,
+        capture=True,
+    )
+    if rev.returncode == 0:
+        base_commit = rev.stdout.strip() or None
+    return base_ref, base_commit
+
+
 def _resolve_worktree(
     config: ProjectConfig,
     slug: str | None = None,
@@ -728,11 +762,38 @@ def worktree_context(
     as_json: bool = False,
 ) -> int:
     """Print worktree identity for humans or agents (``--json``)."""
-    try:
-        wt_root, overlay, wt_config = _resolve_worktree(config, slug)
-    except WorktreeOverlayError as exc:
-        print(f"dk worktree context: {exc}", file=sys.stderr)
-        return 1
+    # Under --json, stdout must be only the JSON: send the helpers' ``$ git …`` echoes to stderr.
+    quiet = contextlib.redirect_stdout(sys.stderr) if as_json else contextlib.nullcontext()
+    with quiet:
+        try:
+            payload = _worktree_context_payload(config, slug)
+        except WorktreeOverlayError as exc:
+            print(f"dk worktree context: {exc}", file=sys.stderr)
+            return 1
+
+    if as_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"slug: {payload['slug']}")
+    print(f"worktree: {payload['worktree']}")
+    print(f"parent_repo_root: {payload['parent_repo_root']}")
+    print(f"branch: {payload['branch'] or '-'}")
+    print(f"head_commit: {payload['head_commit'] or '-'}")
+    print(f"base_ref: {payload['base_ref'] or '-'}")
+    print(f"base_commit: {payload['base_commit'] or '-'}")
+    print(f"base_env: {payload['base_env']}")
+    print(f"compose_project_name: {payload['compose_project_name']}")
+    print(f"site_origin: {payload['site_origin']}")
+    print(f"status: {payload['status']}")
+    print(f"seeded: {payload['seeded']}")
+    print(f"agents_local: {Path(payload['worktree']) / AGENTS_LOCAL_NAME}")
+    return 0
+
+
+def _worktree_context_payload(config: ProjectConfig, slug: str | None) -> dict[str, Any]:
+    """Resolve the worktree, refresh ``AGENTS.local.md``, and gather ``dk worktree context``."""
+    wt_root, overlay, wt_config = _resolve_worktree(config, slug)
 
     parent = (
         Path(overlay.parent_repo_root).resolve()
@@ -753,29 +814,15 @@ def worktree_context(
         "parent_repo_root": str(parent.resolve()),
         "branch": branch or overlay.branch,
         "head_commit": head_commit,
+        "base_ref": overlay.base_ref,
+        "base_commit": overlay.base_commit,
         "base_env": overlay.base_env,
         "compose_project_name": overlay.compose_project_name,
         "site_origin": overlay.site_origin,
         "status": worktree_stack_status(wt_config, overlay),
         "seeded": _media_seeded(wt_config, overlay),
     }
-
-    if as_json:
-        print(json.dumps(payload, indent=2))
-        return 0
-
-    print(f"slug: {payload['slug']}")
-    print(f"worktree: {payload['worktree']}")
-    print(f"parent_repo_root: {payload['parent_repo_root']}")
-    print(f"branch: {payload['branch'] or '-'}")
-    print(f"head_commit: {payload['head_commit'] or '-'}")
-    print(f"base_env: {payload['base_env']}")
-    print(f"compose_project_name: {payload['compose_project_name']}")
-    print(f"site_origin: {payload['site_origin']}")
-    print(f"status: {payload['status']}")
-    print(f"seeded: {payload['seeded']}")
-    print(f"agents_local: {wt_root / AGENTS_LOCAL_NAME}")
-    return 0
+    return payload
 
 
 def list_worktree_overlays(main_root: Path) -> list[tuple[Path, WorktreeOverlay | None]]:
@@ -880,10 +927,14 @@ def worktree_create(
     if not dry_run:
         worktrees_dir(main_root).mkdir(parents=True, exist_ok=True)
 
+    # Record what a new branch was cut from; an existing branch ignores start_ref.
+    base_ref: str | None = None
+    base_commit: str | None = None
     if _branch_exists(main_root, branch_name):
         git_args = ["worktree", "add", str(dest), branch_name]
     else:
         git_args = ["worktree", "add", "-b", branch_name, str(dest), start_ref]
+        base_ref, base_commit = _resolve_start_ref(main_root, start_ref)
 
     result = _git(*git_args, cwd=main_root, check=False, dry_run=dry_run)
     if result.returncode != 0:
@@ -926,6 +977,8 @@ def worktree_create(
         base_env=base_env,
         parent_repo_root=main_root,
         branch=branch_name,
+        base_ref=base_ref,
+        base_commit=base_commit,
     )
     if dry_run:
         print(f"dry-run: write {dest / WORKTREE_MARKER_NAME}", file=sys.stderr)

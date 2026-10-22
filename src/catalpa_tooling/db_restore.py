@@ -15,6 +15,7 @@ from catalpa_tooling.fetch_db import (
 from catalpa_tooling.pgbackrest_db import (
     compose_pg_restore_extras_for_config,
     ensure_db_service_running,
+    pg_dump_archive_error,
     plan_restore_offline,
     run_drop_create_app_database,
     run_drop_create_metabase_database,
@@ -53,17 +54,14 @@ def run_compose_app_dump_restore(
     archive_path: Path | None = None,
     extra_pg_restore_args: Sequence[str] | None = None,
 ) -> int:
-    """Drop/create app DB, pg_restore from ``archive_path`` or default, then post hooks."""
+    """Drop/create app DB, pg_restore from ``archive_path`` or the configured dump, then post hooks."""
+    dump_path = archive_path or config.fetch_db_dump_path
     extras = list(extra_pg_restore_args or [])
-    if archive_path is not None:
-        extras = ["--file", str(archive_path), *extras]
+    extras = ["--file", str(dump_path), *extras]
     restore_extras = compose_pg_restore_extras_for_config(
         config,
         extras,
-        default_archive=config.fetch_db_dump_path,
     )
-    if "--file" not in restore_extras and sys.stdin.isatty():
-        return 1
     rc = ensure_db_service_running(
         compose_file, env_add, config=config, dk_env_name=env_name
     )
@@ -141,6 +139,49 @@ def run_compose_metabase_dump_restore(
     )
 
 
+def _check_archives(archives: Sequence[Path]) -> int:
+    """Refuse (rc 1) unless every archive is a ``pg_dump -Fc`` file; runs before any drop."""
+    for path in archives:
+        err = pg_dump_archive_error(path)
+        if err:
+            print(f"db restore: refusing before dropping anything: {err}", file=sys.stderr)
+            return 1
+    return 0
+
+
+def _restore_configured_dumps(
+    config: ProjectConfig,
+    *,
+    compose_file: str,
+    env_add: dict[str, str],
+    env_name: str,
+    extra_pg_restore_args: Sequence[str] | None = None,
+) -> int:
+    """Restore the app DB, then Metabase when configured, from the configured dumps."""
+    archives = [config.fetch_db_dump_path]
+    if config.has_metabase_fetch() and config.fetch_metabase_db_dump_path is not None:
+        archives.append(config.fetch_metabase_db_dump_path)
+    rc = _check_archives(archives)
+    if rc != 0:
+        return rc
+    rc = run_compose_app_dump_restore(
+        config,
+        compose_file=compose_file,
+        env_add=env_add,
+        env_name=env_name,
+        extra_pg_restore_args=extra_pg_restore_args,
+    )
+    if rc != 0:
+        return rc
+    return run_compose_metabase_dump_restore(
+        config,
+        compose_file=compose_file,
+        env_add=env_add,
+        env_name=env_name,
+        extra_pg_restore_args=extra_pg_restore_args,
+    )
+
+
 def _ensure_local_dumps(config: ProjectConfig, *, auto_fetch: bool) -> int:
     if configured_app_dump_exists(config):
         if config.has_metabase_fetch() and not configured_metabase_dump_exists(config):
@@ -205,6 +246,9 @@ def run_unified_db_restore(
                 file=sys.stderr,
             )
             return 0
+        rc = _check_archives([archive_path])
+        if rc != 0:
+            return rc
         return run_compose_app_dump_restore(
             config,
             compose_file=compose_file,
@@ -229,16 +273,7 @@ def run_unified_db_restore(
                     file=sys.stderr,
                 )
             return 0
-        rc = run_compose_app_dump_restore(
-            config,
-            compose_file=compose_file,
-            env_add=env_add,
-            env_name=env_name,
-            extra_pg_restore_args=extra_pg_restore_args,
-        )
-        if rc != 0:
-            return rc
-        return run_compose_metabase_dump_restore(
+        return _restore_configured_dumps(
             config,
             compose_file=compose_file,
             env_add=env_add,
@@ -283,16 +318,7 @@ def run_unified_db_restore(
                     file=sys.stderr,
                 )
             return 0
-        rc = run_compose_app_dump_restore(
-            config,
-            compose_file=compose_file,
-            env_add=env_add,
-            env_name=env_name,
-            extra_pg_restore_args=extra_pg_restore_args,
-        )
-        if rc != 0:
-            return rc
-        return run_compose_metabase_dump_restore(
+        return _restore_configured_dumps(
             config,
             compose_file=compose_file,
             env_add=env_add,
@@ -309,16 +335,7 @@ def run_unified_db_restore(
             file=sys.stderr,
         )
         return 0
-    rc = run_compose_app_dump_restore(
-        config,
-        compose_file=compose_file,
-        env_add=env_add,
-        env_name=env_name,
-        extra_pg_restore_args=extra_pg_restore_args,
-    )
-    if rc != 0:
-        return rc
-    return run_compose_metabase_dump_restore(
+    return _restore_configured_dumps(
         config,
         compose_file=compose_file,
         env_add=env_add,
