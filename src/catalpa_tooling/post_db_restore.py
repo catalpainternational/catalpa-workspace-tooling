@@ -9,7 +9,7 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from catalpa_tooling.compose import _compose
+from catalpa_tooling.compose import _compose, manage_exec_args
 from catalpa_tooling.config import DbPsqlRestoreEntry, ProjectConfig
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
@@ -271,8 +271,8 @@ def run_post_db_restore_manage_commands(
         )
         for argv in commands:
             print(
-                f"dry-run: would docker compose -f {compose_file} exec -T {web_svc} "
-                f"./manage.py {' '.join(argv)}",
+                f"dry-run: would docker compose -f {compose_file} "
+                f"{' '.join(manage_exec_args(config, argv, tty=False))}",
                 file=sys.stderr,
             )
         return 0
@@ -302,11 +302,7 @@ def run_post_db_restore_manage_commands(
         print(f"post_db_restore: manage.py {label}", file=sys.stderr)
         r = _compose(
             compose_file,
-            "exec",
-            "-T",
-            web_svc,
-            "./manage.py",
-            *argv,
+            *manage_exec_args(config, argv, tty=False),
             env_add=env_add,
             check=False,
         )
@@ -367,8 +363,8 @@ def run_post_metabase_db_restore_manage_commands(
             )
             for argv in commands:
                 print(
-                    f"dry-run: would docker compose -f {compose_file} exec -T {web_svc} "
-                    f"./manage.py {' '.join(argv)}",
+                    f"dry-run: would docker compose -f {compose_file} "
+                    f"{' '.join(manage_exec_args(config, argv, tty=False))}",
                     file=sys.stderr,
                 )
         for svc in hooks.restart_services:
@@ -405,11 +401,7 @@ def run_post_metabase_db_restore_manage_commands(
             print(f"post_metabase_db_restore: manage.py {label}", file=sys.stderr)
             r = _compose(
                 compose_file,
-                "exec",
-                "-T",
-                web_svc,
-                "./manage.py",
-                *argv,
+                *manage_exec_args(config, argv, tty=False),
                 env_add=env_add,
                 check=False,
             )

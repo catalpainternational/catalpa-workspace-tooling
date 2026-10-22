@@ -23,6 +23,17 @@
   are left as they were.
   ([#124](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/124))
 
+- **`dk <env> manage` can run as the image's app user instead of root.** It used
+  `docker compose exec` with no `--user`. Images that drop privileges in the entrypoint
+  (no `USER` line; `runuser`/`gosu`) never go through that entrypoint on `exec`, so every
+  manage command ran as root. Files it wrote to mounted volumes were then root-owned, and the
+  app hit `PermissionError` on them later. Pre-creating upload directories can't cover dated
+  or per-instance `upload_to` paths. The new optional `stack.manage_user` in `tooling.yaml`
+  is passed as `--user` to `dk <env> manage` and to the post-restore `manage_commands`
+  hooks. `dk <env> manage --user USER …` overrides it for one call. Smoke-test
+  `compose run` is unchanged, because it goes through the entrypoint already.
+  ([#86](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/86))
+
 - **Provisioned hosts now rotate container logs.** The droplet bootstrap wrote no
   `/etc/docker/daemon.json`, so every host ran Docker's default `json-file` driver with no
   size cap. Logs from long-lived containers (db, redis, caddy, backup), which are rarely

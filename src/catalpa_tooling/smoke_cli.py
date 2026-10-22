@@ -296,6 +296,8 @@ def _run_compose_manage(
     Ephemeral DB override (e.g. empty-migrate) must set ``DJANGO_DB`` — consumers
     should read that for ``DATABASES['default']['NAME']`` (not ``DJANGO_DB_NAME``).
     """
+    # No stack.manage_user here: unlike exec, `run` goes through the entrypoint, which drops
+    # privileges itself and may need to start as root to chown volumes first (#86).
     cmd = ["run", "--rm", "-T", "--no-deps"]
     if extra_exec_env:
         for key, value in extra_exec_env.items():

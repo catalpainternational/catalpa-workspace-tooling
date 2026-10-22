@@ -431,7 +431,16 @@ def _attach_env_command_parsers(
         help="Trust Caddy local CA (global local proxy or stack proxy service).",
     )
 
-    p_manage = cmd_sub.add_parser("manage", help="docker compose exec web ./manage.py …")
+    p_manage = cmd_sub.add_parser(
+        "manage",
+        help="docker compose exec web ./manage.py … (as stack.manage_user when set).",
+    )
+    p_manage.add_argument(
+        "--user",
+        metavar="USER",
+        default=None,
+        help="Exec as this user instead of stack.manage_user (e.g. root for a one-off).",
+    )
     p_manage.add_argument("manage_args", nargs=argparse.REMAINDER)
 
     p_pull = cmd_sub.add_parser("pull_media", help="Copy django_media volume to local directory.")

@@ -72,7 +72,7 @@ dk
     ├── ensure_volumes               # utility command 
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
     ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
-    ├── manage <django …>            # access ./manage.py
+    ├── manage [--user U] <django …> # ./manage.py as stack.manage_user (or U)
     ├── pull_media                   # volume → host dir (tar)
     ├── wipe                         # alias: compose down -v
     │
