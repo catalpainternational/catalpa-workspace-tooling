@@ -272,7 +272,7 @@ def test_settings_merge_keeps_project_entries(
     assert merged["permissions"]["allow"] == ["Bash(uv run dk dev ps)"]
     assert merged["permissions"]["deny"][0] == "Read(./secret.txt)"
     assert "Read(.env)" in merged["permissions"]["deny"]
-    assert plan_setup().settings is None
+    assert plan_setup().settings == ()
 
     apply_remove(plan_remove())
     assert json.loads(settings_path.read_text(encoding="utf-8")) == project
@@ -287,7 +287,7 @@ def test_unreadable_settings_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     plan = plan_setup(force=True)
     assert settings_path in plan.skipped
-    assert plan.settings is None
+    assert plan.settings == ()
     apply_setup(plan)
     assert settings_path.read_text(encoding="utf-8") == "{ not json"
 
@@ -308,4 +308,102 @@ def test_deleting_the_marker_keeps_the_file_and_status_ready(
     assert inspect_status().ready
 
     rule.unlink()  # a missing file is still a failure
+    assert not inspect_status().ready
+
+
+def _deny(root: Path) -> list[str]:
+    return json.loads((root / ".claude/settings.json").read_text(encoding="utf-8"))["permissions"][
+        "deny"
+    ]
+
+
+def test_deny_rules_follow_a_project_owned_cursorignore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path)
+    (tmp_path / ".cursorignore").write_text(
+        "deploy/envs/**/credentials.yaml\n.env\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+    assert _deny(tmp_path) == ["Read(/deploy/envs/**/credentials.yaml)", "Read(.env)"]
+    assert inspect_status().ready
+
+    # --force replaces the owned .cursorignore with the bundle, and the rules follow it
+    apply_setup(plan_setup(force=True))
+    deny = _deny(tmp_path)
+    assert "Read(/docker/envs/**/credentials.yaml)" in deny
+    assert "Read(/deploy/envs/**/credentials.yaml)" not in deny
+
+
+def test_remove_keeps_deny_entries_the_project_already_had(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path)
+    settings_path = tmp_path / ".claude/settings.json"
+    settings_path.parent.mkdir()
+    project = {"permissions": {"deny": ["Read(.env)"]}}
+    settings_path.write_text(json.dumps(project), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+    record = json.loads((tmp_path / ".claude/setup-agents.json").read_text(encoding="utf-8"))
+    assert "Read(.env)" not in record["deny"]  # the project's, not ours
+    assert "Read(.env.local)" in record["deny"]
+
+    apply_remove(plan_remove())
+    assert json.loads(settings_path.read_text(encoding="utf-8")) == project
+    assert not (tmp_path / ".claude/setup-agents.json").exists()
+
+
+def test_remove_deletes_settings_left_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    apply_setup(plan_setup())
+    apply_remove(plan_remove())
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_stale_recorded_entry_is_dropped_on_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    apply_setup(plan_setup())
+    # an older tooling version added a pattern the bundle no longer has
+    record_path = tmp_path / ".claude/setup-agents.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["deny"].append("Read(.env.old)")
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    settings_path = tmp_path / ".claude/settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings["permissions"]["deny"].append("Read(.env.old)")
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    assert not inspect_status().ready
+    apply_setup(plan_setup())
+    assert "Read(.env.old)" not in _deny(tmp_path)
+    assert "Read(.env.old)" not in record_path.read_text(encoding="utf-8")
+    assert inspect_status().ready
+
+
+def test_settings_keep_non_ascii_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_repo(tmp_path)
+    settings_path = tmp_path / ".claude/settings.json"
+    settings_path.parent.mkdir()
+    settings_path.write_text(json.dumps({"env": {"GREETING": "olá…"}}, ensure_ascii=False))
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+    assert "olá…" in settings_path.read_text(encoding="utf-8")
+
+
+def test_unreadable_settings_is_not_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    apply_setup(plan_setup())
+    (tmp_path / ".claude/settings.json").write_text("{ not json", encoding="utf-8")
     assert not inspect_status().ready

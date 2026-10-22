@@ -5,8 +5,9 @@ a file without it is the project's own and is left alone unless ``force`` is set
 
 Claude Code gets the same guardrails in its own formats: each Cursor rule is converted to
 ``.claude/rules/<rule>.md``, and the ``.cursorignore`` patterns become ``Read(...)`` deny rules
-merged into ``.claude/settings.json``. JSON has no comments, so that file carries no marker:
-only the bundled entries are added or removed, and everything else in it is the project's.
+merged into ``.claude/settings.json``. JSON has no comments, so that file carries no marker.
+Instead ``.claude/setup-agents.json`` records the deny entries setup-agents added: only those are
+ever removed, and everything else in ``settings.json`` is the project's.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ CURSORIGNORE = ".cursorignore"
 RULES_DIR = Path(".cursor/rules")
 CLAUDE_RULES_DIR = Path(".claude/rules")
 CLAUDE_SETTINGS = Path(".claude/settings.json")
+CLAUDE_SETTINGS_RECORD = Path(".claude/setup-agents.json")
 CLAUDE_SKILLS_DIR = Path(".claude/skills")
 CURSOR_SKILLS_DIR = Path(".cursor/skills")
 
@@ -130,11 +132,12 @@ class EntryStatus:
     present: bool
     managed: bool
     current: bool
+    ownable: bool = True  # False for settings.json, which has no marker to delete
 
     @property
     def owned(self) -> bool:
         """Present without the marker: the project keeps its own version, and setup leaves it."""
-        return self.present and not self.managed
+        return self.ownable and self.present and not self.managed
 
 
 @dataclass(frozen=True)
@@ -154,7 +157,7 @@ class AgentsSetupPlan:
     links: tuple[ManagedLink, ...]
     removals: tuple[Path, ...]
     skipped: tuple[Path, ...]  # unmanaged and different: left alone without --force
-    settings: SettingsChange | None = None
+    settings: tuple[SettingsChange, ...] = ()
 
     @property
     def empty(self) -> bool:
@@ -223,8 +226,45 @@ def _rule_files(root: Path, rule: str) -> list[ManagedFile]:
     return [cursor, claude]
 
 
-def _bundled_deny_rules() -> list[str]:
+def _deny_rules(root: Path, *, force: bool = False) -> list[str]:
+    """Deny rules from the ``.cursorignore`` this run leaves in place.
+
+    A project that owns its ``.cursorignore`` (marker deleted, e.g. for a custom
+    ``paths.deploy.envs_dir``) gets rules from its own patterns; otherwise from the bundle,
+    which setup writes there (``force`` overwrites an owned one with it too).
+    """
+    path = root / CURSORIGNORE
+    if not force and path.is_file() and not _is_managed(path):
+        try:
+            return claude_deny_rules(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            pass
     return claude_deny_rules(_bundle().joinpath("cursorignore").read_text(encoding="utf-8"))
+
+
+def _read_record(root: Path) -> list[str]:
+    """Deny entries setup-agents added to settings.json on earlier runs."""
+    try:
+        data = json.loads((root / CLAUDE_SETTINGS_RECORD).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    deny = data.get("deny") if isinstance(data, dict) else None
+    return [r for r in deny if isinstance(r, str)] if isinstance(deny, list) else []
+
+
+def _record_text(rules: list[str]) -> str | None:
+    if not rules:
+        return None
+    return json.dumps(
+        {
+            "_comment": (
+                "Written by catalpa-workspace-tooling setup-agents: the permissions.deny entries "
+                "it added to settings.json, so it removes only those. Commit it with settings.json."
+            ),
+            "deny": rules,
+        },
+        indent=2,
+    ) + "\n"
 
 
 def _read_settings(path: Path) -> dict | None:
@@ -248,31 +288,41 @@ def _deny_list(data: dict) -> list:
 
 
 def _settings_text(data: dict) -> str:
-    return json.dumps(data, indent=2) + "\n"
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
-def _settings_with_rules(path: Path, rules: list[str]) -> SettingsChange | None:
+def _settings_change(root: Path, rules: list[str]) -> list[SettingsChange]:
+    """Bring settings.json's deny list to ``rules``, touching only entries setup-agents added.
+
+    A wanted entry the project already had stays the project's and is not recorded. A recorded
+    entry no longer wanted (a pattern changed upstream, or ``--remove`` passing no rules) is
+    taken out. Returns changes for settings.json and the record, empty when nothing changes.
+    """
+    path = root / CLAUDE_SETTINGS
     data = _read_settings(path)
     if data is None:
-        return None
-    missing = [r for r in rules if r not in _deny_list(data)]
-    if not missing:
-        return None
-    data.setdefault("permissions", {}).setdefault("deny", []).extend(missing)
-    return SettingsChange(path=path, content=_settings_text(data))
-
-
-def _settings_without_rules(path: Path, rules: list[str]) -> SettingsChange | None:
-    data = _read_settings(path)
-    if not data or not any(r in _deny_list(data) for r in rules):
-        return None
-    permissions = data["permissions"]
-    permissions["deny"] = [r for r in permissions["deny"] if r not in rules]
-    if not permissions["deny"]:
-        del permissions["deny"]
-    if not permissions:
-        del data["permissions"]
-    return SettingsChange(path=path, content=_settings_text(data) if data else None)
+        return []
+    record = _read_record(root)
+    deny = list(_deny_list(data))
+    stale = [r for r in record if r not in rules]
+    added = [r for r in rules if r not in deny]
+    new_record = [r for r in record if r in rules] + added
+    changes: list[SettingsChange] = []
+    if stale or added:
+        deny = [r for r in deny if r not in stale] + added
+        permissions = data.setdefault("permissions", {})
+        if deny:
+            permissions["deny"] = deny
+        else:
+            permissions.pop("deny", None)
+            if not permissions:
+                del data["permissions"]
+        changes.append(SettingsChange(path=path, content=_settings_text(data) if data else None))
+    if new_record != record or (not new_record and (root / CLAUDE_SETTINGS_RECORD).exists()):
+        changes.append(
+            SettingsChange(path=root / CLAUDE_SETTINGS_RECORD, content=_record_text(new_record))
+        )
+    return changes
 
 
 def _desired(root: Path, config: ProjectConfig) -> tuple[list[ManagedFile], list[ManagedLink]]:
@@ -351,8 +401,8 @@ def inspect_status(*, repo_root: Path | None = None) -> AgentsSetupStatus:
             present=settings_path.is_file(),
             # Readable, so setup-agents can merge into it.
             managed=settings is not None,
-            current=settings is not None
-            and all(r in _deny_list(settings) for r in _bundled_deny_rules()),
+            current=settings is not None and not _settings_change(root, _deny_rules(root)),
+            ownable=False,
         )
     )
     return AgentsSetupStatus(repo_root=root, entries=tuple(entries))
@@ -410,7 +460,7 @@ def plan_setup(*, repo_root: Path | None = None, force: bool = False) -> AgentsS
         links=tuple(new_links),
         removals=tuple(removals),
         skipped=tuple(skipped),
-        settings=_settings_with_rules(settings_path, _bundled_deny_rules()),
+        settings=tuple(_settings_change(root, _deny_rules(root, force=force))),
     )
 
 
@@ -425,7 +475,7 @@ def plan_remove(*, repo_root: Path | None = None) -> AgentsSetupPlan:
         links=(),
         removals=tuple(removals),
         skipped=(),
-        settings=_settings_without_rules(root / CLAUDE_SETTINGS, _bundled_deny_rules()),
+        settings=tuple(_settings_change(root, [])),
     )
 
 
@@ -482,8 +532,7 @@ def apply_remove(plan: AgentsSetupPlan, *, dry_run: bool = False) -> None:
         if not dry_run:
             path.unlink(missing_ok=True)
 
-    change = plan.settings
-    if change is not None:
+    for change in plan.settings:
         if change.content is None:
             print(f"{verb} {_rel(plan, change.path)}")
         else:
@@ -495,5 +544,5 @@ def apply_remove(plan: AgentsSetupPlan, *, dry_run: bool = False) -> None:
                 change.path.parent.mkdir(parents=True, exist_ok=True)
                 change.path.write_text(change.content, encoding="utf-8")
 
-    if not dry_run and (plan.removals or (change is not None and change.content is None)):
+    if not dry_run and (plan.removals or any(c.content is None for c in plan.settings)):
         _prune_empty_dirs(plan)

@@ -65,12 +65,20 @@ guardrails in its own formats:
 | Cursor | Claude Code | How |
 |--------|-------------|-----|
 | `.cursor/rules/<rule>.mdc` | `.claude/rules/<rule>.md` | Converted from the same source. A rule scoped by `globs` gets them as `paths:`. Every other rule loads at each session start, including ones Cursor applies only when the agent picks them by description (`worktrees`) |
-| `.cursorignore` | `Read(...)` deny rules in `.claude/settings.json` | One rule per pattern. A pattern with a `/` is anchored at the repo root (`Read(/docker/envs/**/credentials.yaml)`), and one without matches at any depth (`Read(.env)`) |
+| `.cursorignore` | `Read(...)` deny rules in `.claude/settings.json` | One rule per pattern, from the project's own `.cursorignore` if it has taken it over (marker deleted), otherwise from the bundled one. A pattern with a `/` is anchored at the directory Claude Code was started in, normally the repo root (`Read(/docker/envs/**/credentials.yaml)`). One without a `/` matches at any depth under that directory (`Read(.env)`) |
 
 `.claude/settings.json` is the project's file too: allow rules, env, hooks. `setup-agents` only adds
-its own deny entries to `permissions.deny`, leaving everything else as it is, and `--remove` takes
-out exactly those entries (deleting the file only if nothing else is left). A file that isn't a
-JSON object is reported and left alone; `--force` doesn't change that.
+its own deny entries to `permissions.deny`, leaving everything else as it is. JSON can't carry a
+marker, so it lists the entries it added in `.claude/setup-agents.json`; commit that file with
+`settings.json`. Only recorded entries are ever removed: `--remove` takes them all out (deleting
+`settings.json` only if nothing else is left), and a run after a tooling bump drops any the new
+version no longer has. A deny entry the project already had is never recorded, so it stays. A
+file that isn't a JSON object is reported, left alone, and fails `--status`; `--force` doesn't
+change that.
+
+Start Claude Code from the repo root. Deny patterns are anchored where it starts, so a session
+started in `frontend/` isn't covered by `Read(/docker/envs/**/credentials.yaml)`, or by
+`Read(.env)` for a `.env` above it.
 
 What the deny rules do not do:
 
