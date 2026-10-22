@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.1
+
 ### Added
 
 - **Claude Code gets the same agent guardrails as Cursor.** It reads neither `.cursor/rules/`
