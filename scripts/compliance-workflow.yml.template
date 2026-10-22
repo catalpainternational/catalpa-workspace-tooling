@@ -1,4 +1,8 @@
 # Optional CI gate for OSS compliance. Copy to consumer .github/workflows/compliance.yml
+#
+# Replace every <FRONTEND_DIR> below with this project's frontend directory — the same
+# value as `compliance.javascript.cwd` (falling back to `paths.frontend`) in tooling.yaml.
+# Match the pnpm/node versions to `native.frontend.package_manager` / `node_version` too.
 name: Compliance
 
 on:
@@ -26,7 +30,6 @@ jobs:
       - name: Install workspace tooling and compliance deps
         run: uv sync --group compliance
 
-      # Match paths.frontend / compliance.javascript.cwd (Bero consumers: bero).
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -35,10 +38,10 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
-          cache-dependency-path: bero/pnpm-lock.yaml
+          cache-dependency-path: <FRONTEND_DIR>/pnpm-lock.yaml
 
       - name: Install frontend dependencies
-        working-directory: bero
+        working-directory: <FRONTEND_DIR>
         run: pnpm install --frozen-lockfile
 
       - name: Compliance gate

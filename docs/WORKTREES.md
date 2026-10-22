@@ -48,7 +48,7 @@ uv run dk worktree seed onboarding -y
 | `.catalpa-worktree.yaml` | Gitignored overlay at the worktree root |
 | `AGENTS.local.md` | Gitignored agent context (written on create; refreshed on `up` / `context`) |
 
-`create` appends `.worktrees/`, `.catalpa-worktree.yaml`, and `AGENTS.local.md` to the repo `.gitignore` when missing — commit that change once per consumer. When `.gitmodules` is present, **`create` initializes each submodule shallowly (`--depth 1`)**, preferring **`--reference` from the matching path in the main checkout** (e.g. `bero/` already present locally — fast / offline). If that path is missing, it falls back to a remote fetch. Use `--full-submodules` for a full history clone, or `--no-submodules` to skip.
+`create` appends `.worktrees/`, `.catalpa-worktree.yaml`, and `AGENTS.local.md` to the repo `.gitignore` when missing — commit that change once per consumer. When `.gitmodules` is present, **`create` initializes each submodule shallowly (`--depth 1`)**, preferring **`--reference` from the matching path in the main checkout** (already present locally — fast / offline). If that path is missing, it falls back to a remote fetch. Use `--full-submodules` for a full history clone, or `--no-submodules` to skip.
 
 Slug sanitization: hyphens become underscores in the directory and compose project (`my-feature` → `my_feature`).
 

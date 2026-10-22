@@ -60,7 +60,7 @@ flowchart TD
 
 ## Port allocation
 
-Dev tests use `site_origin` from `docker/envs/dev/info.yaml` (port **901N**). See **`bero/docs/PORTS.md`**.
+Dev tests use `site_origin` from `docker/envs/dev/info.yaml` (port **901N**). Projects that document their own allocation keep it in `{paths.frontend}/docs/PORTS.md`.
 
 ## Project prerequisites
 
@@ -76,16 +76,16 @@ Dev tests use `site_origin` from `docker/envs/dev/info.yaml` (port **901N**). Se
 
 | Requirement | Where | Notes |
 |-------------|-------|-------|
-| `stack.healthcheck` | `tooling.yaml` | URL when app is healthy (bero: `/cms/`) |
+| `stack.healthcheck` | `tooling.yaml` | URL when app is healthy (e.g. `/cms/` for a Wagtail stack) |
 | `site_origin` | `docker/envs/dev/info.yaml` | HTTP probe + `SMOKE_FE_URL` |
-| `{paths.frontend}/smoke/` | e.g. `bero/smoke/` | First `paths.frontend` entry. Missing directory → failure |
+| `{paths.frontend}/smoke/` | e.g. `<frontend>/smoke/` | First `paths.frontend` entry. Missing directory → failure |
 | `[dependency-groups].smoke` | consumer `pyproject.toml` | `pytest`, `pytest-playwright` |
 | Playwright browser (one-time) | host | `uv run playwright install chromium` |
 
 ### Recommended
 
 - `[tool.uv] default-groups` includes `"smoke"` when you run Playwright locally
-- Root `pytest.ini`: `testpaths = bero/smoke`
+- Root `pytest.ini`: `testpaths = <frontend>/smoke`
 
 ## Consumer `pyproject.toml`
 
@@ -107,14 +107,14 @@ uv run playwright install chromium   # only needed for guest / functional
 
 ### GitHub Actions (tooling only — CI gate)
 
-Host does not need the Django/bero workspace package, Playwright, or a host Node install when compose provides `node`:
+Host does not need the Django workspace package, Playwright, or a host Node install when compose provides `node`:
 
 ```bash
 uv sync --frozen --only-group tooling
 uv run --no-sync tests ci
 ```
 
-Use ``--no-sync`` so ``uv run`` does not pull workspace ``bero`` / default groups (Django, Playwright, …) onto the runner. Same empty-migrate semantics as local. Primary DB migrate stays on `dk <env> manage migrate` when you need it.
+Use ``--no-sync`` so ``uv run`` does not pull workspace members / default groups (Django, Playwright, …) onto the runner. Same empty-migrate semantics as local. Primary DB migrate stays on `dk <env> manage migrate` when you need it.
 
 Host `uv`/pnpm installs do **not** populate Docker BuildKit cache mounts (`/root/.cache/uv`, pnpm store); those stay inside image builds.
 
@@ -124,7 +124,7 @@ Location: `{repo_root}/{paths.frontend}/smoke/` — the first `paths.frontend` e
 
 Extra pytest args: `uv run tests guest -- -k pwa -vv`
 
-## Bero consumer fast path
+## Consumer fast path
 
 ```bash
 uv run tests ci
@@ -133,7 +133,7 @@ uv run tests functional --no-up
 uv run tests functional headed --no-up
 ```
 
-See [bero/README_TESTING.md](https://github.com/catalpainternational/bero/blob/dev-7.4/README_TESTING.md).
+See the platform submodule's own `README_TESTING.md` for project-specific suites.
 
 ## Flags
 
@@ -158,5 +158,5 @@ See [bero/README_TESTING.md](https://github.com/catalpainternational/bero/blob/d
 | Document | Contents |
 |----------|----------|
 | [README.md](../README.md) | Install and command overview |
-| bero `README_TESTING.md` | Bero usage, elearning / functional tests |
-| bero `docs/cursor-rules/bero-deps.mdc` | Where smoke deps must live |
+| Platform submodule `README_TESTING.md` | Project-specific elearning / functional tests |
+| Platform submodule dependency cursor rule | Where smoke deps must live |
