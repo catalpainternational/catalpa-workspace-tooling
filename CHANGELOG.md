@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`dk` runs on rootless Podman on Linux.** [docs/PODMAN.md](docs/PODMAN.md) covers the
+  setup (docker CLI pointed at the Podman socket, low ports) and the two things that stop a
+  first run on Fedora: SELinux blocking unlabelled bind mounts, and the local proxy clashing
+  with another proxy already on port 443.
+  ([#55](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/55))
+
 ## 1.6.0
 
 ### Fixed
