@@ -131,6 +131,11 @@ class EntryStatus:
     managed: bool
     current: bool
 
+    @property
+    def owned(self) -> bool:
+        """Present without the marker: the project keeps its own version, and setup leaves it."""
+        return self.present and not self.managed
+
 
 @dataclass(frozen=True)
 class AgentsSetupStatus:
@@ -139,7 +144,7 @@ class AgentsSetupStatus:
 
     @property
     def ready(self) -> bool:
-        return all(e.present and e.managed and e.current for e in self.entries)
+        return all(e.owned or (e.present and e.current) for e in self.entries)
 
 
 @dataclass(frozen=True)

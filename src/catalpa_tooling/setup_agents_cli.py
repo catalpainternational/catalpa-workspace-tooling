@@ -59,6 +59,9 @@ def _print_status() -> int:
     print(f"repo: {status.repo_root}")
     for e in status.entries:
         rel = e.path.relative_to(status.repo_root)
+        if e.owned:
+            print(f"{rel}: owned by the project (no managed marker; left alone)")
+            continue
         print(f"{rel}: present={e.present} managed={e.managed} current={e.current}")
     print(f"ready: {status.ready}")
     return 0 if status.ready else 1
@@ -70,7 +73,7 @@ def _print_skipped(plan: AgentsSetupPlan) -> None:
         if rel == CLAUDE_SETTINGS:
             reason = "it is not a JSON object with a permissions.deny list to merge into"
         else:
-            reason = "it exists without the managed marker (--force replaces it)"
+            reason = "the project owns it (no managed marker; --force replaces it)"
         print(f"setup-agents: left {rel} alone: {reason}.", file=sys.stderr)
 
 

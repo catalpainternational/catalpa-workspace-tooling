@@ -134,7 +134,10 @@ def test_unmanaged_file_left_alone_without_force(
     assert own in plan.skipped
     apply_setup(plan)
     assert own.read_text(encoding="utf-8") == "my own\n"
-    assert not inspect_status().ready
+    # the project owns it: not a failure, and reported as such
+    status = inspect_status()
+    assert status.ready
+    assert [e.path for e in status.entries if e.owned] == [own]
 
     apply_setup(plan_setup(force=True))
     assert MANAGED_MARKER in own.read_text(encoding="utf-8")
@@ -287,4 +290,22 @@ def test_unreadable_settings_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert plan.settings is None
     apply_setup(plan)
     assert settings_path.read_text(encoding="utf-8") == "{ not json"
+
+
+def test_deleting_the_marker_keeps_the_file_and_status_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    apply_setup(plan_setup())
+    rule = tmp_path / ".cursor/rules/secrets-and-agents.mdc"
+    kept = "\n".join(
+        line for line in rule.read_text(encoding="utf-8").splitlines() if MANAGED_MARKER not in line
+    ) + "\nlocal addition\n"
+    rule.write_text(kept, encoding="utf-8")
+
+    assert rule in plan_setup().skipped
+    assert inspect_status().ready
+
+    rule.unlink()  # a missing file is still a failure
     assert not inspect_status().ready

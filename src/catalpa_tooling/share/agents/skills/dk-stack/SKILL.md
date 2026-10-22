@@ -15,7 +15,8 @@ rather than guessing them.
 or `"remote"`. A remote env (normally `staging`, `prod`) is a server: do not
 run any `dk` command against it, and do not run fetches that read from it
 (`native fetch`, `dk <remote> db pgdump`), unless the user confirms target and
-action. See `.cursor/rules/remote-environments.mdc`.
+action. See the `remote-environments` agent rule (`.cursor/rules/remote-environments.mdc`
+for Cursor, `.claude/rules/remote-environments.md` for Claude Code).
 
 ## Which checkout are you in?
 
