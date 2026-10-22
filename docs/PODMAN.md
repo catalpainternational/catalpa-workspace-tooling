@@ -4,7 +4,8 @@
 Podman and run a project's local stacks without Docker installed. This was checked with
 catalpa-site `main` (295ec575, tooling v1.6.0) on Fedora 45, using Podman 6.1.4, the static
 docker CLI 29.9.2 and Docker Compose v5.5.1. Both `dk dev up -d` (runserver + webpack, hot
-reload) and `dk full up -d` (gunicorn + built static) served all three sites.
+reload) and `dk full up -d` (gunicorn + built static) served all three sites, empty and
+then with prod data restored (all 349 live pages answered 200 in both).
 
 macOS is not covered: under `podman machine` the VM mount does not pass on file-change
 events, so hot reload silently stops working (#94). Remote deploys (`DOCKER_HOST=ssh://…`)
@@ -131,7 +132,34 @@ host ports, so it fails again. Re-run the commands above after `dk proxy down`. 
 container has no restart policy (dk's own has none either), so after a reboot start it with
 `docker start catalpa-local-proxy`.
 
-## 4. Check it works
+## 4. Production data
+
+Taking a database dump and the media from prod works under Podman as it does under Docker,
+because `DOCKER_HOST=ssh://…` sends those commands to the prod host's own Docker. For
+catalpa-site, against a 19.6 MB dump and 1.8 GB of media (8,609 files):
+
+```bash
+dk prod db pgdump > docker/postgres/dumps/catalpa_db.custom      # 9 s
+dk fetch media --no-legacy-path                                  # 2 min 20 s
+dk dev  db restore --file docker/postgres/dumps/catalpa_db.custom   # 32 s
+dk full db restore --file docker/postgres/dumps/catalpa_db.custom   # 17 s
+dk full files push --yes                                         # 14 s, into the Podman volume
+```
+
+Files that rsync adds under an SELinux-labelled `media/` take that label too, so no further
+`chcon` is needed. The other routes stop on problems unrelated to Podman:
+
+- **`native fetch db` and `dk fetch db` (catalpa-site).** Both fall back to the old fetch
+  script, which connects to `native.fetch_media.legacy.ssh_host`. For catalpa-site that host
+  (`site-production.catalpa.build`) no longer resolves. dk then waits 2 minutes and reports
+  that SSH "may still be starting on the new droplet". `dk prod db pgdump` reads from the
+  `docker_host` in the prod `info.yaml` instead.
+- **`dk <env> db restore --dumps` run without a terminal** (a script, CI or an agent).
+  It replaces the database with an empty one, then reads the dump from stdin rather than
+  from the configured path, and stops with "stdin is not a pg_dump -Fc archive". The
+  database is left empty. Pass `--file PATH` instead.
+
+## 5. Check it works
 
 ```bash
 dk dev up -d
@@ -150,5 +178,7 @@ route for that hostname (see section 3). To check hot reload, `touch` a Python f
 - dk's own `docker run` helpers and the project compose files do not label mounts for
   SELinux (section 2).
 - The local proxy's host ports cannot be configured (section 3).
+- `dk <env> db restore --dumps` empties the database before it finds out it has no dump to
+  restore, whenever it runs without a terminal (section 4).
 - Against Podman's compat API, compose drops `platform:` and builds native. `dk push` checks
   the built architecture since v1.6.0 (#114).
