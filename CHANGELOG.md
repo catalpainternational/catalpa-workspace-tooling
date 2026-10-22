@@ -4,6 +4,16 @@
 
 ### Added
 
+- **A `dk-stack` agent skill for consumer repos.** `scripts/agent-skills/dk-stack/SKILL.md`
+  tells an agent how to bring up and reach the local `dk dev` stack, in the main checkout or
+  a worktree: where names and origins come from, waiting for the URL instead of `ps`, the
+  worktree traps (`--base-branch` defaults to `HEAD`, seeding copies main's data, one
+  hostname and no host-port remap), and not claiming a UI check without a browser. It
+  collects what swlt_ws2's `run-app` skill had learned about the tooling, so projects copy
+  it instead of rewriting it. Install steps in
+  [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
 - **`dk` runs on rootless Podman on Linux.** [docs/PODMAN.md](docs/PODMAN.md) covers the
   setup (docker CLI pointed at the Podman socket, low ports) and the two things that stop a
   first run on Fedora: SELinux blocking unlabelled bind mounts, and the local proxy clashing

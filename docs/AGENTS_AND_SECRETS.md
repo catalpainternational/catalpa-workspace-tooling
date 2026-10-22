@@ -20,6 +20,10 @@ cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/remote-environments.m
 cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/smoke-tests.mdc .cursor/rules/
 # Optional — parallel git worktrees:
 cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/worktrees.mdc .cursor/rules/
+# Optional — skill for running the local stack (Claude Code reads .claude/skills, Cursor .cursor/skills):
+mkdir -p .claude/skills .cursor/skills
+cp -R /path/to/catalpa-workspace-tooling/scripts/agent-skills/dk-stack .claude/skills/
+ln -s ../../.claude/skills/dk-stack .cursor/skills/dk-stack
 ```
 
 | File | Purpose |
@@ -29,6 +33,7 @@ cp /path/to/catalpa-workspace-tooling/scripts/cursor-rules/worktrees.mdc .cursor
 | [`remote-environments.mdc`](../scripts/cursor-rules/remote-environments.mdc) | No `dk staging`/`prod`, push, transfer, `clean-images --apply`, or fetch-from-prod without user confirmation |
 | [`smoke-tests.mdc`](../scripts/cursor-rules/smoke-tests.mdc) | Optional — `tests smoke` setup and when to run after tooling bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
 | [`worktrees.mdc`](../scripts/cursor-rules/worktrees.mdc) | Optional — `dk worktree` for isolated local worktrees ([WORKTREES.md](WORKTREES.md)) |
+| [`dk-stack` skill](../scripts/agent-skills/dk-stack/SKILL.md) | Optional — how an agent brings up, reaches and checks the local `dk dev` stack. Project specifics go in the consumer's own `run-app` skill beside it |
 
 Each worktree checkout also gets a gitignored **`AGENTS.local.md`** at its root (from `create`; refreshed on `dk worktree up` / `context`) with slug-specific origins and command hints. Copy `worktrees.mdc` into `.cursor/rules/` when using parallel worktrees.
 
