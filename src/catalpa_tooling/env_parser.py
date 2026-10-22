@@ -385,6 +385,21 @@ def _attach_env_command_parsers(
     host_sub = p_host.add_subparsers(dest="host_command", required=False)
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.")
     p_host_create.add_argument("host_create_args", nargs=argparse.REMAINDER)
+    p_host_logging = host_sub.add_parser(
+        "logging",
+        help="Check (or --apply) the host-wide Docker log rotation default in daemon.json.",
+    )
+    p_host_logging.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the log-driver default into /etc/docker/daemon.json and restart docker.",
+    )
+    p_host_logging.add_argument(
+        "--target",
+        choices=("app", "backup"),
+        default="app",
+        help="app docker_host (default) or dc_backup_docker_host.",
+    )
     p_host.add_argument("--write", action="store_true", help="Write docker_host from droplet public IPv4.")
     p_host.add_argument(
         "--sync-dns",
@@ -394,7 +409,7 @@ def _attach_env_command_parsers(
     p_host.add_argument(
         "--check-remote",
         action="store_true",
-        help="SSH probe docker_host (and dc_backup_docker_host): reachability + timedatectl.",
+        help="SSH probe docker_host (and dc_backup_docker_host): reachability, timedatectl, Docker log rotation.",
     )
 
     _attach_zabbix_commands(cmd_sub, env_name)

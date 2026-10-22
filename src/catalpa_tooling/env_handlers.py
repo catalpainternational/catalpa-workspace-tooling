@@ -416,6 +416,17 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 tail,
                 global_dry_run=dry_run,
             )
+        if getattr(ns, "host_command", None) == "logging":
+            from catalpa_tooling.docker_logging import cmd_host_logging
+
+            return cmd_host_logging(
+                config,
+                env_name,
+                target=ns.target,
+                apply=bool(ns.apply),
+                dry_run=dry_run,
+                yes=bool(ns.yes),
+            )
         if ns.write and ns.sync_dns:
             print("cannot use --write and --sync-dns together", file=sys.stderr)
             return 2
