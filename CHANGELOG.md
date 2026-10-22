@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Claude Code gets the same agent guardrails as Cursor.** It reads neither `.cursor/rules/`
+  nor `.cursorignore`, so until now the secrets and remote-environment rules reached only
+  Cursor. `setup-agents` now also writes each rule as `.claude/rules/<rule>.md`, converted
+  from the same source (Cursor `globs` become Claude `paths`). It also adds a `Read(...)`
+  deny rule for each `.cursorignore` pattern to `.claude/settings.json`, merging into the
+  project's file and removing only its own entries. The deny rules are not a full
+  exclusion: Claude Code doesn't apply them to every shell command, and they can't carve out
+  `.env.example`. [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) covers both.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
 - **`uv run setup-agents` installs and updates the agent files.** It writes `.cursorignore`,
   the Cursor rules and the `dk-stack` skill from the installed tooling version, replacing the
   manual `cp` from a tooling checkout. Optional rules and skills are chosen under `agents:` in

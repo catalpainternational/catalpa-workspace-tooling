@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from catalpa_tooling.agents_setup import (
+    CLAUDE_SETTINGS,
     OPTIONAL_RULES,
     AgentsSetupPlan,
     SKILLS,
@@ -22,8 +23,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="setup-agents",
         description=(
-            "Install agent guardrails (.cursorignore, .cursor/rules) and skills "
-            "(.claude/skills, linked from .cursor/skills) from this tooling version. "
+            "Install agent guardrails (.cursorignore and .cursor/rules for Cursor; "
+            ".claude/rules and Read deny rules in .claude/settings.json for Claude Code) and "
+            "skills (.claude/skills, linked from .cursor/skills) from this tooling version. "
             f"Optional rules ({', '.join(OPTIONAL_RULES)}) and skills ({', '.join(SKILLS)}) "
             "are chosen under agents: in tooling.yaml. Run via `uv run setup-agents` "
             "from a tooling repo root."
@@ -64,11 +66,12 @@ def _print_status() -> int:
 
 def _print_skipped(plan: AgentsSetupPlan) -> None:
     for path in plan.skipped:
-        print(
-            f"setup-agents: left {path.relative_to(plan.repo_root)} alone: it exists without "
-            "the managed marker (--force replaces it).",
-            file=sys.stderr,
-        )
+        rel = path.relative_to(plan.repo_root)
+        if rel == CLAUDE_SETTINGS:
+            reason = "it is not a JSON object with a permissions.deny list to merge into"
+        else:
+            reason = "it exists without the managed marker (--force replaces it)"
+        print(f"setup-agents: left {rel} alone: {reason}.", file=sys.stderr)
 
 
 def _setup_main() -> None:

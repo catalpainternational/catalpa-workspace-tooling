@@ -2,10 +2,16 @@
 
 Sources are bundled under ``share/agents/``. Every installed file carries a managed marker;
 a file without it is the project's own and is left alone unless ``force`` is set.
+
+Claude Code gets the same guardrails in its own formats: each Cursor rule is converted to
+``.claude/rules/<rule>.md``, and the ``.cursorignore`` patterns become ``Read(...)`` deny rules
+merged into ``.claude/settings.json``. JSON has no comments, so that file carries no marker:
+only the bundled entries are added or removed, and everything else in it is the project's.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from importlib.resources import files
@@ -22,6 +28,8 @@ DEFAULT_SKILLS = ("dk-stack",)
 
 CURSORIGNORE = ".cursorignore"
 RULES_DIR = Path(".cursor/rules")
+CLAUDE_RULES_DIR = Path(".claude/rules")
+CLAUDE_SETTINGS = Path(".claude/settings.json")
 CLAUDE_SKILLS_DIR = Path(".claude/skills")
 CURSOR_SKILLS_DIR = Path(".cursor/skills")
 
@@ -51,6 +59,56 @@ def with_marker(text: str, *, name: str) -> str:
             split = end + len("\n---\n")
             return text[:split] + "\n" + comment + text[split:]
     return comment + "\n" + text
+
+
+def cursor_rule_to_claude(text: str) -> str:
+    """Convert a Cursor ``.mdc`` rule to a Claude Code ``.claude/rules`` file.
+
+    Claude Code reads only ``paths:`` from rule frontmatter and loads a rule without it at
+    every launch. A Cursor rule scoped by ``globs`` keeps that scope as ``paths``; any other
+    rule (``alwaysApply: true``, or picked by the agent from its description) always loads.
+    """
+    body = text
+    globs: list[str] = []
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            for line in text[4:end].splitlines():
+                key, _, value = line.partition(":")
+                if key.strip() == "globs" and value.strip():
+                    globs = [g.strip() for g in value.split(",") if g.strip()]
+            body = text[end + len("\n---\n") :].lstrip("\n")
+    if not globs:
+        return body
+    paths = "".join(f'  - "{g}"\n' for g in globs)
+    return f"---\npaths:\n{paths}---\n\n{body}"
+
+
+def claude_deny_rules(cursorignore: str) -> list[str]:
+    """``Read(...)`` deny rules for each ``.cursorignore`` pattern.
+
+    Both use gitignore syntax. A pattern with a ``/`` is anchored at the repo root, which a
+    leading ``/`` gives in project settings (a bare ``./`` would follow Claude Code's working
+    directory instead). Negations have no equivalent here and are dropped, so a file they
+    exempt (``.env.example``) stays hidden from Claude Code.
+    """
+    rules: list[str] = []
+    for line in cursorignore.splitlines():
+        pattern = line.strip()
+        if not pattern or pattern.startswith(("#", "!")):
+            continue
+        if "/" in pattern.rstrip("/") and not pattern.startswith("/"):
+            pattern = "/" + pattern
+        rules.append(f"Read({pattern})")
+    return rules
+
+
+@dataclass(frozen=True)
+class SettingsChange:
+    """New ``.claude/settings.json`` text, or ``None`` to delete a file left empty."""
+
+    path: Path
+    content: str | None
 
 
 @dataclass(frozen=True)
@@ -91,10 +149,11 @@ class AgentsSetupPlan:
     links: tuple[ManagedLink, ...]
     removals: tuple[Path, ...]
     skipped: tuple[Path, ...]  # unmanaged and different: left alone without --force
+    settings: SettingsChange | None = None
 
     @property
     def empty(self) -> bool:
-        return not (self.writes or self.links or self.removals)
+        return not (self.writes or self.links or self.removals or self.settings)
 
 
 def selected_rules(config: ProjectConfig) -> tuple[str, ...]:
@@ -146,14 +205,75 @@ def _skill_link(root: Path, skill: str) -> ManagedLink:
     )
 
 
-def _rule_file(root: Path, rule: str) -> ManagedFile:
+def _rule_files(root: Path, rule: str) -> list[ManagedFile]:
     rel = RULES_DIR / f"{rule}.mdc"
-    return _managed_file(root, rel, _bundle().joinpath("rules", rel.name))
+    cursor = _managed_file(root, rel, _bundle().joinpath("rules", rel.name))
+    claude_rel = CLAUDE_RULES_DIR / f"{rule}.md"
+    claude_text = cursor_rule_to_claude(cursor.bundled)
+    claude = ManagedFile(
+        path=root / claude_rel,
+        content=with_marker(claude_text, name=claude_rel.name),
+        bundled=claude_text,
+    )
+    return [cursor, claude]
+
+
+def _bundled_deny_rules() -> list[str]:
+    return claude_deny_rules(_bundle().joinpath("cursorignore").read_text(encoding="utf-8"))
+
+
+def _read_settings(path: Path) -> dict | None:
+    """Parsed settings, ``{}`` when the file is absent, ``None`` when it is not a JSON object."""
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    permissions = data.get("permissions", {})
+    if not isinstance(permissions, dict) or not isinstance(permissions.get("deny", []), list):
+        return None
+    return data
+
+
+def _deny_list(data: dict) -> list:
+    return data.get("permissions", {}).get("deny", [])
+
+
+def _settings_text(data: dict) -> str:
+    return json.dumps(data, indent=2) + "\n"
+
+
+def _settings_with_rules(path: Path, rules: list[str]) -> SettingsChange | None:
+    data = _read_settings(path)
+    if data is None:
+        return None
+    missing = [r for r in rules if r not in _deny_list(data)]
+    if not missing:
+        return None
+    data.setdefault("permissions", {}).setdefault("deny", []).extend(missing)
+    return SettingsChange(path=path, content=_settings_text(data))
+
+
+def _settings_without_rules(path: Path, rules: list[str]) -> SettingsChange | None:
+    data = _read_settings(path)
+    if not data or not any(r in _deny_list(data) for r in rules):
+        return None
+    permissions = data["permissions"]
+    permissions["deny"] = [r for r in permissions["deny"] if r not in rules]
+    if not permissions["deny"]:
+        del permissions["deny"]
+    if not permissions:
+        del data["permissions"]
+    return SettingsChange(path=path, content=_settings_text(data) if data else None)
 
 
 def _desired(root: Path, config: ProjectConfig) -> tuple[list[ManagedFile], list[ManagedLink]]:
     wanted = [_managed_file(root, Path(CURSORIGNORE), _bundle().joinpath("cursorignore"))]
-    wanted += [_rule_file(root, r) for r in selected_rules(config)]
+    for r in selected_rules(config):
+        wanted += _rule_files(root, r)
     links: list[ManagedLink] = []
     for skill in selected_skills(config):
         wanted += _skill_files(root, skill)
@@ -163,7 +283,8 @@ def _desired(root: Path, config: ProjectConfig) -> tuple[list[ManagedFile], list
 
 def _all_known(root: Path) -> tuple[list[ManagedFile], list[ManagedLink]]:
     known = [_managed_file(root, Path(CURSORIGNORE), _bundle().joinpath("cursorignore"))]
-    known += [_rule_file(root, r) for r in REQUIRED_RULES + OPTIONAL_RULES]
+    for r in REQUIRED_RULES + OPTIONAL_RULES:
+        known += _rule_files(root, r)
     links: list[ManagedLink] = []
     for skill in SKILLS:
         known += _skill_files(root, skill)
@@ -217,6 +338,18 @@ def inspect_status(*, repo_root: Path | None = None) -> AgentsSetupStatus:
         )
         for link in links
     ]
+    settings_path = root / CLAUDE_SETTINGS
+    settings = _read_settings(settings_path)
+    entries.append(
+        EntryStatus(
+            path=settings_path,
+            present=settings_path.is_file(),
+            # Readable, so setup-agents can merge into it.
+            managed=settings is not None,
+            current=settings is not None
+            and all(r in _deny_list(settings) for r in _bundled_deny_rules()),
+        )
+    )
     return AgentsSetupStatus(repo_root=root, entries=tuple(entries))
 
 
@@ -261,12 +394,18 @@ def plan_setup(*, repo_root: Path | None = None, force: bool = False) -> AgentsS
         if link.path not in wanted_paths and _link_matches(link)
     ]
 
+    # Merged, never replaced, so --force does not apply: an unreadable file is skipped.
+    settings_path = root / CLAUDE_SETTINGS
+    if _read_settings(settings_path) is None:
+        skipped.append(settings_path)
+
     return AgentsSetupPlan(
         repo_root=root,
         writes=tuple(writes),
         links=tuple(new_links),
         removals=tuple(removals),
         skipped=tuple(skipped),
+        settings=_settings_with_rules(settings_path, _bundled_deny_rules()),
     )
 
 
@@ -276,7 +415,12 @@ def plan_remove(*, repo_root: Path | None = None) -> AgentsSetupPlan:
     removals = [f.path for f in known if _is_managed(f.path)]
     removals += [link.path for link in known_links if _link_matches(link)]
     return AgentsSetupPlan(
-        repo_root=root, writes=(), links=(), removals=tuple(removals), skipped=()
+        repo_root=root,
+        writes=(),
+        links=(),
+        removals=tuple(removals),
+        skipped=(),
+        settings=_settings_without_rules(root / CLAUDE_SETTINGS, _bundled_deny_rules()),
     )
 
 
@@ -291,7 +435,14 @@ def _prune_empty_dirs(plan: AgentsSetupPlan) -> None:
     candidates = {p.parent for p in plan.removals}
     candidates |= {
         plan.repo_root / d
-        for d in (RULES_DIR, CLAUDE_SKILLS_DIR, CURSOR_SKILLS_DIR, Path(".claude"), Path(".cursor"))
+        for d in (
+            RULES_DIR,
+            CLAUDE_RULES_DIR,
+            CLAUDE_SKILLS_DIR,
+            CURSOR_SKILLS_DIR,
+            Path(".claude"),
+            Path(".cursor"),
+        )
     }
     # Deepest first, so a parent empties out before it is checked.
     for d in sorted(candidates, key=lambda p: len(p.parts), reverse=True):
@@ -325,5 +476,19 @@ def apply_remove(plan: AgentsSetupPlan, *, dry_run: bool = False) -> None:
         print(f"{verb} {_rel(plan, path)}")
         if not dry_run:
             path.unlink(missing_ok=True)
-    if not dry_run and plan.removals:
+
+    change = plan.settings
+    if change is not None:
+        if change.content is None:
+            print(f"{verb} {_rel(plan, change.path)}")
+        else:
+            print(f"{'Would update' if dry_run else 'Updated'} {_rel(plan, change.path)}")
+        if not dry_run:
+            if change.content is None:
+                change.path.unlink(missing_ok=True)
+            else:
+                change.path.parent.mkdir(parents=True, exist_ok=True)
+                change.path.write_text(change.content, encoding="utf-8")
+
+    if not dry_run and (plan.removals or (change is not None and change.content is None)):
         _prune_empty_dirs(plan)

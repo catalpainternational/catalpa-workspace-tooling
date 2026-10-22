@@ -1,8 +1,8 @@
-# Cursor agents: secrets and remote environments
+# Coding agents (Cursor, Claude Code): secrets and remote environments
 
 Consumer projects using `catalpa-workspace-tooling` store deploy secrets in SOPS-encrypted `docker/envs/<env>/credentials.yaml` and may run Docker on **remote hosts** for staging/production (`docker_host` in `info.yaml`).
 
-**AI coding agents (e.g. Cursor) can include shell output and file reads in model context**, which may be processed on external infrastructure depending on your editor settings.
+**AI coding agents (e.g. Cursor, Claude Code) can include shell output and file reads in model context**, which may be processed on external infrastructure depending on your editor settings.
 
 The tooling itself does **not** upload secrets to Catalpa or third parties. Risks appear when an agent **decrypts secrets**, **prints credentials**, or **runs deploy commands against staging/prod** without the user intending it.
 
@@ -54,6 +54,31 @@ bundled copy (a rule copied by hand from the same version), in which case it is 
 from an older version need `--force` once. A real directory where a skill's `.cursor/skills`
 symlink would go is never replaced.
 
+### Claude Code
+
+Claude Code reads neither `.cursor/rules/` nor `.cursorignore`, so `setup-agents` gives it the same
+guardrails in its own formats:
+
+| Cursor | Claude Code | How |
+|--------|-------------|-----|
+| `.cursor/rules/<rule>.mdc` | `.claude/rules/<rule>.md` | Converted from the same source. A rule scoped by `globs` gets them as `paths:`. Every other rule loads at each session start, including ones Cursor applies only when the agent picks them by description (`worktrees`) |
+| `.cursorignore` | `Read(...)` deny rules in `.claude/settings.json` | One rule per pattern. A pattern with a `/` is anchored at the repo root (`Read(/docker/envs/**/credentials.yaml)`), and one without matches at any depth (`Read(.env)`) |
+
+`.claude/settings.json` is the project's file too: allow rules, env, hooks. `setup-agents` only adds
+its own deny entries to `permissions.deny`, leaving everything else as it is, and `--remove` takes
+out exactly those entries (deleting the file only if nothing else is left). A file that isn't a
+JSON object is reported and left alone; `--force` doesn't change that.
+
+What the deny rules do not do:
+
+- **They're not an index exclusion.** They block Claude Code's file tools and the shell commands
+  it recognizes as file reads (`cat`, `head`, `sed`, redirections). They don't block a `grep -r`
+  across the tree, or a script that opens the file itself. `secrets-and-agents` still says not to
+  try, and Claude Code's sandbox (`sandbox.filesystem.denyRead`) is the OS-level control if a
+  project wants one.
+- **They have no exceptions.** `!.env.example` keeps `.env.example` visible to Cursor, but
+  `Read(.env.*)` hides it from Claude Code.
+
 Each worktree checkout also gets a gitignored **`AGENTS.local.md`** at its root (from `create`; refreshed on `dk worktree up` / `context`) with slug-specific origins and command hints. Add `worktrees` to `agents.rules` when using parallel worktrees.
 
 ## Local vs remote environments
@@ -66,13 +91,13 @@ Each worktree checkout also gets a gitignored **`AGENTS.local.md`** at its root 
 
 Check `docker/envs/<env>/info.yaml` for `docker_host`. Custom env names follow the same rule: if `docker_host` is set, treat as remote.
 
-## Secrets: what `.cursorignore` excludes
+## Secrets: what `.cursorignore` and the Claude Code deny rules exclude
 
 - `docker/envs/**/credentials.yaml` (including SOPS ciphertext)
 - `docker/envs/**/dc-backup-tls.yaml` (private backup CA / server PEMs)
 - `docker/envs/**/dc-backup.yaml` (Garage rpc/admin secrets)
 - `docker/envs/**/*credentials.plain.yaml`
-- `.env`, `.env.local`, and other `.env.*` (except `.env.example`)
+- `.env`, `.env.local`, and other `.env.*` (except `.env.example`, for Cursor only)
 
 Adjust paths if your manifest uses different `paths.deploy.envs_dir` or `paths.env_local`.
 
