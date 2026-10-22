@@ -199,7 +199,5 @@ cross the VM boundary (#94). So switch it on per machine, not for everyone.
 - dk's own `docker run` helpers and the project compose files do not label mounts for
   SELinux (section 2).
 - The local proxy's host ports cannot be configured (section 3).
-- `dk <env> db restore --dumps` empties the database before it finds out it has no dump to
-  restore, whenever it runs without a terminal (section 4).
 - Against Podman's compat API, compose drops `platform:` and builds native. `dk push` checks
   the built architecture since v1.6.0 (#114).
