@@ -53,6 +53,14 @@ LOCAL_PROXY_CA_COMMON_NAME = "Catalpa Local Dev Root"
 # Env var read by the bundled Caddyfile ({$CATALPA_LOCAL_DEV_MACHINE:local}) to
 # label the minted CA with the machine that created it.
 LOCAL_PROXY_CA_MACHINE_ENV = "CATALPA_LOCAL_DEV_MACHINE"
+# Machine-wide overrides for the proxy's *host* port publishing (see issue #129).
+# Empty by default (today's behavior: publish 80/443 on every interface). Set to
+# remap a port, or to one of ``_LOCAL_PROXY_PORT_DISABLE_VALUES`` to skip publishing
+# it at all, e.g. when an existing reverse proxy on the machine already holds it.
+LOCAL_PROXY_HTTP_PORT_ENV = "CATALPA_LOCAL_PROXY_HTTP_PORT"
+LOCAL_PROXY_HTTPS_PORT_ENV = "CATALPA_LOCAL_PROXY_HTTPS_PORT"
+LOCAL_PROXY_BIND_ENV = "CATALPA_LOCAL_PROXY_BIND"
+_LOCAL_PROXY_PORT_DISABLE_VALUES = ("0", "off", "none", "disabled")
 _ROUTE_ID_PREFIX = "local-proxy"
 _ROUTE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _LAN_ROUTE_SUFFIX_RE = re.compile(r"-lan-(?P<ip>\d+(?:-\d+)*)$")
@@ -84,6 +92,53 @@ def local_dev_ca_machine_label() -> str:
     short = raw.split(".")[0]
     label = re.sub(r"[^a-z0-9-]+", "-", short.strip().lower()).strip("-")
     return label or "local"
+
+
+def _parse_local_proxy_port(env_var: str, *, default: int) -> int | None:
+    """Parse a host-port override env var; ``None`` means "don't publish this port"."""
+    raw = os.environ.get(env_var, "").strip().lower()
+    if not raw:
+        return default
+    if raw in _LOCAL_PROXY_PORT_DISABLE_VALUES:
+        return None
+    return int(raw)
+
+
+def local_proxy_http_port() -> int | None:
+    """Host port to publish for the proxy's HTTP (80) listener, or ``None`` if disabled."""
+    return _parse_local_proxy_port(LOCAL_PROXY_HTTP_PORT_ENV, default=80)
+
+
+def local_proxy_https_port() -> int | None:
+    """Host port to publish for the proxy's HTTPS (443) listener, or ``None`` if disabled."""
+    return _parse_local_proxy_port(LOCAL_PROXY_HTTPS_PORT_ENV, default=443)
+
+
+def local_proxy_bind_address() -> str:
+    """Host bind address prefix applied to published ports; empty binds every interface."""
+    return os.environ.get(LOCAL_PROXY_BIND_ENV, "").strip()
+
+
+def _local_proxy_publish_args() -> list[str]:
+    """Build the ``-p`` argv fragments for ``docker run``, honoring host-port overrides."""
+    bind = local_proxy_bind_address()
+    prefix = f"{bind}:" if bind else ""
+    args: list[str] = []
+    http_port = local_proxy_http_port()
+    https_port = local_proxy_https_port()
+    if http_port is not None:
+        args += ["-p", f"{prefix}{http_port}:80"]
+    if https_port is not None:
+        args += ["-p", f"{prefix}{https_port}:443"]
+    return args
+
+
+def _proxy_https_port_suffix() -> str:
+    """``":{port}"`` when the published HTTPS port isn't the default 443, else ``""``."""
+    port = local_proxy_https_port()
+    if port is None or port == 443:
+        return ""
+    return f":{port}"
 
 
 class LocalProxyRoute(NamedTuple):
@@ -568,19 +623,20 @@ def docker_endpoint_is_local(endpoint: str) -> bool:
 def require_local_docker_endpoint(*, action: str) -> int:
     """0 when the Docker engine is local; 1 with an explanation when it is not.
 
-    The local proxy is a machine-wide dev convenience: it publishes ports 80/443 on *this*
-    machine, bind-mounts a Caddyfile from *this* filesystem, and terminates TLS with a CA trusted
-    by *this* machine's browsers. Pointed at a remote engine none of that holds, so every
-    operation is either meaningless or actively destructive to whatever runs there.
+    The local proxy is a machine-wide dev convenience: it publishes its configured host
+    ports (80/443 by default) on *this* machine, bind-mounts a Caddyfile from *this*
+    filesystem, and terminates TLS with a CA trusted by *this* machine's browsers. Pointed
+    at a remote engine none of that holds, so every operation is either meaningless or
+    actively destructive to whatever runs there.
     """
     endpoint = effective_docker_endpoint()
     if docker_endpoint_is_local(endpoint):
         return 0
     print(
         f"dk proxy: refusing to {action} against a remote Docker engine ({endpoint}).\n"
-        "  The local dev proxy publishes ports 80/443 on this machine, bind-mounts its\n"
-        "  Caddyfile from this filesystem, and issues certificates for this machine's browsers.\n"
-        "  None of that applies to a remote engine.\n"
+        "  The local dev proxy publishes its configured host ports (80/443 by default) on\n"
+        "  this machine, bind-mounts its Caddyfile from this filesystem, and issues\n"
+        "  certificates for this machine's browsers. None of that applies to a remote engine.\n"
         "  Unset DOCKER_HOST (or `docker context use` a local context) and retry.",
         file=sys.stderr,
     )
@@ -723,10 +779,7 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         "--add-host=host.docker.internal:host-gateway",
         "-e",
         f"{LOCAL_PROXY_CA_MACHINE_ENV}={local_dev_ca_machine_label()}",
-        "-p",
-        "80:80",
-        "-p",
-        "443:443",
+        *_local_proxy_publish_args(),
         "-p",
         "127.0.0.1:2019:2019",
         "-v",
@@ -1046,9 +1099,10 @@ def print_proxy_status(*, file: TextIO | None = None) -> None:
 
 def local_proxy_public_url(info: dict[str, Any], config: ProjectConfig, env_name: str) -> str:
     origins = parse_site_origins_from_info(info)
-    if origins:
-        return origins[0]
-    return primary_site_origin_for_env(info, config, env_name) or ""
+    origin = origins[0] if origins else primary_site_origin_for_env(info, config, env_name) or ""
+    if not origin:
+        return origin
+    return f"{origin}{_proxy_https_port_suffix()}"
 
 
 def print_local_proxy_url(
@@ -1059,9 +1113,10 @@ def print_local_proxy_url(
     file: TextIO | None = None,
 ) -> None:
     out = sys.stderr if file is None else file
+    suffix = _proxy_https_port_suffix()
     origins = resolve_site_origins_for_env(info, config, env_name)
     for origin in origins:
-        print(f"Local dev URL: {origin}", file=out)
+        print(f"Local dev URL: {origin}{suffix}", file=out)
 
 
 def ca_is_trusted() -> bool:

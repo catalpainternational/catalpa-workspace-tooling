@@ -255,11 +255,22 @@ def format_proxy_lan_urls(
     return urls
 
 
-def ca_download_url_for_ip(ip: str, info: dict[str, Any] | None = None) -> str:
-    """Plain-HTTP URL to download the local dev CA root (for one-time device trust)."""
+def ca_download_url_for_ip(ip: str, info: dict[str, Any] | None = None) -> str | None:
+    """Plain-HTTP URL to download the local dev CA root (for one-time device trust).
+
+    ``None`` when the proxy's HTTP host port is disabled (``CATALPA_LOCAL_PROXY_HTTP_PORT``)
+    — LAN auto-download needs plain HTTP reachable, since it fetches the CA itself, before
+    any device trusts it for HTTPS.
+    """
+    from catalpa_tooling.local_proxy import local_proxy_http_port  # avoid import cycle
+
+    http_port = local_proxy_http_port()
+    if http_port is None:
+        return None
     suffix = lan_dns_suffix_from_info(info or {})
     host = f"{ip_to_dns_label(ip)}.{suffix}"
-    return f"http://{host}{LOCAL_PROXY_CA_HTTP_PATH}"
+    port_suffix = "" if http_port == 80 else f":{http_port}"
+    return f"http://{host}{port_suffix}{LOCAL_PROXY_CA_HTTP_PATH}"
 
 
 def build_proxy_lan_env(
@@ -355,7 +366,13 @@ def print_proxy_lan_urls(
     ips = detect_dev_lan_ipv4()
     if ips:
         ca_url = ca_download_url_for_ip(ips[0], info)
-        print(f"  CA install: {ca_url}", file=out)
+        if ca_url:
+            print(f"  CA install: {ca_url}", file=out)
+        else:
+            print(
+                "  CA install: unavailable (CATALPA_LOCAL_PROXY_HTTP_PORT is disabled)",
+                file=out,
+            )
     return urls
 
 
