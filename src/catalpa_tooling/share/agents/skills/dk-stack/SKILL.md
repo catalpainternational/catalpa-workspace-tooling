@@ -1,6 +1,6 @@
 ---
 name: dk-stack
-description: How to bring up, reach and drive a catalpa-workspace-tooling project's local Docker stack (`uv run dk dev`), in the main checkout or a `dk worktree`. Use whenever asked to run, start, preview or screenshot the app, to run Django management commands, or to confirm a change in the running app. A project's own `run-app` skill, if present, adds what is specific to that project and wins where they disagree.
+description: How to bring up, reach and drive a catalpa-workspace-tooling project's local Docker stack (`uv run dk dev`), in the main checkout or a `dk worktree`. Use before starting any development task (to set up its worktree), and whenever asked to run, start, preview or screenshot the app, to run tests or Django management commands, to create or remove a worktree, or to confirm a change in the running app. A project's own `run-app` skill, if present, adds what is specific to that project and wins where they disagree.
 ---
 
 # Running a catalpa-workspace-tooling stack
@@ -17,6 +17,14 @@ run any `dk` command against it, and do not run fetches that read from it
 (`native fetch`, `dk <remote> db pgdump`), unless the user confirms target and
 action. See the `remote-environments` agent rule (`.cursor/rules/remote-environments.mdc`
 for Cursor, `.claude/rules/remote-environments.md` for Claude Code).
+
+## Starting a task
+
+If the project installs the `worktrees` agent rule (`.claude/rules/worktrees.md`,
+`.cursor/rules/worktrees.mdc`), every development task happens in its own
+`dk worktree`, never in the main checkout. Follow that rule first. In Claude
+Code, EnterWorktree and `claude --worktree` create one through the project's
+hooks.
 
 ## Which checkout are you in?
 
@@ -82,9 +90,19 @@ LAN devices, not this machine.
 ## Worktrees
 
 ```bash
-uv run dk worktree create <slug> --base-branch origin/<trunk> --up
+uv run dk worktree create <slug> --base-branch origin/<default-branch> --up
 uv run dk worktree remove <slug>         # stops the stack, keeps volumes; prints the volume rm
 ```
+
+- `<default-branch>` is the remote's default branch:
+  `gh repo view --json defaultBranchRef -q .defaultBranchRef.name`. The local
+  `origin/HEAD` can be years stale.
+- With the `worktrees` rule installed, Claude Code's `WorktreeCreate` and
+  `WorktreeRemove` hooks run `dk worktree claude-hook create|remove`.
+  - create: fetches and cuts from `origin/<default-branch>`, with no seed and
+    no stack.
+  - remove: stops the stack, keeps volumes, and deletes the branch only if
+    `git branch -d` allows it.
 
 - `create` seeds the database and media from the main checkout's `dev` stack,
   so the worktree starts with a **copy of main's data**, not trunk's seeders.
@@ -92,7 +110,7 @@ uv run dk worktree remove <slug>         # stops the stack, keeps volumes; print
 - `--up` brings up the new worktree's stack, not main's (fixed in 1.4.1).
 - `remove --wipe` destroys that worktree's database. Confirm with the user.
 - `--base-branch` defaults to `HEAD`, the main checkout's current branch,
-  however stale it is. Pass `--base-branch origin/<trunk>` explicitly.
+  however stale it is. Pass `--base-branch origin/<default-branch>` explicitly.
 - The overlay gives a worktree **one** primary hostname
   (`<project>-dev-<slug>.<base>`, plus role hosts such as `admin.`), and does
   **not** remap ports a compose file publishes on the host. A project that

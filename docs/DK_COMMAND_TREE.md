@@ -35,8 +35,9 @@ dk
 │   ├── list
 │   ├── info [slug]
 │   ├── seed [slug] [--db|--media] # copy main dev DB + media storage (slug from main checkout)
-│   └── remove <slug> [--wipe] [--keep-stack]  # down + git worktree remove; --wipe also drops
-│                                  # volumes (external: included); --keep-stack leaves it up
+│   ├── remove <slug> [--wipe] [--keep-stack]  # down + git worktree remove; --wipe also drops
+│   │                              # volumes (external: included); --keep-stack leaves it up
+│   └── claude-hook create|remove  # Claude Code WorktreeCreate/WorktreeRemove hook (JSON on stdin)
 │
 ├── context [--env NAME] [--json] [--status]  # every env's origins, compose project, local/remote;
 │                                  # worktree branch + base; config only unless --status
