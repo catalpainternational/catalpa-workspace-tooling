@@ -108,6 +108,34 @@ removing it would strand whatever could not be cleared under a name nothing can 
 
 ## Agents
 
-Prefer `dk worktree create --up` for parallel feature work. Each worktree gets `AGENTS.local.md` with slug, origins, and command hints. Use `dk worktree context --json` from automation. Control stacks with `dk worktree up/down` or `dk --worktree <slug> …` from the main checkout. Never use worktree overlays for remote deploy envs.
+A project that lists `worktrees` under `agents.rules` in `tooling.yaml` opts in to
+**worktree-first development**: agents do every development task in a `dk worktree`, never in
+the main checkout. `uv run setup-agents` installs the always-on `worktrees` rule (Cursor and
+Claude Code) and Claude Code's worktree hooks below.
+
+### Claude Code worktrees
+
+Claude Code makes its own worktrees with a plain `git worktree add` under `.claude/worktrees/`.
+That happens for `claude --worktree <name>`, EnterWorktree, and subagents with
+`isolation: worktree`. Such a worktree has no overlay, so it would share the main checkout's
+stack. With the `worktrees` rule, setup-agents adds two hooks to `.claude/settings.json`, and
+Claude Code runs them instead:
+
+| Hook | Runs | Does |
+|------|------|------|
+| `WorktreeCreate` | `dk worktree claude-hook create` | Asks `origin` for its default branch (`git ls-remote --symref`, since the local `origin/HEAD` can be stale), fetches it, and runs `dk worktree create <name> --base-branch origin/<default> --no-seed`. The new `.worktrees/<slug>` path is the only output on stdout; everything else goes to stderr. |
+| `WorktreeRemove` | `dk worktree claude-hook remove` | Runs `dk worktree remove <slug> -y`, which stops the stack and keeps its volumes. Then `git branch -d` on the worktree's branch, which keeps it unless it is merged or fully pushed. It refuses any path outside `.worktrees/`. |
+
+Some details:
+
+- The hooks run `uv run dk` in `$CLAUDE_PROJECT_DIR`, the main checkout, using that checkout's
+  installed tooling version.
+- No seed and no stack keeps parallel subagents cheap. Run `dk worktree seed <slug> -y` and
+  `dk worktree up <slug>` when the task needs the running app.
+- Claude Code doesn't remove subagents' worktrees. Remove them with `dk worktree remove`.
+- If the stack can't be stopped (for example, Docker isn't running), remove fails and leaves
+  the worktree in place, as `dk worktree remove` does.
+
+Without the rule: prefer `dk worktree create --up` for parallel feature work. Each worktree gets `AGENTS.local.md` with slug, origins, and command hints. Use `dk worktree context --json` from automation. Control stacks with `dk worktree up/down` or `dk --worktree <slug> …` from the main checkout. Never use worktree overlays for remote deploy envs.
 
 See also [AGENTS_AND_SECRETS.md](AGENTS_AND_SECRETS.md) and [DK_COMMAND_TREE.md](DK_COMMAND_TREE.md).

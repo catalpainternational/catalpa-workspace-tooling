@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from catalpa_tooling.agents_setup import (
+    CLAUDE_WORKTREE_HOOKS,
     MANAGED_MARKER,
     apply_remove,
     apply_setup,
@@ -434,3 +435,104 @@ def test_unreadable_settings_is_not_ready(tmp_path: Path, monkeypatch: pytest.Mo
     apply_setup(plan_setup())
     (tmp_path / ".claude/settings.json").write_text("{ not json", encoding="utf-8")
     assert not inspect_status().ready
+
+
+# --- Claude Code worktree hooks, installed with the worktrees rule --------------------------
+
+
+def _hooks(root: Path) -> dict:
+    return json.loads((root / ".claude/settings.json").read_text(encoding="utf-8")).get("hooks", {})
+
+
+def _hook_commands(root: Path, event: str) -> list[str]:
+    return [h["command"] for g in _hooks(root).get(event, []) for h in g["hooks"]]
+
+
+def test_worktrees_rule_installs_claude_worktree_hooks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path, agents="agents:\n  rules: [worktrees]\n")
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+
+    for event, command in CLAUDE_WORKTREE_HOOKS.items():
+        assert _hook_commands(tmp_path, event) == [command]
+    record = json.loads((tmp_path / ".claude/setup-agents.json").read_text(encoding="utf-8"))
+    assert record["hooks"] == CLAUDE_WORKTREE_HOOKS
+    # alwaysApply carries over: the Claude rule has no paths, so it loads every session
+    assert not (tmp_path / ".claude/rules/worktrees.md").read_text(encoding="utf-8").count("paths:")
+    assert inspect_status().ready
+    assert plan_setup().settings == ()
+
+
+def test_no_worktree_hooks_without_the_rule(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    apply_setup(plan_setup())
+    assert _hooks(tmp_path) == {}
+    record = json.loads((tmp_path / ".claude/setup-agents.json").read_text(encoding="utf-8"))
+    assert "hooks" not in record
+
+
+def test_worktree_hooks_keep_project_hooks_and_leave_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path, agents="agents:\n  rules: [worktrees]\n")
+    settings_path = tmp_path / ".claude/settings.json"
+    settings_path.parent.mkdir()
+    project = {
+        "hooks": {
+            "PostToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "fmt"}]}],
+            "WorktreeCreate": [{"hooks": [{"type": "command", "command": "project-own"}]}],
+        }
+    }
+    settings_path.write_text(json.dumps(project), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+    assert _hooks(tmp_path)["PostToolUse"] == project["hooks"]["PostToolUse"]
+    assert _hook_commands(tmp_path, "WorktreeCreate") == [
+        "project-own",
+        CLAUDE_WORKTREE_HOOKS["WorktreeCreate"],
+    ]
+
+    apply_remove(plan_remove())
+    assert json.loads(settings_path.read_text(encoding="utf-8")) == project
+
+
+def test_dropping_the_worktrees_rule_removes_its_hooks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path, agents="agents:\n  rules: [worktrees]\n")
+    monkeypatch.chdir(tmp_path)
+    apply_setup(plan_setup())
+
+    _write_repo(tmp_path)
+    assert not inspect_status().ready
+    apply_setup(plan_setup())
+    assert _hooks(tmp_path) == {}
+    assert not (tmp_path / ".claude/rules/worktrees.md").exists()
+    record = json.loads((tmp_path / ".claude/setup-agents.json").read_text(encoding="utf-8"))
+    assert "hooks" not in record
+    assert inspect_status().ready
+
+
+def test_hook_already_in_settings_stays_the_projects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_repo(tmp_path, agents="agents:\n  rules: [worktrees]\n")
+    settings_path = tmp_path / ".claude/settings.json"
+    settings_path.parent.mkdir()
+    command = CLAUDE_WORKTREE_HOOKS["WorktreeRemove"]
+    project = {"hooks": {"WorktreeRemove": [{"hooks": [{"type": "command", "command": command}]}]}}
+    settings_path.write_text(json.dumps(project), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    apply_setup(plan_setup())
+    assert _hook_commands(tmp_path, "WorktreeRemove") == [command]
+    record = json.loads((tmp_path / ".claude/setup-agents.json").read_text(encoding="utf-8"))
+    assert "WorktreeRemove" not in record["hooks"]
+
+    apply_remove(plan_remove())
+    assert json.loads(settings_path.read_text(encoding="utf-8")) == project

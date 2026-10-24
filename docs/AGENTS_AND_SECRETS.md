@@ -41,7 +41,7 @@ Claude Code, with a `.cursor/skills/<name>` symlink to the same directory for Cu
 | [`secrets-and-agents.mdc`](../src/catalpa_tooling/share/agents/rules/secrets-and-agents.mdc) | No decrypt/show of SOPS or env secrets |
 | [`remote-environments.mdc`](../src/catalpa_tooling/share/agents/rules/remote-environments.mdc) | No `dk staging`/`prod`, push, transfer, `clean-images --apply`, or fetch-from-prod without user confirmation |
 | [`smoke-tests.mdc`](../src/catalpa_tooling/share/agents/rules/smoke-tests.mdc) | Optional (`smoke-tests`) — `tests smoke` setup and when to run after tooling bumps ([SMOKE_TESTS.md](SMOKE_TESTS.md)) |
-| [`worktrees.mdc`](../src/catalpa_tooling/share/agents/rules/worktrees.mdc) | Optional (`worktrees`) — `dk worktree` for isolated local worktrees ([WORKTREES.md](WORKTREES.md)) |
+| [`worktrees.mdc`](../src/catalpa_tooling/share/agents/rules/worktrees.mdc) | Optional (`worktrees`). Always on: every development task in a `dk worktree`. Also installs Claude Code's worktree hooks ([WORKTREES.md](WORKTREES.md#agents)) |
 | [`oss-compliance.mdc`](../src/catalpa_tooling/share/agents/rules/oss-compliance.mdc) | Optional (`oss-compliance`) — `tests compliance` after dependency bumps ([COMPLIANCE.md](COMPLIANCE.md)) |
 | [`dk-stack` skill](../src/catalpa_tooling/share/agents/skills/dk-stack/SKILL.md) | Default skill — how an agent brings up, reaches and checks the local `dk dev` stack. Project specifics go in the consumer's own `run-app` skill beside it |
 
@@ -64,7 +64,7 @@ guardrails in its own formats:
 
 | Cursor | Claude Code | How |
 |--------|-------------|-----|
-| `.cursor/rules/<rule>.mdc` | `.claude/rules/<rule>.md` | Converted from the same source. A rule scoped by `globs` gets them as `paths:`. Every other rule loads at each session start, including ones Cursor applies only when the agent picks them by description (`worktrees`) |
+| `.cursor/rules/<rule>.mdc` | `.claude/rules/<rule>.md` | Converted from the same source. A rule scoped by `globs` gets them as `paths:`. Every other rule loads at each session start, including ones Cursor applies only when the agent picks them by description |
 | `.cursorignore` | `Read(...)` deny rules in `.claude/settings.json` | One rule per pattern, from the project's own `.cursorignore` if it has taken it over (marker deleted), otherwise from the bundled one. A pattern with a `/` is anchored at the directory Claude Code was started in, normally the repo root (`Read(/docker/envs/**/credentials.yaml)`). One without a `/` matches at any depth under that directory (`Read(.env)`) |
 
 `.claude/settings.json` is the project's file too: allow rules, env, hooks. `setup-agents` only adds
@@ -72,7 +72,13 @@ its own deny entries to `permissions.deny`, leaving everything else as it is. JS
 marker, so it lists the entries it added in `.claude/setup-agents.json`; commit that file with
 `settings.json`. Only recorded entries are ever removed: `--remove` takes them all out (deleting
 `settings.json` only if nothing else is left), and a run after a tooling bump drops any the new
-version no longer has. A deny entry the project already had is never recorded, so it stays. A
+version no longer has. A deny entry the project already had is never recorded, so it stays.
+
+With the `worktrees` rule selected, `setup-agents` also adds Claude Code's `WorktreeCreate` and
+`WorktreeRemove` hooks (`dk worktree claude-hook create|remove`), recorded under `hooks` in the
+same file. Dropping the rule takes them out again. A project's own hooks, including its own
+worktree hooks, are left alone. [WORKTREES.md](WORKTREES.md#claude-code-worktrees) covers what
+they do. A
 file that isn't a JSON object is reported, left alone, and fails `--status`; `--force` doesn't
 change that.
 

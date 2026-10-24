@@ -5,9 +5,11 @@ a file without it is the project's own and is left alone unless ``force`` is set
 
 Claude Code gets the same guardrails in its own formats: each Cursor rule is converted to
 ``.claude/rules/<rule>.md``, and the ``.cursorignore`` patterns become ``Read(...)`` deny rules
-merged into ``.claude/settings.json``. JSON has no comments, so that file carries no marker.
-Instead ``.claude/setup-agents.json`` records the deny entries setup-agents added: only those are
-ever removed, and everything else in ``settings.json`` is the project's.
+merged into ``.claude/settings.json``. With the ``worktrees`` rule, its ``WorktreeCreate`` and
+``WorktreeRemove`` hooks are merged there too, so Claude Code's own worktrees are dk worktrees.
+JSON has no comments, so that file carries no marker. Instead ``.claude/setup-agents.json``
+records the deny entries and hooks setup-agents added: only those are ever removed, and
+everything else in ``settings.json`` is the project's.
 """
 
 from __future__ import annotations
@@ -33,6 +35,11 @@ CLAUDE_RULES_DIR = Path(".claude/rules")
 CLAUDE_SETTINGS = Path(".claude/settings.json")
 CLAUDE_SETTINGS_RECORD = Path(".claude/setup-agents.json")
 CLAUDE_SKILLS_DIR = Path(".claude/skills")
+# Installed with the ``worktrees`` rule: Claude Code runs these instead of ``git worktree add``.
+CLAUDE_WORKTREE_HOOKS = {
+    "WorktreeCreate": 'cd "$CLAUDE_PROJECT_DIR" && uv run dk worktree claude-hook create',
+    "WorktreeRemove": 'cd "$CLAUDE_PROJECT_DIR" && uv run dk worktree claude-hook remove',
+}
 CURSOR_SKILLS_DIR = Path(".cursor/skills")
 
 MANAGED_MARKER = "Managed by catalpa-workspace-tooling setup-agents"
@@ -262,29 +269,42 @@ def _deny_rules(root: Path, *, force: bool = False) -> list[str]:
     return claude_deny_rules(_bundle().joinpath("cursorignore").read_text(encoding="utf-8"))
 
 
-def _read_record(root: Path) -> list[str]:
-    """Deny entries setup-agents added to settings.json on earlier runs."""
+def _claude_hooks(config: ProjectConfig) -> dict[str, str]:
+    """Hook command per event that settings.json should carry for this project."""
+    return dict(CLAUDE_WORKTREE_HOOKS) if "worktrees" in selected_rules(config) else {}
+
+
+def _read_record(root: Path) -> tuple[list[str], dict[str, str]]:
+    """Deny entries and hooks (event to command) setup-agents added to settings.json before."""
     try:
         data = json.loads((root / CLAUDE_SETTINGS_RECORD).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return []
-    deny = data.get("deny") if isinstance(data, dict) else None
-    return [r for r in deny if isinstance(r, str)] if isinstance(deny, list) else []
+        return [], {}
+    if not isinstance(data, dict):
+        return [], {}
+    deny = data.get("deny")
+    hooks = data.get("hooks")
+    return (
+        [r for r in deny if isinstance(r, str)] if isinstance(deny, list) else [],
+        {e: c for e, c in hooks.items() if isinstance(c, str)} if isinstance(hooks, dict) else {},
+    )
 
 
-def _record_text(rules: list[str]) -> str | None:
-    if not rules:
+def _record_text(rules: list[str], hooks: dict[str, str]) -> str | None:
+    if not rules and not hooks:
         return None
-    return json.dumps(
-        {
-            "_comment": (
-                "Written by catalpa-workspace-tooling setup-agents: the permissions.deny entries "
-                "it added to settings.json, so it removes only those. Commit it with settings.json."
-            ),
-            "deny": rules,
-        },
-        indent=2,
-    ) + "\n"
+    record: dict = {
+        "_comment": (
+            "Written by catalpa-workspace-tooling setup-agents: the permissions.deny entries and "
+            "hooks it added to settings.json, so it removes only those. Commit it with "
+            "settings.json."
+        ),
+    }
+    if rules:
+        record["deny"] = rules
+    if hooks:
+        record["hooks"] = hooks
+    return json.dumps(record, indent=2) + "\n"
 
 
 def _read_settings(path: Path) -> dict | None:
@@ -300,6 +320,9 @@ def _read_settings(path: Path) -> dict | None:
     permissions = data.get("permissions", {})
     if not isinstance(permissions, dict) or not isinstance(permissions.get("deny", []), list):
         return None
+    hooks = data.get("hooks", {})
+    if not isinstance(hooks, dict) or not all(isinstance(g, list) for g in hooks.values()):
+        return None
     return data
 
 
@@ -311,22 +334,59 @@ def _settings_text(data: dict) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
-def _settings_change(root: Path, rules: list[str]) -> list[SettingsChange]:
-    """Bring settings.json's deny list to ``rules``, touching only entries setup-agents added.
+def _has_hook(data: dict, event: str, command: str) -> bool:
+    return any(
+        isinstance(group, dict)
+        and any(isinstance(h, dict) and h.get("command") == command for h in group.get("hooks", []))
+        for group in data.get("hooks", {}).get(event, [])
+    )
 
-    A wanted entry the project already had stays the project's and is not recorded. A recorded
-    entry no longer wanted (a pattern changed upstream, or ``--remove`` passing no rules) is
-    taken out. Returns changes for settings.json and the record, empty when nothing changes.
+
+def _drop_hook(data: dict, event: str, command: str) -> None:
+    """Take ``command`` out of ``event``, then any group, event or ``hooks`` it leaves empty."""
+    groups = []
+    for group in data["hooks"].get(event, []):
+        if isinstance(group, dict) and isinstance(group.get("hooks"), list):
+            kept = [
+                h
+                for h in group["hooks"]
+                if not (isinstance(h, dict) and h.get("command") == command)
+            ]
+            if not kept:
+                continue
+            group = {**group, "hooks": kept}
+        groups.append(group)
+    if groups:
+        data["hooks"][event] = groups
+    else:
+        data["hooks"].pop(event, None)
+    if not data["hooks"]:
+        del data["hooks"]
+
+
+def _settings_change(
+    root: Path, rules: list[str], hooks: dict[str, str] | None = None
+) -> list[SettingsChange]:
+    """Bring settings.json's deny list to ``rules`` and its hooks to ``hooks``.
+
+    Only entries setup-agents added are touched. A wanted entry the project already had stays
+    the project's and is not recorded. A recorded entry no longer wanted (a pattern changed
+    upstream, the ``worktrees`` rule dropped, or ``--remove`` passing nothing) is taken out.
+    Returns changes for settings.json and the record, empty when nothing changes.
     """
+    hooks = hooks or {}
     path = root / CLAUDE_SETTINGS
     data = _read_settings(path)
     if data is None:
         return []
-    record = _read_record(root)
+    record, hook_record = _read_record(root)
     deny = list(_deny_list(data))
     stale = [r for r in record if r not in rules]
     added = [r for r in rules if r not in deny]
     new_record = [r for r in record if r in rules] + added
+    stale_hooks = {e: c for e, c in hook_record.items() if hooks.get(e) != c}
+    added_hooks = {e: c for e, c in hooks.items() if not _has_hook(data, e, c)}
+    new_hook_record = {e: c for e, c in hook_record.items() if e not in stale_hooks} | added_hooks
     changes: list[SettingsChange] = []
     if stale or added:
         deny = [r for r in deny if r not in stale] + added
@@ -337,10 +397,25 @@ def _settings_change(root: Path, rules: list[str]) -> list[SettingsChange]:
             permissions.pop("deny", None)
             if not permissions:
                 del data["permissions"]
+    if stale_hooks or added_hooks:
+        data.setdefault("hooks", {})
+        for event, command in stale_hooks.items():
+            _drop_hook(data, event, command)
+        for event, command in added_hooks.items():
+            data.setdefault("hooks", {}).setdefault(event, []).append(
+                {"hooks": [{"type": "command", "command": command}]}
+            )
+    if stale or added or stale_hooks or added_hooks:
         changes.append(SettingsChange(path=path, content=_settings_text(data) if data else None))
-    if new_record != record or (not new_record and (root / CLAUDE_SETTINGS_RECORD).exists()):
+    record_exists = (root / CLAUDE_SETTINGS_RECORD).exists()
+    if (new_record, new_hook_record) != (record, hook_record) or (
+        not new_record and not new_hook_record and record_exists
+    ):
         changes.append(
-            SettingsChange(path=root / CLAUDE_SETTINGS_RECORD, content=_record_text(new_record))
+            SettingsChange(
+                path=root / CLAUDE_SETTINGS_RECORD,
+                content=_record_text(new_record, new_hook_record),
+            )
         )
     return changes
 
@@ -425,7 +500,8 @@ def inspect_status(*, repo_root: Path | None = None) -> AgentsSetupStatus:
             present=settings_path.is_file(),
             # Readable, so setup-agents can merge into it.
             managed=settings is not None,
-            current=settings is not None and not _settings_change(root, _deny_rules(root)),
+            current=settings is not None
+            and not _settings_change(root, _deny_rules(root), _claude_hooks(config)),
             ownable=False,
         )
     )
@@ -484,7 +560,9 @@ def plan_setup(*, repo_root: Path | None = None, force: bool = False) -> AgentsS
         links=tuple(new_links),
         removals=tuple(removals),
         skipped=tuple(skipped),
-        settings=tuple(_settings_change(root, _deny_rules(root, force=force))),
+        settings=tuple(
+            _settings_change(root, _deny_rules(root, force=force), _claude_hooks(config))
+        ),
     )
 
 
