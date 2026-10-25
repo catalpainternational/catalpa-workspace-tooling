@@ -243,6 +243,19 @@ class TestPgbackrestVolumeConfig(unittest.TestCase):
         text = render_pgbackrest_ini("write", vm, {})
         self.assertIn("repo1-retention-full=14", text)
 
+    def test_render_pgbackrest_diff_retention_only_when_set(self) -> None:
+        vm = {
+            "BUCKET": "b",
+            "REGION": "r",
+            "KEY": "k",
+            "SECRET": "s",
+            "REPO_PATH": "/p",
+            "STANZA": "main",
+        }
+        self.assertNotIn("repo1-retention-diff", render_pgbackrest_ini("write", vm, {}))
+        text = render_pgbackrest_ini("write", vm, {"PGBR_REPO1_RETENTION_DIFF": "5"})
+        self.assertIn("repo1-retention-diff=5", text)
+
     def test_render_pgbackrest_tuning_env_override(self) -> None:
         vm = {
             "BUCKET": "b",

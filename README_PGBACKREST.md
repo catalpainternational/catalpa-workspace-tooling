@@ -241,6 +241,7 @@ Not part of `pgbr_s3_write_*`; set in credentials or `info.yaml` env (uppercase)
 - `PGBR_REPO1_BUNDLE`, `PGBR_REPO1_BLOCK`, `PGBR_ARCHIVE_ASYNC` — `y`/`n`
 - `PGBR_PROCESS_MAX`, `PGBR_COMPRESS_LEVEL`
 - `PGBR_REPO1_RETENTION_FULL_TYPE`, `PGBR_REPO1_RETENTION_FULL`
+- `PGBR_REPO1_RETENTION_DIFF` — differential backups to keep; left unset, pgBackRest's default applies
 
 See [`pgbackrest_volume_config.py`](src/catalpa_tooling/pgbackrest_volume_config.py).
 

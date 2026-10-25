@@ -547,7 +547,8 @@ def render_pgbackrest_ini(
 
     Optional process env (same dict as deploy ``env_add``) can override tuning via
     ``PGBR_REPO1_BUNDLE``, ``PGBR_REPO1_BLOCK``, ``PGBR_PROCESS_MAX``, ``PGBR_ARCHIVE_ASYNC``,
-    ``PGBR_COMPRESS_LEVEL``, ``PGBR_REPO1_RETENTION_FULL_TYPE``, ``PGBR_REPO1_RETENTION_FULL``.
+    ``PGBR_COMPRESS_LEVEL``, ``PGBR_REPO1_RETENTION_FULL_TYPE``, ``PGBR_REPO1_RETENTION_FULL``,
+    ``PGBR_REPO1_RETENTION_DIFF`` (written only when set).
     ``PGBR_S3_*_RETENTION_FULL`` (suffix ``RETENTION_FULL``) still overrides the numeric
     retention when set.
     """
@@ -574,6 +575,8 @@ def render_pgbackrest_ini(
     )
     ret_full = vars_map.get("RETENTION_FULL") or _env_str(env, "PGBR_REPO1_RETENTION_FULL", "30")
     lines.append(f"repo1-retention-full={ret_full}")
+    if ret_diff := str(env.get("PGBR_REPO1_RETENTION_DIFF") or "").strip():
+        lines.append(f"repo1-retention-diff={ret_diff}")
 
     from catalpa_tooling.dc_backup.hosts import DC_BACKUP_CA_CONTAINER_PATH, dc_backup_ca_host_path
 
