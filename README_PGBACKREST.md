@@ -62,11 +62,7 @@ pgbr_s3_write_stanza: main
 
 Set optional `DOCKER_ADD_HOST` in `info.yaml` `env:` when the S3 endpoint is a hostname (not needed for bare IP). When `dc-backup-tls.yaml` exists, `DC_BACKUP_CA_FILE` defaults to `{ops.config_dir}/tls/dc-backup-ca.crt` so the `db` container and stanza-create runs mount the CA and emit `repo1-storage-ca-file`. Recreate `db` after `dc-backup install`.
 
-Decrypt locally with your SOPS age key, or:
-
-```bash
-sops exec-env docker/envs/prod/credentials.yaml -- dk prod …
-```
+`dk` decrypts `credentials.yaml` itself with your SOPS age key. `PGBR_S3_*` values set in your shell are not read, so `sops exec-env … -- dk …` does not supply them.
 
 ### READ mode (restore-only hosts)
 
@@ -92,7 +88,7 @@ digitalocean:
     pgbackrest_repo_path: /marktwain/prod/pgbackrest
 ```
 
-Override binaries with `DOCTL_BIN` / `S3CMD_BIN`. Use global `--yes` to accept provisioning without typing `y`. `bkp_db pgdump` / bare `configure` do not trigger provisioning.
+Override binaries with `DOCTL_BIN` / `S3CMD_BIN`. Use `dk <env> --yes` to accept provisioning without typing `y`. `bkp_db pgdump` / bare `configure` do not trigger provisioning.
 
 ## `tooling.yaml` (`ops.pgbackrest`)
 
@@ -190,9 +186,9 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `pgdump [args…]` | `pg_dump` via compose |
 | `restore [--dumps] [--file ARCHIVE] [pgBackRest args…]` | `--file ARCHIVE` restores the app DB from that custom-format dump; `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured) without consulting pgBackRest or auto-fetching. Either way `db` is started if needed, the app DB is dropped and recreated first, and when `native.reset_db.postgis` is true PostGIS is pre-created and its catalog tables granted to the app user (compose restore defaults to `--role postgres` unless `native.reset_db.restore_as_super` is true or `pg_restore_args` sets `--role`). With neither flag: offline pgBackRest restore of **this stack’s** backups (`--dry-run` prints stanza, repo path, and compose command). Not for Ansible/Debian package clusters — use `restore --dumps` / `restore --file` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)). |
 
-On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
+On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With **`dk <env> --yes`**, configure runs automatically without the y/n prompt.
 
-Offline restore may require global `dk --yes` when not attached to a TTY.
+Offline restore may require `dk <env> --yes` when not attached to a TTY.
 
 After a successful **`restore`**, the tooling may run project-configured hooks (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …` or the relevant SQL file.
 

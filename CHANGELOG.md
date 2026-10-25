@@ -64,6 +64,24 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- `bkp_db version` no longer passes `--stanza`, which `pgbackrest version` rejects, and runs
+  without pgBackRest keys.
+
+- `bkp_db check` and `bkp_db configure verify` skip `pgbackrest check` on a restore-only (READ
+  mode) host and say why: that check needs WAL archiving, which a reader never turns on.
+
+- `db restore --dry-run` with no pgBackRest keys and no local dump says it would fetch, instead of
+  fetching. A fetch that has no SSH host configured is a one-line error, not a traceback.
+
+- `clean-images` skips a package GitHub cannot find (404: never published, or the token cannot
+  see it) instead of stopping, and exits 1 when it finds none of them.
+
+- `db pgdump -- <pg_dump flags>` no longer passes the `--` on to `pg_dump`.
+
+- The backup and media READMEs named a global `dk --yes` and a `sops exec-env … -- dk` pattern;
+  neither exists. They now say `dk <env> --yes`, and that `PGBR_S3_*` values set in the shell are
+  not read.
+
 - An upper-case `DOMAIN` under `env:` in an environment's `info.yaml` is used as given instead
   of the site addresses, so projects that read `DOMAIN` as one hostname can list several
   `site_origin` entries.

@@ -122,18 +122,25 @@ def _compose_exec_pgbackrest(
     compose_file: str,
     env: dict[str, str],
     *pgbackrest_rest: str,
+    stanza: bool = True,
 ) -> int:
     """``docker compose exec -T -u postgres db pgbackrest …`` (db must be running).
+
+    ``stanza=False`` leaves out ``--stanza``, which commands such as ``version`` reject, and
+    skips the repository settings check, since such commands never reach the repository.
 
     The ``db`` service often runs as root (entrypoint fixes volume permissions); pgBackRest
     must run as ``postgres`` to connect via the local socket (see systemd/pgbackrest-backup.sh).
     """
-    err = validate_pgbackrest_env(env)
-    if err:
-        print(err, file=sys.stderr)
-        return 1
-    stanza = resolve_stanza(env)
-    assert stanza  # validated above
+    stanza_argv: list[str] = []
+    if stanza:
+        err = validate_pgbackrest_env(env)
+        if err:
+            print(err, file=sys.stderr)
+            return 1
+        stanza_name = resolve_stanza(env)
+        assert stanza_name  # validated above
+        stanza_argv = [f"--stanza={stanza_name}"]
     argv = [
         "docker",
         "compose",
@@ -146,7 +153,7 @@ def _compose_exec_pgbackrest(
         "db",
         "pgbackrest",
         *_log_level_argv(env),
-        f"--stanza={stanza}",
+        *stanza_argv,
         *pgbackrest_rest,
     ]
     r = run_cmd(
@@ -471,6 +478,13 @@ def run_info(compose_file: str, env: dict[str, str]) -> int:
 
 
 def run_check_online(compose_file: str, env: dict[str, str]) -> int:
+    if resolve_mode(env) == "read":
+        print(
+            "pgBackRest check: skipped in READ mode. `pgbackrest check` tests WAL archiving, "
+            "which a restore-only host never does; use `bkp_db info` and look for `status: ok` to test the repository.",
+            file=sys.stderr,
+        )
+        return 0
     return _compose_exec_pgbackrest(compose_file, env, "check")
 
 
@@ -493,11 +507,14 @@ def run_configure_verify_online_check(compose_file: str, env: dict[str, str]) ->
 
 
 def run_version(compose_file: str, env: dict[str, str]) -> int:
-    return _compose_exec_pgbackrest(compose_file, env, "version")
+    return _compose_exec_pgbackrest(compose_file, env, "version", stanza=False)
 
 
 def _pg_dump_inner_script(extra_pg_dump_args: Sequence[str] | None) -> str:
-    extras = tuple(extra_pg_dump_args or ())
+    extras = list(extra_pg_dump_args or ())
+    # `dk <env> db pgdump -- --schema-only`: the `--` only separates dk's flags from pg_dump's.
+    while extras and extras[0] == "--":
+        extras.pop(0)
     inner = (
         _DJANGO_APP_SHELL_VARS
         + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
