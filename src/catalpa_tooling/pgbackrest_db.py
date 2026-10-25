@@ -420,7 +420,7 @@ def _pg_restore_compose_inner_script(
 ) -> str:
     """Shell script run in the ``db`` container to execute ``pg_restore``."""
     shell_vars = _db_shell_vars(target)
-    pg_restore_cmd = 'pg_restore -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB"'
+    pg_restore_cmd = 'pg_restore -U postgres -d "$APP_DB"'
     if extras:
         pg_restore_cmd += " " + " ".join(shlex.quote(a) for a in extras)
     pg_restore_cmd += _pg_restore_compose_role_suffix(
@@ -433,25 +433,23 @@ def _pg_restore_compose_inner_script(
     if not promote_app_superuser:
         return (
             shell_vars
-            + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
             + pg_restore_cmd
         )
 
     return f"""set -eu
 {shell_vars}
-export PGPASSWORD="$POSTGRES_PASSWORD"
 _promoted=0
 demote_app_user() {{
   if [ "$_promoted" -eq 1 ]; then
-    psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=0 \\
+    psql -U postgres -d postgres -v ON_ERROR_STOP=0 \\
       -c "ALTER ROLE \\"$APP_USER\\" NOSUPERUSER;" >/dev/null 2>&1 || true
   fi
 }}
 trap demote_app_user EXIT
-_super=$(psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atqc \\
+_super=$(psql -U postgres -d postgres -Atqc \\
   "SELECT rolsuper FROM pg_roles WHERE rolname = '$APP_USER'")
 if [ "$_super" != "t" ]; then
-  psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 \\
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \\
     -c "ALTER ROLE \\"$APP_USER\\" SUPERUSER;"
   _promoted=1
 fi
@@ -517,8 +515,7 @@ def _pg_dump_inner_script(extra_pg_dump_args: Sequence[str] | None) -> str:
         extras.pop(0)
     inner = (
         _DJANGO_APP_SHELL_VARS
-        + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
-        + 'exec pg_dump -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -Fc'
+        + 'exec pg_dump -U postgres -d "$APP_DB" -Fc'
     )
     if extras:
         inner = inner + " " + " ".join(shlex.quote(a) for a in extras)
@@ -532,7 +529,7 @@ def run_pg_dump(
 ) -> int:
     """Run ``pg_dump`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``); stream to stdout.
 
-    Uses the superuser inside the container (``postgres`` / ``POSTGRES_PASSWORD``). Optional
+    Runs as the ``postgres`` superuser over the container's local socket. Optional
     ``extra_pg_dump_args`` are appended (shell-quoted). Command echo is suppressed so stdout is
     suitable for ``> file`` or piping.
     """
@@ -545,6 +542,8 @@ def run_pg_dump(
             compose_file,
             "exec",
             "-T",
+            "-u",
+            "postgres",
             "db",
             "sh",
             "-c",
@@ -576,6 +575,8 @@ def run_pg_dump_to_file(
         compose_file,
         "exec",
         "-T",
+        "-u",
+        "postgres",
         "db",
         "sh",
         "-c",
@@ -662,10 +663,9 @@ def run_drop_create_app_database(
     shell_vars = _db_shell_vars(target)
     script = f"""set -eu
 {shell_vars}
-export PGPASSWORD="$POSTGRES_PASSWORD"
-dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
-createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
-psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
+dropdb -U postgres --if-exists --force "$APP_DB"
+createdb -U postgres -O "$APP_USER" "$APP_DB"
+psql -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
 {psql_body}
 EOF
 """
@@ -677,6 +677,8 @@ EOF
             compose_file,
             "exec",
             "-T",
+            "-u",
+            "postgres",
             "db",
             "sh",
             "-c",
@@ -862,6 +864,8 @@ def run_pg_restore(
                     compose_file,
                     "exec",
                     "-T",
+                    "-u",
+                    "postgres",
                     "db",
                     "sh",
                     "-c",

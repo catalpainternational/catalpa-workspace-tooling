@@ -138,4 +138,5 @@ def test_pg_restore_inner_script_skips_promotion_when_disabled() -> None:
         restore_as_super=False,
     )
     assert "SUPERUSER" not in script
-    assert "pg_restore -h" in script
+    assert 'pg_restore -U postgres -d "$APP_DB"' in script
+    assert "PGPASSWORD" not in script
