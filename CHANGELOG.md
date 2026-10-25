@@ -19,6 +19,10 @@
   - The `dk-stack` skill now triggers on starting a development task and points to the rule.
     See [docs/WORKTREES.md](docs/WORKTREES.md#claude-code-worktrees).
 
+- `paths.env_local` (default `.env.local`), `paths.deploy.dev_compose` (default: the
+  `default_compose` file) and `ops.zabbix` are optional. Without `ops.zabbix`, the Zabbix agent
+  commands fail with an error naming the section to add.
+
 ### Fixed
 
 - **Restic can back up more than one file volume.** `ops.restic.data_volume` names exactly
@@ -57,7 +61,6 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
-
 ## 1.6.1
 
 ### Added
