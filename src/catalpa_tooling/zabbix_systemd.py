@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
+from catalpa_tooling.config import ProjectConfigError
 from catalpa_tooling.restic_files import RESTIC_IMAGE
 from catalpa_tooling.run_cmd import run as run_cmd
 
@@ -1037,12 +1038,18 @@ def _apply_config_globals(config: ProjectConfig) -> None:
     """Bind module paths and unit names from ``tooling.yaml`` (single-threaded CLI)."""
     global UNIT_NAME, UNIT_DESCRIPTION_LABEL, SYSTEMD_UNIT_PATH, ENV_DIR, ENV_FILE, USERPARAMS_FILE
     global DEFAULT_ZABBIX_COMPOSE_PROJECT, DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE
-    UNIT_NAME = config.ops.zabbix.unit_name
+    zabbix = config.ops.zabbix
+    if zabbix is None:
+        raise ProjectConfigError(
+            "tooling.yaml has no `ops.zabbix:` section (unit_name, userparams_file); "
+            "add it to run the Zabbix agent commands."
+        )
+    UNIT_NAME = zabbix.unit_name
     UNIT_DESCRIPTION_LABEL = config.meta.name
     SYSTEMD_UNIT_PATH = Path("/etc/systemd/system") / UNIT_NAME
     ENV_DIR = Path(config.ops.config_dir)
     ENV_FILE = ENV_DIR / "zabbix-agent2.docker.env"
-    USERPARAMS_FILE = ENV_DIR / config.ops.zabbix.userparams_file
+    USERPARAMS_FILE = ENV_DIR / zabbix.userparams_file
     DEFAULT_ZABBIX_COMPOSE_PROJECT = config.stack.compose_project_default
     DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE = str(ENV_DIR / "restic-files-backup.env")
 
