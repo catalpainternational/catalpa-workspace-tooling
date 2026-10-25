@@ -61,6 +61,10 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- An upper-case `DOMAIN` under `env:` in an environment's `info.yaml` is used as given instead
+  of the site addresses, so projects that read `DOMAIN` as one hostname can list several
+  `site_origin` entries.
+
 ## 1.6.1
 
 ### Added

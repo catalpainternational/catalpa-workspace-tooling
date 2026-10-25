@@ -159,6 +159,49 @@ def test_load_managed_deploy_context_sets_domain_and_site_origin(
     assert ctx.env_add["DOMAIN"] == "web.example.com, api.example.com"
 
 
+def test_load_managed_deploy_context_keeps_domain_from_info_env(minimal_project) -> None:
+    """A project whose DOMAIN is one hostname sets it in info.yaml; site origins must not replace it."""
+    env_dir = minimal_project.deploy_envs_dir / "local"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "info.yaml").write_text(
+        "name: local\n"
+        "site_origin:\n"
+        "  - https://web.example.com\n"
+        "  - https://api.example.com\n"
+        "env:\n"
+        "  DOMAIN: web.example.com\n"
+        "local_proxy:\n"
+        "  enabled: false\n"
+        "credentials_decrypt_optional: true\n",
+        encoding="utf-8",
+    )
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["DOMAIN"] == "web.example.com"
+
+
+def test_load_managed_deploy_context_legacy_lowercase_domain_gives_way_to_site_origin(
+    minimal_project,
+) -> None:
+    env_dir = minimal_project.deploy_envs_dir / "local"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "info.yaml").write_text(
+        "name: local\n"
+        "site_origin:\n"
+        "  - https://new.example.com\n"
+        "  - https://api.example.com\n"
+        "env:\n"
+        "  domain: old.example.com\n"
+        "local_proxy:\n"
+        "  enabled: false\n"
+        "credentials_decrypt_optional: true\n",
+        encoding="utf-8",
+    )
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["DOMAIN"] == "new.example.com, api.example.com"
+
+
 def test_load_managed_deploy_context_redirect_origins_not_in_domain(
     minimal_project,
 ) -> None:
