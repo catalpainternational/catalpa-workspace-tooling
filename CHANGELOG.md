@@ -19,6 +19,9 @@
   - The `dk-stack` skill now triggers on starting a development task and points to the rule.
     See [docs/WORKTREES.md](docs/WORKTREES.md#claude-code-worktrees).
 
+- `PGBR_REPO1_RETENTION_DIFF` sets how many differential pgBackRest backups to keep. Left unset,
+  nothing changes.
+
 - `paths.env_local` (default `.env.local`), `paths.deploy.dev_compose` (default: the
   `default_compose` file) and `ops.zabbix` are optional. Without `ops.zabbix`, the Zabbix agent
   commands fail with an error naming the section to add.
