@@ -64,6 +64,12 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- Restore hooks (`ops.post_db_restore` `db_psql`), `db pgdump`, `db restore` from dumps and the
+  database reset before it connect as `postgres` over the `db` container's local socket, not with
+  `POSTGRES_PASSWORD` over TCP. A cluster restored from another host keeps that host's postgres
+  password, so these failed on images whose `pg_hba.conf` asks for a password on 127.0.0.1. The
+  `db` image needs a `postgres` OS user, which pgBackRest commands already required.
+
 - `bkp_db version` no longer passes `--stanza`, which `pgbackrest version` rejects, and runs
   without pgBackRest keys.
 

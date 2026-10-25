@@ -97,8 +97,10 @@ class TestDropCreateAppDatabase(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(calls), 1)
         self.assertEqual(
-            calls[0][:9],
-            ["docker", "compose", "-f", "compose.yml", "exec", "-T", "db", "sh", "-c"],
+            calls[0][:11],
+            # As postgres over the socket: a cluster restored from another host keeps that
+            # host's postgres password, so a password over TCP cannot be relied on.
+            ["docker", "compose", "-f", "compose.yml", "exec", "-T", "-u", "postgres", "db", "sh", "-c"],
         )
         script = calls[0][-1]
         self.assertIn("dropdb", script)
@@ -108,6 +110,8 @@ class TestDropCreateAppDatabase(unittest.TestCase):
         self.assertIn('APP_USER="${DJANGO_APP_DB_USER:-${DJANGO_DB_USER', script)
         self.assertIn('"$APP_DB"', script)
         self.assertNotIn("postgis", script)
+        self.assertNotIn("PGPASSWORD", script)
+        self.assertNotIn("-h ", script)
 
 
 class TestLogLevelArgvShell(unittest.TestCase):
