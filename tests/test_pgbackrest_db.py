@@ -28,6 +28,10 @@ class TestPgDumpInnerScript(unittest.TestCase):
         self.assertIn('-d "$APP_DB"', script)
         self.assertNotIn('"$DJANGO_APP_DB"', script)
 
+    def test_leading_double_dash_is_not_passed_to_pg_dump(self) -> None:
+        script = _pg_dump_inner_script(["--", "--schema-only"])
+        self.assertTrue(script.endswith("-Fc --schema-only"), script)
+
 
 class TestComposeExecPgbackrest(unittest.TestCase):
     def test_backup_runs_as_postgres_user(self) -> None:
@@ -426,6 +430,68 @@ class TestRunRestoreOfflinePostHooks(unittest.TestCase):
             env_add={"PGBR_STANZA": "main"},
             env_name="dev",
         )
+
+
+
+
+_READ_ENV = {
+    "PGBR_S3_READ_BUCKET": "b",
+    "PGBR_S3_READ_REGION": "r",
+    "PGBR_S3_READ_KEY": "k",
+    "PGBR_S3_READ_SECRET": "s",
+    "PGBR_S3_READ_REPO_PATH": "/p",
+    "PGBR_S3_READ_STANZA": "main",
+}
+
+
+class TestVersionAndReadModeCheck(unittest.TestCase):
+    def test_version_passes_no_stanza(self) -> None:
+        """`pgbackrest version` rejects --stanza (ERROR [031])."""
+        from catalpa_tooling.pgbackrest_db import run_version
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+            calls.append(list(cmd))
+            return MagicMock(returncode=0)
+
+        with patch("catalpa_tooling.pgbackrest_db.run_cmd", side_effect=fake_run):
+            self.assertEqual(run_version("compose.yml", dict(_READ_ENV)), 0)
+        self.assertEqual(calls[0][-1], "version")
+        self.assertFalse([a for a in calls[0] if a.startswith("--stanza")])
+
+    def test_check_is_skipped_in_read_mode(self) -> None:
+        """`pgbackrest check` needs archive_mode on, which a reader never has."""
+        from catalpa_tooling.pgbackrest_db import run_check_online
+
+        with (
+            patch("catalpa_tooling.pgbackrest_db.run_cmd") as run,
+            patch("sys.stderr", new_callable=StringIO) as err,
+        ):
+            self.assertEqual(run_check_online("compose.yml", dict(_READ_ENV)), 0)
+        run.assert_not_called()
+        self.assertIn("READ mode", err.getvalue())
+
+    def test_version_runs_without_repository_settings(self) -> None:
+        from catalpa_tooling.pgbackrest_db import run_version
+
+        with patch(
+            "catalpa_tooling.pgbackrest_db.run_cmd", return_value=MagicMock(returncode=0)
+        ) as run:
+            self.assertEqual(run_version("compose.yml", {}), 0)
+        self.assertEqual(run.call_args.args[0][-1], "version")
+
+    def test_check_runs_in_write_mode(self) -> None:
+        from catalpa_tooling.pgbackrest_db import run_check_online
+
+        write_env = {k.replace("_READ_", "_WRITE_"): v for k, v in _READ_ENV.items()}
+        with patch(
+            "catalpa_tooling.pgbackrest_db.run_cmd", return_value=MagicMock(returncode=0)
+        ) as run:
+            self.assertEqual(run_check_online("compose.yml", write_env), 0)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[-1], "check")
+        self.assertIn("--stanza=main", argv)
 
 
 if __name__ == "__main__":

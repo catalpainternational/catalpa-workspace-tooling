@@ -130,7 +130,7 @@ When WRITE-mode `restic_write_*` keys are missing, `dk <env> bkp_files …` can 
 | `restore [SNAPSHOT]` | Restore a snapshot **this stack** wrote into staging volume / media (destructive; confirms by env name). Not for Ansible/host-path snapshots — see [below](#ansible--host-path-snapshots). |
 | `install-systemd [--dry-run] [--enable]` | Install timer on deploy host ([README_SYSTEMD.md](README_SYSTEMD.md)) |
 
-`restore` refuses to run without a TTY unless you pass global `dk --yes`. Scheduled `backup` via systemd stays quiet unless `ops.restic.verbose` is set in `tooling.yaml`.
+`restore` refuses to run without a TTY unless you pass `dk <env> --yes`. Scheduled `backup` via systemd stays quiet unless `ops.restic.verbose` is set in `tooling.yaml`.
 
 ## Ansible / host-path snapshots
 

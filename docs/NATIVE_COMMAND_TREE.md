@@ -124,7 +124,7 @@ Requires `rsync` and `ssh` on PATH.
 uv run dk local bkp_files push
 ```
 
-Default source is the same directory as `fetch media` (`native.fetch_media.dest`, typically `./media/`). Uses rsync (incremental; `--delete` mirrors the host tree). On macOS Docker Desktop, rsync runs inside a one-off container. Fallback: `--method tar`. Confirm by typing the env name, or `dk --yes`.
+Default source is the same directory as `fetch media` (`native.fetch_media.dest`, typically `./media/`). Uses rsync (incremental; `--delete` mirrors the host tree). On macOS Docker Desktop, rsync runs inside a one-off container. Fallback: `--method tar`. Confirm by typing the env name, or pass `dk <env> --yes`.
 
 ## `reset-db`
 
