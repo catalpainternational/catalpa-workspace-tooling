@@ -64,6 +64,12 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- `db restore` checks, before asking you to type the environment's name or stopping `db`, that the newest backup
+  is from the same PostgreSQL major as the `db` image, and refuses when it is not (not checked
+  with `--set` or a point-in-time `--target`, which pick another backup). While `db` recovers, the wait stops as soon
+  as PostgreSQL says the data is from another version or `db` restarts, instead of waiting out
+  `PGBR_RESTORE_RECOVERY_TIMEOUT_SEC` (an hour by default).
+
 - A stack role that runs a stock image (no `build:`, like a dev stack's Caddy) no longer gets
   dk's image labels, which gave it an empty build and failed `dk <env> up` with
   `open Dockerfile: no such file or directory`.
