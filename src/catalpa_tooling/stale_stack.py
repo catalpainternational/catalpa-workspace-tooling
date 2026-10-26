@@ -151,8 +151,9 @@ def label_target_services(
 ) -> tuple[str, ...]:
     """Every service that builds a stack image, derived from the resolved compose config.
 
-    The three stack roles are always included, so a project whose compose cannot be resolved —
-    or whose docker is unavailable — gets exactly the previous behaviour rather than an error.
+    The three stack roles are included, except any role the resolved compose config runs from a
+    stock image with no ``build:``. A project whose compose cannot be resolved — or whose docker
+    is unavailable — keeps all three, exactly the previous behaviour, rather than an error.
     Anything else that builds the same tag is added, because compose builds that tag once per
     service and the last build owns it: a co-builder without the override silently strips the
     labels off an image dk just stamped (#99).
@@ -167,6 +168,14 @@ def label_target_services(
         return tuple(names)
 
     resolved = _compose_config(config, compose_file, env_add or {})
+    services = resolved.get("services")
+    if isinstance(services, dict):
+        # A role that runs a stock image (a dev stack's Caddy, say) has nothing to build. The
+        # override would give it a `build:` with no context, and compose fails looking for a
+        # Dockerfile the project never had.
+        names = [
+            n for n in names if not isinstance(services.get(n), dict) or services[n].get("build")
+        ]
     shared = _co_builders(resolved, stack_build_services(config))
     for image, builders in shared.items():
         _warn_multiple_builders(image, builders)
