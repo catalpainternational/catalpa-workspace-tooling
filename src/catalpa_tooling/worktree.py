@@ -1393,6 +1393,15 @@ def _seed_media(
     return 0, f"copied {src_media.describe()} → {dst_media.describe()}"
 
 
+def _seed_volume_keys(config: ProjectConfig) -> tuple[str, ...]:
+    """Volumes to seed beyond the media storage: restic's extra volumes, then ``seed_volumes``.
+
+    Anything worth backing up holds files the database refers to, so it is worth seeding too.
+    """
+    restic_extras = config.ops_optional.restic.extra_volumes if config.ops_optional else ()
+    return tuple(dict.fromkeys((*restic_extras, *config.worktree.seed_volumes)))
+
+
 def _plan_seed_volumes(
     seed_volumes: tuple[str, ...],
     *,
@@ -1624,7 +1633,7 @@ def worktree_seed(
             print(f"worktree seed: {exc}", file=sys.stderr)
             return 1
         extra_volumes, unlisted = _plan_seed_volumes(
-            dest_config.worktree.seed_volumes,
+            _seed_volume_keys(dest_config),
             src_media=src_media,
             dst_media=dst_media,
             src_vols=resolve_stack_volumes(compose_file=src_compose, env=src_r, config=src_config),

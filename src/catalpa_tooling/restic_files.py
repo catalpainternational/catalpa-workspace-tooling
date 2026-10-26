@@ -55,6 +55,7 @@ DJANGO_MEDIA_MOUNT: Final[str] = "/backup/django_media"
 # Env keys written to restic-files-backup.env for systemd (see restic-files-backup.sh).
 RESTIC_FILES_DATA_VOLUME_KEY: Final[str] = "RESTIC_FILES_DATA_VOLUME"
 RESTIC_FILES_BACKUP_PATH_KEY: Final[str] = "RESTIC_FILES_BACKUP_PATH"
+RESTIC_FILES_EXTRA_VOLUMES_KEY: Final[str] = "RESTIC_FILES_EXTRA_VOLUMES"
 
 
 def restic_data_volume_key(config: ProjectConfig | None) -> str:
@@ -120,6 +121,65 @@ def django_media_volume_name(
         project = _default_compose_project(config)
     vol_key = _restic_data_volume_key(config)
     return f"{project}_{vol_key}"
+
+
+def restic_backup_targets(
+    compose_project_name: str,
+    *,
+    config: ProjectConfig | None = None,
+) -> list[tuple[str, str, str]]:
+    """``(key, docker_volume, mount)`` for every volume restic backs up, primary first.
+
+    The primary keeps :func:`restic_backup_mount_path`, which honours ``ops.restic.backup_path``.
+    The other ``ops.restic.data_volumes`` mount at ``/backup/<key>`` (issue #103).
+    """
+    project = (compose_project_name or "").strip()
+    if not project:
+        project = _default_compose_project(config)
+    targets = [
+        (
+            _restic_data_volume_key(config),
+            django_media_volume_name(project, config=config),
+            restic_backup_mount_path(config=config),
+        )
+    ]
+    extras = config.ops.restic.extra_volumes if config is not None else ()
+    targets.extend((key, f"{project}_{key}", f"/backup/{key}") for key in extras)
+    return targets
+
+
+def _docker_volume_exists(name: str, env: dict[str, str]) -> bool:
+    r = run_cmd(
+        ["docker", "volume", "inspect", name],
+        env=_merged_process_env_restic(env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    return r.returncode == 0
+
+
+def _existing_backup_targets(
+    env: dict[str, str],
+    config: ProjectConfig | None,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Backup targets whose volume exists, and the names of extra volumes that do not.
+
+    The primary is always kept, as before. A missing extra is left out because ``docker run -v``
+    would create it empty and unlabelled.
+    """
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+    primary, *extras = restic_backup_targets(project, config=config)
+    targets = [primary]
+    missing: list[str] = []
+    for target in extras:
+        if _docker_volume_exists(target[1], env):
+            targets.append(target)
+        else:
+            missing.append(target[1])
+    return targets, missing
 
 
 def staging_volume_name(
@@ -468,30 +528,44 @@ def run_restic_command(
     read_only_django_media: bool,
     config: ProjectConfig | None = None,
 ) -> int:
-    """Run `restic …` with the configured compose volume mounted at ``restic_backup_mount_path``."""
+    """Run `restic …` with every configured volume mounted (see :func:`restic_backup_targets`)."""
     err = validate_restic_env(env)
     if err:
         print(err, file=sys.stderr)
         return 1
-    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
-    mount = restic_backup_mount_path(config=config)
-    vol = django_media_volume_name(project, config=config)
+    targets, _missing = _existing_backup_targets(env, config)
     return _docker_run_restic(
         env,
-        [(vol, mount, read_only_django_media)],
+        [(vol, mount, read_only_django_media) for _key, vol, mount in targets],
         restic_argv,
     )
 
 
 def run_backup(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
-    """restic backup of the configured compose volume."""
-    mount = restic_backup_mount_path(config=config)
-    return run_restic_command(
+    """restic backup of every configured compose volume, in one snapshot.
+
+    An extra volume that does not exist is left out rather than mounted (``docker run -v``
+    would create it empty), and the run then exits non-zero so the gap is noticed.
+    """
+    err = validate_restic_env(env)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
+    targets, missing = _existing_backup_targets(env, config)
+    for vol in missing:
+        print(
+            f"restic backup: volume {vol} does not exist; backing up the others without it.",
+            file=sys.stderr,
+        )
+    rc = _docker_run_restic(
         env,
-        ["backup", mount],
-        read_only_django_media=True,
-        config=config,
+        [(vol, mount, True) for _key, vol, mount in targets],
+        ["backup", *(mount for _key, _vol, mount in targets)],
     )
+    if rc == 0 and missing:
+        print(f"restic backup: missing volume(s): {', '.join(missing)}.", file=sys.stderr)
+        return 1
+    return rc
 
 
 def run_snapshots(env: dict[str, str]) -> int:
@@ -535,9 +609,11 @@ def run_restore(
     skip_confirm: bool,
     config: ProjectConfig | None = None,
 ) -> int:
-    """Restore snapshot into django_media: extract to a staging volume, then sync into the live volume.
+    """Restore a snapshot into every configured volume via a staging volume.
 
-    Destructive: clears current contents of django_media (including dotfiles) before copy-back.
+    Destructive: each volume's current contents (including dotfiles) are cleared before the
+    snapshot's tree is copied back. An extra volume the snapshot does not contain (it predates
+    ``ops.restic.data_volumes``) is left untouched, with a warning.
     """
     err = validate_restic_env(env)
     if err:
@@ -545,15 +621,14 @@ def run_restore(
         return 1
     env = restic_env_for_restore(env)
     project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
-    mount = restic_backup_mount_path(config=config)
-    vol_key = _restic_data_volume_key(config)
-    media_vol = django_media_volume_name(project, config=config)
+    targets = restic_backup_targets(project, config=config)
+    primary_mount = targets[0][2]
     stage_vol = staging_volume_name(project, config=config)
 
     if not skip_confirm:
+        listed = ", ".join(f"{key!r} ({vol})" for key, vol, _mount in targets)
         print(
-            f"WARNING: This will replace all files in the {vol_key!r} volume "
-            f"({media_vol}) with snapshot {snapshot!r}.",
+            f"WARNING: This will replace all files in {listed} with snapshot {snapshot!r}.",
             file=sys.stderr,
         )
         print(f"  Environment: {env_name}", file=sys.stderr)
@@ -579,12 +654,14 @@ def run_restore(
         return 1
 
     try:
-        # Extract snapshot path into staging; snapshot layout uses the backup mount prefix.
+        # Extract the whole snapshot into staging; its layout uses the backup mount prefixes.
+        # `--path` selects snapshots containing the primary, so ones taken before the extra
+        # volumes were configured still match `latest`.
         rc = _docker_run_restic(
             env,
             [
                 (stage_vol, "/restore", False),
-                (media_vol, mount, True),
+                *((vol, mount, True) for _key, vol, mount in targets),
             ],
             [
                 "restore",
@@ -592,28 +669,37 @@ def run_restore(
                 "--target",
                 "/restore",
                 "--path",
-                mount,
+                primary_mount,
             ],
         )
         if rc != 0:
             return rc
 
-        # Promote: restored tree is /restore{mount}/... (leading segment = mount path).
-        inner = "/stage" + mount
-        script = (
-            f"set -e; rm -rf /live/* /live/.[!.]* /live/..?* 2>/dev/null || true; "
-            f"if [ -d {inner} ]; then cp -a {inner}/. /live/; else "
-            f"echo 'Expected tree not found at {inner}' >&2; exit 1; fi"
-        )
-        rc = _docker_run_alpine(
-            env,
-            [
-                (media_vol, "/live", False),
-                (stage_vol, "/stage", False),
-            ],
-            script,
-        )
-        return rc
+        # Promote: each restored tree is /restore{mount}/... (leading segment = mount path).
+        for index, (key, vol, mount) in enumerate(targets):
+            inner = "/stage" + mount
+            if index == 0:
+                missing = f"echo 'Expected tree not found at {inner}' >&2; exit 1"
+            else:
+                missing = (
+                    f"echo 'Snapshot has no {mount}; leaving volume {key} unchanged.' >&2; exit 0"
+                )
+            script = (
+                f"set -e; if [ ! -d {inner} ]; then {missing}; fi; "
+                f"rm -rf /live/* /live/.[!.]* /live/..?* 2>/dev/null || true; "
+                f"cp -a {inner}/. /live/"
+            )
+            rc = _docker_run_alpine(
+                env,
+                [
+                    (vol, "/live", False),
+                    (stage_vol, "/stage", False),
+                ],
+                script,
+            )
+            if rc != 0:
+                return rc
+        return 0
     finally:
         run_cmd(
             ["docker", "volume", "rm", "-f", stage_vol],

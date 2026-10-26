@@ -13,6 +13,7 @@ from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.restic_files import (
     RESTIC_FILES_BACKUP_PATH_KEY,
     RESTIC_FILES_DATA_VOLUME_KEY,
+    RESTIC_FILES_EXTRA_VOLUMES_KEY,
     aws_env_vars_for_s3_restic_env_file,
     normalize_restic_credentials,
     resolve_env_with_compose_project,
@@ -170,6 +171,9 @@ def render_restic_env(
     default_backup_path = f"/backup/{restic_data_volume_key(config)}"
     if backup_path != default_backup_path:
         lines.append(f"{RESTIC_FILES_BACKUP_PATH_KEY}={backup_path}")
+    extra_volumes = config.ops.restic.extra_volumes if config is not None else ()
+    if extra_volumes:
+        lines.append(f"{RESTIC_FILES_EXTRA_VOLUMES_KEY}={' '.join(extra_volumes)}")
     order = [
         "RESTIC_REPOSITORY",
         "RESTIC_PASSWORD",

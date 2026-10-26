@@ -98,7 +98,13 @@ dk worktree remove <slug> [--wipe] [--keep-stack] [--dry-run] [-y]
 
 The media storage is one volume, chosen from `ops.restic.data_volume` (default `django_media`).
 If the project keeps files in other named volumes as well, such as private uploads or public
-documents, list them in `tooling.yaml` so the seed copies those too:
+documents, the seed copies those too when they are listed in either of two places in
+`tooling.yaml`:
+
+- **`ops.restic.data_volumes`**: every volume restic backs up is seeded, so a project that lists
+  its file volumes there for backups needs nothing more
+  ([README_RESTIC.md](../README_RESTIC.md#more-than-one-file-volume)).
+- **`worktree.seed_volumes`**: for volumes to seed that restic doesn't back up.
 
 ```yaml
 worktree:
@@ -112,7 +118,7 @@ copied from the main checkout's stack to the worktree's in the same way as the m
 and gets its own line in the output and in the final summary. A key that either stack's compose
 file does not declare is reported as skipped. Listing the media volume again is harmless.
 
-Without the setting, `seed` prints a line for every other named volume the web service mounts,
+Otherwise, `seed` prints a line for every other named volume the web service mounts,
 saying it was not seeded. The database is copied whole, so rows that point at files in an
 unseeded volume will be missing their files in the worktree. Volumes the app regenerates, such
 as collected static files, don't need seeding; ignore their lines.

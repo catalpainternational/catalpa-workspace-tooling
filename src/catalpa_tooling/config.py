@@ -220,12 +220,22 @@ class PgbackrestOpsConfig:
 
 @dataclass(frozen=True)
 class ResticOpsConfig:
-    """Compose volume key restic backs up (``{COMPOSE_PROJECT_NAME}_{data_volume}``)."""
+    """Compose volume keys restic backs up (``{COMPOSE_PROJECT_NAME}_{key}``).
+
+    ``data_volume`` is the primary (media) volume; ``extra_volumes`` are the rest of
+    ``ops.restic.data_volumes``, each mounted at ``/backup/<key>`` (issue #103).
+    """
 
     data_volume: str
     backup_path: str | None = None
     verbose: int | None = None
     restore_verbose: int | None = None
+    extra_volumes: tuple[str, ...] = ()
+
+    @property
+    def data_volumes(self) -> tuple[str, ...]:
+        """Every volume restic backs up, primary first."""
+        return (self.data_volume, *self.extra_volumes)
 
 
 @dataclass(frozen=True)
@@ -553,7 +563,8 @@ class WorktreeConfig:
     """Optional ``dk worktree`` settings (``worktree:``).
 
     ``seed_volumes`` lists compose volume keys that ``dk worktree seed`` copies in addition to
-    the media storage (``ops.restic.data_volume`` or its bind), which is always seeded.
+    the media storage (``ops.restic.data_volume`` or its bind), which is always seeded, and to
+    the other ``ops.restic.data_volumes``, which are seeded too.
     """
 
     seed_volumes: tuple[str, ...] = ()
@@ -1679,10 +1690,7 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         restic_raw = {}
     elif not isinstance(restic_raw, dict):
         raise ProjectConfigError("ops.restic must be a mapping")
-    restic_data_volume = _validate_compose_volume_key(
-        _optional_str(restic_raw, "data_volume") or DEFAULT_RESTIC_DATA_VOLUME,
-        field="ops.restic.data_volume",
-    )
+    restic_volumes = _parse_restic_data_volumes(restic_raw)
     restic_backup_path = _optional_str(restic_raw, "backup_path")
     if restic_backup_path is not None and not restic_backup_path.startswith("/"):
         raise ProjectConfigError("ops.restic.backup_path must be an absolute path")
@@ -1717,7 +1725,8 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
             ),
         ),
         restic=ResticOpsConfig(
-            data_volume=restic_data_volume,
+            data_volume=restic_volumes[0],
+            extra_volumes=restic_volumes[1:],
             backup_path=restic_backup_path,
             verbose=_parse_restic_verbose_field(restic_raw, "verbose", section="ops.restic"),
             restore_verbose=_parse_restic_verbose_field(
@@ -1944,6 +1953,30 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         tooling_path=tooling_path.resolve(),
         agents=_parse_agents(data.get("agents")),
         worktree=_parse_worktree(data.get("worktree")),
+    )
+
+
+def _parse_restic_data_volumes(restic_raw: dict[str, Any]) -> tuple[str, ...]:
+    """``ops.restic.data_volumes`` (list, primary first) or the single ``data_volume``."""
+    single = _optional_str(restic_raw, "data_volume")
+    if "data_volumes" not in restic_raw or restic_raw["data_volumes"] is None:
+        return (
+            _validate_compose_volume_key(
+                single or DEFAULT_RESTIC_DATA_VOLUME, field="ops.restic.data_volume"
+            ),
+        )
+    if single is not None:
+        raise ProjectConfigError(
+            "Set ops.restic.data_volumes or ops.restic.data_volume, not both "
+            "(the first data_volumes entry is the primary media volume)"
+        )
+    keys = _parse_string_list(restic_raw["data_volumes"], field="ops.restic.data_volumes")
+    if not keys:
+        raise ProjectConfigError("ops.restic.data_volumes must not be empty")
+    return tuple(
+        dict.fromkeys(
+            _validate_compose_volume_key(k, field="ops.restic.data_volumes") for k in keys
+        )
     )
 
 

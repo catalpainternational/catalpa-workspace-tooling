@@ -2,7 +2,7 @@
 
 import pytest
 
-from catalpa_tooling.config import load_project_config
+from catalpa_tooling.config import ProjectConfigError, load_project_config
 from catalpa_tooling.restic_files import (
     _docker_run_env_flags,
     _docker_run_restic,
@@ -11,8 +11,11 @@ from catalpa_tooling.restic_files import (
     merge_restic_verbose_from_cli,
     normalize_restic_credentials,
     restic_backup_mount_path,
+    restic_backup_targets,
     restic_credentials_conflict_message,
     restic_env_for_restore,
+    run_backup,
+    run_restore,
     split_restic_cli_verbose,
     validate_restic_env,
     validate_restic_env_for_systemd,
@@ -230,3 +233,171 @@ def test_restic_backup_mount_path_custom_backup_path(minimal_project, tmp_path) 
     assert restic_backup_mount_path(config=cfg) == "/mnt/btrfs-data/jid-media"
     body = render_restic_env({}, config=cfg)
     assert "RESTIC_FILES_BACKUP_PATH=/mnt/btrfs-data/jid-media" in body
+
+
+def _with_restic(minimal_project, block: str):
+    """Rewrite the fixture's ``ops.restic`` block and reload the config."""
+    tooling = minimal_project.tooling_path
+    text = tooling.read_text(encoding="utf-8")
+    tooling.write_text(text.replace("  zabbix:", f"  restic:\n{block}  zabbix:"), encoding="utf-8")
+    return load_project_config(minimal_project.repo_root)
+
+
+_THREE_VOLUMES = (
+    "    data_volumes:\n"
+    "      - django_media\n"
+    "      - django_public_documents\n"
+    "      - django_private_uploads\n"
+)
+
+
+def test_data_volumes_list_sets_primary_and_extras(minimal_project) -> None:
+    cfg = _with_restic(minimal_project, _THREE_VOLUMES + "      - django_media\n")
+    assert cfg.ops.restic.data_volume == "django_media"
+    assert cfg.ops.restic.extra_volumes == ("django_public_documents", "django_private_uploads")
+    assert restic_backup_targets("prod", config=cfg) == [
+        ("django_media", "prod_django_media", "/backup/django_media"),
+        ("django_public_documents", "prod_django_public_documents", "/backup/django_public_documents"),
+        ("django_private_uploads", "prod_django_private_uploads", "/backup/django_private_uploads"),
+    ]
+    body = render_restic_env({}, config=cfg)
+    assert "RESTIC_FILES_DATA_VOLUME=django_media" in body
+    assert "RESTIC_FILES_EXTRA_VOLUMES=django_public_documents django_private_uploads" in body
+
+
+def test_single_data_volume_has_no_extras(minimal_project) -> None:
+    assert minimal_project.ops.restic.data_volumes == ("django_media",)
+    assert "RESTIC_FILES_EXTRA_VOLUMES" not in render_restic_env({}, config=minimal_project)
+
+
+@pytest.mark.parametrize(
+    ("block", "match"),
+    [
+        ("    data_volume: x\n    data_volumes: [y]\n", "not both"),
+        ("    data_volumes: []\n", "must not be empty"),
+        ("    data_volumes: [ok, 'bad key']\n", "ops.restic.data_volumes"),
+    ],
+)
+def test_data_volumes_rejects_bad_config(minimal_project, block: str, match: str) -> None:
+    with pytest.raises(ProjectConfigError, match=match):
+        _with_restic(minimal_project, block)
+
+
+def _record_docker(monkeypatch: pytest.MonkeyPatch, *, existing: set[str]) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    class _R:
+        def __init__(self, rc: int) -> None:
+            self.returncode = rc
+            self.stdout = self.stderr = ""
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _R:
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "volume", "inspect"]:
+            return _R(0 if cmd[3] in existing else 1)
+        return _R(0)
+
+    monkeypatch.setattr("catalpa_tooling.restic_files.run_cmd", fake_run)
+    return calls
+
+
+_WRITE_ENV = {
+    "COMPOSE_PROJECT_NAME": "prod",
+    "RESTIC_WRITE_REPOSITORY": "s3:bucket/x",
+    "RESTIC_WRITE_PASSWORD": "p",
+}
+
+
+def test_run_backup_takes_every_volume_in_one_snapshot(
+    minimal_project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _with_restic(minimal_project, _THREE_VOLUMES)
+    calls = _record_docker(
+        monkeypatch,
+        existing={"prod_django_public_documents", "prod_django_private_uploads"},
+    )
+    assert run_backup(dict(_WRITE_ENV), config=cfg) == 0
+    (run,) = [c for c in calls if c[:2] == ["docker", "run"]]
+    assert "prod_django_private_uploads:/backup/django_private_uploads:ro" in run
+    assert run[run.index("backup") :] == [
+        "backup",
+        "/backup/django_media",
+        "/backup/django_public_documents",
+        "/backup/django_private_uploads",
+    ]
+
+
+def test_run_backup_skips_a_missing_extra_volume_and_fails(
+    minimal_project, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`docker run -v` would create the volume empty and back that up, hiding the gap."""
+    cfg = _with_restic(minimal_project, _THREE_VOLUMES)
+    calls = _record_docker(monkeypatch, existing={"prod_django_public_documents"})
+    assert run_backup(dict(_WRITE_ENV), config=cfg) == 1
+    (run,) = [c for c in calls if c[:2] == ["docker", "run"]]
+    assert not any("private_uploads" in arg for arg in run)
+    assert "/backup/django_public_documents" in run
+    assert "prod_django_private_uploads" in capsys.readouterr().err
+
+
+def test_run_restore_promotes_each_volume(
+    minimal_project, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _with_restic(minimal_project, _THREE_VOLUMES)
+    calls = _record_docker(monkeypatch, existing=set())
+    assert run_restore(dict(_WRITE_ENV), "latest", env_name="prod", skip_confirm=True, config=cfg) == 0
+
+    restic_run, *alpine_runs = [c for c in calls if c[:2] == ["docker", "run"]]
+    # `--path` names the primary only, so snapshots from before the extras still match.
+    assert restic_run[restic_run.index("--path") :] == ["--path", "/backup/django_media"]
+    assert [r[r.index("-v") + 1] for r in alpine_runs] == [
+        "prod_django_media:/live",
+        "prod_django_public_documents:/live",
+        "prod_django_private_uploads:/live",
+    ]
+    primary, extra, _ = (r[-1] for r in alpine_runs)
+    assert "exit 1" in primary and "/stage/backup/django_media" in primary
+    # An older snapshot without this tree leaves the volume alone instead of emptying it.
+    assert "leaving volume django_public_documents unchanged" in extra
+    assert extra.index("[ ! -d") < extra.index("rm -rf")
+
+
+def test_backup_script_mounts_extra_volumes(tmp_path) -> None:
+    """Run the systemd script itself against a stub `docker` that logs its argv."""
+    import os
+    import subprocess
+
+    from catalpa_tooling.systemd_assets import systemd_source_dir
+
+    log = tmp_path / "docker.log"
+    stub = tmp_path / "bin" / "docker"
+    stub.parent.mkdir()
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$*" >> {log}\n'
+        'if [[ "$1 $2" == "volume inspect" && "$3" == *missing* ]]; then exit 1; fi\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    script = systemd_source_dir() / "restic-files-backup.sh"
+    env = {
+        "PATH": f"{stub.parent}:{os.environ['PATH']}",
+        "COMPOSE_PROJECT_NAME": "prod",
+        "RESTIC_REPOSITORY": "s3:bucket/x",
+        "RESTIC_PASSWORD": "p",
+        "RESTIC_FILES_DATA_VOLUME": "django_media",
+        "RESTIC_FILES_EXTRA_VOLUMES": "django_private_uploads missing_vol",
+    }
+    r = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+    assert r.returncode == 1, r.stderr
+    assert "prod_missing_vol" in r.stderr
+    run_line = [line for line in log.read_text().splitlines() if line.startswith("run ")][0]
+    assert "-v prod_django_private_uploads:/backup/django_private_uploads:ro" in run_line
+    assert "missing_vol" not in run_line
+    assert run_line.endswith("backup /backup/django_media /backup/django_private_uploads")
+
+    env.pop("RESTIC_FILES_EXTRA_VOLUMES")
+    log.unlink()
+    r = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert log.read_text().strip().endswith("backup /backup/django_media")

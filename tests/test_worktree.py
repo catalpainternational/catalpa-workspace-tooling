@@ -1128,6 +1128,37 @@ def test_worktree_seed_copies_every_listed_volume(
     assert "; volume public_documents: copied volume app_compose_dev_public_documents" in err
 
 
+def test_worktree_seed_includes_restic_data_volumes(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What restic backs up holds files the database refers to, so it is seeded by default."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    tooling = wt / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    assert "  zabbix:" in text
+    tooling.write_text(
+        text.replace(
+            "  zabbix:",
+            "  restic:\n    data_volumes: [django_media, private_uploads]\n  zabbix:",
+        ),
+        encoding="utf-8",
+    )
+    _with_seed_volumes(config, wt, ["private_uploads", "scratch"])
+    calls: list[dict] = []
+    _patch_media_transfer(
+        monkeypatch,
+        calls,
+        stack_volumes={"private_uploads": "private_uploads", "scratch": "scratch"},
+    )
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    assert [c["dst_media"].location for c in calls] == [
+        "app_compose_dev_feat_a_django_media",
+        "app_compose_dev_feat_a_private_uploads",
+        "app_compose_dev_feat_a_scratch",
+    ]
+
+
 def test_worktree_seed_reports_a_listed_volume_the_stack_lacks(
     tmp_path: Path,
     isolated_tooling: None,
