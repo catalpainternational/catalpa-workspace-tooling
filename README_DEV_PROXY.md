@@ -97,6 +97,25 @@ live sites:
 
 LAN magic-DNS routes are grouped under the same project/env as the canonical hostname, in a separate `lan:` section.
 
+## Fallback sites (names no stack here routes)
+
+Another tool on the machine can hand dk's proxy the names it doesn't route itself, so that dk's
+proxy stays the only thing on 80/443. On a workstation that also runs Podman copies, containerwharf's
+`setup edge` does this: it moves its edge to a high port and writes
+`~/.config/catalpa/local-proxy/sites/edge.caddy`, which sends every `*.localhost` name on to
+the edge.
+
+- A file in `sites/` is a Caddyfile snippet, imported at the end of the proxy's Caddyfile. After
+  changing one, run `dk proxy reload`: it re-reads the Caddyfile and puts every stack's route back.
+- Each stack's route goes ahead of the fallbacks, so a fallback never takes a stack's name.
+- Give a fallback site the names it serves, never a catch-all `https://`: Caddy answers every
+  request a site's route matches, so a catch-all would also answer for a stack whose route an
+  older dk added after it. `*` matches one label, so list the depths you need
+  (`*.localhost, *.*.localhost, …`).
+- A fallback may ask for certificates on demand (`tls { on_demand }`). The proxy only issues them
+  for `.localhost` and `.localdev.temp.build` names, signed by dk's local CA, so `dk proxy trust`
+  covers them.
+
 ## Project requirements
 
 - **Stack Caddy** on container port **80** (`stack.services.proxy`).

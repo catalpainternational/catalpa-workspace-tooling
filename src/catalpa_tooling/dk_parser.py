@@ -16,6 +16,31 @@ from catalpa_tooling.remote_deploy import list_deploy_env_names
 from catalpa_tooling.worktree_cli import attach_worktree_subcommands
 
 
+def add_proxy_parser(sub: argparse._SubParsersAction) -> None:
+    """`dk proxy …`. Machine-wide, so it needs no project: ``dk_cli`` also builds it alone."""
+    p_proxy = sub.add_parser(
+        "proxy",
+        help="Machine-wide local dev HTTPS reverse proxy (*.localdev.temp.build).",
+    )
+    p_proxy.add_argument("--dry-run", action="store_true", help="Show actions without running.")
+    proxy_sub = p_proxy.add_subparsers(dest="proxy_command", required=True)
+    proxy_sub.add_parser("up", help=f"Start {LOCAL_PROXY_CONTAINER} (Caddy on :80/:443).")
+    proxy_sub.add_parser("down", help=f"Stop and remove {LOCAL_PROXY_CONTAINER}.")
+    proxy_sub.add_parser("status", help="Show proxy container and route count.")
+    proxy_sub.add_parser(
+        "reload",
+        help="Re-read the proxy's Caddyfile and its fallback sites, keeping each stack's route.",
+    )
+    proxy_sub.add_parser(
+        "trust",
+        help="Trust Caddy local CA from the global proxy (macOS/Linux; requires sudo).",
+    )
+    proxy_sub.add_parser(
+        "ca",
+        help="Show LAN CA download URL + QR and device install steps.",
+    )
+
+
 def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     # Service names and envs_dir appear only in help text. A project that adopts the
     # engine-agnostic commands (cut-release, next-branch) declares no `stack:` or
@@ -164,23 +189,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     p_digoc = sub.add_parser("digoc", help="DigitalOcean helpers (wraps host doctl).")
     attach_digoc_subcommands(p_digoc, config)
 
-    p_proxy = sub.add_parser(
-        "proxy",
-        help="Machine-wide local dev HTTPS reverse proxy (*.localdev.temp.build).",
-    )
-    p_proxy.add_argument("--dry-run", action="store_true", help="Show actions without running.")
-    proxy_sub = p_proxy.add_subparsers(dest="proxy_command", required=True)
-    proxy_sub.add_parser("up", help=f"Start {LOCAL_PROXY_CONTAINER} (Caddy on :80/:443).")
-    proxy_sub.add_parser("down", help=f"Stop and remove {LOCAL_PROXY_CONTAINER}.")
-    proxy_sub.add_parser("status", help="Show proxy container and route count.")
-    proxy_sub.add_parser(
-        "trust",
-        help="Trust Caddy local CA from the global proxy (macOS/Linux; requires sudo).",
-    )
-    proxy_sub.add_parser(
-        "ca",
-        help="Show LAN CA download URL + QR and device install steps.",
-    )
+    add_proxy_parser(sub)
 
     p_cut = sub.add_parser(
         "cut-release",

@@ -19,6 +19,11 @@
   - The `dk-stack` skill now triggers on starting a development task and points to the rule.
     See [docs/WORKTREES.md](docs/WORKTREES.md#claude-code-worktrees).
 
+- dk's local proxy can sit in front of another proxy on the same machine. Snippets in
+  `~/.config/catalpa/local-proxy/sites/` are its fallback sites, for names no stack routes;
+  `dk proxy reload` reads them and keeps every stack's route. Stack routes go ahead of fallbacks.
+  See README_DEV_PROXY.md, "Fallback sites".
+
 - `PGBR_REPO1_RETENTION_DIFF` sets how many differential pgBackRest backups to keep. Left unset,
   nothing changes.
 
@@ -64,6 +69,9 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- `dk proxy …` runs from any folder. The proxy is the machine's, but dk used to refuse it
+  outside a project with a `tooling.yaml`.
+
 - `db restore` checks, before asking you to type the environment's name or stopping `db`, that the newest backup
   is from the same PostgreSQL major as the `db` image, and refuses when it is not (not checked
   with `--set` or a point-in-time `--target`, which pick another backup). While `db` recovers, the wait stops as soon
@@ -73,6 +81,11 @@
 - A stack role that runs a stock image (no `build:`, like a dev stack's Caddy) no longer gets
   dk's image labels, which gave it an empty build and failed `dk <env> up` with
   `open Dockerfile: no such file or directory`.
+
+- `dk <env> up` and `dk proxy up` recreate a `catalpa-local-proxy` that does not publish 80, 443
+  and 2019, instead of reusing it and failing to register routes. Docker keeps a proxy running
+  with no ports when something else held 443 as it started; one made by hand to sit behind
+  another proxy, as PODMAN.md used to describe, has none either.
 
 - Restore hooks (`ops.post_db_restore` `db_psql`), `db pgdump`, `db restore` from dumps and the
   database reset before it connect as `postgres` over the `db` container's local socket, not with

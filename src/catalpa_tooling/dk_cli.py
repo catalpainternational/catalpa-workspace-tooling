@@ -23,7 +23,7 @@ from catalpa_tooling.build_push import _cmd_push
 from catalpa_tooling.clean_images import clean_images
 from catalpa_tooling.dk_transfer import cmd_transfer
 from catalpa_tooling.dk_fetch import cmd_fetch
-from catalpa_tooling.dk_parser import build_dk_parser
+from catalpa_tooling.dk_parser import add_proxy_parser, build_dk_parser
 from catalpa_tooling.doctl_cli import dispatch_digoc
 from catalpa_tooling.env_handlers import handle_env_command
 from catalpa_tooling.env_parser import RESERVED_DK_TOP_COMMANDS
@@ -113,6 +113,12 @@ def _load_config_for_argv(argv: list[str]) -> tuple[ProjectConfig, list[str], st
 
 def _main_impl() -> None:
     argv = sys.argv[1:]
+    if argv[:1] == ["proxy"]:
+        # The proxy is the machine's, not a project's: run it from anywhere, including from
+        # another tool's checkout (containerwharf's `setup edge` runs `dk proxy reload`).
+        parser = argparse.ArgumentParser(prog="dk")
+        add_proxy_parser(parser.add_subparsers(dest="command", required=True))
+        sys.exit(cmd_proxy(parser.parse_args(argv)))
     config, argv, _worktree_slug = _load_config_for_argv(argv)
     parser = build_dk_parser(config)
     # Must run before custom argv routing: argcomplete uses COMP_LINE while sys.argv is often bare ``dk``.
