@@ -538,6 +538,17 @@ class ProjectMetaConfig:
 
 
 @dataclass(frozen=True)
+class AgentsConfig:
+    """Optional agent files for ``setup-agents`` (``agents:``).
+
+    ``skills`` is ``None`` when the key is absent, meaning the bundled default set.
+    """
+
+    rules: tuple[str, ...] = ()
+    skills: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
 class SpacesConfig:
     """DigitalOcean Spaces defaults for backup auto-provisioning (``digitalocean.spaces``)."""
 
@@ -581,6 +592,7 @@ class ProjectConfig:
     compliance: ComplianceConfig | None
     repo_root: Path
     tooling_path: Path
+    agents: AgentsConfig = AgentsConfig()
 
     @property
     def stack(self) -> StackConfig:
@@ -1918,6 +1930,22 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         compliance=compliance,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),
+        agents=_parse_agents(data.get("agents")),
+    )
+
+
+def _parse_agents(raw: Any) -> AgentsConfig:
+    if raw is None:
+        return AgentsConfig()
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("agents must be a mapping")
+    return AgentsConfig(
+        rules=_parse_string_list(raw.get("rules"), field="agents.rules"),
+        skills=(
+            _parse_string_list(raw["skills"], field="agents.skills")
+            if "skills" in raw and raw["skills"] is not None
+            else None
+        ),
     )
 
 

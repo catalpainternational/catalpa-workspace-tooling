@@ -15,6 +15,11 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TextIO
 
+from catalpa_tooling.docker_selinux import (
+    SELINUX_LABEL_DISABLE_ENV,
+    engine_reports_selinux,
+    selinux_label_disable_args,
+)
 from catalpa_tooling.local_proxy_assets import local_proxy_caddyfile_path
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import (
@@ -735,13 +740,21 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         )
         return 0
 
+    selinux_args = selinux_label_disable_args()
     if proxy_container_exists():
+        recreate_reason = ""
         if proxy_caddyfile_mount_is_stale():
             stale = proxy_caddyfile_mount_source()
+            recreate_reason = f"bind-mounts a Caddyfile that no longer exists ({stale})"
+        elif selinux_args and not proxy_has_label_disable():
+            recreate_reason = (
+                "was created without `--security-opt label=disable`, so SELinux stops it "
+                "reading its bind mounts"
+            )
+        if recreate_reason:
             print(
-                f"Existing {LOCAL_PROXY_CONTAINER!r} bind-mounts a Caddyfile that no longer "
-                f"exists ({stale}); recreating it from {caddyfile}. "
-                "The local CA is persisted on the host and is kept.",
+                f"Existing {LOCAL_PROXY_CONTAINER!r} {recreate_reason}; recreating it from "
+                f"{caddyfile}. The local CA is persisted on the host and is kept.",
                 file=sys.stderr,
             )
             removed = run_cmd(
@@ -764,6 +777,8 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
             start = run_cmd(["docker", "start", LOCAL_PROXY_CONTAINER], check=False)
             if start.returncode != 0:
                 return start.returncode
+            if not wait_for_proxy_to_stay_up():
+                return 1
             return ensure_proxy_on_network(dry_run=dry_run)
 
     data_dir = local_proxy_data_dir()
@@ -774,6 +789,7 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         "-d",
         "--name",
         LOCAL_PROXY_CONTAINER,
+        *selinux_args,
         "--network",
         LOCAL_PROXY_NETWORK,
         "--add-host=host.docker.internal:host-gateway",
@@ -798,7 +814,104 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         file=sys.stderr,
     )
     created = run_cmd(cmd, check=False)
-    return created.returncode
+    if created.returncode != 0:
+        return created.returncode
+    return 0 if wait_for_proxy_to_stay_up() else 1
+
+
+def proxy_has_label_disable() -> bool:
+    """True when the existing proxy container runs with ``--security-opt label=disable``."""
+    result = run_cmd(
+        ["docker", "inspect", LOCAL_PROXY_CONTAINER, "--format", "{{json .HostConfig.SecurityOpt}}"],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        # Can't tell, so don't churn the shared proxy over it.
+        return True
+    return any(opt in (result.stdout or "") for opt in ("label=disable", "label:disable"))
+
+
+# Long enough for Caddy to fail on an unreadable Caddyfile; it answers its admin API well inside it.
+PROXY_SETTLE_SECONDS = 3.0
+
+
+def _proxy_state() -> tuple[bool, str] | None:
+    """``(running, exit_code)`` for the proxy container, or ``None`` if it can't be inspected."""
+    result = run_cmd(
+        [
+            "docker",
+            "inspect",
+            LOCAL_PROXY_CONTAINER,
+            "--format",
+            "{{.State.Running}} {{.State.ExitCode}}",
+        ],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    parts = (result.stdout or "").split()
+    if result.returncode != 0 or len(parts) != 2 or parts[0] not in ("true", "false"):
+        return None
+    return parts[0] == "true", parts[1]
+
+
+def wait_for_proxy_to_stay_up(*, timeout: float | None = None, interval: float = 0.3) -> bool:
+    """After ``docker run -d`` / ``docker start``, confirm the proxy did not exit straight away.
+
+    Both commands succeed even when the container dies a moment later — under SELinux the
+    proxy exits 1 with an empty log because it cannot read its Caddyfile (#128). Returns
+    ``True`` once the admin API answers or the settle window passes with the container up;
+    on an early exit, prints the exit code and log and returns ``False``.
+    """
+    import time
+
+    deadline = time.monotonic() + (PROXY_SETTLE_SECONDS if timeout is None else timeout)
+    while True:
+        state = _proxy_state()
+        if state is not None and not state[0]:
+            _report_proxy_exited(state[1])
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        try:
+            status, _ = _admin_request("GET", "/config/", timeout=1.0)
+            if status < 500:
+                return True
+        except LocalProxyConfigError:
+            pass
+        time.sleep(interval)
+
+
+def _report_proxy_exited(exit_code: str) -> None:
+    print(
+        f"dk proxy: {LOCAL_PROXY_CONTAINER!r} exited straight after starting (exit code {exit_code}).",
+        file=sys.stderr,
+    )
+    logs = run_cmd(
+        ["docker", "logs", "--tail", "30", LOCAL_PROXY_CONTAINER],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    output = ((logs.stdout or "") + (logs.stderr or "")).strip()
+    if output:
+        print(f"Last lines of `docker logs {LOCAL_PROXY_CONTAINER}`:", file=sys.stderr)
+        print(output, file=sys.stderr)
+    else:
+        print(f"`docker logs {LOCAL_PROXY_CONTAINER}` is empty.", file=sys.stderr)
+    if engine_reports_selinux():
+        print(
+            "The engine has SELinux enabled. An exit with no log usually means the container "
+            "cannot read its bind mounts. Recreate it with `dk proxy down && dk proxy up`, "
+            f"or set {SELINUX_LABEL_DISABLE_ENV}=1 to force `--security-opt label=disable`. "
+            "See docs/PODMAN.md section 2.",
+            file=sys.stderr,
+        )
 
 
 def wait_for_proxy_admin(*, timeout: float = 15.0, interval: float = 0.3) -> bool:

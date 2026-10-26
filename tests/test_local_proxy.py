@@ -95,7 +95,8 @@ def _run_ensure_proxy_running(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     captured: dict[str, list[str]] = {}
 
     def fake_run(cmd, **_kwargs):
-        captured["cmd"] = cmd
+        if cmd[:2] == ["docker", "run"]:
+            captured["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(local_proxy, "run_cmd", fake_run)

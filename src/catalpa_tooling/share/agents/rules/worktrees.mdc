@@ -1,0 +1,37 @@
+---
+description: All development happens in an isolated dk worktree, never in the main checkout
+alwaysApply: true
+---
+# Develop in a `dk worktree`
+
+This project does **every development task** (a fix, a feature, a refactor, docs, a dependency bump) in its own git worktree under `.worktrees/<slug>`, made by catalpa-workspace-tooling. The main checkout is the human's: don't edit, commit or switch branches there.
+
+## Starting a task
+
+- **Claude Code:** enter a worktree before the first edit: EnterWorktree, or start the session with `claude --worktree <name>`. setup-agents configured this project's `WorktreeCreate`/`WorktreeRemove` hooks, so these run `dk worktree claude-hook`, which cuts `.worktrees/<slug>` from `origin/<default branch>` (fetched first). Subagents with `isolation: worktree` get one the same way.
+- **Anything else (Cursor, a shell):** from the main checkout, run
+  `uv run dk worktree create <slug> --base-branch origin/<default branch> --no-seed`.
+  Without `--base-branch` it cuts from the main checkout's `HEAD`, however stale. `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` names the default branch.
+- Never use a bare `git worktree add`, and don't create worktrees under `.claude/worktrees/`. Neither gets the dk overlay (its own compose project, database and hostnames).
+- Don't nest: create from the main checkout, not from inside another worktree.
+
+## Working in it
+
+- Edit, commit and push only inside `.worktrees/<slug>`. The branch is `worktree/<slug>` unless you chose one.
+- `uv run dk context --json` (inside it) or `uv run dk -W <slug> context --json` (from the main checkout) says which checkout you are in, its branch and base, and its origins.
+- The stack and data are on demand. A hook-made worktree is not seeded and has no stack running:
+  - `uv run dk worktree seed <slug> -y` copies the DB and media from the main checkout's `dev` stack.
+  - `uv run dk worktree up <slug>`, then `uv run dk -W <slug> dev manage migrate`.
+- Keep using `dk dev` (with `-W <slug>` from the main checkout). The overlay remaps the compose project and localdev hostnames. Don't invent overlays for remote envs (`docker_host`).
+- Check the project's `run-app` skill for what a worktree can't do yet (for example a second site hostname, or a published host port).
+
+## Finishing
+
+- Push the branch and open the PR from the worktree.
+- Then remove it. Either way below, the stack stops and its volumes are kept.
+  - In Claude Code, use ExitWorktree. Removing needs `discard_changes: true` once the work is pushed. The hook also deletes the branch, but only when `git branch -d` allows it: the branch is merged, or fully pushed to its upstream.
+  - Otherwise, run `uv run dk worktree remove <slug> -y`. That leaves the branch in place.
+- `remove --wipe` destroys that worktree's Docker volumes, including its database. Confirm with the user first.
+- Subagent worktrees are not removed automatically. Remove them when their work is merged or abandoned.
+
+See `docs/WORKTREES.md` in catalpa-workspace-tooling.

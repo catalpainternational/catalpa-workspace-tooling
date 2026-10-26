@@ -19,6 +19,7 @@ from catalpa_tooling.worktree import (
     worktree_status,
     worktree_up,
 )
+from catalpa_tooling.worktree_claude_hook import HOOK_EVENTS, cmd_claude_hook
 from catalpa_tooling.worktree_overlay import DEFAULT_BASE_ENV
 
 
@@ -239,6 +240,12 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
         help="Skip confirmation (required without a TTY).",
     )
 
+    p_hook = sub.add_parser(
+        "claude-hook",
+        help="Claude Code WorktreeCreate/WorktreeRemove hook (reads hook JSON on stdin).",
+    )
+    p_hook.add_argument("event", choices=HOOK_EVENTS)
+
 
 def cmd_worktree(ns: argparse.Namespace, config: ProjectConfig) -> int:
     """Dispatch ``dk worktree`` subcommands."""
@@ -310,5 +317,7 @@ def cmd_worktree(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dry_run=bool(ns.dry_run),
             yes=bool(ns.yes),
         )
+    if cmd == "claude-hook":
+        return cmd_claude_hook(ns.event, config)
     print(f"dk worktree: unknown command {cmd!r}", file=__import__("sys").stderr)
     return 1
