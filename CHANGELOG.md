@@ -69,6 +69,11 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- `dk proxy trust` and `dk <env> trust-caddy-cert` work on Fedora and its relatives (RHEL,
+  Silverblue, Bluefin): the root goes into `/etc/pki/ca-trust/source/anchors` and
+  `update-ca-trust` runs. They used to try Debian's `update-ca-certificates` on every Linux. A
+  system with neither family's command and folder gets an error naming them, and no sudo.
+
 - `dk proxy …` runs from any folder. The proxy is the machine's, but dk used to refuse it
   outside a project with a `tooling.yaml`.
 

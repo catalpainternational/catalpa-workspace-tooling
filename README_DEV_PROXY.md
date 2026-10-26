@@ -25,6 +25,38 @@ rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/catalpa/local-proxy"
 dk proxy down && dk proxy up && dk proxy trust
 ```
 
+### Linux notes
+
+`dk proxy trust` adds the root to the **system** trust store: `update-ca-certificates` on Debian
+and Ubuntu, `update-ca-trust` on Fedora and its relatives (RHEL, Silverblue, Bluefin). After
+that, `curl` and most command-line tools trust every local address. Check with
+`curl -sS -o /dev/null -w '%{http_code}\n' https://<project>-dev.localdev.temp.build/` (no `-k`).
+
+Many Linux browsers do **not** read the system store, so they keep warning until you import
+the root into them once:
+
+- **Firefox outside Fedora's own package** keeps its own store per profile.
+- **Flatpak and Snap browsers** (Firefox, Chrome, Edge — Bluefin's default Firefox is a
+  Flatpak) run in a sandbox with their own `/etc`.
+
+Download the root from the running proxy — the copy under `~/.config/catalpa/local-proxy` is
+root-owned when Docker runs as root:
+
+```bash
+curl -o ~/catalpa-local-ca.crt http://localhost/catalpa-local-ca.crt
+```
+
+Then import it:
+
+- **Firefox:** Settings → Privacy & Security → Certificates → View Certificates →
+  Authorities → Import… → tick **Trust this CA to identify websites**.
+- **Chrome / Edge / Chromium:** Settings → Privacy and security → Security → Manage
+  certificates → the local or custom certificates section → **Trusted certificates** →
+  Import.
+
+Quit and reopen the browser. The root is minted once per machine, so this is once per
+browser profile.
+
 ## Configuration
 
 The proxy is **on by default** for local Docker envs. Opt out:
