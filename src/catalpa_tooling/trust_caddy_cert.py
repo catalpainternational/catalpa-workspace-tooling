@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -19,7 +20,13 @@ CADDY_LOCAL_CA_PATH = "/data/caddy/pki/authorities/local/root.crt"
 
 _MACOS_KEYCHAIN = "/Library/Keychains/System.keychain"
 _LINUX_CA_BASENAME = "catalpa-local-proxy-root.crt"
-_LINUX_CA_DIR = Path("/usr/local/share/ca-certificates")
+# Each Linux family's system trust store: the command that rebuilds it, and the folder it reads.
+# Debian and Ubuntu use update-ca-certificates; Fedora and its relatives (RHEL, Silverblue,
+# Bluefin) use p11-kit's update-ca-trust, and have no update-ca-certificates at all.
+_LINUX_TRUST_STORES = (
+    ("update-ca-certificates", Path("/usr/local/share/ca-certificates")),
+    ("update-ca-trust", Path("/etc/pki/ca-trust/source/anchors")),
+)
 
 
 def _compose_proxy_container_id(
@@ -93,22 +100,39 @@ def _trust_macos(cert_dest: str, *, dry_run: bool) -> int:
 
 
 def _trust_linux(cert_dest: str, *, dry_run: bool) -> int:
-    dest = _LINUX_CA_DIR / _LINUX_CA_BASENAME
+    # Both the command and its folder: Arch has update-ca-trust without Fedora's anchors folder,
+    # openSUSE update-ca-certificates without Debian's.
+    store = next(
+        ((cmd, d) for cmd, d in _LINUX_TRUST_STORES if shutil.which(cmd) and d.is_dir()), None
+    )
+    if store is None:
+        names = " nor ".join(f"{cmd} with {d}" for cmd, d in _LINUX_TRUST_STORES)
+        print(
+            f"Cannot trust the CA: this system has neither {names}. Add the root to its "
+            "trust store by hand (dk's local proxy serves it at "
+            "http://localhost/catalpa-local-ca.crt), or import it into the browser.",
+            file=sys.stderr,
+        )
+        return 1
+    update, ca_dir = store
+    dest = ca_dir / _LINUX_CA_BASENAME
     if dry_run:
         print(
-            f"dry-run: would copy {cert_dest} to {dest} and run sudo update-ca-certificates",
+            f"dry-run: would copy {cert_dest} to {dest} and run sudo {update}",
             file=sys.stderr,
         )
         return 0
     print(f"Installing CA to {dest} (requires sudo)...", file=sys.stderr)
+    # Readable by everyone: on Fedora, browsers read the anchors folder as the user (p11-kit),
+    # and the temporary copy is private to us.
     install = run_cmd(
-        ["sudo", "cp", cert_dest, str(dest)],
+        ["sudo", "install", "-m", "0644", cert_dest, str(dest)],
         check=False,
     )
     if install.returncode != 0:
         return install.returncode
-    update = run_cmd(["sudo", "update-ca-certificates"], check=False)
-    return update.returncode
+    updated = run_cmd(["sudo", update], check=False)
+    return updated.returncode
 
 
 def trust_caddy_ca_from_container(
