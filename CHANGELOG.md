@@ -64,6 +64,10 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- A stack role that runs a stock image (no `build:`, like a dev stack's Caddy) no longer gets
+  dk's image labels, which gave it an empty build and failed `dk <env> up` with
+  `open Dockerfile: no such file or directory`.
+
 - Restore hooks (`ops.post_db_restore` `db_psql`), `db pgdump`, `db restore` from dumps and the
   database reset before it connect as `postgres` over the `db` container's local socket, not with
   `POSTGRES_PASSWORD` over TCP. A cluster restored from another host keeps that host's postgres

@@ -167,6 +167,14 @@ def label_target_services(
         return tuple(names)
 
     resolved = _compose_config(config, compose_file, env_add or {})
+    services = resolved.get("services")
+    if isinstance(services, dict):
+        # A role that runs a stock image (a dev stack's Caddy, say) has nothing to build. The
+        # override would give it a `build:` with no context, and compose fails looking for a
+        # Dockerfile the project never had.
+        names = [
+            n for n in names if not isinstance(services.get(n), dict) or services[n].get("build")
+        ]
     shared = _co_builders(resolved, stack_build_services(config))
     for image, builders in shared.items():
         _warn_multiple_builders(image, builders)
