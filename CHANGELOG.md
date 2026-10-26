@@ -21,6 +21,27 @@
 
 ### Fixed
 
+- **Restic can back up more than one file volume.** `ops.restic.data_volume` names exactly
+  one volume, so files an app keeps in other named volumes were never backed up, while
+  pgBackRest still backed up the database rows that point at them. swlt_ws2's public documents
+  and private uploads are one example. `ops.restic.data_volumes` now takes a list; the first
+  entry is the primary media volume, as `data_volume` was.
+  - **Backup:** every listed volume goes into one snapshot, each mounted at `/backup/<key>`. A
+    listed volume that is missing on the host is left out, and the run exits non-zero.
+  - **Restore:** fills every volume from the snapshot. A volume the snapshot predates is left
+    unchanged.
+  - **systemd:** the timer's script reads the extra volumes from `RESTIC_FILES_EXTRA_VOLUMES`.
+    Re-run `bkp_files install-systemd` after changing the list.
+  - **Unchanged:** `data_volume` on its own works as before. See
+    [README_RESTIC.md](README_RESTIC.md#more-than-one-file-volume). (#103)
+- **`dk worktree seed` (and `create`) can seed more than one file volume.** Only the media
+  volume was copied, so files in other named volumes were missing from the worktree while
+  their database rows were copied.
+  - **What's seeded:** every `ops.restic.data_volumes` entry, plus any listed under the new
+    `worktree.seed_volumes`. Each gets its own outcome line.
+  - **Unseeded volumes are named:** a volume the web service mounts but nothing seeds is now
+    named in the output rather than passed over silently.
+  - See [docs/WORKTREES.md](docs/WORKTREES.md#seeding-more-than-one-file-volume). (#103)
 - **dk's containers work with SELinux enforcing (Fedora, RHEL).** When `docker info`
   reports SELinux, the local proxy and the one-off helpers that bind-mount host paths
   (media pull and push, SBOM and ORAS, restic with a DC backup CA) run with
