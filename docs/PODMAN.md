@@ -54,26 +54,41 @@ echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/50-unpriv
 ## 2. SELinux (Fedora, RHEL and derivatives)
 
 With SELinux enforcing, a container cannot read a host folder that is mounted without a
-label. dk and the project compose files mount without `:z`, so this applies to Docker on
-Fedora as well as Podman. It shows up two ways:
+label. This applies to Docker on Fedora as well as to Podman. Check with `getenforce`.
 
-- **`catalpa-local-proxy` exits 1 straight away, with no error in its log.** It cannot read
-  the Caddyfile or write its CA under `~/.config/catalpa/local-proxy`.
-- **Dev stack services get `Permission denied`** on the `./catalpa_wagtail`, `./media` and
-  `./docker/caddy/Caddyfile` mounts.
+**dk's own containers.** The local proxy and dk's one-off helpers (media pull and push, the
+SBOM and ORAS containers, restic with a DC backup CA) bind-mount host paths. When
+`docker info` reports SELinux, dk starts them with `--security-opt label=disable`, which
+leaves host labels alone and lifts SELinux confinement for that container only. It does not
+use `:z`, because that would permanently relabel paths such as the Caddyfile inside `.venv`
+(lost on every `uv sync`), an extract folder you chose, or the Docker socket. Set
+`DK_SELINUX_LABEL_DISABLE=1` to force the flag if detection misses, or `=0` to turn it off.
 
-Check with `getenforce`. If it prints `Enforcing`, label the project's mounted paths once,
-which is what `:z` would do:
+A `catalpa-local-proxy` that an older dk created without the flag is recreated on the next
+`dk <env> up` or `dk proxy up`; its CA is kept. If the proxy still exits straight after
+starting, dk now stops and prints the exit code and `docker logs`, instead of carrying on.
+
+**Project compose files.** Bind mounts in a project's own compose files are not dk's to
+change. Without a label, dev stack services get `Permission denied` on mounts such as
+`./catalpa_wagtail`, `./media` and `./docker/caddy/Caddyfile`. Add `:z` (shared label) to
+each host-path bind mount in the consumer repo:
+
+```yaml
+    volumes:
+      - ./catalpa_wagtail:/app/catalpa_wagtail:z
+      - ./media:/app/media:z
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+```
+
+`:z` is ignored where SELinux is off, including Docker Desktop on macOS. Use `:z`, not `:Z`
+(private label), for anything two services mount. Named volumes need nothing. Until a
+project has this, label the paths once by hand, which is what `:z` does:
 
 ```bash
 chcon -R -t container_file_t catalpa_wagtail media docker/caddy/Caddyfile   # catalpa-site paths
 ```
 
 New files created inside those folders inherit the label. `restorecon -R <path>` undoes it.
-
-For the proxy, label its two mounts in the same way, or start it with
-`--security-opt label=disable` (section 3). A label on the Caddyfile inside `.venv` is lost
-whenever `uv sync` reinstalls the tooling, so the second option holds up better.
 
 ## 3. When something else already holds port 443
 
@@ -196,8 +211,8 @@ cross the VM boundary (#94). So switch it on per machine, not for everyone.
 
 ## Known gaps
 
-- dk's own `docker run` helpers and the project compose files do not label mounts for
-  SELinux (section 2).
+- Project compose files need `:z` on host-path bind mounts under SELinux; dk can't add it
+  for them (section 2).
 - The local proxy's host ports cannot be configured (section 3).
 - Against Podman's compat API, compose drops `platform:` and builds native. `dk push` checks
   the built architecture since v1.6.0 (#114).
