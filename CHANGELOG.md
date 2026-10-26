@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **Worktree-first development, including Claude Code's own worktrees.**
+  - The `worktrees` agent rule now says to do every development task in a `dk worktree`
+    rather than the main checkout. It loads in every session (`alwaysApply: true`), and tells
+    agents to cut worktrees from `origin/<default branch>`, not the main checkout's `HEAD`.
+  - With that rule selected, `setup-agents` adds `WorktreeCreate` and `WorktreeRemove` hooks
+    to `.claude/settings.json`, recorded in `.claude/setup-agents.json`.
+  - With the hooks, `claude --worktree`, EnterWorktree and `isolation: worktree` subagents get
+    a dk worktree, made by the new `dk worktree claude-hook create|remove`, instead of a bare
+    `.claude/worktrees/` checkout. A hook-made worktree is cut from the freshly fetched remote
+    default branch, with no seed and no stack.
+  - Hook removal stops the stack and keeps its volumes. It deletes the branch only when
+    `git branch -d` allows it.
+  - The `dk-stack` skill now triggers on starting a development task and points to the rule.
+    See [docs/WORKTREES.md](docs/WORKTREES.md#claude-code-worktrees).
+
 ### Fixed
 
 - **dk's containers work with SELinux enforcing (Fedora, RHEL).** When `docker info`
