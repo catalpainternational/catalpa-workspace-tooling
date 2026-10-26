@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -71,6 +73,11 @@ def _db_shell_vars(target: DbRestoreTarget) -> str:
 
 # PostgreSQL startup log once crash/archive recovery has finished (English messages).
 _PG_RECOVERY_READY_LOG = "database system is ready to accept connections"
+# The official image's entrypoint prints this each time the container starts on an existing data
+# directory; seeing it twice while waiting means `db` is crash-looping.
+_PG_ENTRYPOINT_START_LOG = "Skipping initialization"
+# A data directory from another major version never starts, however long we wait.
+_PG_WRONG_MAJOR_LOG = "database files are incompatible with server"
 
 
 def _merged_process_env(env: dict[str, str]) -> dict[str, str]:
@@ -1113,8 +1120,11 @@ def wait_db_logs_for_recovery_ready(
         start_new_session=True,
     )
     ready = threading.Event()
+    failed: list[str] = []
 
     def _read_loop() -> None:
+        starts = 0
+        last_fatal = ""
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -1123,6 +1133,19 @@ def wait_db_logs_for_recovery_ready(
                 if _PG_RECOVERY_READY_LOG in line:
                     ready.set()
                     return
+                if "FATAL:" in line:
+                    last_fatal = line.split("FATAL:", 1)[1].strip()
+                if _PG_WRONG_MAJOR_LOG in line:
+                    failed.append(f"PostgreSQL cannot open the restored data: {last_fatal}")
+                    return
+                if _PG_ENTRYPOINT_START_LOG in line:
+                    starts += 1
+                    if starts > 1:
+                        failed.append(
+                            "`db` keeps restarting instead of finishing recovery"
+                            + (f"; last error: {last_fatal}" if last_fatal else ".")
+                        )
+                        return
         except Exception:
             return
 
@@ -1145,6 +1168,8 @@ def wait_db_logs_for_recovery_ready(
                 break
             if ready.wait(timeout=remaining):
                 return True, ""
+            if failed:
+                return False, failed[0]
             if proc.poll() is not None:
                 return (
                     False,
@@ -1167,6 +1192,103 @@ def wait_db_logs_for_recovery_ready(
         signal.signal(signal.SIGINT, old_sigint)
         _terminate_log_follower(proc)
         th.join(timeout=5)
+
+
+def pg_major_of_newest_backup(info_json: str) -> str | None:
+    """PostgreSQL major of the newest backup in ``pgbackrest info --output=json``, if any.
+
+    That is the set a restore with no ``--set`` takes. Each backup names its cluster by ``id``;
+    the stanza's ``db`` list maps that id to a version, which changes after a ``stanza-upgrade``.
+    """
+    try:
+        stanzas = json.loads(info_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(stanzas, list) or not stanzas or not isinstance(stanzas[0], dict):
+        return None
+    backups = stanzas[0].get("backup") or []
+    if not backups:
+        return None
+    db_id = (backups[-1].get("database") or {}).get("id")
+    for db in stanzas[0].get("db") or []:
+        if db.get("id") == db_id:
+            return str(db.get("version") or "").split(".")[0] or None
+    return None
+
+
+def pg_major_from_version_text(text: str) -> str | None:
+    """``postgres (PostgreSQL) 18.6 (Debian …)`` -> ``18``."""
+    match = re.search(r"\(PostgreSQL\)\s+(\d+)", text)
+    return match.group(1) if match else None
+
+
+def check_backup_matches_image(
+    env: dict[str, str],
+    *,
+    compose_file: str,
+    extra_pgbackrest_args: Sequence[str] | None = None,
+) -> int:
+    """Refuse a restore whose newest backup is from another PostgreSQL major than the `db` image.
+
+    The restore itself would succeed and the download take minutes; only then would PostgreSQL
+    refuse to start. Returns 0 when they match, or when either side cannot be read (the restore
+    goes ahead and says so), or when ``--set`` or a point-in-time ``--target`` picks a backup
+    other than the newest.
+    """
+    picks_another = ("--set", "--target")
+    if any(a in picks_another or a.startswith(tuple(f"{p}=" for p in picks_another))
+           for a in extra_pgbackrest_args or ()):
+        return 0
+    stanza = resolve_stanza(env)
+    inner = (
+        "postgres --version; echo ---; "
+        f"pgbackrest --stanza={shlex.quote(stanza or '')} info --output=json"
+    )
+    argv = [
+        "docker",
+        "compose",
+        "-f",
+        compose_file,
+        "run",
+        "-T",
+        "--rm",
+        "--no-deps",
+        "-u",
+        "postgres",
+        "--entrypoint",
+        "/bin/sh",
+        "db",
+        "-c",
+        inner,
+    ]
+    r = subprocess.run(
+        argv,
+        env=_merged_process_env(env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    version_text, _, info_json = (r.stdout or "").partition("---")
+    image_major = pg_major_from_version_text(version_text)
+    backup_major = pg_major_of_newest_backup(info_json.strip())
+    if image_major is None or backup_major is None:
+        print(
+            "pgBackRest restore: could not compare the backup's PostgreSQL version with the "
+            "`db` image's; restoring anyway.",
+            file=sys.stderr,
+        )
+        return 0
+    if image_major != backup_major:
+        print(
+            f"pgBackRest restore: the newest backup is PostgreSQL {backup_major}, but the `db` "
+            f"image runs PostgreSQL {image_major}, so it could not start on the restored data. "
+            f"Build `db` from a PostgreSQL {backup_major} image, or pick an older backup with "
+            "--set.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def build_restore_offline_argv(
@@ -1315,6 +1437,14 @@ def run_restore_offline(
             env,
             config=config,
             skip_configure_confirm=skip_confirm,
+        )
+        != 0
+    ):
+        return 1
+
+    if (
+        check_backup_matches_image(
+            env, compose_file=compose_file, extra_pgbackrest_args=extra_pgbackrest_args
         )
         != 0
     ):
