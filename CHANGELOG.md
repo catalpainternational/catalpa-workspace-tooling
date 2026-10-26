@@ -21,6 +21,13 @@
 
 ### Fixed
 
+- **`dk worktree seed` (and `create`) can seed more than one file volume.** Only the media
+  volume (`ops.restic.data_volume`) was copied, so files in other named volumes, such as
+  private uploads or public documents, were missing from the worktree. Their database rows were
+  still copied. List the extra volumes under the new `worktree.seed_volumes` in `tooling.yaml`.
+  Each one gets its own outcome line. A volume the web service mounts but nothing seeds is now
+  named in the output rather than skipped silently. See
+  [docs/WORKTREES.md](docs/WORKTREES.md#seeding-more-than-one-file-volume). (#103)
 - **dk's containers work with SELinux enforcing (Fedora, RHEL).** When `docker info`
   reports SELinux, the local proxy and the one-off helpers that bind-mount host paths
   (media pull and push, SBOM and ORAS, restic with a DC backup CA) run with

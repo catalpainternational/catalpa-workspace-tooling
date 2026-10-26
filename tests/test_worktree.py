@@ -9,10 +9,14 @@ import pytest
 import yaml
 
 from catalpa_tooling.cli.dk_argv import peel_worktree_flag
-from catalpa_tooling.config import ProjectConfig as ProjectConfigT, load_project_config
+from catalpa_tooling.config import (
+    ProjectConfig as ProjectConfigT,
+    ProjectConfigError,
+    load_project_config,
+)
 from catalpa_tooling.dk_cli import _load_config_for_argv
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
-from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
+from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind, StackVolumes
 from catalpa_tooling.worktree import (
     AGENTS_LOCAL_NAME,
     ensure_worktree_gitignore,
@@ -44,11 +48,14 @@ def _patch_media_transfer(
     *,
     source_has_content: bool | None = True,
     transfer_rc: int = 0,
+    stack_volumes: dict[str, str] | None = None,
+    web_mounts: tuple[str, ...] = (),
 ) -> tuple[MediaStorage, MediaStorage]:
     """Stand in for the volume machinery: resolve, probe and transfer.
 
     Returns the ``(source, destination)`` storages the patched resolver hands out. The
     destination carries the worktree's compose project, which is what the copy has to reach.
+    ``stack_volumes`` maps compose volume keys to the suffix after each stack's project name.
     """
     src_media = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_django_media")
     dst_media = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_feat_a_django_media")
@@ -58,6 +65,13 @@ def _patch_media_transfer(
         return dst_media if project.endswith("_feat_a") else src_media
 
     monkeypatch.setattr("catalpa_tooling.worktree.resolve_media_storage", fake_resolve)
+
+    def fake_stack_volumes(*, compose_file, env, config, repo_root=None):
+        project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+        names = {key: f"{project}_{suffix}" for key, suffix in (stack_volumes or {}).items()}
+        return StackVolumes(names=names, web_mounts=web_mounts)
+
+    monkeypatch.setattr("catalpa_tooling.worktree.resolve_stack_volumes", fake_stack_volumes)
     monkeypatch.setattr(
         "catalpa_tooling.worktree.media_storage_has_content",
         lambda storage, env, **k: source_has_content,
@@ -1052,6 +1066,133 @@ def test_worktree_seed_media_failure_is_fatal(
     config, _wt = _seedable_worktree(tmp_path, monkeypatch)
     _patch_media_transfer(monkeypatch, [], transfer_rc=3)
     assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 3
+
+
+def _with_seed_volumes(config: ProjectConfigT, wt: Path, keys: list[str]) -> None:
+    """Add ``worktree.seed_volumes`` to the worktree's tooling.yaml (the seed reads that one)."""
+    del config
+    tooling = wt / "tooling.yaml"
+    tooling.write_text(
+        tooling.read_text(encoding="utf-8")
+        + yaml.safe_dump({"worktree": {"seed_volumes": keys}}),
+        encoding="utf-8",
+    )
+
+
+def test_worktree_seed_volumes_config_parses_and_dedupes(tmp_path: Path) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    assert load_project_config(tmp_path).worktree.seed_volumes == ()
+    _with_seed_volumes(load_project_config(tmp_path), tmp_path, ["private_uploads", "docs", "docs"])
+    assert load_project_config(tmp_path).worktree.seed_volumes == ("private_uploads", "docs")
+
+
+def test_worktree_seed_volumes_config_rejects_bad_key(tmp_path: Path) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    _with_seed_volumes(load_project_config(tmp_path), tmp_path, ["not a volume"])
+    with pytest.raises(ProjectConfigError, match="worktree.seed_volumes"):
+        load_project_config(tmp_path)
+
+
+def test_worktree_seed_copies_every_listed_volume(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Files outside the media volume reach the worktree too, each with its own line (#103)."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["django_media", "private_uploads", "public_documents"])
+    calls: list[dict] = []
+    _patch_media_transfer(
+        monkeypatch,
+        calls,
+        stack_volumes={
+            "django_media": "django_media",
+            "private_uploads": "private_uploads",
+            "public_documents": "public_documents",
+        },
+    )
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+
+    pairs = [(c["src_media"].location, c["dst_media"].location) for c in calls]
+    assert pairs == [
+        ("app_compose_dev_django_media", "app_compose_dev_feat_a_django_media"),
+        ("app_compose_dev_private_uploads", "app_compose_dev_feat_a_private_uploads"),
+        ("app_compose_dev_public_documents", "app_compose_dev_feat_a_public_documents"),
+    ]
+    assert len({c["media_dir"] for c in calls}) == 3
+    err = capsys.readouterr().err
+    assert "worktree seed: volume private_uploads copied volume " in err
+    assert "; volume public_documents: copied volume app_compose_dev_public_documents" in err
+
+
+def test_worktree_seed_reports_a_listed_volume_the_stack_lacks(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["gone"])
+    calls: list[dict] = []
+    _patch_media_transfer(monkeypatch, calls)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    assert len(calls) == 1
+    err = capsys.readouterr().err
+    assert "volume gone: skipped, not declared" in err
+
+
+def test_worktree_seed_names_web_volumes_it_does_not_copy(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without the setting, an unseeded file volume is named, not passed over silently (#103)."""
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(
+        monkeypatch,
+        [],
+        stack_volumes={"django_media": "django_media", "private_uploads": "private_uploads"},
+        web_mounts=("django_media", "private_uploads"),
+    )
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, dry_run=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "volume private_uploads is mounted by the web service but not seeded" in err
+    assert "volume django_media is mounted" not in err
+
+
+def test_worktree_seed_dry_run_lists_extra_volumes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["private_uploads"])
+    calls: list[dict] = []
+    _patch_media_transfer(
+        monkeypatch,
+        calls,
+        stack_volumes={"private_uploads": "private_uploads"},
+        web_mounts=("private_uploads",),
+    )
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, dry_run=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert (
+        "dry-run: volume private_uploads volume app_compose_dev_private_uploads → "
+        "volume app_compose_dev_feat_a_private_uploads"
+    ) in err
+    assert "not seeded" not in err
+    assert calls == []
 
 
 def test_media_seeded_reads_the_stack_volume(

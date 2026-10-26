@@ -549,6 +549,17 @@ class AgentsConfig:
 
 
 @dataclass(frozen=True)
+class WorktreeConfig:
+    """Optional ``dk worktree`` settings (``worktree:``).
+
+    ``seed_volumes`` lists compose volume keys that ``dk worktree seed`` copies in addition to
+    the media storage (``ops.restic.data_volume`` or its bind), which is always seeded.
+    """
+
+    seed_volumes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SpacesConfig:
     """DigitalOcean Spaces defaults for backup auto-provisioning (``digitalocean.spaces``)."""
 
@@ -593,6 +604,7 @@ class ProjectConfig:
     repo_root: Path
     tooling_path: Path
     agents: AgentsConfig = AgentsConfig()
+    worktree: WorktreeConfig = WorktreeConfig()
 
     @property
     def stack(self) -> StackConfig:
@@ -1931,6 +1943,22 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),
         agents=_parse_agents(data.get("agents")),
+        worktree=_parse_worktree(data.get("worktree")),
+    )
+
+
+def _parse_worktree(raw: Any) -> WorktreeConfig:
+    if raw is None:
+        return WorktreeConfig()
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("worktree must be a mapping")
+    keys = _parse_string_list(raw.get("seed_volumes"), field="worktree.seed_volumes")
+    return WorktreeConfig(
+        seed_volumes=tuple(
+            dict.fromkeys(
+                _validate_compose_volume_key(k, field="worktree.seed_volumes") for k in keys
+            )
+        ),
     )
 
 

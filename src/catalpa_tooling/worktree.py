@@ -22,7 +22,9 @@ from catalpa_tooling.media_storage import (
     MediaStorage,
     MediaStorageError,
     MediaStorageKind,
+    StackVolumes,
     resolve_media_storage,
+    resolve_stack_volumes,
 )
 from catalpa_tooling.media_transfer import run_transfer_media
 from catalpa_tooling.pgbackrest_db import (
@@ -1391,6 +1393,45 @@ def _seed_media(
     return 0, f"copied {src_media.describe()} → {dst_media.describe()}"
 
 
+def _plan_seed_volumes(
+    seed_volumes: tuple[str, ...],
+    *,
+    src_media: MediaStorage,
+    dst_media: MediaStorage,
+    src_vols: StackVolumes,
+    dst_vols: StackVolumes,
+) -> tuple[list[tuple[str, MediaStorage | None, MediaStorage | None]], list[str]]:
+    """Pair each ``worktree.seed_volumes`` key with its source and destination storage.
+
+    Returns ``(planned, unlisted)``. A planned entry has ``None`` storages when either stack
+    does not declare the key, so the caller reports it as skipped rather than dropping it.
+    ``unlisted`` names the volumes the web service mounts that nothing will seed — the silent
+    gap behind issue #103.
+    """
+    media_locations = {src_media.location, dst_media.location}
+    planned: list[tuple[str, MediaStorage | None, MediaStorage | None]] = []
+    for key in seed_volumes:
+        src_name, dst_name = src_vols.names.get(key), dst_vols.names.get(key)
+        if src_name in media_locations or dst_name in media_locations:
+            continue  # already the media storage
+        if src_name is None or dst_name is None:
+            planned.append((key, None, None))
+            continue
+        planned.append(
+            (
+                key,
+                MediaStorage(MediaStorageKind.VOLUME, src_name),
+                MediaStorage(MediaStorageKind.VOLUME, dst_name),
+            )
+        )
+    unlisted = [
+        key
+        for key in dst_vols.web_mounts
+        if key not in seed_volumes and dst_vols.names[key] not in media_locations
+    ]
+    return planned, unlisted
+
+
 def _seed_database(
     src_compose: str,
     src_r: dict[str, str],
@@ -1566,6 +1607,7 @@ def worktree_seed(
 
     src_media: MediaStorage | None = None
     dst_media: MediaStorage | None = None
+    extra_volumes: list[tuple[str, MediaStorage | None, MediaStorage | None]] = []
     if do_media:
         try:
             src_media = resolve_media_storage(
@@ -1581,6 +1623,22 @@ def worktree_seed(
         except MediaStorageError as exc:
             print(f"worktree seed: {exc}", file=sys.stderr)
             return 1
+        extra_volumes, unlisted = _plan_seed_volumes(
+            dest_config.worktree.seed_volumes,
+            src_media=src_media,
+            dst_media=dst_media,
+            src_vols=resolve_stack_volumes(compose_file=src_compose, env=src_r, config=src_config),
+            dst_vols=resolve_stack_volumes(
+                compose_file=dst_compose, env=dst_r, config=dest_config
+            ),
+        )
+        for key in unlisted:
+            print(
+                f"worktree seed: volume {key} is mounted by the web service but not seeded. "
+                "If it holds files the database refers to, list it under "
+                "worktree.seed_volumes in tooling.yaml.",
+                file=sys.stderr,
+            )
 
     if dry_run:
         if do_media:
@@ -1589,6 +1647,17 @@ def worktree_seed(
                 f"dry-run: media {src_media.describe()} → {dst_media.describe()}",
                 file=sys.stderr,
             )
+            for key, src_vol, dst_vol in extra_volumes:
+                if src_vol is None or dst_vol is None:
+                    print(
+                        f"dry-run: volume {key} skipped, not declared in both stacks' compose files",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"dry-run: volume {key} {src_vol.describe()} → {dst_vol.describe()}",
+                        file=sys.stderr,
+                    )
         if do_db:
             print(
                 f"dry-run: pg_dump from main {base_env} → "
@@ -1617,7 +1686,7 @@ def worktree_seed(
     }
 
     def _summary() -> str:
-        return "; ".join(f"{step}: {outcomes[step]}" for step in ("db", "media"))
+        return "; ".join(f"{step}: {outcome}" for step, outcome in outcomes.items())
 
     parent = dest_config.repo_root / dest_config.ops.transfer_workdir
     parent.mkdir(parents=True, exist_ok=True)
@@ -1644,6 +1713,26 @@ def worktree_seed(
             if rc != 0:
                 return rc
             print(f"worktree seed: media {outcomes['media']}.", file=sys.stderr)
+
+            for key, src_vol, dst_vol in extra_volumes:
+                step = f"volume {key}"
+                if src_vol is None or dst_vol is None:
+                    outcomes[step] = "skipped, not declared in both stacks' compose files"
+                else:
+                    rc, outcomes[step] = _seed_media(
+                        src_r,
+                        dst_r,
+                        src_media=src_vol,
+                        dst_media=dst_vol,
+                        dest_config=dest_config,
+                        dest_overlay=dest_overlay,
+                        dst_ctx=dst_ctx,
+                        base_env=base_env,
+                        media_dir=session / f"volume_{key}",
+                    )
+                    if rc != 0:
+                        return rc
+                print(f"worktree seed: {step} {outcomes[step]}.", file=sys.stderr)
 
         if do_db:
             rc, outcomes["db"] = _seed_database(

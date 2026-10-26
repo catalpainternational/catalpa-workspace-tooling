@@ -93,6 +93,29 @@ dk worktree remove <slug> [--wipe] [--keep-stack] [--dry-run] [-y]
 - **up / down / restart / logs** — remapped compose lifecycle via the worktree overlay (volumes kept on `down`).
 - **status / context** — stack status (`running` / `stopped` / `unknown`) and agent-oriented identity.
 - **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus a copy of that stack's media storage (volume or bind) onto the worktree's. The media copy replaces whatever the destination held, and takes Wagtail originals and renditions together from the same source stack as the dump, so image rows and files stay consistent. A source with no media is skipped, not an error; the final line reports what each step did.
+
+### Seeding more than one file volume
+
+The media storage is one volume, chosen from `ops.restic.data_volume` (default `django_media`).
+If the project keeps files in other named volumes as well, such as private uploads or public
+documents, list them in `tooling.yaml` so the seed copies those too:
+
+```yaml
+worktree:
+  seed_volumes:
+    - django_private_uploads
+    - django_public_documents
+```
+
+Each entry is a compose volume key, the same kind of name as `ops.restic.data_volume`. Each is
+copied from the main checkout's stack to the worktree's in the same way as the media storage,
+and gets its own line in the output and in the final summary. A key that either stack's compose
+file does not declare is reported as skipped. Listing the media volume again is harmless.
+
+Without the setting, `seed` prints a line for every other named volume the web service mounts,
+saying it was not seeded. The database is copied whole, so rows that point at files in an
+unseeded volume will be missing their files in the worktree. Volumes the app regenerates, such
+as collected static files, don't need seeding; ignore their lines.
 - **remove** — `compose down` for the remapped project, then git worktree remove. **Volumes are
   kept**; the command prints how to reclaim them. Since 1.4.1: before that, the stack was left
   running for a project name that no longer had a checkout.
