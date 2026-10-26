@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.docker_selinux import selinux_label_disable_args
 from catalpa_tooling.run_cmd import run as run_cmd
 
 # Pin tool images; bump intentionally when upgrading scanners/attach tooling.
@@ -228,6 +229,7 @@ def generate_image_cyclonedx(image_ref: str, output_path: Path) -> int:
             "docker",
             "run",
             "--rm",
+            *selinux_label_disable_args(),
             "-v",
             "/var/run/docker.sock:/var/run/docker.sock",
             "-v",
@@ -304,6 +306,7 @@ def attach_sbom_referrer(image_ref_with_digest: str, sbom_path: Path) -> int:
             "docker",
             "run",
             "--rm",
+            *selinux_label_disable_args(),
             "-v",
             f"{work_dir}:/workspace",
             "-w",

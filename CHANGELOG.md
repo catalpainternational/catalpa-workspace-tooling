@@ -19,6 +19,24 @@
   - The `dk-stack` skill now triggers on starting a development task and points to the rule.
     See [docs/WORKTREES.md](docs/WORKTREES.md#claude-code-worktrees).
 
+### Fixed
+
+- **dk's containers work with SELinux enforcing (Fedora, RHEL).** When `docker info`
+  reports SELinux, the local proxy and the one-off helpers that bind-mount host paths
+  (media pull and push, SBOM and ORAS, restic with a DC backup CA) run with
+  `--security-opt label=disable`, so they can read their mounts without dk relabelling host
+  files. Nothing changes where SELinux is off, including macOS. An existing proxy created
+  without the flag is recreated, keeping its CA. `DK_SELINUX_LABEL_DISABLE=1`/`0` overrides
+  the detection. Project compose files still need `:z` on their own bind mounts; see
+  [docs/PODMAN.md](docs/PODMAN.md) section 2.
+  ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+
+- **`dk` stops when the local proxy exits straight after starting.** `docker run -d` and
+  `docker start` succeed even if the container dies a moment later, so dk used to carry on
+  with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
+  and the end of `docker logs`, with an SELinux hint when the engine has it on.
+  ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+
 ## 1.6.1
 
 ### Added

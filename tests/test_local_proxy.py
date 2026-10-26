@@ -97,7 +97,8 @@ def test_ensure_proxy_running_passes_machine_env(
     captured: dict[str, list[str]] = {}
 
     def fake_run(cmd, **_kwargs):
-        captured["cmd"] = cmd
+        if cmd[:2] == ["docker", "run"]:
+            captured["cmd"] = cmd
         import subprocess
 
         return subprocess.CompletedProcess(cmd, 0)

@@ -12,6 +12,7 @@ from typing import Final, Literal
 
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.config import DEFAULT_RESTIC_DATA_VOLUME, ProjectConfig, ProjectConfigError
+from catalpa_tooling.docker_selinux import selinux_label_disable_args
 from catalpa_tooling.run_cmd import run as run_cmd
 
 # Like PGBR_S3_WRITE_* / PGBR_S3_READ_*: use one credential source per environment (mutually exclusive).
@@ -412,7 +413,11 @@ def _docker_run_restic(
     )
 
     cmd.extend(docker_add_host_args(merged))
-    cmd.extend(docker_ca_volume_args(merged))
+    ca_volume_args = docker_ca_volume_args(merged)
+    if ca_volume_args:
+        # The CA PEM is the only host path bind-mounted here; the rest are named volumes (#128).
+        cmd.extend(selinux_label_disable_args(merged))
+    cmd.extend(ca_volume_args)
     cmd.extend(_docker_run_env_flags(merged))
     cmd.extend(docker_ca_env_flags_for_restic(merged))
     for src, dest, ro in volume_mounts:
