@@ -68,6 +68,31 @@ def render_systemd_unit(
     return body
 
 
+def as_user_unit(body: str) -> str:
+    """Rewrite a rendered system unit to run under the login user's systemd (rootless Podman).
+
+    No ``User=``/``Group=``; ordered after the user's ``podman.socket`` instead of
+    ``docker.service``; wanted by ``default.target``; and ``docker`` in the scripts reaches
+    the user's Podman through ``DOCKER_HOST``. A user manager has no
+    ``network-online.target``, so the lines naming it go.
+    """
+    out: list[str] = []
+    for line in body.splitlines():
+        key = line.split("=", 1)[0].strip()
+        if key in ("User", "Group"):
+            continue
+        if key == "Wants" and "network-online.target" in line:
+            continue
+        if key == "After":
+            line = "After=podman.socket"
+        elif line.strip() == "WantedBy=multi-user.target":
+            line = "WantedBy=default.target"
+        out.append(line)
+        if line.strip() == "[Service]":
+            out.append("Environment=DOCKER_HOST=unix://%t/podman/podman.sock")
+    return "\n".join(out) + ("\n" if body.endswith("\n") else "")
+
+
 def validate_systemd_units(
     units: SystemdUnitsOpsConfig,
     unit_prefix: str,
