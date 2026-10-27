@@ -1113,7 +1113,9 @@ def cmd_env_host_create(
         return 1
 
     p = _host_create_parser(env_name)
-    ns, rest = p.parse_known_args(argv)
+    # QUICKSTART tells operators to put create-only flags after `--` so the top-level
+    # parser leaves them alone; argparse would then read them as stray positionals.
+    ns, rest = p.parse_known_args([a for a in argv if a != "--"])
     if rest:
         p.error(f"unrecognized arguments: {' '.join(rest)}")
 

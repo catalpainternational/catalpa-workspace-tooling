@@ -1127,3 +1127,27 @@ def test_cmd_env_host_sync_dns(
 
     assert cmd_env_host(config, "prod", sync_dns=True) == 0
     assert sync_calls == ["203.0.113.5"]
+
+
+def test_cmd_env_host_create_takes_its_flags_after_the_documented_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QUICKSTART: create-only flags go after `--` so the top-level parser leaves them alone."""
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+    seen: dict = {}
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id_dry_run",
+        lambda project, **_k: seen.setdefault("project", project) or "proj",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_droplets.create_droplet",
+        lambda *_a, **kw: seen.update(context=kw["context"]) or 0,
+    )
+    argv = ["--dry-run", "--", "--context", "personal", "--project", "mine"]
+    assert cmd_env_host_create(config, "staging", argv) == 0
+    assert seen == {"project": "mine", "context": "personal"}
