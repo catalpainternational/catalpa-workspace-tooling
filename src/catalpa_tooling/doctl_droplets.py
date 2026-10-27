@@ -11,6 +11,35 @@ from catalpa_tooling.config import DigitalOceanConfig
 from catalpa_tooling.doctl_binary import DoctlCommandError, DoctlNotFoundError
 
 DEFAULT_IMAGE = "ubuntu-24-04-x64"
+#: ``digitalocean.os`` for a Fedora CoreOS droplet: Ignition instead of cloud-config.
+FEDORA_COREOS = "fedora-coreos"
+
+
+def fcos_image_id(image: str, *, context: str | None = None) -> str:
+    """A custom FCOS image's ID: DigitalOcean has no slug for one, so a name is looked up."""
+    from catalpa_tooling.doctl_binary import run_doctl_json
+
+    if image.isdigit():
+        return image
+    data = run_doctl_json(["compute", "image", "list-user"], context=context)
+    ids = [str(i["id"]) for i in data if isinstance(i, dict) and i.get("name") == image] if isinstance(data, list) else []
+    if len(ids) != 1:
+        print(f"Found {len(ids)} custom images named {image!r}; set digitalocean.image to its ID.", file=sys.stderr)
+        raise SystemExit(1)
+    return ids[0]
+
+
+def ssh_public_keys(key_refs: tuple[str, ...], *, context: str | None = None) -> list[str]:
+    """Public halves of the account SSH keys named by ID or fingerprint (Ignition needs the keys)."""
+    from catalpa_tooling.doctl_binary import run_doctl_json
+
+    data = run_doctl_json(["compute", "ssh-key", "list"], context=context)
+    wanted = set(key_refs)
+    return [
+        str(k["public_key"])
+        for k in (data if isinstance(data, list) else [])
+        if isinstance(k, dict) and (str(k.get("id")) in wanted or k.get("fingerprint") in wanted)
+    ]
 
 
 def _hint_ssh_key_list_forbidden() -> None:
@@ -335,8 +364,11 @@ def create_droplet(
     for_env: str | None = None,
     enable_monitoring: bool | None = None,
     reuse_existing: bool = False,
+    env_image: str | None = None,
+    os: str | None = None,
 ) -> int:
-    """Create a droplet with the standard bootstrap cloud-config user-data."""
+    """Create a droplet with the standard bootstrap user-data: cloud-config, or Ignition
+    for ``os=fedora-coreos``."""
     from catalpa_tooling.deploy_do_link import normalize_droplet_hostname
     from catalpa_tooling.doctl_binary import (
         DoctlCommandError,
@@ -356,11 +388,14 @@ def create_droplet(
         field="size",
         required=True,
     )
+    fcos = os == FEDORA_COREOS
     resolved_image = _pick(
         image,
         do_config.image if do_config else None,
+        env_value=env_image,
         field="image",
-        default=DEFAULT_IMAGE,
+        required=fcos,
+        default=None if fcos else DEFAULT_IMAGE,
     )
     resolved_region = _pick(
         region,
@@ -383,7 +418,20 @@ def create_droplet(
         if enable_monitoring is not None
         else (do_config.monitoring if do_config else True)
     )
-    user_data = render_droplet_bootstrap(timezone=resolved_timezone)
+    if fcos:
+        from catalpa_tooling.cloud_config.fcos_ignition import render_fcos_ignition
+
+        if dry_run:
+            print(f"dry-run: Fedora CoreOS image {resolved_image!r}, Ignition with core's keys", file=sys.stderr)
+            keys = ["ssh-ed25519 AAAA... (account keys)"]
+        else:
+            resolved_image = fcos_image_id(resolved_image, context=context)
+            keys = ssh_public_keys(resolved_keys, context=context)
+        # DigitalOcean refuses its metrics agent on a custom image, and FCOS has none to install.
+        resolved_monitoring = False
+        user_data = render_fcos_ignition(keys)
+    else:
+        user_data = render_droplet_bootstrap(timezone=resolved_timezone)
 
     tmp_path: Path | None = None
     try:

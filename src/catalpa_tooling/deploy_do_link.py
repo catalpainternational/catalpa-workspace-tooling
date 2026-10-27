@@ -14,6 +14,11 @@ import yaml
 from catalpa_tooling.config import ProjectConfig
 
 DEFAULT_SSH_USER = "root"
+#: ``digitalocean.os`` value for a Fedora CoreOS droplet (rootless Podman as ``core``).
+FEDORA_COREOS = "fedora-coreos"
+FCOS_SSH_USER = "core"
+#: The login's Podman API socket on Fedora CoreOS (``core`` is uid 1000).
+FCOS_PODMAN_SOCKET = "/run/user/1000/podman/podman.sock"
 _INFO_DO_EXAMPLE = """\
 digitalocean:
   droplet_name: my-hostname   # optional; default is {project.name}-{env}
@@ -22,6 +27,8 @@ digitalocean:
   size: s-2vcpu-4gb           # optional; for `dk <env> host create`
   region: sgp1                # optional; for `dk <env> host create`
   dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300)
+  os: fedora-coreos           # optional; rootless Podman as core, Ignition instead of cloud-config
+  image: fcos-next-45.…       # optional; required with os: fedora-coreos (custom image name or ID)
 """
 
 
@@ -32,6 +39,8 @@ class EnvDoLink:
     explicit_droplet_name: bool = False
     size: str | None = None
     region: str | None = None
+    os: str | None = None
+    image: str | None = None
 
 
 def normalize_droplet_hostname(name: str) -> str:
@@ -75,8 +84,16 @@ def _parse_env_do_block(raw: Any) -> tuple[str | None, str, str | None, str | No
     if not isinstance(raw, dict):
         return None, DEFAULT_SSH_USER, None, None
     droplet_name = _env_do_str(raw, "droplet_name")
-    ssh_user = _env_do_str(raw, "ssh_user") or DEFAULT_SSH_USER
+    default_user = FCOS_SSH_USER if _env_do_str(raw, "os") == FEDORA_COREOS else DEFAULT_SSH_USER
+    ssh_user = _env_do_str(raw, "ssh_user") or default_user
     return droplet_name, ssh_user, _env_do_str(raw, "size"), _env_do_str(raw, "region")
+
+
+def _env_do_os_image(raw: Any) -> tuple[str | None, str | None]:
+    """``(os, image)`` from ``info.yaml`` ``digitalocean``."""
+    if not isinstance(raw, dict):
+        return None, None
+    return _env_do_str(raw, "os"), _env_do_str(raw, "image")
 
 
 def read_env_do_link(info: dict[str, Any]) -> EnvDoLink | None:
@@ -100,20 +117,17 @@ def resolve_env_do_link(
 ) -> EnvDoLink:
     """Resolve droplet link: explicit ``digitalocean.droplet_name`` or ``{project}-{env}``."""
     droplet_name, ssh_user, size, region = _parse_env_do_block(info.get("digitalocean"))
-    if droplet_name:
-        return EnvDoLink(
-            droplet_name=normalize_droplet_hostname(droplet_name),
-            ssh_user=ssh_user,
-            size=size,
-            region=region,
-            explicit_droplet_name=True,
-        )
+    os, image = _env_do_os_image(info.get("digitalocean"))
     return EnvDoLink(
-        droplet_name=default_droplet_name(config, env_name),
+        droplet_name=normalize_droplet_hostname(droplet_name)
+        if droplet_name
+        else default_droplet_name(config, env_name),
         ssh_user=ssh_user,
         size=size,
         region=region,
-        explicit_droplet_name=False,
+        explicit_droplet_name=bool(droplet_name),
+        os=os,
+        image=image,
     )
 
 
@@ -146,11 +160,13 @@ def droplet_region_slug(droplet: dict[str, Any]) -> str:
     return str(region or "")
 
 
-def format_docker_host(ssh_user: str, ip: str) -> str:
+def format_docker_host(ssh_user: str, ip: str, *, os: str | None = None) -> str:
     user = (ssh_user or DEFAULT_SSH_USER).strip() or DEFAULT_SSH_USER
     host = ip.strip()
     if not host:
         return ""
+    if os == FEDORA_COREOS:
+        return f"ssh://{user}@{host}{FCOS_PODMAN_SOCKET}"
     return f"ssh://{user}@{host}"
 
 
@@ -947,7 +963,7 @@ def cmd_env_host(
         return rc
 
     ip = public_ipv4(droplet)
-    docker_host = format_docker_host(link.ssh_user, ip)
+    docker_host = format_docker_host(link.ssh_user, ip, os=link.os)
     print_host_resolution(link=link, droplet=droplet, docker_host=docker_host)
 
     if configured_host:
@@ -1148,6 +1164,8 @@ def cmd_env_host_create(
         for_env=None,
         enable_monitoring=False if ns.no_monitoring else None,
         reuse_existing=not ns.no_reuse_existing,
+        env_image=link.image,
+        os=link.os,
     )
     if rc != 0 or dry_run:
         return rc
