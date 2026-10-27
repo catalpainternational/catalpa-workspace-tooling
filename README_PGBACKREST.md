@@ -132,7 +132,7 @@ dk prod bkp_db backup full             # optional sanity check
 |------|----------------|
 | `host create` | Deploy machine and `docker_host` in `info.yaml`. |
 | `bkp_db init` | Creates external volumes, materializes pgBackRest/Postgres conf, starts `db` if needed, registers S3 stanza (skips if already present). |
-| `up -d` | Starts the rest of the stack (also runs volume ensure + materialize if you skipped `init`). |
+| `up -d` | Starts the rest of the stack (also runs volume ensure + materialize). With write credentials on a new database it refuses until `bkp_db init` has run. |
 | `install-systemd` | Host timers for full/incr backups — [README_SYSTEMD.md](README_SYSTEMD.md). |
 
 **Equivalent manual flow** (no `init`):
@@ -146,7 +146,9 @@ dk prod bkp_db install-systemd --enable
 
 ### What `dk <env> up` does automatically
 
-Every **`dk <env> up …`** (including `up -d db`) runs **`ensure_volumes`** and **`materialize_configs`** before calling `docker compose`. You do **not** need separate `ensure_volumes` or `bkp_db configure` before `up` unless you want config on disk without starting containers.
+Every **`dk <env> up …`** (including `up -d db`) runs **`ensure_volumes`** and **`materialize_configs`** before calling `docker compose`. You do **not** need separate `ensure_volumes` or `bkp_db configure` before `up` unless you want config on disk without starting containers, apart from the first `up` below.
+
+**A new environment with write credentials runs `dk <env> db init` before its first `up`.** `up` turns WAL archiving on, and until `db init` has created the stanza every archive attempt fails and restarts Postgres, part-way through the first migrations. `up` refuses in that case and says so.
 
 The dk-only flag **`--provision`** on `up` is stripped before compose and does not add extra steps — plain `up` already materializes.
 
@@ -266,7 +268,7 @@ Cross-cutting config (where values live, service vs container name, compose proj
 | `Skipping pgBackRest systemd files: PGBR_S3_WRITE_STANZA is not set` | WRITE credentials missing. |
 | `Could not discover a unique db container` | Stack not up, multiple Postgres containers, or set `pgbr_db_container`. |
 | Archive still off after deploy | Run `bkp_db configure` or any `dk <env> up`; entrypoint may not overwrite provisioned drop-ins. |
-| `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically); or `dk <env> up -d db` then retry. Check `pg1_path` matches real `PGDATA`. |
+| `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically). Check `pg1_path` matches real `PGDATA`. |
 | `info` shows `missing stanza path` after `init` skipped stanza-create | Broken or empty S3 repo prefix; clear repo path or fix credentials, then re-run `bkp_db configure stanza-create` (tooling only skips when `info` reports `status: ok`). |
 | `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
 | `[031]: option 'pg1-path' cannot be set multiple times` | Image `/etc/pgbackrest.conf` (or `/etc/pgbackrest/pgbackrest.conf`) also sets `pg1-path`. Tooling already writes it in `conf.d`. Remove it from the image file; keep only lock/log/spool. See [QUICKSTART.md](QUICKSTART.md#postgres-image-and-pgbackrestconf). |

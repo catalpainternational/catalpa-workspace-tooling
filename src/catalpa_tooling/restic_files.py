@@ -46,7 +46,7 @@ _RESTIC_READ_OK_SUBCOMMANDS: frozenset[str] = frozenset(
     }
 )
 
-# Official image; pin patch release (Docker Hub has 0.17.x, not bare 0.17).
+# Official image; pin a patch release. 0.18 is the first with `restore --exclude-xattr`.
 RESTIC_IMAGE: Final[str] = "restic/restic:0.18.1"
 
 # Default mount when ``ops.restic.data_volume`` is ``django_media`` (must match paths in snapshots).

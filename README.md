@@ -148,6 +148,8 @@ After install, these console scripts are available:
 | `tests`   | `backend` / `frontend` / `workspace` pytest or Vitest; **`smoke`** layered stack health + Playwright — see [docs/SMOKE_TESTS.md](docs/SMOKE_TESTS.md)                                                                                                                                                                                                                                                                                                        |
 | `scripts` | Run `scripts/*.sh` helpers (auto-discovered; excludes `dev-*.sh`)                                                                                                                                                                                                                                                                                                                                                                                            |
 
+dk's own flags go after the environment name (`dk prod --yes db init`, not `dk --yes prod …`), and options for the tool underneath go after `--` (`dk prod db restore -- --set=<backup> --type=immediate`).
+
 ### Project script extensions
 
 Place bash scripts under `paths.scripts` in `tooling.yaml` (a single directory or an **ordered list**). When using a list, **earlier directories win** if the same command name appears in more than one path (so project `scripts/` can override shared helpers):

@@ -75,3 +75,21 @@ def test_host_logging_still_checks_a_docker_host(monkeypatch) -> None:
     monkeypatch.setattr(docker_logging, "probe_host_logging", lambda ssh: probed.append(ssh))
     assert docker_logging.cmd_host_logging(object(), "prod") == 1  # probe returned None
     assert probed == ["root@prod.example.com"]
+
+
+@pytest.mark.parametrize(
+    ("env", "initialised", "refused"),
+    [
+        (WRITE_ENV, False, True),  # new database + backups: archiving would crash migrations
+        (WRITE_ENV, True, False),  # already running: never stopped
+        ({"COMPOSE_PROJECT_NAME": "site"}, False, False),  # no backups configured
+    ],
+)
+def test_first_up_waits_for_db_init_only_with_backups_and_a_new_database(
+    monkeypatch, env, initialised, refused
+) -> None:
+    monkeypatch.setattr(pvc, "_pgdata_has_control_file", lambda *a, **k: initialised)
+    why = pvc.first_up_needs_db_init(dict(env), image="img")
+    assert (why is not None) == refused
+    if refused:
+        assert "db init" in why

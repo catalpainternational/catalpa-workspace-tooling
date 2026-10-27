@@ -45,6 +45,7 @@ from catalpa_tooling.pgbackrest_db import (
 )
 from catalpa_tooling.pgbackrest_volume_config import (
     ensure_external_stack_volumes,
+    first_up_needs_db_init,
     materialize_configs,
     postgres_image_from_env,
     remove_wipe_data_volumes,
@@ -248,6 +249,12 @@ def _run_compose_path(
             )
             if rc != 0:
                 return rc
+        why = first_up_needs_db_init(
+            env_add, image=postgres_image_from_env(env_add, config=config), config=config
+        )
+        if why:
+            print(why, file=sys.stderr)
+            return 1
         rc = materialize_configs(
             env_add,
             dry_run=False,
