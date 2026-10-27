@@ -1127,3 +1127,27 @@ def test_cmd_env_host_sync_dns(
 
     assert cmd_env_host(config, "prod", sync_dns=True) == 0
     assert sync_calls == ["203.0.113.5"]
+
+
+def test_cmd_env_host_create_finishes_in_the_account_and_project_it_created_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--context`/`--project` reached the droplet create but not the DNS and docker_host steps,
+    which then looked in tooling.yaml's project with the default doctl login."""
+    from catalpa_tooling import deploy_do_link
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.ensure_doctl_available", lambda: Path("/doctl"))
+    monkeypatch.setattr("catalpa_tooling.doctl_projects.resolve_project_id", lambda *_a, **_k: "p")
+    monkeypatch.setattr("catalpa_tooling.doctl_droplets.create_droplet", lambda *_a, **_k: 0)
+    finished: list = []
+    monkeypatch.setattr(
+        deploy_do_link, "_finish_host_provisioning", lambda cfg, env, **kw: finished.append(cfg) or 0
+    )
+    argv = ["--context", "personal", "--project", "mine"]
+    assert deploy_do_link.cmd_env_host_create(config, "staging", argv) == 0
+    do = finished[0].digitalocean
+    assert (do.project_name, do.project_id, do.context) == ("mine", None, "personal")
