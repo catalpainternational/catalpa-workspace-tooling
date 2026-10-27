@@ -1058,7 +1058,9 @@ def _docker_run_cp(
             image,
             "-c",
             (
-                f"cat > /work/{q} && chmod 644 /work/{q} "
+                # 600: the pgBackRest drop-in holds the repository's S3 secret. postgres
+                # owns the files; it and root (dk's own probes) are the only readers.
+                f"cat > /work/{q} && chmod 600 /work/{q} "
                 f"&& chown postgres:postgres /work/{q}"
             ),
         ],
@@ -1351,6 +1353,9 @@ def run_pgbackrest_stanza_create(
             "--rm",
             *_compose_db_platform_args(image, docker_env),
             *_docker_run_s3_network_args(env),
+            # pgBackRest refuses stanza-create as root, and a db image may set no USER.
+            "--user",
+            "postgres",
             "--entrypoint",
             "/bin/sh",
             "-v",
