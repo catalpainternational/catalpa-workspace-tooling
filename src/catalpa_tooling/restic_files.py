@@ -47,7 +47,7 @@ _RESTIC_READ_OK_SUBCOMMANDS: frozenset[str] = frozenset(
 )
 
 # Official image; pin patch release (Docker Hub has 0.17.x, not bare 0.17).
-RESTIC_IMAGE: Final[str] = "restic/restic:0.17.3"
+RESTIC_IMAGE: Final[str] = "restic/restic:0.18.1"
 
 # Default mount when ``ops.restic.data_volume`` is ``django_media`` (must match paths in snapshots).
 DJANGO_MEDIA_MOUNT: Final[str] = "/backup/django_media"
@@ -668,6 +668,10 @@ def run_restore(
                 snapshot,
                 "--target",
                 "/restore",
+                # The source host's SELinux labels are not the target's to keep, and a
+                # rootless container may not change them: every file failed without this.
+                "--exclude-xattr",
+                "security.selinux",
                 "--path",
                 primary_mount,
             ],
