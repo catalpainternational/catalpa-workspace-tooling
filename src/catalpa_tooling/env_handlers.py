@@ -86,6 +86,7 @@ from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.systemd_remote_install import (
     cmd_install_systemd_backups,
     parse_docker_host_to_ssh_target,
+    rootless_podman_socket,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.dc_backup.hosts import (
@@ -573,6 +574,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             env_defaults=env_defaults,
             site_origin=str(site_origin) if site_origin else None,
             target=zabbix_target,
+            podman_socket=rootless_podman_socket(str(docker_host)) if zabbix_target == "app" else None,
         )
 
     if env_command == "ensure_volumes":
