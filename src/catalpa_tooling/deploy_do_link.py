@@ -1172,8 +1172,31 @@ def cmd_env_host_create(
     if rc != 0 or dry_run:
         return rc
     return _finish_host_provisioning(
-        config,
+        _with_do_overrides(config, project=ns.project, context=ns.context),
         env_name,
         context=context,
         dry_run=False,
     )
+
+
+def _with_do_overrides(
+    config: ProjectConfig, *, project: str | None, context: str | None
+) -> ProjectConfig:
+    """``config`` with ``host create --project/--context`` applied, so the steps after the
+    droplet exists (docker_host, DNS) look in the same account and project it was made in."""
+    import dataclasses
+
+    from catalpa_tooling.config import DigitalOceanConfig
+
+    if not project and not context:
+        return config
+    base = config.digitalocean or DigitalOceanConfig(
+        project_name=None, project_id=None, context=None, timezone=None,
+        region=None, size=None, image=None, ssh_keys=None,
+    )  # fmt: skip
+    changes: dict[str, str | None] = {}
+    if project:
+        changes.update(project_name=project, project_id=None)
+    if context:
+        changes["context"] = context
+    return dataclasses.replace(config, digitalocean=dataclasses.replace(base, **changes))
