@@ -368,6 +368,8 @@ uv run native start          # Honcho: runserver + frontend
 
 ## 7. First remote environment (DigitalOcean droplet and deploy)
 
+`host create` also puts a DigitalOcean cloud firewall, `dk-<droplet>`, on every new droplet: SSH, HTTP, HTTPS (and HTTP/3) and ping in; out, only git over SSH, DNS, HTTP(S), NTP, mail and Zabbix. `digitalocean.firewall: false` in `info.yaml` makes none, and `digitalocean.firewall: {out_tcp: [5432]}` adds outbound ports. A droplet that already existed when `host create` ran keeps whatever firewall it has.
+
 Prefer `dk <env> host create` over a raw `dk digoc droplets create` so the env is named, linked, and DNS-synced in one flow. Examples use `staging`; `prod` is the same once `docker/envs/prod/info.yaml` exists.
 
 ### Define the env

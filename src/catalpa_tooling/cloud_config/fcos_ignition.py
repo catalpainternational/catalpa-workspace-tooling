@@ -42,16 +42,13 @@ def _owner() -> dict[str, dict[str, int]]:
     return {"user": {"id": CORE_UID}, "group": {"id": CORE_UID}}
 
 
-def _file(path: str, contents: str, mode: int, *, owned_by_core: bool = False) -> dict:
-    entry: dict = {
+def _file(path: str, contents: str, mode: int) -> dict:
+    return {
         "path": path,
         "mode": mode,
         "overwrite": True,
         "contents": {"source": "data:," + quote(contents)},
     }
-    if owned_by_core:
-        entry.update(_owner())
-    return entry
 
 
 def render_fcos_ignition(ssh_public_keys: list[str]) -> str:

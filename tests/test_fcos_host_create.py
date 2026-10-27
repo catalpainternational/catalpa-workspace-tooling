@@ -67,3 +67,39 @@ def test_create_sends_ignition_for_the_fcos_image_without_monitoring(monkeypatch
     assert argv[argv.index("--image") + 1] == "4242"
     assert "--enable-monitoring" not in argv
     assert json.loads(sent["user_data"])["ignition"]["version"].startswith("3.")
+
+
+def test_ignition_lets_core_bind_80_and_reboots_only_in_the_window() -> None:
+    files = _files(json.loads(render_fcos_ignition([KEY])))
+    assert files["/etc/sysctl.d/90-dk-unprivileged-ports.conf"].strip() == "net.ipv4.ip_unprivileged_port_start = 80"
+    window = files["/etc/zincati/config.d/55-dk-update-window.toml"]
+    assert 'strategy = "periodic"' in window and 'days = [ "Sun" ]' in window
+
+
+def test_the_fcos_image_is_found_by_its_name_and_must_be_unique(monkeypatch) -> None:
+    images = [{"id": 11, "name": "fcos-a"}, {"id": 12, "name": "fcos-b"}, {"id": 13, "name": "fcos-b"}]
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", lambda *_a, **_k: images)
+    assert doctl_droplets.fcos_image_id("fcos-a") == "11"
+    assert doctl_droplets.fcos_image_id("4242") == "4242"
+    with pytest.raises(SystemExit):
+        doctl_droplets.fcos_image_id("fcos-b")
+
+
+def test_core_gets_the_public_keys_named_by_id_or_fingerprint(monkeypatch) -> None:
+    keys = [
+        {"id": 1, "fingerprint": "aa:bb", "public_key": "ssh-ed25519 AAAA one"},
+        {"id": 2, "fingerprint": "cc:dd", "public_key": "ssh-ed25519 BBBB two"},
+        {"id": 3, "fingerprint": "ee:ff", "public_key": "ssh-ed25519 CCCC three"},
+    ]
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", lambda *_a, **_k: keys)
+    assert doctl_droplets.ssh_public_keys(("1", "cc:dd")) == ["ssh-ed25519 AAAA one", "ssh-ed25519 BBBB two"]
+
+
+def test_an_fcos_droplet_needs_an_image(monkeypatch, capsys) -> None:
+    """There is no stock FCOS slug, so a missing image is refused before any lookup."""
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", lambda *_a, **_k: pytest.fail("looked up"))
+    with pytest.raises(SystemExit):
+        doctl_droplets.create_droplet(
+            "x", size="s-1vcpu-2gb", region="sgp1", project_id="p", ssh_keys=("1",), os="fedora-coreos",
+        )  # fmt: skip
+    assert "Missing image" in capsys.readouterr().err

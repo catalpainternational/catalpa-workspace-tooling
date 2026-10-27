@@ -29,6 +29,7 @@ digitalocean:
   dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300)
   os: fedora-coreos           # optional; rootless Podman as core, Ignition instead of cloud-config
   image: fcos-next-45.…       # optional; required with os: fedora-coreos (custom image name or ID)
+  firewall: false             # optional; default: cloud firewall dk-<droplet> (SSH/web/ping in, deploy traffic out)
 """
 
 
@@ -426,6 +427,7 @@ def _finish_host_provisioning(
     *,
     context: str | None,
     dry_run: bool = False,
+    new_droplet: bool = True,
 ) -> int:
     """Patch docker_host, register SSH known_hosts, sync DO DNS, verify DNS."""
     failures: list[tuple[str, int]] = []
@@ -474,6 +476,25 @@ def _finish_host_provisioning(
             file=sys.stderr,
         )
         return 1
+
+    from catalpa_tooling.doctl_firewall import ensure_droplet_firewall, env_firewall_settings
+
+    fw_settings = env_firewall_settings(info)
+    if fw_settings is None:
+        print("No cloud firewall (digitalocean.firewall: false).", file=sys.stderr)
+    elif not new_droplet:
+        # An outbound allowlist on a server that is already running could cut off
+        # something it relies on, so only a droplet this run made gets one.
+        print(
+            f"Droplet {link.droplet_name!r} already existed: its cloud firewall is left as it is.",
+            file=sys.stderr,
+        )
+    else:
+        fw_rc = ensure_droplet_firewall(
+            link.droplet_name, droplet["id"], fw_settings, context=context, dry_run=dry_run
+        )
+        if fw_rc != 0:
+            failures.append(("firewall", fw_rc))
 
     from catalpa_tooling.host_storage import ensure_do_block_volumes_for_specs
     from catalpa_tooling.storage_config import parse_storage_volumes_from_info
@@ -1140,13 +1161,26 @@ def cmd_env_host_create(
     do_config = config.digitalocean
     context = ns.context or (do_config.context if do_config else None)
 
+    overridden = _with_do_overrides(config, project=ns.project, context=ns.context)
     if dry_run:
         project_id = resolve_project_id_dry_run(ns.project, do_config=do_config)
+        existed = False
     else:
+        from catalpa_tooling.doctl_binary import DoctlCommandError
+
         ensure_doctl_available()
         try:
             project_id = resolve_project_id(ns.project, do_config=do_config, context=context)
+            # Anywhere in the account, not only in the project: `create_droplet` reuses a
+            # droplet of this name from outside the project too, and moves it in.
+            existed = (
+                find_droplet_for_link(overridden, link, context=context) is not None
+                or find_droplet_by_name(link.droplet_name, context=context) is not None
+            )
         except SystemExit:
+            return 1
+        except DoctlCommandError as e:
+            print(f"Could not look up droplet {link.droplet_name!r}: {e}", file=sys.stderr)
             return 1
 
     rc = create_droplet(
@@ -1172,10 +1206,11 @@ def cmd_env_host_create(
     if rc != 0 or dry_run:
         return rc
     return _finish_host_provisioning(
-        _with_do_overrides(config, project=ns.project, context=ns.context),
+        overridden,
         env_name,
         context=context,
         dry_run=False,
+        new_droplet=not existed,
     )
 
 
