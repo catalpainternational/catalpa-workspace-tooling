@@ -8,6 +8,7 @@ import sys
 from catalpa_tooling.local_proxy import (
     ensure_proxy_running,
     print_proxy_status,
+    reload_proxy,
     proxy_container_id,
     require_local_docker_endpoint,
     stop_proxy,
@@ -35,6 +36,9 @@ def cmd_proxy(ns: argparse.Namespace) -> int:
 
     if sub == "down":
         return stop_proxy(dry_run=dry_run)
+
+    if sub == "reload":
+        return reload_proxy(dry_run=dry_run)
 
     if sub == "status":
         print_proxy_status()

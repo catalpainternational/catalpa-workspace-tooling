@@ -316,3 +316,39 @@ def test_db_psql_only_skips_compose(minimal_project, tmp_path) -> None:
             == 0
         )
         compose.assert_not_called()
+
+def test_db_psql_runs_as_postgres_over_the_socket(minimal_project, tmp_path) -> None:
+    """A cluster restored from another host keeps that host's postgres password, so the
+    hook must not depend on POSTGRES_PASSWORD over TCP."""
+    from dataclasses import replace
+
+    from catalpa_tooling.config import DbPsqlRestoreEntry, PostDbRestoreOpsConfig
+
+    hooks = PostDbRestoreOpsConfig(
+        envs=None,
+        db_psql=(DbPsqlRestoreEntry(target="app", file="fix.sql"),),
+        manage_commands=(),
+    )
+    cfg = replace(minimal_project, repo_root=tmp_path)
+    cfg = replace(cfg, ops_optional=replace(cfg.ops, post_db_restore=hooks))
+    (tmp_path / "fix.sql").write_text("SELECT 1;\n", encoding="utf-8")
+
+    with (
+        patch(
+            "catalpa_tooling.post_db_restore._resolve_db_psql_container_path",
+            return_value=(0, "/tmp/fix.sql"),
+        ),
+        patch(
+            "catalpa_tooling.post_db_restore.run_cmd",
+            return_value=MagicMock(returncode=0),
+        ) as run,
+    ):
+        run_post_db_restore_manage_commands(
+            cfg, compose_file="compose.yml", env_add={}, env_name="dev"
+        )
+
+    argv = run.call_args.args[0]
+    assert argv[argv.index("exec") : argv.index("db")] == ["exec", "-T", "-u", "postgres"]
+    script = argv[-1]
+    assert "PGPASSWORD" not in script
+    assert "-h " not in script

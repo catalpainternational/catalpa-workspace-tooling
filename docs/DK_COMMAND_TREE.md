@@ -15,6 +15,7 @@ dk
 ├── proxy [--dry-run]              # machine-wide local dev HTTPS reverse proxy
 │   ├── up                         # start catalpa-local-proxy (Caddy :80/:443); CA persisted on host
 │   ├── down                       # stop/remove catalpa-local-proxy (host-persisted CA kept)
+│   ├── reload                     # re-read the Caddyfile and sites/ fallbacks; keep stack routes
 │   ├── status                     # running? live sites (host -> upstream, project/env)
 │   └── trust                      # trust "Catalpa Local Dev Root (<machine>)" CA once (macOS/Linux)
 │

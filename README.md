@@ -284,6 +284,8 @@ Each deploy environment’s `docker/envs/<env>/info.yaml` may set **`site_origin
 | `SITE_ORIGIN` | First normalized origin (e.g. `https://catalpa.io`)                                   |
 | `DOMAIN`      | Comma+space joined hostnames for Caddy and Django (e.g. `catalpa.io, www.catalpa.io`) |
 
+An upper-case `DOMAIN` under `env:` in `info.yaml` is used as given instead, for apps that read `DOMAIN` as one hostname.
+
 Top-level **`domain`** (string or list) is still accepted but deprecated; prefer `site_origin`. Nested `env.site_origin` / `env.domain` are used only when the top-level field is empty.
 
 ### `redirect_origins` in `info.yaml`

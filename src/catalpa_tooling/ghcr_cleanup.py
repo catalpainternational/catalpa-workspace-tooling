@@ -31,6 +31,14 @@ _DEFAULT_KEEP_N_TAGGED = 20
 _DEFAULT_OLDER_THAN = "180 days"
 
 
+class GitHubApiError(RuntimeError):
+    """A GitHub API call that answered with an error status."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 @dataclass(frozen=True)
 class PackageVersion:
     package: str
@@ -417,8 +425,9 @@ def _github_request(
             payload = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             payload = {"message": raw or exc.reason}
-        raise RuntimeError(
-            f"GitHub API {method} {url} failed ({exc.code}): {payload.get('message', raw)}"
+        raise GitHubApiError(
+            exc.code,
+            f"GitHub API {method} {url} failed ({exc.code}): {payload.get('message', raw)}",
         ) from exc
 
 
@@ -511,7 +520,22 @@ def run_cleanup(
 
     versions_by_package: dict[str, list[PackageVersion]] = {}
     for package in plan.packages:
-        versions_by_package[package] = list_fn(plan.owner, package, resolved_token)
+        try:
+            versions_by_package[package] = list_fn(plan.owner, package, resolved_token)
+        except GitHubApiError as exc:
+            if exc.status != 404:
+                raise
+            print(
+                f"{package}: not found (never published, or this token cannot see it), skipped",
+                file=sys.stderr,
+            )
+    if not versions_by_package:
+        # Every package missing is more likely a wrong owner or token than nothing published.
+        print(
+            f"No package under {plan.owner} was found; check image_registry and the token.",
+            file=sys.stderr,
+        )
+        return 1
 
     staged = plan_deletions(plan, versions_by_package)
     print_cleanup_summary(plan, staged, dry_run=dry_run)

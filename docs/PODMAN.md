@@ -92,42 +92,27 @@ New files created inside those folders inherit the label. `restorecon -R <path>`
 
 ## 3. When something else already holds port 443
 
-dk's proxy always publishes `80:80` and `443:443` on every address. If another reverse proxy
-on the machine already holds 443, even on loopback only, `dk <env> up` stops with:
+dk's proxy publishes `80:80` and `443:443` on every address. If another reverse proxy on the
+machine already holds 443, even on loopback only, `dk <env> up` stops with:
 
 ```
 docker: Error response from daemon: rootlessport listen tcp :443: bind: address already in use
 ```
 
-`ss -ltnp 'sport = :443'` shows who holds the port. The stacks themselves are created
-before this point, but nothing routes to them.
+`ss -ltnp 'sport = :443'` shows who holds the port.
 
-To keep both proxies, run dk's proxy without host ports behind the existing one. dk
-reuses a `catalpa-local-proxy` container that already exists, so create it by hand, the
-same way dk would but without `-p 80:80 -p 443:443`:
-
-```bash
-docker rm -f catalpa-local-proxy
-CADDYFILE="$PWD/.venv/lib/python3.12/site-packages/catalpa_tooling/local_proxy/Caddyfile"
-docker network create catalpa-local-proxy-net 2>/dev/null || true
-docker run -d --name catalpa-local-proxy \
-  --security-opt label=disable \
-  --network catalpa-local-proxy-net \
-  --add-host=host.docker.internal:host-gateway \
-  -e CATALPA_LOCAL_DEV_MACHINE="$(hostname -s)" \
-  -p 127.0.0.1:2019:2019 \
-  -v "$HOME/.config/catalpa/local-proxy:/data" \
-  -v "$CADDYFILE:/etc/caddy/Caddyfile:ro" \
-  caddy:2-alpine caddy run --config /etc/caddy/Caddyfile
-podman network connect <front-proxy-network> catalpa-local-proxy
-```
-
-Then route `*.localdev.temp.build` from the front proxy to it. For a Caddy front proxy:
+Keep dk's proxy on 80/443 and put the other proxy behind it: move the other one to a high port
+and give dk's proxy a fallback site for its names (README_DEV_PROXY.md, "Fallback sites"). For
+containerwharf's workstation edge, which serves the Podman copies of partisipa and nextgen,
+`containerwharf setup edge` does both. For any other Caddy, write
+`~/.config/catalpa/local-proxy/sites/<name>.caddy`:
 
 ```caddy
-*.localdev.temp.build {
-	tls internal
-	reverse_proxy https://catalpa-local-proxy:443 {
+*.localhost, *.*.localhost, *.*.*.localhost {
+	tls {
+		on_demand
+	}
+	reverse_proxy https://host.docker.internal:<its port> {
 		header_up Host {host}
 		transport http {
 			tls_server_name {host}
@@ -137,15 +122,12 @@ Then route `*.localdev.temp.build` from the front proxy to it. For a Caddy front
 }
 ```
 
-`header_up Host {host}` is required. Without it, Caddy sends the upstream's own address as
-the Host header, dk's proxy matches none of its routes, and every page comes back as an
-empty `200`. The certificate in the browser is then the front proxy's, so trust that CA
-instead of running `dk proxy trust`.
+then run `dk proxy reload`. The other proxy has to listen on an address a Docker container can
+reach (not only the host's loopback). Browsers see dk's certificate, so `dk proxy trust` is the
+only CA to trust.
 
-`dk proxy down` removes this container, and the next `dk <env> up` recreates it with the
-host ports, so it fails again. Re-run the commands above after `dk proxy down`. The
-container has no restart policy (dk's own has none either), so after a reboot start it with
-`docker start catalpa-local-proxy`.
+An older version of this section created dk's proxy by hand with no ports, behind the other
+proxy. dk now recreates such a container with its ports on the next `dk <env> up`.
 
 ## 4. Production data
 

@@ -19,6 +19,18 @@
   - The `dk-stack` skill now triggers on starting a development task and points to the rule.
     See [docs/WORKTREES.md](docs/WORKTREES.md#claude-code-worktrees).
 
+- dk's local proxy can sit in front of another proxy on the same machine. Snippets in
+  `~/.config/catalpa/local-proxy/sites/` are its fallback sites, for names no stack routes;
+  `dk proxy reload` reads them and keeps every stack's route. Stack routes go ahead of fallbacks.
+  See README_DEV_PROXY.md, "Fallback sites".
+
+- `PGBR_REPO1_RETENTION_DIFF` sets how many differential pgBackRest backups to keep. Left unset,
+  nothing changes.
+
+- `paths.env_local` (default `.env.local`), `paths.deploy.dev_compose` (default: the
+  `default_compose` file) and `ops.zabbix` are optional. Without `ops.zabbix`, the Zabbix agent
+  commands fail with an error naming the section to add.
+
 ### Fixed
 
 - **Restic can back up more than one file volume.** `ops.restic.data_volume` names exactly
@@ -57,6 +69,56 @@
   with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
   and the end of `docker logs`, with an SELinux hint when the engine has it on.
   ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+- `dk proxy trust` and `dk <env> trust-caddy-cert` work on Fedora and its relatives (RHEL,
+  Silverblue, Bluefin): the root goes into `/etc/pki/ca-trust/source/anchors` and
+  `update-ca-trust` runs. They used to try Debian's `update-ca-certificates` on every Linux. A
+  system with neither family's command and folder gets an error naming them, and no sudo.
+
+- `dk proxy …` runs from any folder. The proxy is the machine's, but dk used to refuse it
+  outside a project with a `tooling.yaml`.
+
+- `db restore` checks, before asking you to type the environment's name or stopping `db`, that the newest backup
+  is from the same PostgreSQL major as the `db` image, and refuses when it is not (not checked
+  with `--set` or a point-in-time `--target`, which pick another backup). While `db` recovers, the wait stops as soon
+  as PostgreSQL says the data is from another version or `db` restarts, instead of waiting out
+  `PGBR_RESTORE_RECOVERY_TIMEOUT_SEC` (an hour by default).
+
+- A stack role that runs a stock image (no `build:`, like a dev stack's Caddy) no longer gets
+  dk's image labels, which gave it an empty build and failed `dk <env> up` with
+  `open Dockerfile: no such file or directory`.
+
+- `dk <env> up` and `dk proxy up` recreate a `catalpa-local-proxy` that does not publish 80, 443
+  and 2019, instead of reusing it and failing to register routes. Docker keeps a proxy running
+  with no ports when something else held 443 as it started; one made by hand to sit behind
+  another proxy, as PODMAN.md used to describe, has none either.
+
+- Restore hooks (`ops.post_db_restore` `db_psql`), `db pgdump`, `db restore` from dumps and the
+  database reset before it connect as `postgres` over the `db` container's local socket, not with
+  `POSTGRES_PASSWORD` over TCP. A cluster restored from another host keeps that host's postgres
+  password, so these failed on images whose `pg_hba.conf` asks for a password on 127.0.0.1. The
+  `db` image needs a `postgres` OS user, which pgBackRest commands already required.
+
+- `bkp_db version` no longer passes `--stanza`, which `pgbackrest version` rejects, and runs
+  without pgBackRest keys.
+
+- `bkp_db check` and `bkp_db configure verify` skip `pgbackrest check` on a restore-only (READ
+  mode) host and say why: that check needs WAL archiving, which a reader never turns on.
+
+- `db restore --dry-run` with no pgBackRest keys and no local dump says it would fetch, instead of
+  fetching. A fetch that has no SSH host configured is a one-line error, not a traceback.
+
+- `clean-images` skips a package GitHub cannot find (404: never published, or the token cannot
+  see it) instead of stopping, and exits 1 when it finds none of them.
+
+- `db pgdump -- <pg_dump flags>` no longer passes the `--` on to `pg_dump`.
+
+- The backup and media READMEs named a global `dk --yes` and a `sops exec-env … -- dk` pattern;
+  neither exists. They now say `dk <env> --yes`, and that `PGBR_S3_*` values set in the shell are
+  not read.
+
+- An upper-case `DOMAIN` under `env:` in an environment's `info.yaml` is used as given instead
+  of the site addresses, so projects that read `DOMAIN` as one hostname can list several
+  `site_origin` entries.
 
 ## 1.6.1
 

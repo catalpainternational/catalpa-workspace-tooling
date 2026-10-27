@@ -233,6 +233,64 @@ def test_upsert_route_dedupes_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "local-proxy-other-dev" in ids
 
 
+def test_upsert_route_goes_ahead_of_a_fallback_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fallback from /data/sites may match a stack's name; Caddy takes the first route that matches."""
+    import json
+
+    fallback = {"handle": [{"handler": "subroute"}]}
+    server = {"listen": [":443"], "routes": [fallback]}
+    patched: list[dict] = []
+
+    def fake_admin_request(method, path, *, body=None, timeout=10.0):
+        if method == "GET" and path == "/config/apps/http/servers":
+            return 200, json.dumps({"srv0": {"listen": [":443"]}})
+        if method == "GET":
+            return 200, json.dumps(server)
+        patched.append(body)
+        return 200, ""
+
+    monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
+
+    assert upsert_route("local-proxy-tvi-dev", "tvi-dev.localdev.temp.build", "tvi:80") == 0
+    assert [r.get("@id") for r in patched[0]["routes"]] == ["local-proxy-tvi-dev", None]
+
+
+def test_reload_proxy_puts_the_stack_routes_back_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Caddyfile reload drops routes added over the admin API; dk's go back ahead of fallbacks."""
+    import json
+
+    stack = {"@id": "local-proxy-tvi-dev", "match": [{"host": ["tvi-dev.localdev.temp.build"]}]}
+    fallback = {"handle": [{"handler": "subroute"}]}
+    before = {"listen": [":443"], "routes": [stack]}
+    after = {"listen": [":443"], "routes": [fallback]}
+    state = {"server": before}
+    patched: list[dict] = []
+    docker_calls: list[list[str]] = []
+
+    def fake_admin_request(method, path, *, body=None, timeout=10.0):
+        if method == "GET" and path == "/config/apps/http/servers":
+            return 200, json.dumps({"srv0": {"listen": [":443"]}})
+        if method == "GET" and path.endswith("/routes"):
+            return 200, json.dumps(state["server"]["routes"])
+        if method == "GET":
+            return 200, json.dumps(state["server"])
+        patched.append(body)
+        return 200, ""
+
+    def fake_run(cmd, **kwargs):
+        docker_calls.append(list(cmd))
+        state["server"] = after
+        return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+    monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
+    monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123")
+
+    assert local_proxy.reload_proxy() == 0
+    assert docker_calls[0][:5] == ["docker", "exec", "catalpa-local-proxy", "caddy", "reload"]
+    assert [r.get("@id") for r in patched[0]["routes"]] == ["local-proxy-tvi-dev", None]
+
+
 def test_local_proxy_routes_single(minimal_config: ProjectConfig) -> None:
     routes = local_proxy_routes(_DEV_INFO, minimal_config, "dev", "ambulancia_dev")
     assert routes == [
@@ -466,12 +524,29 @@ def _mounts_json(source: str) -> str:
     )
 
 
-def _stub_proxy_run(monkeypatch, tmp_path, *, mount_source: str):
+_ALL_PROXY_PORTS = {
+    "80/tcp": [{"HostIp": "", "HostPort": "80"}],
+    "443/tcp": [{"HostIp": "", "HostPort": "443"}],
+    "2019/tcp": [{"HostIp": "127.0.0.1", "HostPort": "2019"}],
+}
+
+
+def _stub_proxy_run(
+    monkeypatch, tmp_path, *, mount_source: str, port_bindings=None, live_ports=None
+):
     """Record docker calls for ensure_proxy_running with an existing, stopped container."""
+    import json
+
     calls: list[list[str]] = []
+    bindings = _ALL_PROXY_PORTS if port_bindings is None else port_bindings
+    live_bindings = _ALL_PROXY_PORTS if live_ports is None else live_ports
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
+        if cmd[:2] == ["docker", "inspect"] and "{{json .HostConfig.PortBindings}}" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(bindings))
+        if cmd[:2] == ["docker", "inspect"] and "{{json .NetworkSettings.Ports}}" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(live_bindings))
         if cmd[:2] == ["docker", "inspect"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=_mounts_json(mount_source))
         return subprocess.CompletedProcess(cmd, 0, stdout="")
@@ -549,6 +624,58 @@ def test_ensure_proxy_running_starts_container_when_mount_source_is_live(monkeyp
     assert any(c[:2] == ["docker", "start"] for c in calls)
     assert not any(c[:3] == ["docker", "rm", "-f"] for c in calls)
     assert not any(c[:2] == ["docker", "run"] for c in calls)
+
+
+def test_ensure_proxy_running_recreates_a_proxy_without_its_ports(monkeypatch, tmp_path, capsys):
+    """A proxy made by hand to sit behind another one publishes nothing; dk cannot use it."""
+    live = tmp_path / "venv" / "catalpa_tooling" / "local_proxy" / "Caddyfile"
+    calls, _ = _stub_proxy_run(monkeypatch, tmp_path, mount_source=str(live), port_bindings={})
+
+    assert local_proxy.ensure_proxy_running() == 0
+
+    assert ["docker", "rm", "-f"] in [c[:3] for c in calls]
+    assert not any(c[:2] == ["docker", "start"] for c in calls)
+    run_cmd = next(c for c in calls if c[:2] == ["docker", "run"])
+    assert "443:443" in run_cmd and "127.0.0.1:2019:2019" in run_cmd
+    assert "does not publish 80/tcp, 443/tcp, 2019/tcp" in capsys.readouterr().err
+
+
+def test_ensure_proxy_running_recreates_a_running_proxy_whose_ports_never_bound(
+    monkeypatch, tmp_path, capsys
+):
+    """Started while another proxy held 443: Docker keeps it running with no ports at all."""
+    live = tmp_path / "venv" / "catalpa_tooling" / "local_proxy" / "Caddyfile"
+    unbound = {"80/tcp": None, "443/tcp": None, "2019/tcp": None}
+    calls, _ = _stub_proxy_run(monkeypatch, tmp_path, mount_source=str(live), live_ports=unbound)
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123")
+    monkeypatch.setattr(local_proxy, "proxy_container_exists", lambda: False)
+
+    assert local_proxy.ensure_proxy_running() == 0
+
+    assert ["docker", "rm", "-f"] in [c[:3] for c in calls]
+    assert any(c[:2] == ["docker", "run"] for c in calls)
+    assert "is running but holds none of 80/tcp, 443/tcp, 2019/tcp" in capsys.readouterr().err
+
+
+def test_ensure_proxy_running_leaves_a_running_proxy_with_its_ports_alone(monkeypatch, tmp_path):
+    live = tmp_path / "venv" / "catalpa_tooling" / "local_proxy" / "Caddyfile"
+    calls, _ = _stub_proxy_run(monkeypatch, tmp_path, mount_source=str(live))
+    monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "abc123")
+
+    assert local_proxy.ensure_proxy_running() == 0
+    assert not any(c[:3] == ["docker", "rm", "-f"] for c in calls)
+
+
+def test_proxy_missing_ports_names_only_the_missing_ones(monkeypatch):
+    import json
+
+    bindings = {"443/tcp": [{"HostIp": "", "HostPort": "443"}], "80/tcp": None}
+    monkeypatch.setattr(
+        local_proxy,
+        "run_cmd",
+        lambda cmd, **_: subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(bindings)),
+    )
+    assert local_proxy.proxy_missing_ports() == ["80/tcp", "2019/tcp"]
 
 
 def test_proxy_caddyfile_mount_is_stale_ignores_a_different_live_install(monkeypatch, tmp_path):

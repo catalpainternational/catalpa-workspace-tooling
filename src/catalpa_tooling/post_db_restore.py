@@ -180,8 +180,7 @@ def run_db_psql_hooks(
 
         inner = (
             _db_shell_vars(target)
-            + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
-            + "psql -h 127.0.0.1 -p 5432 -U postgres -d "
+            + "psql -U postgres -d "
             + '"$APP_DB" -v ON_ERROR_STOP=1 -f '
             + shlex.quote(container_path)
         )
@@ -197,6 +196,8 @@ def run_db_psql_hooks(
                 compose_file,
                 "exec",
                 "-T",
+                "-u",
+                "postgres",
                 "db",
                 "sh",
                 "-c",

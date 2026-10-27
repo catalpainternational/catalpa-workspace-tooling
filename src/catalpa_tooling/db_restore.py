@@ -191,6 +191,9 @@ def _ensure_local_dumps(config: ProjectConfig, *, auto_fetch: bool) -> int:
                     run_fetch_all_dbs(config, only="metabase")
                 except SystemExit as exc:
                     return int(exc.code or 1)
+                except ValueError as exc:
+                    print(f"db restore: {exc}", file=sys.stderr)
+                    return 1
             elif not configured_metabase_dump_exists(config):
                 print(
                     "db restore: Metabase dump missing — run `uv run dk fetch db --only metabase` "
@@ -210,6 +213,9 @@ def _ensure_local_dumps(config: ProjectConfig, *, auto_fetch: bool) -> int:
         run_fetch_all_dbs(config)
     except SystemExit as exc:
         return int(exc.code or 1)
+    except ValueError as exc:
+        print(f"db restore: {exc}", file=sys.stderr)
+        return 1
     if not configured_app_dump_exists(config):
         print("db restore: fetch completed but app dump is still missing or too small.", file=sys.stderr)
         return 1
@@ -326,15 +332,16 @@ def run_unified_db_restore(
             extra_pg_restore_args=extra_pg_restore_args,
         )
 
-    rc = _ensure_local_dumps(config, auto_fetch=True)
-    if rc != 0:
-        return rc
     if dry_run:
         print(
-            f"dry-run: would restore app DB from {config.fetch_db_dump_path} after fetch",
+            f"dry-run: no pgBackRest keys and no dump at {config.fetch_db_dump_path}; "
+            "would fetch the configured databases, then restore from it",
             file=sys.stderr,
         )
         return 0
+    rc = _ensure_local_dumps(config, auto_fetch=True)
+    if rc != 0:
+        return rc
     return _restore_configured_dumps(
         config,
         compose_file=compose_file,

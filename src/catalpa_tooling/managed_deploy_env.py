@@ -343,7 +343,9 @@ def load_managed_deploy_context(
         env_add["SITE_ORIGIN"] = site_origin
         env_add.setdefault("BERO_ORIGIN", site_origin)
     domain_s = domain_env_from_origins(site_origins_list)
-    if domain_s:
+    if domain_s and "DOMAIN" not in info_env:
+        # An upper-case `env: DOMAIN` in info.yaml wins: some apps read DOMAIN as one
+        # hostname. The deprecated lower-case `env: domain` still gives way to site_origin.
         env_add["DOMAIN"] = domain_s
 
     from catalpa_tooling.caddy_site_addresses import (

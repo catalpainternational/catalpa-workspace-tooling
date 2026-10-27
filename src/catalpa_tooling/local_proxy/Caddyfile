@@ -20,6 +20,24 @@
 			intermediate_cn "Catalpa Local Dev Intermediate ({$CATALPA_LOCAL_DEV_MACHINE:local})"
 		}
 	}
+
+	# A fallback site (below) may ask for a certificate when a name is first visited. Only
+	# local names get one, so the proxy never mints certificates for whatever a client sends.
+	on_demand_tls {
+		ask http://localhost:5555/local-name
+	}
+}
+
+# Answers on_demand_tls above, for the names of a fallback site that asks for certificates on
+# demand: 200 only for local names. Stack and LAN routes get certificates by name and are never
+# checked here.
+http://localhost:5555 {
+	@local_name expression <<CEL
+		{query.domain}.endsWith(".localhost")
+		|| {query.domain}.endsWith(".localdev.temp.build")
+		CEL
+	respond @local_name 200
+	respond 403
 }
 
 :443 {
@@ -35,3 +53,10 @@
 		redir https://{host}{uri} permanent
 	}
 }
+
+# Fallback sites another tool on this machine adds, for names no stack here routes (a
+# workstation's Podman copies behind containerwharf's edge, say). dk puts each stack's route
+# ahead of them, so a fallback never takes a stack's name; a fallback names its hosts rather
+# than catching all, for stacks whose older dk adds routes after it. The folder is
+# ~/.config/catalpa/local-proxy/sites on the host; after changing it, run `dk proxy reload`.
+import /data/sites/*.caddy

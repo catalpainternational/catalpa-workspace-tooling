@@ -142,3 +142,64 @@ def test_empty_section_is_treated_as_absent(native_only_project: Path) -> None:
 
     with pytest.raises(ProjectConfigError, match="or it is empty"):
         _ = config.stack
+
+
+def _drop_manifest_key(root: Path, *path: str) -> None:
+    import yaml
+
+    manifest = root / "tooling.yaml"
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    parent = data
+    for key in path[:-1]:
+        parent = parent[key]
+    del parent[path[-1]]
+    manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def test_env_local_defaults_to_dot_env_local(native_only_project: Path) -> None:
+    """A partial manifest need not name the native env file (partisipa's does not)."""
+    _drop_manifest_key(native_only_project, "paths", "env_local")
+
+    config = load_project_config(native_only_project)
+
+    assert config.env_local_path == native_only_project / ".env.local"
+
+
+def test_dev_compose_defaults_to_default_compose(tmp_path: Path) -> None:
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    _drop_manifest_key(tmp_path, "paths", "deploy", "dev_compose")
+
+    config = load_project_config(tmp_path)
+
+    assert config.compose_dev == config.compose_prod == "compose.yml"
+
+
+def test_ops_without_zabbix_loads_and_zabbix_commands_say_what_to_add(tmp_path: Path) -> None:
+    from catalpa_tooling.zabbix_systemd import _apply_config_globals
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    _drop_manifest_key(tmp_path, "ops", "zabbix")
+
+    config = load_project_config(tmp_path)
+
+    assert config.ops.zabbix is None
+    with pytest.raises(ProjectConfigError, match="ops.zabbix"):
+        _apply_config_globals(config)
+
+
+def test_ops_zabbix_that_is_not_a_mapping_is_a_config_error(tmp_path: Path) -> None:
+    import yaml
+
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    manifest = tmp_path / "tooling.yaml"
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["ops"]["zabbix"] = "agent2"
+    manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(ProjectConfigError, match="ops.zabbix"):
+        load_project_config(tmp_path)

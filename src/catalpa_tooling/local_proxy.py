@@ -525,6 +525,43 @@ def proxy_caddyfile_mount_is_stale() -> bool:
     return not Path(source).is_file()
 
 
+#: What ``ensure_proxy_running`` publishes. A proxy missing any of them serves nothing, and dk
+#: cannot register routes without the admin port.
+PROXY_PUBLISHED_PORTS = ("80/tcp", "443/tcp", "2019/tcp")
+
+
+def proxy_missing_ports(*, live: bool = False) -> list[str]:
+    """The ports in ``PROXY_PUBLISHED_PORTS`` the existing proxy does not publish.
+
+    ``live`` asks what a running proxy actually holds rather than what it was created with. They
+    differ when something else held 443 as it started: Docker keeps it running with no ports
+    (measured: docker-ce 29.9, a Podman edge on loopback 443).
+    """
+    field = ".NetworkSettings.Ports" if live else ".HostConfig.PortBindings"
+    result = run_cmd(
+        [
+            "docker",
+            "inspect",
+            LOCAL_PROXY_CONTAINER,
+            "--format",
+            "{{json " + field + "}}",
+        ],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        bindings = json.loads((result.stdout or "").strip() or "{}")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(bindings, dict):
+        return []
+    return [port for port in PROXY_PUBLISHED_PORTS if not bindings.get(port)]
+
+
 _LOCAL_DOCKER_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -669,7 +706,28 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         return rc
 
     if proxy_container_id():
-        return ensure_proxy_on_network(dry_run=dry_run)
+        unbound = [] if dry_run else proxy_missing_ports(live=True)
+        if not unbound:
+            return ensure_proxy_on_network(dry_run=dry_run)
+        print(
+            f"{LOCAL_PROXY_CONTAINER!r} is running but holds none of {', '.join(unbound)}: "
+            "something else had the port when it started (`ss -ltnp 'sport = :443'`). "
+            "Recreating it.",
+            file=sys.stderr,
+        )
+        removed = run_cmd(
+            ["docker", "rm", "-f", LOCAL_PROXY_CONTAINER],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if removed.returncode != 0:
+            print(
+                f"dk proxy up: could not remove {LOCAL_PROXY_CONTAINER!r}: "
+                f"{(removed.stderr or removed.stdout or '').strip()}",
+                file=sys.stderr,
+            )
+            return removed.returncode
 
     caddyfile = local_proxy_caddyfile_path()
     if not caddyfile.is_file():
@@ -687,7 +745,10 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
     selinux_args = selinux_label_disable_args()
     if proxy_container_exists():
         recreate_reason = ""
-        if proxy_caddyfile_mount_is_stale():
+        missing = proxy_missing_ports()
+        if missing:
+            recreate_reason = f"does not publish {', '.join(missing)}"
+        elif proxy_caddyfile_mount_is_stale():
             stale = proxy_caddyfile_mount_source()
             recreate_reason = f"bind-mounts a Caddyfile that no longer exists ({stale})"
         elif selinux_args and not proxy_has_label_disable():
@@ -726,7 +787,7 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
             return ensure_proxy_on_network(dry_run=dry_run)
 
     data_dir = local_proxy_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "sites").mkdir(parents=True, exist_ok=True)
     cmd = [
         "docker",
         "run",
@@ -980,7 +1041,9 @@ def upsert_route(
     routes = [
         r for r in routes if not (isinstance(r, dict) and r.get("@id") == route_id_value)
     ]
-    routes.append(body)
+    # First, not last: Caddy takes the first route that matches, and a fallback site from the
+    # Caddyfile (/data/sites) may match a stack's name.
+    routes.insert(0, body)
     server["routes"] = routes
 
     status, detail = _admin_request("PATCH", server_path, body=server)
@@ -991,6 +1054,70 @@ def upsert_route(
             file=sys.stderr,
         )
         return 1
+    return 0
+
+
+def reload_proxy(*, dry_run: bool = False) -> int:
+    """Re-read the proxy's Caddyfile and the fallback sites it imports, keeping each stack's route.
+
+    A Caddyfile reload replaces the whole config, so the routes dk added over the admin API would
+    go until each stack's next ``dk <env> up``. They are read first and put back ahead of the
+    reloaded config's own routes.
+    """
+    if not proxy_container_id():
+        print(
+            f"{LOCAL_PROXY_CONTAINER} is not running; `dk proxy up` reads the Caddyfile.",
+            file=sys.stderr,
+        )
+        return 1
+    kept = [
+        r
+        for r in _https_server_routes()
+        if str(r.get("@id", "")).startswith(f"{_ROUTE_ID_PREFIX}-")
+    ]
+    if dry_run:
+        print(
+            f"dry-run: would reload {LOCAL_PROXY_CONTAINER} and keep {len(kept)} route(s)",
+            file=sys.stderr,
+        )
+        return 0
+    reloaded = run_cmd(
+        [
+            "docker",
+            "exec",
+            LOCAL_PROXY_CONTAINER,
+            "caddy",
+            "reload",
+            "--config",
+            CADDYFILE_CONTAINER_PATH,
+            "--adapter",
+            "caddyfile",
+        ],
+        check=False,
+    )
+    if reloaded.returncode != 0:
+        return reloaded.returncode
+    if not kept:
+        return 0
+    server_path = f"/config/apps/http/servers/{_https_server_name()}"
+    status, payload = _admin_request("GET", server_path)
+    if status >= 400:
+        print(
+            f"Reloaded, but could not read the new config (HTTP {status}): {payload}",
+            file=sys.stderr,
+        )
+        return 1
+    server = json.loads(payload) if payload.strip() else {}
+    server["routes"] = kept + [r for r in server.get("routes") or [] if isinstance(r, dict)]
+    status, detail = _admin_request("PATCH", server_path, body=server)
+    if status >= 400:
+        print(
+            f"Reloaded, but could not put back {len(kept)} stack route(s) "
+            f"(HTTP {status}): {detail}. Run `dk <env> up -d` for each stack.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Reloaded {LOCAL_PROXY_CONTAINER}; kept {len(kept)} stack route(s).", file=sys.stderr)
     return 0
 
 
