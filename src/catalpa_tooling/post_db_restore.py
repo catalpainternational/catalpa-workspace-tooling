@@ -19,11 +19,76 @@ from catalpa_tooling.storage_config import (
     parse_storage_volumes_from_info,
 )
 
-_ENV_NAME_PLACEHOLDER = "{env_name}"
+# Placeholders that need SITE_ORIGIN; a hook using one refuses to run without it.
+_SITE_PLACEHOLDERS = ("{site_origin}", "{site_host}")
 
 
-def _expand_argv(argv: tuple[str, ...], *, env_name: str) -> tuple[str, ...]:
-    return tuple(a.replace(_ENV_NAME_PLACEHOLDER, env_name) for a in argv)
+def _hook_placeholders(
+    config: ProjectConfig,
+    *,
+    env_name: str,
+    env_add: dict[str, str],
+) -> dict[str, str]:
+    """Values for ``{env_name}``, ``{site_origin}``, ``{site_host}``, ``{worktree_slug}``.
+
+    ``{site_origin}`` comes from ``SITE_ORIGIN`` in the resolved compose env, which in a
+    worktree is already the overlay origin. ``{worktree_slug}`` is empty outside a worktree,
+    and for envs other than the worktree's base env.
+    """
+    from catalpa_tooling.site_origin import hostnames_from_origins
+    from catalpa_tooling.worktree_overlay import WorktreeOverlayError, load_worktree_overlay
+
+    values = {"{env_name}": env_name}
+    origin = str(env_add.get("SITE_ORIGIN") or "").strip()
+    if origin:
+        values["{site_origin}"] = origin
+        values["{site_host}"] = hostnames_from_origins([origin])[0]
+    slug = ""
+    try:
+        overlay = load_worktree_overlay(config.repo_root)
+    except WorktreeOverlayError:
+        overlay = None
+    if overlay is not None and overlay.base_env == env_name:
+        slug = overlay.slug
+    values["{worktree_slug}"] = slug
+    return values
+
+
+def _expand_argv(argv: tuple[str, ...], values: dict[str, str]) -> tuple[str, ...]:
+    out = []
+    for a in argv:
+        for key, value in values.items():
+            a = a.replace(key, value)
+        out.append(a)
+    return tuple(out)
+
+
+def _expand_commands(
+    config: ProjectConfig,
+    commands: Sequence[tuple[str, ...]],
+    *,
+    env_name: str,
+    env_add: dict[str, str],
+    hook_label: str,
+) -> list[tuple[str, ...]] | None:
+    """Expand placeholders in ``commands``; None (after printing why) when one can't be filled."""
+    values = _hook_placeholders(config, env_name=env_name, env_add=env_add)
+    for argv in commands:
+        missing = [p for p in _SITE_PLACEHOLDERS if p not in values and any(p in a for a in argv)]
+        if missing:
+            print(
+                f"{hook_label}: `manage.py {' '.join(argv)}` uses {', '.join(missing)}, "
+                f"but SITE_ORIGIN is not set for env {env_name!r}.",
+                file=sys.stderr,
+            )
+            return None
+    return [_expand_argv(argv, values) for argv in commands]
+
+
+def post_db_restore_applies(config: ProjectConfig, env_name: str) -> bool:
+    """True when ``ops.post_db_restore`` has hooks that run for ``env_name``."""
+    hooks = config.ops.post_db_restore
+    return bool(hooks.manage_commands or hooks.db_psql) and hooks.applies_to_env(env_name)
 
 
 def _load_env_info(config: ProjectConfig, env_name: str) -> dict[str, Any]:
@@ -232,10 +297,18 @@ def run_post_db_restore_manage_commands(
     Returns 0 when there is nothing to run.
     """
     hooks = config.ops.post_db_restore
-    if not hooks.manage_commands and not hooks.db_psql:
+    if not post_db_restore_applies(config, env_name):
         return 0
-    if not hooks.applies_to_env(env_name):
-        return 0
+
+    commands = _expand_commands(
+        config,
+        hooks.manage_commands,
+        env_name=env_name,
+        env_add=env_add,
+        hook_label="post_db_restore",
+    )
+    if commands is None:
+        return 1
 
     rc = run_db_psql_hooks(
         config,
@@ -254,7 +327,6 @@ def run_post_db_restore_manage_commands(
         return 0
 
     web_svc = config.stack_service("web")
-    commands = [_expand_argv(argv, env_name=env_name) for argv in hooks.manage_commands]
 
     rc = _ensure_stack_volumes(config, env_name, env_add, dry_run=dry_run)
     if rc != 0:
@@ -332,6 +404,16 @@ def run_post_metabase_db_restore_manage_commands(
     if not hooks.applies_to_env(env_name):
         return 0
 
+    commands = _expand_commands(
+        config,
+        hooks.manage_commands,
+        env_name=env_name,
+        env_add=env_add,
+        hook_label="post_metabase_db_restore",
+    )
+    if commands is None:
+        return 1
+
     rc = run_db_psql_hooks(
         config,
         hooks.db_psql,
@@ -344,7 +426,6 @@ def run_post_metabase_db_restore_manage_commands(
         return rc
 
     web_svc = config.stack_service("web")
-    commands = [_expand_argv(argv, env_name=env_name) for argv in hooks.manage_commands]
 
     if hooks.manage_commands:
         rc = _ensure_stack_volumes(config, env_name, env_add, dry_run=dry_run)

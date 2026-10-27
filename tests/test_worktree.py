@@ -1357,3 +1357,112 @@ def test_worktree_context_json_stdout_is_only_json(
 
     assert json.loads(out.out)["branch"] == "worktree/ctx"
     assert "$ git rev-parse" in out.err
+
+
+def _patch_post_db_restore(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[dict],
+    *,
+    applies: bool = True,
+    rc: int = 0,
+) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._seed_database",
+        lambda *a, **k: (calls.append({"step": "seed_database"}), (0, "restored"))[1],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.post_db_restore_applies", lambda config, env_name: applies
+    )
+
+    def fake_hooks(config, **kwargs):
+        calls.append({"step": "hooks", "config": config, **kwargs})
+        return rc
+
+    monkeypatch.setattr("catalpa_tooling.worktree.run_post_db_restore_manage_commands", fake_hooks)
+
+
+def test_worktree_seed_runs_post_db_restore_hooks_against_the_worktree(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Copied rows still name the main checkout's hosts until the hooks rewrite them (#140)."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls)
+    overlay = load_worktree_overlay(wt)
+    assert overlay is not None
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, do_media=False, yes=True) == 0
+
+    assert [c["step"] for c in calls] == ["seed_database", "hooks"]
+    hook = calls[1]
+    assert hook["config"].repo_root.resolve() == wt.resolve()
+    assert hook["env_name"] == "dev"
+    assert hook["env_add"]["COMPOSE_PROJECT_NAME"] == "app_compose_dev_feat_a"
+    assert hook["env_add"]["SITE_ORIGIN"] == overlay.site_origin
+    assert Path(hook["compose_file"]).is_relative_to(wt.resolve())
+    assert "db: restored, post_db_restore hooks ran" in capsys.readouterr().err
+
+
+def test_worktree_seed_skips_hooks_that_do_not_apply(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls, applies=False)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, do_media=False, yes=True) == 0
+    assert [c["step"] for c in calls] == ["seed_database"]
+    assert "worktree seed: complete (db: restored;" in capsys.readouterr().err
+
+
+def test_worktree_seed_media_only_runs_no_hooks(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls)
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    assert calls == []
+
+
+def test_worktree_seed_hook_failure_is_fatal_with_a_retry_hint(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    _patch_post_db_restore(monkeypatch, [], rc=4)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, do_media=False, yes=True) == 4
+    err = capsys.readouterr().err
+    assert "db: restored, post_db_restore hooks failed" in err
+    assert "Retry: uv run dk worktree seed feat_a --db -y" in err
+    assert "worktree seed: complete" not in err
+
+
+def test_worktree_seed_dry_run_plans_the_hooks(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls)
+
+    assert worktree_seed(config, slug="feat_a", do_media=False, dry_run=True, yes=True) == 0
+    assert [c["step"] for c in calls] == ["hooks"]
+    assert calls[0]["dry_run"] is True

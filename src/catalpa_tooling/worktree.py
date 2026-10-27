@@ -35,6 +35,10 @@ from catalpa_tooling.pgbackrest_db import (
     run_pg_restore,
 )
 from catalpa_tooling.pgbackrest_volume_config import remove_all_external_stack_volumes
+from catalpa_tooling.post_db_restore import (
+    post_db_restore_applies,
+    run_post_db_restore_manage_commands,
+)
 from catalpa_tooling.restic_files import resolve_env_with_compose_project
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.worktree_overlay import (
@@ -1673,6 +1677,13 @@ def worktree_seed(
                 f"pg_restore into {dest_overlay.compose_project_name}",
                 file=sys.stderr,
             )
+            return run_post_db_restore_manage_commands(
+                dest_config,
+                compose_file=dst_compose,
+                env_add=dst_r,
+                env_name=base_env,
+                dry_run=True,
+            )
         return 0
 
     if not yes and not sys.stdin.isatty():
@@ -1757,6 +1768,25 @@ def worktree_seed(
             if rc != 0:
                 return rc
             print(f"worktree seed: database {outcomes['db']}.", file=sys.stderr)
+
+            # The copied rows still describe the main checkout's stack (site hostnames and
+            # the like); the project's restore hooks rewrite them for this worktree.
+            if post_db_restore_applies(dest_config, base_env):
+                rc = run_post_db_restore_manage_commands(
+                    dest_config,
+                    compose_file=dst_compose,
+                    env_add=dst_r,
+                    env_name=base_env,
+                )
+                if rc != 0:
+                    outcomes["db"] = "restored, post_db_restore hooks failed"
+                    print(f"worktree seed: failed ({_summary()}).", file=sys.stderr)
+                    print(
+                        f"  Retry: uv run dk worktree seed {dest_overlay.slug} --db -y",
+                        file=sys.stderr,
+                    )
+                    return rc
+                outcomes["db"] = "restored, post_db_restore hooks ran"
     finally:
         shutil.rmtree(session, ignore_errors=True)
 

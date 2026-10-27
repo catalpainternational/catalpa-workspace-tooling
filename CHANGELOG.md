@@ -21,6 +21,16 @@
 
 ### Fixed
 
+- **`dk worktree seed` runs the `ops.post_db_restore` hooks** (#140). The seed copies the main
+  checkout's database but skipped the hooks, so values such as Wagtail `Site` hostnames still
+  named the main checkout's stack, and pages in the worktree posted forms to it. The hooks now
+  run after the database step, against the worktree's stack, with the same `envs` filter
+  (matched against the base env). A hook failure fails the seed and prints a retry command.
+  - New hook placeholders: `{site_origin}` and `{site_host}` (the env's primary origin, which
+    in a worktree is the worktree's own) and `{worktree_slug}` (empty in the main checkout).
+    `{env_name}` is still the base env in a worktree. A hook that uses a site placeholder when
+    the env has no `SITE_ORIGIN` fails before anything runs. See
+    [README_PGBACKREST.md](README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
 - **Restic can back up more than one file volume.** `ops.restic.data_volume` names exactly
   one volume, so files an app keeps in other named volumes were never backed up, while
   pgBackRest still backed up the database rows that point at them. swlt_ws2's public documents
