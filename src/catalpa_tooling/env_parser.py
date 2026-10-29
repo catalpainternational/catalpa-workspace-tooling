@@ -107,6 +107,21 @@ def _attach_zabbix_commands(cmd_sub: argparse._SubParsersAction, env_name: str) 
     p_logs.add_argument("-f", "--follow", action="store_true")
 
 
+def _add_restore_yes(p: argparse.ArgumentParser) -> None:
+    """Accept ``--yes`` after ``restore`` as well as after the env name.
+
+    ``SUPPRESS`` keeps this subparser from resetting an env-level ``--yes`` to False.
+    """
+    p.add_argument(
+        "-y",
+        "--yes",
+        dest="yes",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Skip the confirmation prompt (required without a TTY).",
+    )
+
+
 def _attach_files_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> None:
     def _build_files_parser(name: str, *, dest: str) -> argparse.ArgumentParser:
         p = cmd_sub.add_parser(name, help="restic backups and host media → volume.")
@@ -137,6 +152,7 @@ def _attach_files_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -
             default="latest",
             help="Snapshot ID (default: latest).",
         )
+        _add_restore_yes(p_restore)
         return p
 
     _build_files_parser("files", dest="files_command")
@@ -196,6 +212,7 @@ def _attach_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> N
             dest="restore_dry_run",
             help="Print restore plan (stanza, repo path, compose command) without running.",
         )
+        _add_restore_yes(p_restore)
         p_restore.add_argument("pgbackrest_restore_args", nargs=argparse.REMAINDER)
         return p
 

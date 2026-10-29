@@ -31,6 +31,10 @@
     `{env_name}` is still the base env in a worktree. A hook that uses a site placeholder when
     the env has no `SITE_ORIGIN` fails before anything runs. See
     [README_PGBACKREST.md](README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
+- **`--yes` works anywhere after `restore`.** Without a TTY, `dk <env> db restore` and
+  `dk <env> files restore` say "Pass --yes", but `--yes` after `restore` was only accepted
+  as the last word, so `dk <env> db restore --yes -- --type=immediate` failed. Both restore
+  commands now take `-y` / `--yes` in any position.
 - **Restic can back up more than one file volume.** `ops.restic.data_volume` names exactly
   one volume, so files an app keeps in other named volumes were never backed up, while
   pgBackRest still backed up the database rows that point at them. swlt_ws2's public documents
