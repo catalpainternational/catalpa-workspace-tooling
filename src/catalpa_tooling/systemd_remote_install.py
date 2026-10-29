@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,7 +23,7 @@ from catalpa_tooling.restic_files import (
     restic_data_volume_key,
 )
 from catalpa_tooling.systemd_assets import systemd_source_dir
-from catalpa_tooling.systemd_render import render_systemd_unit
+from catalpa_tooling.systemd_render import as_user_unit, render_systemd_unit
 
 REMOTE_SYSTEMD = "/etc/systemd/system"
 
@@ -30,6 +31,72 @@ SCRIPTS = (
     ("pgbackrest-backup.sh", 0o755),
     ("restic-files-backup.sh", 0o755),
 )
+
+
+@dataclass(frozen=True)
+class BackupInstallTarget:
+    """Where the backup units, scripts and env files go on the host, and how to drive them.
+
+    ``unit_dir``, ``install_prefix`` and ``config_dir`` are the paths ssh and scp use;
+    a user install gives them relative to the login's home. ``unit_install_prefix`` and
+    ``unit_config_dir`` are the same folders as a unit file names them.
+    """
+
+    unit_dir: str
+    install_prefix: str
+    config_dir: str
+    unit_install_prefix: str
+    unit_config_dir: str
+    systemctl: str
+    docker: str
+    user: bool
+
+
+def rootless_podman_socket(docker_host: str) -> str | None:
+    """The socket path when ``docker_host`` names a user's Podman
+    (``ssh://u@h/run/user/<uid>/podman/podman.sock``).
+
+    Only Podman's own socket counts: the user units reach it as ``%t/podman/podman.sock``,
+    so a rootless Docker socket (``/run/user/<uid>/docker.sock``) is not taken for one.
+    """
+    path = urlparse((docker_host or "").strip()).path
+    if path.startswith("/run/user/") and path.endswith("/podman/podman.sock"):
+        return path
+    return None
+
+
+def backup_install_target(docker_host: str, *, install_prefix: str, config_dir: str) -> BackupInstallTarget:
+    """Root's systemd for a Docker host; the login user's for a rootless Podman one.
+
+    A rootless host (Fedora CoreOS with no sudo) cannot write ``/opt``, ``/etc`` or
+    ``/etc/systemd/system``, so the configured folders keep their names and move under
+    the user's home: ``/opt/<name>`` → ``~/.local/lib/<name>``, ``/etc/<name>`` →
+    ``~/.config/<name>``.
+    """
+    socket = rootless_podman_socket(docker_host)
+    if socket is None:
+        return BackupInstallTarget(
+            unit_dir=REMOTE_SYSTEMD,
+            install_prefix=install_prefix,
+            config_dir=config_dir,
+            unit_install_prefix=install_prefix,
+            unit_config_dir=config_dir,
+            systemctl="systemctl",
+            docker="docker",
+            user=False,
+        )
+    prefix = f".local/lib/{Path(install_prefix.rstrip('/')).name}"
+    cfg = f".config/{Path(config_dir.rstrip('/')).name}"
+    return BackupInstallTarget(
+        unit_dir=".config/systemd/user",
+        install_prefix=prefix,
+        config_dir=cfg,
+        unit_install_prefix=f"%h/{prefix}",
+        unit_config_dir=f"%h/{cfg}",
+        systemctl="systemctl --user",
+        docker=f"DOCKER_HOST=unix://{socket} docker",
+        user=True,
+    )
 
 
 def parse_docker_host_to_ssh_target(docker_host: str) -> str:
@@ -198,10 +265,12 @@ def render_restic_env(
     return "\n".join(lines) + "\n"
 
 
-def discover_db_container(ssh_target: str, compose_project: str) -> str | None:
+def discover_db_container(
+    ssh_target: str, compose_project: str, *, docker: str = "docker"
+) -> str | None:
     """Pick a single running Postgres container name on the remote host, or None."""
     r = run_cmd(
-        ["ssh", "-o", "BatchMode=yes", ssh_target, "docker", "ps", "--format", "{{.Names}}"],
+        ["ssh", "-o", "BatchMode=yes", ssh_target, f"{docker} ps --format '{{{{.Names}}}}'"],
         capture_output=True,
         text=True,
         check=False,
@@ -313,9 +382,15 @@ def cmd_install_systemd_backups(
         print("Nothing to install (pgBackRest and restic both skipped).", file=sys.stderr)
         return 1
 
+    target = backup_install_target(
+        docker_host,
+        install_prefix=config.ops.install_prefix,
+        config_dir=config.ops.config_dir,
+    )
+
     container = (env_r.get("PGBR_DB_CONTAINER") or "").strip()
     if do_pgbr and not container and not dry_run:
-        discovered = discover_db_container(ssh_target, project)
+        discovered = discover_db_container(ssh_target, project, docker=target.docker)
         if discovered:
             container = discovered
             env_r["PGBR_DB_CONTAINER"] = discovered
@@ -345,8 +420,8 @@ def cmd_install_systemd_backups(
         )
         return 1
 
-    install_prefix = config.ops.install_prefix
-    config_dir = config.ops.config_dir
+    install_prefix = target.install_prefix
+    config_dir = target.config_dir
     units_pgbr = config.ops.systemd_units.pgbackrest
     units_restic = config.ops.systemd_units.restic
     timers_pgbr = config.ops.systemd_units.timers_enable_pgbackrest
@@ -357,6 +432,8 @@ def cmd_install_systemd_backups(
         return 1
 
     print(f"SSH target: {ssh_target}", file=sys.stderr)
+    if target.user:
+        print(f"Rootless Podman host: user units in ~/{target.unit_dir}", file=sys.stderr)
     print(f"Would install: pgBackRest={do_pgbr} restic={do_restic} dry_run={dry_run} enable={enable}", file=sys.stderr)
 
     unit_names: list[str] = []
@@ -389,7 +466,7 @@ def cmd_install_systemd_backups(
 
     rc = _ssh_run(
         ssh_target,
-        f"mkdir -p {install_prefix} {config_dir} {REMOTE_SYSTEMD}",
+        f"mkdir -p {install_prefix} {config_dir} {target.unit_dir}",
     )
     if rc != 0:
         return rc
@@ -425,9 +502,11 @@ def cmd_install_systemd_backups(
             try:
                 body = render_systemd_unit(
                     name,
-                    install_prefix=install_prefix,
-                    config_dir=config_dir,
+                    install_prefix=target.unit_install_prefix,
+                    config_dir=target.unit_config_dir,
                 )
+                if target.user:
+                    body = as_user_unit(body)
             except (ValueError, FileNotFoundError) as e:
                 print(str(e), file=sys.stderr)
                 return 1
@@ -436,7 +515,7 @@ def cmd_install_systemd_backups(
             to_scp_units.append(local_unit)
 
         if to_scp_units:
-            rc = _scp_push(ssh_target, to_scp_units, REMOTE_SYSTEMD)
+            rc = _scp_push(ssh_target, to_scp_units, target.unit_dir)
             if rc != 0:
                 return rc
 
@@ -461,14 +540,14 @@ def cmd_install_systemd_backups(
             if rc != 0:
                 return rc
 
-    rc = _ssh_run(ssh_target, "systemctl daemon-reload")
+    rc = _ssh_run(ssh_target, f"{target.systemctl} daemon-reload")
     if rc != 0:
         return rc
 
     if not enable:
         print(
             "Install complete. Timers are not enabled. "
-            f"Run with --enable (and review timers) or: ssh {ssh_target} 'systemctl enable --now <timer>'",
+            f"Run with --enable (and review timers) or: ssh {ssh_target} '{target.systemctl} enable --now <timer>'",
             file=sys.stderr,
         )
         return 0
@@ -479,7 +558,7 @@ def cmd_install_systemd_backups(
     if do_restic:
         timers.extend(timers_restic)
     for t in timers:
-        rc = _ssh_run(ssh_target, f"systemctl enable --now {t}")
+        rc = _ssh_run(ssh_target, f"{target.systemctl} enable --now {t}")
         if rc != 0:
             return rc
     print(f"Enabled timers on {ssh_target}: {' '.join(timers)}", file=sys.stderr)

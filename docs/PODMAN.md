@@ -8,8 +8,8 @@ reload) and `dk full up -d` (gunicorn + built static) served all three sites, em
 then with prod data restored (all 349 live pages answered 200 in both).
 
 macOS is not covered: under `podman machine` the VM mount does not pass on file-change
-events, so hot reload silently stops working (#94). Remote deploys (`DOCKER_HOST=ssh://…`)
-and `dk push` were not tried.
+events, so hot reload silently stops working (#94). `dk push` was not tried. Remote deploys
+to a rootless Fedora CoreOS host are section 7.
 
 ## 1. One-time machine setup
 
@@ -208,6 +208,32 @@ any engine, and once more for each worktree stack. A watcher that uses change ev
 (`pywatchman` with watchman, or `django-watchfiles`) would remove that cost on Linux. On
 macOS with Podman, though, Django would then stop reloading, because those events do not
 cross the VM boundary (#94). So switch it on per machine, not for everyone.
+
+## 7. Deploying to a rootless Fedora CoreOS host
+
+Point `docker_host` at the login's Podman socket and dk deploys with the project's compose
+file unchanged:
+
+```yaml
+docker_host: ssh://core@<host>/run/user/1000/podman/podman.sock
+```
+
+Checked on 2026-10-27 with catalpa-site v6.2.0 (dk from the rootless-units branch) on a
+DigitalOcean droplet: Fedora CoreOS 45, Podman 6.1.1, its own Docker CLI 29.7.2, `core`
+with no sudo. Images pulled from GHCR with the operator's login, `up --wait`, all three
+sites over HTTPS with Let's Encrypt, production's database and media restored read-only,
+backups to a throwaway store, and the Zabbix agent's checks.
+
+- **The host needs a `docker` binary**: the Docker CLI's ssh transport runs `docker system
+  dial-stdio` on the far side. Fedora CoreOS ships one.
+- **Backups and Zabbix install as the login's own units** (`~/.config/systemd/user`,
+  `systemctl --user`); see README_SYSTEMD.md and ZABBIX_README.md.
+- **Containers come back after a reboot only with `podman-restart.service` enabled for the
+  login** (containerwharf does this on new hosts). After a hard power-off it can fail on a
+  container whose config never reached the disk, and the containers it had started lose
+  their port forwarding; `dk <env> up -d --force-recreate --wait <service>` and another
+  `up -d --wait` recover. A clean reboot is unaffected.
+- **`host logging` has nothing to do**: Podman logs to journald.
 
 ## Known gaps
 
