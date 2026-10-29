@@ -138,6 +138,39 @@ def test_normalize_dk_env_argv_trailing_yes() -> None:
     assert normalize_dk_env_argv(["demo", "wipe", "--yes"]) == ["demo", "--yes", "wipe"]
 
 
+@pytest.mark.parametrize(
+    ("argv", "rest_attr", "rest"),
+    [
+        (
+            ["staging", "db", "restore", "--yes", "--", "--type=immediate"],
+            "pgbackrest_restore_args",
+            ["--", "--type=immediate"],
+        ),
+        (["staging", "files", "restore", "-y", "abc123"], "snapshot", "abc123"),
+    ],
+)
+def test_dk_parser_restore_accepts_yes(
+    tooling_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    rest_attr: str,
+    rest: object,
+) -> None:
+    """The no-TTY refusal says "Pass --yes", so the restore command itself takes it."""
+    monkeypatch.chdir(tooling_repo)
+    parser = build_dk_parser(load_project_config(tooling_repo))
+    ns = parser.parse_args(normalize_dk_env_argv(argv))
+    assert ns.yes is True
+    assert getattr(ns, rest_attr) == rest
+
+
+def test_dk_parser_restore_keeps_env_level_yes(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tooling_repo)
+    parser = build_dk_parser(load_project_config(tooling_repo))
+    ns = parser.parse_args(normalize_dk_env_argv(["staging", "--yes", "db", "restore"]))
+    assert ns.yes is True
+
+
 @pytest.mark.skipif(
     not __import__("importlib").util.find_spec("argcomplete"),
     reason="argcomplete not installed",
