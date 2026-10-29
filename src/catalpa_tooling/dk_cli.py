@@ -65,9 +65,25 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
             if unknown is not None:
                 print(unknown_env_subcommand_message(first, unknown), file=sys.stderr)
                 raise SystemExit(2)
-        return parser.parse_args(env_argv)
+        return _parse_env_argv(parser, env_argv)
 
     return parser.parse_args(root_argv)
+
+
+def _parse_env_argv(parser: argparse.ArgumentParser, env_argv: list[str]) -> argparse.Namespace:
+    """Parse ``<env> …``, handing everything after ``host create`` to that command whole.
+
+    ``host create`` keeps its options in its own parser (``_host_create_parser``), behind
+    a REMAINDER positional. argparse gives a REMAINDER nothing that starts with ``-`` when
+    it comes first, so ``--ssh-key`` and the rest reached the top-level parser and were
+    refused (#154).
+    """
+    for i in range(len(env_argv) - 1):
+        if env_argv[i] == "host" and env_argv[i + 1] == "create":
+            ns = parser.parse_args(env_argv[: i + 2])
+            ns.host_create_args = env_argv[i + 2 :]
+            return ns
+    return parser.parse_args(env_argv)
 
 
 def _load_config_for_argv(argv: list[str]) -> tuple[ProjectConfig, list[str], str | None]:
