@@ -198,7 +198,7 @@ After a successful **`restore`**, the tooling may run project-configured hooks (
 
 ## Post-restore hooks (`ops.post_db_restore` / `ops.post_metabase_db_restore`)
 
-Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`dk <env> db restore`, `dk transfer` DB leg).
+Optional hooks in repo-root `tooling.yaml` (default: none). Applied after successful Compose DB restores (`dk <env> db restore`, `dk transfer` DB leg), and after the database step of `dk worktree seed` (which `dk worktree create` runs by default). `ops.post_db_restore` only: a worktree seed copies the app database, not Metabase.
 
 **App database** (`ops.post_db_restore`) runs after the main `pg_restore`. **Metabase database** (`ops.post_metabase_db_restore`) runs only when `paths.fetch_metabase_db_dump` is configured and the metabase leg restores successfully.
 
@@ -218,7 +218,7 @@ ops:
       - target: app
         file: docker/postgres/fix-app-db-permissions.sql
     manage_commands:
-      - [sync_wagtail_sites, --profile, "{env_name}"]
+      - [sync_wagtail_sites, --profile, "{env_name}", --primary-host, "{site_host}"]
       - migrate --noinput          # string form is split with shlex
   post_metabase_db_restore:
     envs: [dev]
@@ -230,7 +230,18 @@ ops:
     restart_services: [metabase]
 ```
 
-Each `manage_commands` entry is arguments after `manage.py` (same as `dk <env> manage …`). `{env_name}` is replaced with the deploy env name. Stack volumes are ensured (including host binds from `storage.volumes` when configured), then the web service is started and health-checked before commands run.
+Each `manage_commands` entry is arguments after `manage.py` (same as `dk <env> manage …`). These placeholders are replaced in each argument:
+
+| Placeholder | Value |
+|-------------|-------|
+| `{env_name}` | The deploy env name. In a worktree this is the base env (`dev`), not the worktree. |
+| `{site_origin}` | The env's primary origin (`SITE_ORIGIN`). In a worktree, the worktree's own origin. |
+| `{site_host}` | The hostname of `{site_origin}`. |
+| `{worktree_slug}` | The worktree slug, or empty in the main checkout. |
+
+A command that uses `{site_origin}` or `{site_host}` when the env has no `SITE_ORIGIN` fails before anything runs. Hooks that rewrite hostnames should take them from these placeholders: a worktree seed copies the main checkout's database, so its rows name the main checkout's hosts until a hook rewrites them. Anything the app caches in the database from those rows, such as Wagtail's site root paths, is the hook's job to clear.
+
+Stack volumes are ensured (including host binds from `storage.volumes` when configured), then the web service is started and health-checked before commands run.
 
 **Host-native restore** (`native reset-db`) uses `native.reset_db.post_manage_commands` instead (unchanged).
 
