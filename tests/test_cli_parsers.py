@@ -193,3 +193,24 @@ def test_dk_argcomplete_env_subcommands(tooling_repo: Path, monkeypatch: pytest.
     words = out.read_text(encoding="utf-8").split("\013")
     assert "info" in words
     assert "compose" in words
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["staging", "host", "create", "--ssh-key", "aa:bb", "--size", "s-4vcpu-8gb"],
+        ["staging", "--dry-run", "host", "create", "--ssh-key=aa:bb", "--size=s-4vcpu-8gb"],
+    ],
+)
+def test_dk_host_create_receives_its_options(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> None:
+    """#154: options right after `host create` reached the top-level parser, which
+    refused them, so `--ssh-key` could never be given."""
+    from catalpa_tooling import dk_cli
+
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    ns = dk_cli._parse_dk(config, argv, build_dk_parser(config))
+    assert ns.env_command == "host" and ns.host_command == "create"
+    assert ns.host_create_args == argv[argv.index("create") + 1 :]
