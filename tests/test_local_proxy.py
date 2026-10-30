@@ -83,10 +83,8 @@ def test_local_dev_ca_machine_label(monkeypatch: pytest.MonkeyPatch) -> None:
     assert local_dev_ca_machine_label() == "local"
 
 
-def test_ensure_proxy_running_passes_machine_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LOCAL_PROXY_CA_MACHINE_ENV, "testbox")
+def _run_ensure_proxy_running(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Run ``ensure_proxy_running`` with docker fully stubbed; return the captured argv."""
     monkeypatch.setattr(local_proxy, "ensure_proxy_network", lambda **_: 0)
     monkeypatch.setattr(local_proxy, "proxy_container_id", lambda: "")
     monkeypatch.setattr(local_proxy, "proxy_container_exists", lambda: False)
@@ -99,16 +97,99 @@ def test_ensure_proxy_running_passes_machine_env(
     def fake_run(cmd, **_kwargs):
         if cmd[:2] == ["docker", "run"]:
             captured["cmd"] = cmd
-        import subprocess
-
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(local_proxy, "run_cmd", fake_run)
 
     assert local_proxy.ensure_proxy_running() == 0
-    cmd = captured["cmd"]
+    return captured["cmd"]
+
+
+def test_ensure_proxy_running_passes_machine_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(LOCAL_PROXY_CA_MACHINE_ENV, "testbox")
+    cmd = _run_ensure_proxy_running(monkeypatch)
     assert "-e" in cmd
     assert f"{LOCAL_PROXY_CA_MACHINE_ENV}=testbox" in cmd
+
+
+def test_ensure_proxy_running_publishes_default_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CATALPA_LOCAL_PROXY_HTTP_PORT", raising=False)
+    monkeypatch.delenv("CATALPA_LOCAL_PROXY_HTTPS_PORT", raising=False)
+    monkeypatch.delenv("CATALPA_LOCAL_PROXY_BIND", raising=False)
+    cmd = _run_ensure_proxy_running(monkeypatch)
+    assert "80:80" in cmd
+    assert "443:443" in cmd
+
+
+def test_ensure_proxy_running_remaps_https_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CATALPA_LOCAL_PROXY_HTTPS_PORT", "8443")
+    cmd = _run_ensure_proxy_running(monkeypatch)
+    assert "8443:443" in cmd
+    assert "443:443" not in cmd
+    assert "80:80" in cmd
+
+
+def test_ensure_proxy_running_disables_host_ports(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CATALPA_LOCAL_PROXY_HTTP_PORT", "0")
+    monkeypatch.setenv("CATALPA_LOCAL_PROXY_HTTPS_PORT", "off")
+    cmd = _run_ensure_proxy_running(monkeypatch)
+    assert "80:80" not in cmd
+    assert "443:443" not in cmd
+    # The loopback-only admin port publish is untouched.
+    assert "127.0.0.1:2019:2019" in cmd
+
+
+def test_ensure_proxy_running_applies_bind_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CATALPA_LOCAL_PROXY_BIND", "127.0.0.1")
+    cmd = _run_ensure_proxy_running(monkeypatch)
+    assert "127.0.0.1:80:80" in cmd
+    assert "127.0.0.1:443:443" in cmd
+
+
+@pytest.mark.parametrize(
+    ("env_var", "value", "expected"),
+    [
+        ("CATALPA_LOCAL_PROXY_HTTP_PORT", None, 80),
+        ("CATALPA_LOCAL_PROXY_HTTP_PORT", "8080", 8080),
+        ("CATALPA_LOCAL_PROXY_HTTP_PORT", "0", None),
+        ("CATALPA_LOCAL_PROXY_HTTP_PORT", "off", None),
+        ("CATALPA_LOCAL_PROXY_HTTPS_PORT", None, 443),
+        ("CATALPA_LOCAL_PROXY_HTTPS_PORT", "8443", 8443),
+        ("CATALPA_LOCAL_PROXY_HTTPS_PORT", "disabled", None),
+    ],
+)
+def test_parse_local_proxy_port(
+    monkeypatch: pytest.MonkeyPatch, env_var: str, value: str | None, expected: int | None
+) -> None:
+    if value is None:
+        monkeypatch.delenv(env_var, raising=False)
+    else:
+        monkeypatch.setenv(env_var, value)
+    default = 80 if "HTTP_PORT" in env_var else 443
+    assert local_proxy._parse_local_proxy_port(env_var, default=default) == expected
+
+
+def test_print_local_proxy_url_appends_custom_https_port(
+    monkeypatch: pytest.MonkeyPatch, minimal_config: ProjectConfig, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setenv("CATALPA_LOCAL_PROXY_HTTPS_PORT", "8443")
+    local_proxy.print_local_proxy_url(_DEV_INFO, minimal_config, "dev")
+    err = capsys.readouterr().err
+    assert "ambulancia-dev.localdev.temp.build:8443" in err
+
+
+def test_print_local_proxy_url_omits_default_port(
+    monkeypatch: pytest.MonkeyPatch, minimal_config: ProjectConfig, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.delenv("CATALPA_LOCAL_PROXY_HTTPS_PORT", raising=False)
+    local_proxy.print_local_proxy_url(_DEV_INFO, minimal_config, "dev")
+    err = capsys.readouterr().err
+    assert "ambulancia-dev.localdev.temp.build:" not in err
+    assert "ambulancia-dev.localdev.temp.build" in err
 
 
 def test_local_proxy_enabled_default_on_local() -> None:

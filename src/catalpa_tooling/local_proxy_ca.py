@@ -76,6 +76,15 @@ def print_proxy_ca_instructions(
     ca_url = ca_download_url_for_ip(ips[0], info)
     host_path = local_proxy_data_dir() / "ca-root.crt"
 
+    if ca_url is None:
+        print(
+            "LAN CA auto-download is unavailable: CATALPA_LOCAL_PROXY_HTTP_PORT is disabled "
+            "on this machine, so there's no plain-HTTP port to fetch the CA from.",
+            file=out,
+        )
+        print(f"Copy the CA from this machine instead: {host_path}", file=out)
+        return 0
+
     print("", file=out)
     print("Install the Catalpa local dev CA on your phone/tablet (one time per device):", file=out)
     print("", file=out)

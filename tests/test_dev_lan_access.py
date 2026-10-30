@@ -9,6 +9,7 @@ import pytest
 from catalpa_tooling.dev_lan_access import (
     build_dev_lan_env,
     build_proxy_lan_env,
+    ca_download_url_for_ip,
     dev_lan_access_enabled,
     dev_lan_port_from_info,
     format_dev_lan_urls,
@@ -157,3 +158,20 @@ def test_print_dev_lan_urls_proxy(
     err = capsys.readouterr().err
     assert "dk proxy ca" in err
     assert "https://ambulancia-dev.10-0-0-5.lan.localdev.temp.build" in err
+
+
+def test_ca_download_url_for_ip_default_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CATALPA_LOCAL_PROXY_HTTP_PORT", raising=False)
+    url = ca_download_url_for_ip("10.0.0.5")
+    assert url == "http://10-0-0-5.lan.localdev.temp.build/catalpa-local-ca.crt"
+
+
+def test_ca_download_url_for_ip_custom_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CATALPA_LOCAL_PROXY_HTTP_PORT", "8080")
+    url = ca_download_url_for_ip("10.0.0.5")
+    assert url == "http://10-0-0-5.lan.localdev.temp.build:8080/catalpa-local-ca.crt"
+
+
+def test_ca_download_url_for_ip_none_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CATALPA_LOCAL_PROXY_HTTP_PORT", "0")
+    assert ca_download_url_for_ip("10.0.0.5") is None

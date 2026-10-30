@@ -34,6 +34,25 @@ local_proxy:
   enabled: false
 ```
 
+### Host ports (machine-wide)
+
+The shared proxy itself — not a per-project `tooling.yaml`/`info.yaml` setting, since it's
+one container for every project on the machine — publishes host ports `80` and `443` by
+default. Override with env vars (set once in your shell profile; a running/stopped
+container keeps the ports it was created with, so `dk proxy down && dk <env> up` to apply a
+change):
+
+- `CATALPA_LOCAL_PROXY_HTTP_PORT` / `CATALPA_LOCAL_PROXY_HTTPS_PORT` — remap a host port
+  (e.g. `CATALPA_LOCAL_PROXY_HTTPS_PORT=8443`), or set to `0`/`off` to skip publishing it,
+  e.g. when another reverse proxy on the machine already holds it. Printed `Local dev URL:`
+  lines include a non-default HTTPS port automatically.
+- `CATALPA_LOCAL_PROXY_BIND` — bind address for both ports (e.g. `127.0.0.1` to keep them
+  off the LAN).
+
+Disabling the HTTP port also disables LAN CA auto-download (`dk proxy ca` says so instead of
+printing a broken URL — copy the CA file from `~/.config/catalpa/local-proxy/` by hand).
+See `docs/PODMAN.md` §3 for the case of chaining dk's proxy behind an existing one.
+
 ### Minimal onboarding
 
 Hostnames follow `{project-slug}-{env}.localdev.temp.build` from `tooling.yaml` `project.name` (underscores → hyphens). Compose project names default to `{stack.compose_project_default}_{env}`.

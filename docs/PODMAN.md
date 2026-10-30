@@ -43,13 +43,16 @@ docker version --format '{{.Client.Version}} / server {{.Server.Version}}'
 and the real CLI keeps `docker compose config --format json` and the compose labels exactly
 as dk expects them.
 
-**Low ports.** The local proxy publishes 80 and 443, and rootless Podman can only bind them
-after:
+**Low ports.** The local proxy publishes 80 and 443 by default, and rootless Podman can only
+bind them after:
 
 ```bash
 sudo sysctl net.ipv4.ip_unprivileged_port_start=80
 echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee /etc/sysctl.d/50-unprivileged-ports.conf
 ```
+
+If you'd rather not grant that, remap the proxy's host ports instead (`CATALPA_LOCAL_PROXY_HTTP_PORT`
+/ `CATALPA_LOCAL_PROXY_HTTPS_PORT`, section 3) to ports above 1024.
 
 ## 2. SELinux (Fedora, RHEL and derivatives)
 
@@ -92,8 +95,8 @@ New files created inside those folders inherit the label. `restorecon -R <path>`
 
 ## 3. When something else already holds port 443
 
-dk's proxy always publishes `80:80` and `443:443` on every address. If another reverse proxy
-on the machine already holds 443, even on loopback only, `dk <env> up` stops with:
+By default dk's proxy publishes `80:80` and `443:443` on every address. If another reverse
+proxy on the machine already holds 443, even on loopback only, `dk <env> up` stops with:
 
 ```
 docker: Error response from daemon: rootlessport listen tcp :443: bind: address already in use
@@ -102,23 +105,29 @@ docker: Error response from daemon: rootlessport listen tcp :443: bind: address 
 `ss -ltnp 'sport = :443'` shows who holds the port. The stacks themselves are created
 before this point, but nothing routes to them.
 
-To keep both proxies, run dk's proxy without host ports behind the existing one. dk
-reuses a `catalpa-local-proxy` container that already exists, so create it by hand, the
-same way dk would but without `-p 80:80 -p 443:443`:
+**Preferred fix: configure the proxy's host ports.** Three machine-wide env vars control
+this (set them in your shell profile, then `dk proxy down && dk <env> up` to recreate the
+container — an already-created container keeps the ports it was created with):
+
+- `CATALPA_LOCAL_PROXY_HTTP_PORT` / `CATALPA_LOCAL_PROXY_HTTPS_PORT` — remap the published
+  host port, e.g. `CATALPA_LOCAL_PROXY_HTTPS_PORT=8443`. Set to `0` (or `off`) to skip
+  publishing that port at all.
+- `CATALPA_LOCAL_PROXY_BIND` — bind address for both published ports, e.g. `127.0.0.1` to
+  keep them off the LAN.
+
+Printed `Local dev URL:` lines include the configured HTTPS port automatically when it
+isn't 443. If you disable the HTTP port, LAN CA auto-download (`dk proxy ca`) says so
+instead of printing a broken URL — copy the CA file from `~/.config/catalpa/local-proxy/`
+to the device instead.
+
+**Alternative: chain behind the existing proxy.** If you'd rather route from the existing
+proxy to dk's (e.g. because it needs to keep serving 443 itself), set
+`CATALPA_LOCAL_PROXY_HTTP_PORT=0 CATALPA_LOCAL_PROXY_HTTPS_PORT=0` so dk's proxy joins only
+the shared Docker network with no host ports, then connect it to the front proxy's network:
 
 ```bash
-docker rm -f catalpa-local-proxy
-CADDYFILE="$PWD/.venv/lib/python3.12/site-packages/catalpa_tooling/local_proxy/Caddyfile"
-docker network create catalpa-local-proxy-net 2>/dev/null || true
-docker run -d --name catalpa-local-proxy \
-  --security-opt label=disable \
-  --network catalpa-local-proxy-net \
-  --add-host=host.docker.internal:host-gateway \
-  -e CATALPA_LOCAL_DEV_MACHINE="$(hostname -s)" \
-  -p 127.0.0.1:2019:2019 \
-  -v "$HOME/.config/catalpa/local-proxy:/data" \
-  -v "$CADDYFILE:/etc/caddy/Caddyfile:ro" \
-  caddy:2-alpine caddy run --config /etc/caddy/Caddyfile
+dk proxy down
+dk <env> up
 podman network connect <front-proxy-network> catalpa-local-proxy
 ```
 
@@ -142,10 +151,10 @@ the Host header, dk's proxy matches none of its routes, and every page comes bac
 empty `200`. The certificate in the browser is then the front proxy's, so trust that CA
 instead of running `dk proxy trust`.
 
-`dk proxy down` removes this container, and the next `dk <env> up` recreates it with the
-host ports, so it fails again. Re-run the commands above after `dk proxy down`. The
-container has no restart policy (dk's own has none either), so after a reboot start it with
-`docker start catalpa-local-proxy`.
+`dk proxy down` removes the container, and the next `dk <env> up` recreates it on
+`catalpa-local-proxy-net` only, so re-run `podman network connect` after that. The
+container has no restart policy, so after a reboot start it with
+`docker start catalpa-local-proxy` (or run `dk <env> up`).
 
 ## 4. Production data
 
@@ -213,6 +222,5 @@ cross the VM boundary (#94). So switch it on per machine, not for everyone.
 
 - Project compose files need `:z` on host-path bind mounts under SELinux; dk can't add it
   for them (section 2).
-- The local proxy's host ports cannot be configured (section 3).
 - Against Podman's compat API, compose drops `platform:` and builds native. `dk push` checks
   the built architecture since v1.6.0 (#114).
