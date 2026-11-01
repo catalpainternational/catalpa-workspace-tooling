@@ -325,6 +325,7 @@ def create_droplet(
     region: str | None = None,
     env_size: str | None = None,
     env_region: str | None = None,
+    env_image: str | None = None,
     project_id: str,
     ssh_keys: tuple[str, ...] = (),
     timezone: str | None = None,
@@ -359,6 +360,7 @@ def create_droplet(
     resolved_image = _pick(
         image,
         do_config.image if do_config else None,
+        env_value=env_image,
         field="image",
         default=DEFAULT_IMAGE,
     )

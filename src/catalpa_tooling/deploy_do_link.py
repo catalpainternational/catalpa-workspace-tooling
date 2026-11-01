@@ -32,6 +32,7 @@ class EnvDoLink:
     explicit_droplet_name: bool = False
     size: str | None = None
     region: str | None = None
+    image: str | None = None
 
 
 def normalize_droplet_hostname(name: str) -> str:
@@ -70,18 +71,24 @@ def is_digitalocean_host_disabled(info: dict[str, Any]) -> bool:
     return _truthy(raw.get("disabled"))
 
 
-def _parse_env_do_block(raw: Any) -> tuple[str | None, str, str | None, str | None]:
-    """Return ``(droplet_name, ssh_user, size, region)`` from ``info.yaml`` ``digitalocean``."""
+def _parse_env_do_block(raw: Any) -> tuple[str | None, str, str | None, str | None, str | None]:
+    """Return ``(droplet_name, ssh_user, size, region, image)`` from ``info.yaml`` ``digitalocean``."""
     if not isinstance(raw, dict):
-        return None, DEFAULT_SSH_USER, None, None
+        return None, DEFAULT_SSH_USER, None, None, None
     droplet_name = _env_do_str(raw, "droplet_name")
     ssh_user = _env_do_str(raw, "ssh_user") or DEFAULT_SSH_USER
-    return droplet_name, ssh_user, _env_do_str(raw, "size"), _env_do_str(raw, "region")
+    return (
+        droplet_name,
+        ssh_user,
+        _env_do_str(raw, "size"),
+        _env_do_str(raw, "region"),
+        _env_do_str(raw, "image"),
+    )
 
 
 def read_env_do_link(info: dict[str, Any]) -> EnvDoLink | None:
     """Parse ``digitalocean`` block when ``droplet_name`` is set explicitly in info.yaml."""
-    droplet_name, ssh_user, size, region = _parse_env_do_block(info.get("digitalocean"))
+    droplet_name, ssh_user, size, region, image = _parse_env_do_block(info.get("digitalocean"))
     if not droplet_name:
         return None
     return EnvDoLink(
@@ -89,6 +96,7 @@ def read_env_do_link(info: dict[str, Any]) -> EnvDoLink | None:
         ssh_user=ssh_user,
         size=size,
         region=region,
+        image=image,
         explicit_droplet_name=True,
     )
 
@@ -99,13 +107,14 @@ def resolve_env_do_link(
     info: dict[str, Any],
 ) -> EnvDoLink:
     """Resolve droplet link: explicit ``digitalocean.droplet_name`` or ``{project}-{env}``."""
-    droplet_name, ssh_user, size, region = _parse_env_do_block(info.get("digitalocean"))
+    droplet_name, ssh_user, size, region, image = _parse_env_do_block(info.get("digitalocean"))
     if droplet_name:
         return EnvDoLink(
             droplet_name=normalize_droplet_hostname(droplet_name),
             ssh_user=ssh_user,
             size=size,
             region=region,
+            image=image,
             explicit_droplet_name=True,
         )
     return EnvDoLink(
@@ -113,6 +122,7 @@ def resolve_env_do_link(
         ssh_user=ssh_user,
         size=size,
         region=region,
+        image=image,
         explicit_droplet_name=False,
     )
 
@@ -1138,6 +1148,7 @@ def cmd_env_host_create(
         region=ns.region,
         env_size=link.size,
         env_region=link.region,
+        env_image=link.image,
         project_id=project_id,
         ssh_keys=tuple(ns.ssh_keys),
         timezone=ns.timezone,

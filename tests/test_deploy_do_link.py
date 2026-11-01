@@ -905,7 +905,7 @@ def test_cmd_env_host_create_uses_info_yaml_size_region(
     env_dir = tmp_path / "docker" / "envs" / "staging"
     env_dir.mkdir(parents=True)
     (env_dir / "info.yaml").write_text(
-        "digitalocean:\n  size: s-1vcpu-2gb\n  region: sgp1\n",
+        "digitalocean:\n  size: s-1vcpu-2gb\n  region: sgp1\n  image: ubuntu-26-04-x64\n",
         encoding="utf-8",
     )
 
@@ -930,8 +930,10 @@ def test_cmd_env_host_create_uses_info_yaml_size_region(
     assert cmd_env_host_create(config, "staging", ["--dry-run"]) == 0
     assert create_kwargs[0]["env_size"] == "s-1vcpu-2gb"
     assert create_kwargs[0]["env_region"] == "sgp1"
+    assert create_kwargs[0]["env_image"] == "ubuntu-26-04-x64"
     assert create_kwargs[0]["size"] is None
     assert create_kwargs[0]["region"] is None
+    assert create_kwargs[0]["image"] is None
 
 
 def test_cmd_env_host_create_cli_overrides_info_yaml(
