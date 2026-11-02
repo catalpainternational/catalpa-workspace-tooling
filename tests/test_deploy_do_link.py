@@ -242,6 +242,14 @@ def test_resolve_env_do_link_size_region_without_droplet_name(minimal_project) -
     )
 
 
+def test_resolve_env_do_link_reads_image(minimal_project) -> None:
+    info = {"digitalocean": {"image": "ubuntu-26-04-x64"}}
+    assert resolve_env_do_link(minimal_project, "staging", info).image == "ubuntu-26-04-x64"
+    info["digitalocean"]["droplet_name"] = "web-1"
+    assert resolve_env_do_link(minimal_project, "staging", info).image == "ubuntu-26-04-x64"
+    assert read_env_do_link(info).image == "ubuntu-26-04-x64"
+
+
 def test_droplet_name_to_env_map_includes_default_names(tmp_path: Path) -> None:
     config = _load_test_config(tmp_path)
     env_dir = tmp_path / "docker" / "envs" / "prod"

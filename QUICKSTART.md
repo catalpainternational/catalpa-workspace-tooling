@@ -147,7 +147,7 @@ Volume keys you later bind with `storage.volumes` in `info.yaml` must be one of:
 
 ### `digitalocean` (defaults for `dk <env> host create`)
 
-Add this when the first remote env will be a DigitalOcean droplet. Per-env overrides go in `docker/envs/<env>/info.yaml` (see §4). For `size` and `region`, resolution is **CLI flag → env `info.yaml` → `tooling.yaml`**.
+Add this when the first remote env will be a DigitalOcean droplet. Per-env overrides go in `docker/envs/<env>/info.yaml` (see §4). For `size`, `region` and `image`, resolution is **CLI flag → env `info.yaml` → `tooling.yaml`**.
 
 ```yaml
 digitalocean:

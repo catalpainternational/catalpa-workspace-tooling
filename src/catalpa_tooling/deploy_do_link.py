@@ -21,6 +21,7 @@ digitalocean:
   disabled: false             # true: manual docker_host only (no droplet / DO DNS API)
   size: s-2vcpu-4gb           # optional; for `dk <env> host create`
   region: sgp1                # optional; for `dk <env> host create`
+  image: ubuntu-24-04-x64     # optional; for `dk <env> host create`
   dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300)
 """
 
@@ -95,19 +96,23 @@ def _parse_env_do_block(raw: Any) -> EnvDoBlock:
     )
 
 
+def _link_from_block(block: EnvDoBlock, droplet_name: str, *, explicit: bool) -> EnvDoLink:
+    return EnvDoLink(
+        droplet_name=droplet_name,
+        ssh_user=block.ssh_user,
+        size=block.size,
+        region=block.region,
+        image=block.image,
+        explicit_droplet_name=explicit,
+    )
+
+
 def read_env_do_link(info: dict[str, Any]) -> EnvDoLink | None:
     """Parse ``digitalocean`` block when ``droplet_name`` is set explicitly in info.yaml."""
     block = _parse_env_do_block(info.get("digitalocean"))
     if not block.droplet_name:
         return None
-    return EnvDoLink(
-        droplet_name=normalize_droplet_hostname(block.droplet_name),
-        ssh_user=block.ssh_user,
-        size=block.size,
-        region=block.region,
-        image=block.image,
-        explicit_droplet_name=True,
-    )
+    return _link_from_block(block, normalize_droplet_hostname(block.droplet_name), explicit=True)
 
 
 def resolve_env_do_link(
@@ -116,24 +121,11 @@ def resolve_env_do_link(
     info: dict[str, Any],
 ) -> EnvDoLink:
     """Resolve droplet link: explicit ``digitalocean.droplet_name`` or ``{project}-{env}``."""
+    link = read_env_do_link(info)
+    if link is not None:
+        return link
     block = _parse_env_do_block(info.get("digitalocean"))
-    if block.droplet_name:
-        return EnvDoLink(
-            droplet_name=normalize_droplet_hostname(block.droplet_name),
-            ssh_user=block.ssh_user,
-            size=block.size,
-            region=block.region,
-            image=block.image,
-            explicit_droplet_name=True,
-        )
-    return EnvDoLink(
-        droplet_name=default_droplet_name(config, env_name),
-        ssh_user=block.ssh_user,
-        size=block.size,
-        region=block.region,
-        image=block.image,
-        explicit_droplet_name=False,
-    )
+    return _link_from_block(block, default_droplet_name(config, env_name), explicit=False)
 
 
 def public_ipv4(droplet: dict[str, Any]) -> str:
@@ -1051,7 +1043,7 @@ def _host_create_parser(env_name: str) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--image",
-        help="Image slug (default: ubuntu-24-04-x64 or digitalocean.image)",
+        help="Image slug (default: info.yaml digitalocean.image, then tooling.yaml, then ubuntu-24-04-x64)",
     )
     p.add_argument(
         "--region",
