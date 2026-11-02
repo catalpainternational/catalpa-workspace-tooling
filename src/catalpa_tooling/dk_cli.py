@@ -70,20 +70,35 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
     return parser.parse_args(root_argv)
 
 
-def _parse_env_argv(parser: argparse.ArgumentParser, env_argv: list[str]) -> argparse.Namespace:
-    """Parse ``<env> …``, handing everything after ``host create`` to that command whole.
+def _passthrough_dest(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> str | None:
+    """Name of the REMAINDER argument of the subcommand ``ns`` selected, if it has one."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            chosen = action.choices.get(getattr(ns, action.dest, None))
+            if chosen is not None:
+                return _passthrough_dest(chosen, ns)
+            return None
+    for action in parser._actions:
+        if action.nargs == argparse.REMAINDER:
+            return action.dest
+    return None
 
-    ``host create`` keeps its options in its own parser (``_host_create_parser``), behind
-    a REMAINDER positional. argparse gives a REMAINDER nothing that starts with ``-`` when
-    it comes first, so ``--ssh-key`` and the rest reached the top-level parser and were
-    refused (#154).
+
+def _parse_env_argv(parser: argparse.ArgumentParser, env_argv: list[str]) -> argparse.Namespace:
+    """Parse ``<env> …``, giving a passthrough subcommand the options argparse left over.
+
+    argparse gives a REMAINDER positional nothing that starts with ``-`` when it comes first,
+    so ``dk staging host create --ssh-key aa`` or ``dk staging docker --version`` were refused
+    as unrecognised (#154). Those leftovers always precede what the REMAINDER did take, so
+    they go back on its front; a subcommand without a passthrough still rejects them.
     """
-    for i in range(len(env_argv) - 1):
-        if env_argv[i] == "host" and env_argv[i + 1] == "create":
-            ns = parser.parse_args(env_argv[: i + 2])
-            ns.host_create_args = env_argv[i + 2 :]
-            return ns
-    return parser.parse_args(env_argv)
+    ns, unknown = parser.parse_known_args(env_argv)
+    if unknown:
+        dest = _passthrough_dest(parser, ns)
+        if dest is None:
+            parser.error("unrecognized arguments: " + " ".join(unknown))
+        setattr(ns, dest, unknown + list(getattr(ns, dest) or []))
+    return ns
 
 
 def _load_config_for_argv(argv: list[str]) -> tuple[ProjectConfig, list[str], str | None]:

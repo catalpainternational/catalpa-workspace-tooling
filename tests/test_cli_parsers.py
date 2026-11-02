@@ -196,21 +196,61 @@ def test_dk_argcomplete_env_subcommands(tooling_repo: Path, monkeypatch: pytest.
 
 
 @pytest.mark.parametrize(
-    "argv",
+    ("argv", "dest", "expected"),
     [
-        ["staging", "host", "create", "--ssh-key", "aa:bb", "--size", "s-4vcpu-8gb"],
-        ["staging", "--dry-run", "host", "create", "--ssh-key=aa:bb", "--size=s-4vcpu-8gb"],
+        (
+            ["staging", "host", "create", "--ssh-key", "aa:bb", "--size", "s-4vcpu-8gb"],
+            "host_create_args",
+            ["--ssh-key", "aa:bb", "--size", "s-4vcpu-8gb"],
+        ),
+        (
+            ["staging", "--dry-run", "host", "create", "--ssh-key=aa:bb", "--size=s-4vcpu-8gb"],
+            "host_create_args",
+            ["--ssh-key=aa:bb", "--size=s-4vcpu-8gb"],
+        ),
+        (["staging", "host", "create", "--help"], "host_create_args", ["--help"]),
+        # The same leading-option refusal hit every other passthrough (#154 review).
+        (["staging", "compose", "-f", "x.yml", "up"], "compose_argv", ["-f", "x.yml", "up"]),
+        (["staging", "docker", "--version"], "docker_argv", ["--version"]),
+        (["staging", "manage", "--settings", "x"], "manage_args", ["--settings", "x"]),
+        # A passthrough's own words are not a `host create` of ours.
+        (
+            ["staging", "docker", "run", "alpine", "host", "create", "-x"],
+            "docker_argv",
+            ["run", "alpine", "host", "create", "-x"],
+        ),
+        (
+            ["staging", "manage", "shell", "host", "create", "--foo"],
+            "manage_args",
+            ["shell", "host", "create", "--foo"],
+        ),
     ],
 )
-def test_dk_host_create_receives_its_options(
-    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+def test_dk_passthrough_receives_its_options(
+    tooling_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    dest: str,
+    expected: list[str],
 ) -> None:
-    """#154: options right after `host create` reached the top-level parser, which
-    refused them, so `--ssh-key` could never be given."""
+    """#154: options right after a passthrough's name reached the top-level parser, which
+    refused them, so `host create --ssh-key` could never be given."""
     from catalpa_tooling import dk_cli
 
     monkeypatch.chdir(tooling_repo)
     config = load_project_config(tooling_repo)
     ns = dk_cli._parse_dk(config, argv, build_dk_parser(config))
-    assert ns.env_command == "host" and ns.host_command == "create"
-    assert ns.host_create_args == argv[argv.index("create") + 1 :]
+    assert getattr(ns, dest) == expected
+
+
+def test_dk_unknown_option_without_passthrough_is_still_refused(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling import dk_cli
+
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    with pytest.raises(SystemExit) as exc:
+        dk_cli._parse_dk(config, ["staging", "info", "--bogus"], build_dk_parser(config))
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --bogus" in capsys.readouterr().err

@@ -385,7 +385,8 @@ def _attach_env_command_parsers(
 
     p_host = cmd_sub.add_parser("host", help="Verify droplet / print or patch docker_host.")
     host_sub = p_host.add_subparsers(dest="host_command", required=False)
-    p_host_create = host_sub.add_parser("create", help="Provision a new droplet.")
+    # add_help=False: `host create --help` goes to the command's own parser, which lists the options.
+    p_host_create = host_sub.add_parser("create", help="Provision a new droplet.", add_help=False)
     p_host_create.add_argument("host_create_args", nargs=argparse.REMAINDER)
     p_host_logging = host_sub.add_parser(
         "logging",
