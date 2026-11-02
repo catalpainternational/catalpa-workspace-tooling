@@ -112,7 +112,7 @@ def attach_digoc_subcommands(parser: argparse.ArgumentParser, config: ProjectCon
     p_d_create.add_argument("--size", help="Droplet size slug (e.g. s-2vcpu-4gb)")
     p_d_create.add_argument(
         "--image",
-        help="Image slug (default: ubuntu-24-04-x64 or digitalocean.image)",
+        help="Image slug (default: info.yaml digitalocean.image with --for-env, then tooling.yaml, then ubuntu-24-04-x64)",
     )
     p_d_create.add_argument("--region", help="Region slug (e.g. sgp1)")
     p_d_create.add_argument(
