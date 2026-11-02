@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -46,7 +48,7 @@ def test_auth_list_invokes_doctl(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_run = MagicMock(return_value=MagicMock(returncode=0))
     monkeypatch.setattr(doctl_cli, "run_doctl", mock_run)
     assert doctl_cli._cmd_auth_list([]) == 0
-    mock_run.assert_called_once_with(["auth", "list"], context=None)
+    mock_run.assert_called_once_with(["auth", "list"])
 
 
 def test_projects_list_invokes_doctl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,6 +59,28 @@ def test_projects_list_invokes_doctl(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_run.assert_called_once()
     args = mock_run.call_args[0][0]
     assert args[0:2] == ["projects", "list"]
+
+
+def test_projects_list_uses_tooling_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = SimpleNamespace(digitalocean=SimpleNamespace(context="personal"), has_deploy_paths=False)
+    monkeypatch.setattr(doctl_cli.ProjectConfig, "from_cwd", lambda: config)
+    monkeypatch.setattr(doctl_cli, "ensure_doctl_available", lambda: None)
+    mock_run = MagicMock(return_value=MagicMock(returncode=0))
+    monkeypatch.setattr(doctl_cli, "run_doctl", mock_run)
+    assert doctl_cli._cmd_projects_list([]) == 0
+    assert mock_run.call_args.kwargs["context"] == "personal"
+
+
+def test_projects_list_works_without_tooling_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TOOLING_CONFIG", raising=False)
+    monkeypatch.setattr(doctl_cli, "ensure_doctl_available", lambda: None)
+    mock_run = MagicMock(return_value=MagicMock(returncode=0))
+    monkeypatch.setattr(doctl_cli, "run_doctl", mock_run)
+    assert doctl_cli._cmd_projects_list([]) == 0
+    assert mock_run.call_args.kwargs["context"] is None
 
 
 def test_droplets_list_with_project_flag(monkeypatch: pytest.MonkeyPatch) -> None:

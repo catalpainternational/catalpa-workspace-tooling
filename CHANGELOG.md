@@ -21,6 +21,12 @@
 
 ### Fixed
 
+- **DigitalOcean commands stay in the right account.** Block volume setup and
+  `dk digoc projects list` now use `digitalocean.context` from `tooling.yaml` instead of
+  doctl's active context, and `dk <env> host create --context/--project` finishes
+  (`docker_host`, DNS) in the account and project the droplet was made in.
+  `dk digoc auth list` no longer accepts its unused `--context`.
+
 - **`dk worktree seed` runs the `ops.post_db_restore` hooks** (#140). The seed copies the main
   checkout's database but skipped the hooks, so values such as Wagtail `Site` hostnames still
   named the main checkout's stack, and pages in the worktree posted forms to it. The hooks now

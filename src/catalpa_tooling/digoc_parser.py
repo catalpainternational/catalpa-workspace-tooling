@@ -35,7 +35,6 @@ def attach_digoc_subcommands(parser: argparse.ArgumentParser, config: ProjectCon
     p_auth_init.set_defaults(handler="auth-init")
 
     p_auth_list = auth_sub.add_parser("list", help="List authentication contexts.")
-    p_auth_list.add_argument("--context", help="Unused; listed for symmetry with other subcommands")
     p_auth_list.set_defaults(handler="auth-list")
 
     auth_sub.add_parser("remove", help="Remove a stored context (pass through to host doctl).").set_defaults(

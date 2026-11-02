@@ -102,7 +102,7 @@ def _cmd_auth_list(ns_or_argv: argparse.Namespace | list[str]) -> int:
         return run_digoc(["auth", "list", *ns_or_argv])
     ns = ns_or_argv
     ensure_doctl_available()
-    return run_doctl(["auth", "list"], context=ns.context).returncode
+    return run_doctl(["auth", "list"]).returncode
 
 
 def _cmd_projects_list(ns_or_argv: argparse.Namespace | list[str]) -> int:
@@ -110,9 +110,16 @@ def _cmd_projects_list(ns_or_argv: argparse.Namespace | list[str]) -> int:
         return run_digoc(["projects", "list", *ns_or_argv])
     ns = ns_or_argv
     ensure_doctl_available()
+    try:
+        do_config = ProjectConfig.from_cwd().digitalocean
+    except FileNotFoundError:
+        do_config = None
+    except ProjectConfigError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     return run_doctl(
         ["projects", "list", "--format", ns.format],
-        context=ns.context,
+        context=ns.context or (do_config.context if do_config else None),
     ).returncode
 
 

@@ -68,6 +68,9 @@ def ensure_do_block_volumes_for_specs(
     if not do_specs:
         return 0
 
+    if context is None and config.digitalocean:
+        context = config.digitalocean.context
+
     if is_digitalocean_host_disabled(info):
         print(
             "storage: digitalocean.disabled is set; skipping DO block volume provisioning. "
