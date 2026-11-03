@@ -67,10 +67,17 @@ def _resolve_image_registry(info: dict, images_config: dict, config: ProjectConf
 
 
 def _resolve_compose_file_from_info(info: dict, config: ProjectConfig) -> str | None:
-    """Return compose file path relative to repo root, or None if invalid."""
+    """Return the absolute compose file path under ``config.repo_root``, or None if invalid.
+
+    Absolute, not repo-relative: ``_compose`` never chdirs, so a relative ``-f`` resolves against
+    the *process* cwd. Driving a worktree stack from the main checkout then picked up the main
+    checkout's compose file — and with it the main checkout's relative bind mounts — while
+    ``COMPOSE_PROJECT_NAME`` still said "worktree". Every identity signal looked right and only
+    the mounts disagreed. See issue #62.
+    """
     raw = info.get("compose_file")
     if raw is None or raw is False:
-        return config.compose_prod
+        return str((config.repo_root / config.compose_prod).resolve())
     rel = str(raw).strip()
     if not rel or ".." in Path(rel).parts:
         print(f"Invalid compose_file in info.yaml: {raw!r}", file=sys.stderr)
@@ -85,7 +92,42 @@ def _resolve_compose_file_from_info(info: dict, config: ProjectConfig) -> str | 
     if not path.is_file():
         print(f"compose_file not found: {path}", file=sys.stderr)
         return None
-    return rel
+    return str(path)
+
+
+def apply_worktree_overlay_for_env(
+    info: dict, repo_root: Path, env_name: str
+) -> tuple[bool, dict, object | None, bool]:
+    """Remap ``info`` onto a worktree's own compose project and origins.
+
+    Returns ``(ok, info, overlay, applied)``. Split out of ``load_managed_deploy_context`` so the
+    ``--dry-run`` path can report the worktree's identity too: that early exit skips the full
+    context load to avoid a SOPS decrypt, and used to print the *main* env's origin — which made
+    the natural "which stack am I pointed at?" check answer with the wrong stack. See issue #62.
+    """
+    from catalpa_tooling.worktree_overlay import (
+        WorktreeOverlayError,
+        apply_worktree_overlay_to_info,
+        load_worktree_overlay,
+    )
+
+    try:
+        overlay = load_worktree_overlay(repo_root)
+    except WorktreeOverlayError as exc:
+        print(f"worktree overlay: {exc}", file=sys.stderr)
+        return False, info, None, False
+    if overlay is None:
+        return True, info, None, False
+    remapped = apply_worktree_overlay_to_info(info, overlay, env_name=env_name)
+    if remapped is None:
+        return True, info, overlay, False
+    print(
+        f"worktree overlay: slug={overlay.slug!r} "
+        f"compose={overlay.compose_project_name!r} "
+        f"site={overlay.site_origin}",
+        file=sys.stderr,
+    )
+    return True, remapped, overlay, True
 
 
 @dataclass(frozen=True)
@@ -192,30 +234,11 @@ def load_managed_deploy_context(
     worktree_overlay = None
     worktree_applied = False
     if apply_worktree:
-        from catalpa_tooling.worktree_overlay import (
-            WorktreeOverlayError,
-            apply_worktree_overlay_to_info,
-            load_worktree_overlay,
+        ok, info, worktree_overlay, worktree_applied = apply_worktree_overlay_for_env(
+            info, repo_root, env_name
         )
-
-        try:
-            worktree_overlay = load_worktree_overlay(repo_root)
-        except WorktreeOverlayError as exc:
-            print(f"worktree overlay: {exc}", file=sys.stderr)
+        if not ok:
             return None
-        if worktree_overlay is not None:
-            remapped = apply_worktree_overlay_to_info(
-                info, worktree_overlay, env_name=env_name
-            )
-            if remapped is not None:
-                info = remapped
-                worktree_applied = True
-                print(
-                    f"worktree overlay: slug={worktree_overlay.slug!r} "
-                    f"compose={worktree_overlay.compose_project_name!r} "
-                    f"site={worktree_overlay.site_origin}",
-                    file=sys.stderr,
-                )
 
     if compose_file is None:
         compose_file = _resolve_compose_file_from_info(info, config)

@@ -190,6 +190,10 @@ class StackConfig:
     healthcheck: StackHealthcheckConfig
     origin_env_keys: tuple[str, ...]
     build_placeholders: dict[str, str]
+    # User for `docker compose exec … ./manage.py`. exec skips the entrypoint, so images that
+    # drop privileges there (runuser/gosu, no USER line) would otherwise run manage as root
+    # and leave root-owned files on mounted volumes (#86). None: the image's default user.
+    manage_user: str | None = None
 
 
 # PG 18+ official image layout (see catalpa-postgres-entrypoint.sh); override via tooling.yaml pg1_path.
@@ -216,12 +220,22 @@ class PgbackrestOpsConfig:
 
 @dataclass(frozen=True)
 class ResticOpsConfig:
-    """Compose volume key restic backs up (``{COMPOSE_PROJECT_NAME}_{data_volume}``)."""
+    """Compose volume keys restic backs up (``{COMPOSE_PROJECT_NAME}_{key}``).
+
+    ``data_volume`` is the primary (media) volume; ``extra_volumes`` are the rest of
+    ``ops.restic.data_volumes``, each mounted at ``/backup/<key>`` (issue #103).
+    """
 
     data_volume: str
     backup_path: str | None = None
     verbose: int | None = None
     restore_verbose: int | None = None
+    extra_volumes: tuple[str, ...] = ()
+
+    @property
+    def data_volumes(self) -> tuple[str, ...]:
+        """Every volume restic backs up, primary first."""
+        return (self.data_volume, *self.extra_volumes)
 
 
 @dataclass(frozen=True)
@@ -534,6 +548,29 @@ class ProjectMetaConfig:
 
 
 @dataclass(frozen=True)
+class AgentsConfig:
+    """Optional agent files for ``setup-agents`` (``agents:``).
+
+    ``skills`` is ``None`` when the key is absent, meaning the bundled default set.
+    """
+
+    rules: tuple[str, ...] = ()
+    skills: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
+class WorktreeConfig:
+    """Optional ``dk worktree`` settings (``worktree:``).
+
+    ``seed_volumes`` lists compose volume keys that ``dk worktree seed`` copies in addition to
+    the media storage (``ops.restic.data_volume`` or its bind), which is always seeded, and to
+    the other ``ops.restic.data_volumes``, which are seeded too.
+    """
+
+    seed_volumes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SpacesConfig:
     """DigitalOcean Spaces defaults for backup auto-provisioning (``digitalocean.spaces``)."""
 
@@ -577,6 +614,8 @@ class ProjectConfig:
     compliance: ComplianceConfig | None
     repo_root: Path
     tooling_path: Path
+    agents: AgentsConfig = AgentsConfig()
+    worktree: WorktreeConfig = WorktreeConfig()
 
     @property
     def stack(self) -> StackConfig:
@@ -1274,7 +1313,17 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
         ),
         origin_env_keys=origin_keys,
         build_placeholders=_parse_build_placeholders(stack_raw.get("build_placeholders")),
+        manage_user=_parse_manage_user(stack_raw),
     )
+
+
+def _parse_manage_user(stack_raw: dict[str, Any]) -> str | None:
+    user = _optional_str(stack_raw, "manage_user")
+    if user is not None and any(ch.isspace() for ch in user):
+        raise ProjectConfigError(
+            f"stack.manage_user must be a user name or uid[:gid] (got {user!r})"
+        )
+    return user
 
 
 def _parse_spaces(spaces_raw: dict[str, Any]) -> SpacesConfig:
@@ -1641,10 +1690,7 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         restic_raw = {}
     elif not isinstance(restic_raw, dict):
         raise ProjectConfigError("ops.restic must be a mapping")
-    restic_data_volume = _validate_compose_volume_key(
-        _optional_str(restic_raw, "data_volume") or DEFAULT_RESTIC_DATA_VOLUME,
-        field="ops.restic.data_volume",
-    )
+    restic_volumes = _parse_restic_data_volumes(restic_raw)
     restic_backup_path = _optional_str(restic_raw, "backup_path")
     if restic_backup_path is not None and not restic_backup_path.startswith("/"):
         raise ProjectConfigError("ops.restic.backup_path must be an absolute path")
@@ -1679,7 +1725,8 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
             ),
         ),
         restic=ResticOpsConfig(
-            data_volume=restic_data_volume,
+            data_volume=restic_volumes[0],
+            extra_volumes=restic_volumes[1:],
             backup_path=restic_backup_path,
             verbose=_parse_restic_verbose_field(restic_raw, "verbose", section="ops.restic"),
             restore_verbose=_parse_restic_verbose_field(
@@ -1904,6 +1951,62 @@ def _parse_manifest(data: dict[str, Any], *, repo_root: Path, tooling_path: Path
         compliance=compliance,
         repo_root=repo_root.resolve(),
         tooling_path=tooling_path.resolve(),
+        agents=_parse_agents(data.get("agents")),
+        worktree=_parse_worktree(data.get("worktree")),
+    )
+
+
+def _parse_restic_data_volumes(restic_raw: dict[str, Any]) -> tuple[str, ...]:
+    """``ops.restic.data_volumes`` (list, primary first) or the single ``data_volume``."""
+    single = _optional_str(restic_raw, "data_volume")
+    if "data_volumes" not in restic_raw or restic_raw["data_volumes"] is None:
+        return (
+            _validate_compose_volume_key(
+                single or DEFAULT_RESTIC_DATA_VOLUME, field="ops.restic.data_volume"
+            ),
+        )
+    if single is not None:
+        raise ProjectConfigError(
+            "Set ops.restic.data_volumes or ops.restic.data_volume, not both "
+            "(the first data_volumes entry is the primary media volume)"
+        )
+    keys = _parse_string_list(restic_raw["data_volumes"], field="ops.restic.data_volumes")
+    if not keys:
+        raise ProjectConfigError("ops.restic.data_volumes must not be empty")
+    return tuple(
+        dict.fromkeys(
+            _validate_compose_volume_key(k, field="ops.restic.data_volumes") for k in keys
+        )
+    )
+
+
+def _parse_worktree(raw: Any) -> WorktreeConfig:
+    if raw is None:
+        return WorktreeConfig()
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("worktree must be a mapping")
+    keys = _parse_string_list(raw.get("seed_volumes"), field="worktree.seed_volumes")
+    return WorktreeConfig(
+        seed_volumes=tuple(
+            dict.fromkeys(
+                _validate_compose_volume_key(k, field="worktree.seed_volumes") for k in keys
+            )
+        ),
+    )
+
+
+def _parse_agents(raw: Any) -> AgentsConfig:
+    if raw is None:
+        return AgentsConfig()
+    if not isinstance(raw, dict):
+        raise ProjectConfigError("agents must be a mapping")
+    return AgentsConfig(
+        rules=_parse_string_list(raw.get("rules"), field="agents.rules"),
+        skills=(
+            _parse_string_list(raw["skills"], field="agents.skills")
+            if "skills" in raw and raw["skills"] is not None
+            else None
+        ),
     )
 
 

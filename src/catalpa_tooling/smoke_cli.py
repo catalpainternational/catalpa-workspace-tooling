@@ -116,6 +116,7 @@ def _prepare_compose_up(
             ctx.config,
             env_add,
             use_prepulled_registry=ctx.use_prepulled_registry,
+            compose_file=compose_file,
         )
     if rc != 0:
         return rc
@@ -295,6 +296,8 @@ def _run_compose_manage(
     Ephemeral DB override (e.g. empty-migrate) must set ``DJANGO_DB`` — consumers
     should read that for ``DATABASES['default']['NAME']`` (not ``DJANGO_DB_NAME``).
     """
+    # No stack.manage_user here: unlike exec, `run` goes through the entrypoint, which drops
+    # privileges itself and may need to start as root to chown volumes first (#86).
     cmd = ["run", "--rm", "-T", "--no-deps"]
     if extra_exec_env:
         for key, value in extra_exec_env.items():
@@ -834,6 +837,17 @@ def _run_one_frontend_build(
                 file=sys.stderr,
             )
 
+    if not use_compose and not (frontend_dir / "node_modules").is_dir():
+        # The compose path gets node_modules from the image; the host path assumes them.
+        # Without this the first script dies on a missing binary (`vue-tsc: command not
+        # found`), which points at the wrong thing entirely. See issue #80.
+        print(
+            f"smoke: {frontend_dir / 'node_modules'} missing — run "
+            f"`{package_manager} install --frozen-lockfile` in {frontend_dir}",
+            file=sys.stderr,
+        )
+        return 1
+
     def _run_script(script: str) -> int:
         if use_compose:
             assert compose_file is not None and env_add is not None
@@ -922,6 +936,27 @@ def _run_frontend_build(
     return 0
 
 
+def _refuse_inside_worktree(config: ProjectConfig, *, log_prefix: str) -> int:
+    """Return 2 (with a message) when ``config`` points at a worktree checkout."""
+    from catalpa_tooling.worktree_overlay import load_worktree_overlay
+
+    try:
+        overlay = load_worktree_overlay(config.repo_root)
+    except Exception:
+        # A marker we cannot read is not a reason to refuse; the main checkout has none.
+        return 0
+    if overlay is None:
+        return 0
+    print(
+        f"tests {log_prefix}: is not worktree-aware yet; run it from the main checkout "
+        f"(would recreate worktree {overlay.slug!r}'s caddy on host port 80, which the "
+        "shared local proxy holds, leaving every later `dk --worktree` command failing). "
+        f"Main checkout: {overlay.parent_repo_root or '..'}",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def run_smoke(
     config: ProjectConfig,
     *,
@@ -943,7 +978,15 @@ def run_smoke(
 
     Functional (``functional=True``): skip the gate; wait for HTTP and run pytest
     (typically ``-m elearning``).
+
+    Refuses to run inside a worktree (exit 2): none of these modes applies the worktree
+    overlay, so an ``up`` here would recreate the worktree's containers from the base env's
+    compose config and publish host port 80 — which the shared local proxy already holds.
+    See issue #77.
     """
+    rc = _refuse_inside_worktree(config, log_prefix=log_prefix)
+    if rc != 0:
+        return rc
     pytest_args = list(pytest_args or [])
     if not guest:
         functional = _resolve_functional(

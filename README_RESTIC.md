@@ -1,6 +1,6 @@
 # Restic (media files, `bkp_files`)
 
-Back up the stack’s **`django_media`** Docker volume with [restic](https://restic.net) via `docker run restic/restic`. Repository credentials live in `docker/envs/<env>/credentials.yaml` in the consumer app repo.
+Back up the stack’s **`django_media`** Docker volume (and any others listed in `ops.restic.data_volumes`) with [restic](https://restic.net) via `docker run restic/restic`. Repository credentials live in `docker/envs/<env>/credentials.yaml` in the consumer app repo.
 
 **Related docs**
 
@@ -25,6 +25,40 @@ ops:
 When ``backup_path`` is set, the compose volume is mounted at that path inside the restic container for backup and restore (must match paths in existing snapshots). Default: ``/backup/{data_volume}``. Use this when **this stack** already writes snapshots under a non-default prefix — not as a way to ingest Ansible-era host trees (see [below](#ansible--host-path-snapshots)).
 
 `COMPOSE_PROJECT_NAME` must match the Compose project on the deploy host (from `info.yaml` env or `stack.compose_project_default` in `tooling.yaml`). The volume key must match the `volumes:` name in your compose file.
+
+### More than one file volume
+
+If the app keeps files in other named volumes too, such as private uploads kept apart from
+`MEDIA_ROOT`, list all of them under `data_volumes` instead of `data_volume`:
+
+```yaml
+ops:
+  restic:
+    data_volumes:
+      - django_media              # first entry: the primary (media) volume
+      - django_public_documents
+      - django_private_uploads
+```
+
+The first entry plays the role of `data_volume`: it is the media volume that `fetch`, `push`,
+`transfer` and `backup_path` use. Each further entry is backed up into the **same snapshot**,
+mounted at `/backup/<key>`, and is the Docker volume `{COMPOSE_PROJECT_NAME}_<key>`. Setting
+both `data_volume` and `data_volumes` is an error.
+
+- **backup:** if an extra volume does not exist on the host, the others are still backed up
+  and the run then exits non-zero, so the timer, and Zabbix through it, report the gap. It is
+  not mounted, because `docker run -v` would create it empty and back that up.
+- **restore:** replaces the contents of every listed volume. A snapshot taken before a volume
+  was listed has no tree for it, so that volume is left as it is, with a warning.
+- **systemd:** the volumes after the first go into `restic-files-backup.env` as
+  `RESTIC_FILES_EXTRA_VOLUMES`. After changing the list, re-run `bkp_files install-systemd`
+  on each host so the timer picks it up.
+- **worktrees:** `dk worktree seed` copies these volumes as well
+  ([docs/WORKTREES.md](docs/WORKTREES.md#seeding-more-than-one-file-volume)).
+
+The first backup after adding volumes has a different path set from earlier snapshots, so
+restic reads every file again instead of using the previous snapshot as its parent.
+Deduplication still applies, so the repository grows only by the new volumes' contents.
 
 ## Credentials per environment
 

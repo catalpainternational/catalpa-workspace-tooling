@@ -9,6 +9,7 @@ from catalpa_tooling.local_proxy import (
     ensure_proxy_running,
     print_proxy_status,
     proxy_container_id,
+    require_local_docker_endpoint,
     stop_proxy,
     wait_for_ca_root,
     wait_for_proxy_admin,
@@ -20,6 +21,14 @@ from catalpa_tooling.trust_caddy_cert import trust_caddy_ca_from_container
 def cmd_proxy(ns: argparse.Namespace) -> int:
     sub = getattr(ns, "proxy_command", None)
     dry_run = bool(getattr(ns, "dry_run", False))
+
+    # Covers every subcommand, including the read-only ones: `status` against a remote engine
+    # reports on a container that is not the proxy this machine uses, which is worse than no
+    # answer. `--dry-run` refuses too — the endpoint is wrong, not the action.
+    command = f"dk proxy {sub}" if sub else "dk proxy"
+    rc = require_local_docker_endpoint(action=f"run `{command}`")
+    if rc != 0:
+        return rc
 
     if sub == "up":
         return ensure_proxy_running(dry_run=dry_run)

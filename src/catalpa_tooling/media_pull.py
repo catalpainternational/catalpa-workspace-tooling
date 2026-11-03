@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.docker_selinux import selinux_label_disable_args
 from catalpa_tooling.media_storage import (
     MediaStorage,
     MediaStorageError,
@@ -66,6 +67,13 @@ def _docker_data_mount(storage: MediaStorage, *, read_only: bool) -> str:
     return f"{storage.location}:/data{suffix}"
 
 
+def _storage_label_args(storage: MediaStorage, run_env: dict[str, str]) -> list[str]:
+    """SELinux opt-out for host binds (#128); named volumes are labelled by the engine."""
+    if storage.kind is MediaStorageKind.BIND:
+        return selinux_label_disable_args(run_env)
+    return []
+
+
 def _source_env_for_storage(storage: MediaStorage, run_env: dict[str, str]) -> dict[str, str]:
     """Volume side honors DOCKER_HOST; bind mounts always use the local daemon."""
     if storage.kind is MediaStorageKind.BIND:
@@ -106,6 +114,7 @@ def run_pull_media(
         "--rm",
         "--platform",
         "linux/amd64",
+        *_storage_label_args(resolved, source_env),
         "-v",
         data_mount,
         alpine_image,
@@ -122,6 +131,7 @@ def run_pull_media(
         "-i",
         "--platform",
         "linux/amd64",
+        *selinux_label_disable_args(_local_docker_process_env()),
         "-v",
         f"{target.resolve()}:/out",
         alpine_image,
@@ -229,6 +239,7 @@ def run_push_media(
         "-i",
         "--platform",
         "linux/amd64",
+        *_storage_label_args(resolved, dest_env),
         "-v",
         data_mount,
         alpine_image,
@@ -242,6 +253,7 @@ def run_push_media(
         "--rm",
         "--platform",
         "linux/amd64",
+        *selinux_label_disable_args(_local_docker_process_env()),
         "-v",
         f"{source.resolve()}:/src:ro",
         alpine_image,

@@ -24,6 +24,7 @@ uv run dk --worktree ${SLUG} …
 uv run dk worktree up ${SLUG}
 uv run dk worktree down ${SLUG}
 uv run dk worktree context ${SLUG} --json
+uv run dk --worktree ${SLUG} context --json   # every origin, compose project, and base branch
 ```
 
 Inside this worktree, `dk ${BASE_ENV}` uses the remapped compose project and localdev hostnames.

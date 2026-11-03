@@ -65,6 +65,17 @@ def _block_real_ssh_keyscan(
     monkeypatch.setattr("catalpa_tooling.ssh_known_hosts._run_ssh_keyscan", _blocked)
 
 
+@pytest.fixture(autouse=True)
+def _no_selinux_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never ask the real engine (``docker info``) whether it enforces SELinux."""
+    monkeypatch.delenv("DK_SELINUX_LABEL_DISABLE", raising=False)
+    monkeypatch.setattr(
+        "catalpa_tooling.docker_selinux.engine_reports_selinux", lambda env=None: False
+    )
+    monkeypatch.setattr("catalpa_tooling.local_proxy.engine_reports_selinux", lambda env=None: False)
+    monkeypatch.setattr("catalpa_tooling.local_proxy.PROXY_SETTLE_SECONDS", 0.0)
+
+
 @pytest.fixture
 def isolated_tooling(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unset ``TOOLING_CONFIG`` so ``load_project_config(tmp_path)`` uses that tree."""

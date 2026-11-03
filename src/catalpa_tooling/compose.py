@@ -98,6 +98,27 @@ def _compose(
     finally:
         restore_controlling_tty()
 
+def manage_exec_args(
+    config: ProjectConfig,
+    manage_argv: Sequence[str],
+    *,
+    tty: bool,
+    user: str | None = None,
+) -> list[str]:
+    """``docker compose`` args for ``exec <web> ./manage.py …``, as ``stack.manage_user``.
+
+    ``user`` overrides the configured user for one call (e.g. ``dk <env> manage --user root``).
+    """
+    exec_user = user or config.stack.manage_user
+    args = ["exec"]
+    if not tty:
+        args.append("-T")
+    if exec_user:
+        args.extend(["--user", exec_user])
+    args.extend([config.stack_service("web"), "./manage.py", *manage_argv])
+    return args
+
+
 def _healthcheck_host_header(
     env_add: dict[str, str] | None,
     *,

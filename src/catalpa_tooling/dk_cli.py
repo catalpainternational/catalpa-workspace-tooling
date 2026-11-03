@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from catalpa_tooling.cli.completion import activate, argcomplete_active
 from catalpa_tooling.cli.dk_argv import (
@@ -11,9 +12,12 @@ from catalpa_tooling.cli.dk_argv import (
     normalize_dk_env_argv,
     normalize_dk_root_argv,
     peel_worktree_flag,
+    unknown_env_subcommand,
+    unknown_env_subcommand_message,
 )
 from catalpa_tooling.cli_interrupt import run_cli
 from catalpa_tooling.config import ProjectConfig, load_project_config
+from catalpa_tooling.context_cli import cmd_context
 from catalpa_tooling.local_compose import _cmd_build
 from catalpa_tooling.build_push import _cmd_push
 from catalpa_tooling.clean_images import clean_images
@@ -22,6 +26,7 @@ from catalpa_tooling.dk_fetch import cmd_fetch
 from catalpa_tooling.dk_parser import build_dk_parser
 from catalpa_tooling.doctl_cli import dispatch_digoc
 from catalpa_tooling.env_handlers import handle_env_command
+from catalpa_tooling.env_parser import RESERVED_DK_TOP_COMMANDS
 from catalpa_tooling.local_proxy_cli import cmd_proxy
 from catalpa_tooling.cut_release import cut_release_beta, cut_release_final, next_branch
 from catalpa_tooling.remote_deploy import list_dk_env_names, list_deploy_env_names, resolve_deploy_env_name
@@ -38,7 +43,8 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
         raise SystemExit(1)
 
     first = root_argv[0]
-    envs = set(list_dk_env_names(config))
+    # An env named like a top-level command gets no subparser (env_parser), so never route to it.
+    envs = set(list_dk_env_names(config)) - RESERVED_DK_TOP_COMMANDS
 
     if first in envs:
         env_argv = normalize_dk_env_argv(root_argv)
@@ -54,9 +60,45 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
             raise SystemExit(0)
         if is_implicit_compose_argv(root_argv) and not argcomplete_active():
             return build_implicit_compose_namespace(root_argv)
-        return parser.parse_args(env_argv)
+        if not argcomplete_active():
+            unknown = unknown_env_subcommand(root_argv)
+            if unknown is not None:
+                print(unknown_env_subcommand_message(first, unknown), file=sys.stderr)
+                raise SystemExit(2)
+        return _parse_env_argv(parser, env_argv)
 
     return parser.parse_args(root_argv)
+
+
+def _passthrough_dest(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> str | None:
+    """Name of the REMAINDER argument of the subcommand ``ns`` selected, if it has one."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            chosen = action.choices.get(getattr(ns, action.dest, None))
+            if chosen is not None:
+                return _passthrough_dest(chosen, ns)
+            return None
+    for action in parser._actions:
+        if action.nargs == argparse.REMAINDER:
+            return action.dest
+    return None
+
+
+def _parse_env_argv(parser: argparse.ArgumentParser, env_argv: list[str]) -> argparse.Namespace:
+    """Parse ``<env> …``, giving a passthrough subcommand the options argparse left over.
+
+    argparse gives a REMAINDER positional nothing that starts with ``-`` when it comes first,
+    so ``dk staging host create --ssh-key aa`` or ``dk staging docker --version`` were refused
+    as unrecognised (#154). Those leftovers always precede what the REMAINDER did take, so
+    they go back on its front; a subcommand without a passthrough still rejects them.
+    """
+    ns, unknown = parser.parse_known_args(env_argv)
+    if unknown:
+        dest = _passthrough_dest(parser, ns)
+        if dest is None:
+            parser.error("unrecognized arguments: " + " ".join(unknown))
+        setattr(ns, dest, unknown + list(getattr(ns, dest) or []))
+    return ns
 
 
 def _load_config_for_argv(argv: list[str]) -> tuple[ProjectConfig, list[str], str | None]:
@@ -130,12 +172,13 @@ def _main_impl() -> None:
             "cut-release",
             "next-branch",
             "worktree",
+            "context",
         ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
                 f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk next-branch`, `dk worktree`, "
-                f"or a name with {envs_dir}/<name>/info.yaml.",
+                f"`dk context`, or a name with {envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
             if envs:
@@ -217,6 +260,8 @@ def _main_impl() -> None:
         )
     if cmd == "worktree":
         sys.exit(cmd_worktree(ns, config))
+    if cmd == "context":
+        sys.exit(cmd_context(ns, config))
 
     if getattr(ns, "env_name", None):
         sys.exit(handle_env_command(ns, config))

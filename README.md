@@ -73,6 +73,14 @@ Then use **Terminal → Run Task** (Cmd+Shift+P → “Tasks: Run Task”). Djan
 
 Check status with `uv run setup-vscode --status`. Remove scaffolded files with `uv run setup-vscode --remove`.
 
+**Agent guardrails and skills (recommended, per tooling repo):**
+
+```bash
+uv run setup-agents
+```
+
+Installs `.cursorignore`, `.cursor/rules/` and the `dk-stack` skill (`.claude/skills/`, linked from `.cursor/skills/`) from this tooling version; commit them. `uv run setup-agents --status` shows which are out of date after a tooling bump. See [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md).
+
 **Manual fallback (no `setup-shell`):** copy [`scripts/catalpa-direnv.zsh`](scripts/catalpa-direnv.zsh) to `~/.config/catalpa/direnv.zsh`, add to `~/.zshrc` **after** `compinit` and `eval "$(direnv hook zsh)"`:
 
 ```zsh

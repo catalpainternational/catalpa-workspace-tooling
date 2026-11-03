@@ -93,19 +93,24 @@ def compose_yml_build(
     *,
     env_add: dict[str, str] | None = None,
     services: tuple[str, ...] | None = None,
+    compose_file: str | None = None,
 ) -> int:
     """Run ``docker compose -f compose.yml build`` from repo root.
+
+    ``compose_file`` defaults to the production compose file. Local environments pass their own
+    (``info.yaml`` ``compose_file``) so ``dk dev up`` builds the images it is about to run.
 
     A generated label-only override stamps ``catalpa.*`` build labels onto the stack images so
     ``stale_stack`` can tell which branch and commit they came from. It is passed as an extra
     ``-f`` rather than committed to each project's compose file, so projects pick the behaviour
-    up by upgrading tooling alone.
+    up by upgrading tooling alone. Its targets are derived from the resolved config, so any
+    other service building a stack image is stamped too (issue #99).
     """
     from catalpa_tooling.stale_stack import write_label_override
 
     names = services if services else stack_build_services(config)
-    compose_file = config.compose_prod
-    label_override = write_label_override(config)
+    compose_file = compose_file or config.compose_prod
+    label_override = write_label_override(config, compose_file, env_add)
     cmd = [
         "docker",
         "compose",

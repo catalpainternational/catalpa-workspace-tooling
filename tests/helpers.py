@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 from catalpa_tooling.env_yaml import _credentials_to_env
 
@@ -25,6 +27,49 @@ def write_minimal_tooling_tree(target: Path) -> None:
     (target / "docker" / "images.yaml").write_text(
         "image_registry: ghcr.io/example/app\n",
         encoding="utf-8",
+    )
+
+
+def write_dev_env(repo: Path) -> None:
+    """Write a local ``dev`` env with role origins and an explicit compose project."""
+    env_dir = repo / "docker" / "envs" / "dev"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (repo / "compose.dev.yaml").write_text("services: {}\n", encoding="utf-8")
+    info = {
+        "compose_file": "compose.dev.yaml",
+        "credentials_decrypt_optional": True,
+        "site_origin": "https://minimal-dev.localdev.temp.build",
+        "local_proxy": {"roles": ["admin", "stats"]},
+        "env": {
+            "compose_project_name": "app_compose_dev",
+            "bero_origin": "https://minimal-dev.localdev.temp.build",
+            "django_origin": "https://admin.minimal-dev.localdev.temp.build",
+            "metabase_origin": "https://stats.minimal-dev.localdev.temp.build",
+            "caddy_site_address": "http://minimal-dev.localdev.temp.build",
+            "postgres_password": "dev",
+        },
+    }
+    (env_dir / "info.yaml").write_text(yaml.safe_dump(info), encoding="utf-8")
+    tooling = (repo / "tooling.yaml").read_text(encoding="utf-8")
+    if "credentials_optional_envs:" in tooling and "- dev" not in tooling:
+        tooling = tooling.replace(
+            "credentials_optional_envs:\n      - local\n",
+            "credentials_optional_envs:\n      - local\n      - dev\n",
+        )
+        (repo / "tooling.yaml").write_text(tooling, encoding="utf-8")
+
+
+def git_init_commit(repo: Path) -> None:
+    """``git init`` ``repo`` and commit everything in it."""
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
     )
 
 

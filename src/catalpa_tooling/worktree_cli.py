@@ -19,6 +19,7 @@ from catalpa_tooling.worktree import (
     worktree_status,
     worktree_up,
 )
+from catalpa_tooling.worktree_claude_hook import HOOK_EVENTS, cmd_claude_hook
 from catalpa_tooling.worktree_overlay import DEFAULT_BASE_ENV
 
 
@@ -65,7 +66,7 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
     p_create.add_argument(
         "--no-seed",
         action="store_true",
-        help="Skip seeding DB + host media from the main checkout's base env.",
+        help="Skip seeding DB + media from the main checkout's base env.",
     )
     p_create.add_argument(
         "--up",
@@ -183,13 +184,18 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
 
     p_remove = sub.add_parser(
         "remove",
-        help="Remove a git worktree (optionally wipe its Docker volumes).",
+        help="Remove a git worktree and stop its stack (optionally wipe its Docker volumes).",
     )
     p_remove.add_argument("slug", help="Worktree slug under .worktrees/.")
     p_remove.add_argument(
         "--wipe",
         action="store_true",
-        help="Also compose down -v for the remapped compose project.",
+        help="Also remove the stack's volumes, including external ones (destroys its database).",
+    )
+    p_remove.add_argument(
+        "--keep-stack",
+        action="store_true",
+        help="Leave the stack running after removing the checkout (the pre-1.4.1 behaviour).",
     )
     p_remove.add_argument("--dry-run", action="store_true", help="Show actions without running.")
     p_remove.add_argument(
@@ -201,7 +207,7 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
 
     p_seed = sub.add_parser(
         "seed",
-        help="Copy DB + host media from the main checkout's base env into a worktree.",
+        help="Copy DB + media from the main checkout's base env into a worktree.",
     )
     p_seed.add_argument(
         "slug",
@@ -217,7 +223,7 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
     p_seed.add_argument(
         "--media",
         action="store_true",
-        help="Select the host media leg (default: both unless only --db).",
+        help="Select the media leg — the stack's media volume or bind (default: both unless only --db).",
     )
     p_seed.add_argument(
         "--from",
@@ -233,6 +239,12 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip confirmation (required without a TTY).",
     )
+
+    p_hook = sub.add_parser(
+        "claude-hook",
+        help="Claude Code WorktreeCreate/WorktreeRemove hook (reads hook JSON on stdin).",
+    )
+    p_hook.add_argument("event", choices=HOOK_EVENTS)
 
 
 def cmd_worktree(ns: argparse.Namespace, config: ProjectConfig) -> int:
@@ -283,6 +295,7 @@ def cmd_worktree(ns: argparse.Namespace, config: ProjectConfig) -> int:
             config,
             slug=ns.slug,
             wipe=bool(ns.wipe),
+            keep_stack=bool(ns.keep_stack),
             dry_run=bool(ns.dry_run),
             yes=bool(ns.yes),
         )
@@ -304,5 +317,7 @@ def cmd_worktree(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dry_run=bool(ns.dry_run),
             yes=bool(ns.yes),
         )
+    if cmd == "claude-hook":
+        return cmd_claude_hook(ns.event, config)
     print(f"dk worktree: unknown command {cmd!r}", file=__import__("sys").stderr)
     return 1

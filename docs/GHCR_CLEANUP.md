@@ -66,7 +66,7 @@ ghcr_cleanup:
   collect_deploy_tags: true
 ```
 
-Package names come from `tooling.yaml` → `stack.images.components` (the same names `dk push` publishes).
+Package names come from `tooling.yaml` → `stack.images.components` (the same names `dk push` publishes). When `image_registry` is nested (for example `ghcr.io/org/swlt_ws2`), GHCR package names are qualified as `{namespace}/{component}` (`swlt_ws2/swlt-django`); a flat `ghcr.io/org` registry keeps bare component names.
 
 Set non-secret deploy pins in each environment's `docker/envs/<env>/info.yaml`:
 

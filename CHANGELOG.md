@@ -4,6 +4,393 @@
 
 ### Added
 
+- **Worktree-first development, including Claude Code's own worktrees.**
+  - The `worktrees` agent rule now says to do every development task in a `dk worktree`
+    rather than the main checkout. It loads in every session (`alwaysApply: true`), and tells
+    agents to cut worktrees from `origin/<default branch>`, not the main checkout's `HEAD`.
+  - With that rule selected, `setup-agents` adds `WorktreeCreate` and `WorktreeRemove` hooks
+    to `.claude/settings.json`, recorded in `.claude/setup-agents.json`.
+  - With the hooks, `claude --worktree`, EnterWorktree and `isolation: worktree` subagents get
+    a dk worktree, made by the new `dk worktree claude-hook create|remove`, instead of a bare
+    `.claude/worktrees/` checkout. A hook-made worktree is cut from the freshly fetched remote
+    default branch, with no seed and no stack.
+  - Hook removal stops the stack and keeps its volumes. It deletes the branch only when
+    `git branch -d` allows it.
+  - The `dk-stack` skill now triggers on starting a development task and points to the rule.
+    See [docs/WORKTREES.md](docs/WORKTREES.md#claude-code-worktrees).
+
+### Fixed
+
+- **`dk <env> host create` reads `digitalocean.image` from the env's `info.yaml`.** It was
+  ignored there while `size` and `region` worked. An env whose `info.yaml` already has an
+  `image:` line now provisions new droplets from it instead of the `tooling.yaml` image, so
+  check `docker/envs/*/info.yaml` for stale values.
+- **`dk worktree seed` runs the `ops.post_db_restore` hooks** (#140). The seed copies the main
+  checkout's database but skipped the hooks, so values such as Wagtail `Site` hostnames still
+  named the main checkout's stack, and pages in the worktree posted forms to it. The hooks now
+  run after the database step, against the worktree's stack, with the same `envs` filter
+  (matched against the base env). A hook failure fails the seed and prints a retry command.
+  - New hook placeholders: `{site_origin}` and `{site_host}` (the env's primary origin, which
+    in a worktree is the worktree's own) and `{worktree_slug}` (empty in the main checkout).
+    `{env_name}` is still the base env in a worktree. A hook that uses a site placeholder when
+    the env has no `SITE_ORIGIN` fails before anything runs. See
+    [README_PGBACKREST.md](README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
+- **Restic can back up more than one file volume.** `ops.restic.data_volume` names exactly
+  one volume, so files an app keeps in other named volumes were never backed up, while
+  pgBackRest still backed up the database rows that point at them. swlt_ws2's public documents
+  and private uploads are one example. `ops.restic.data_volumes` now takes a list; the first
+  entry is the primary media volume, as `data_volume` was.
+  - **Backup:** every listed volume goes into one snapshot, each mounted at `/backup/<key>`. A
+    listed volume that is missing on the host is left out, and the run exits non-zero.
+  - **Restore:** fills every volume from the snapshot. A volume the snapshot predates is left
+    unchanged.
+  - **systemd:** the timer's script reads the extra volumes from `RESTIC_FILES_EXTRA_VOLUMES`.
+    Re-run `bkp_files install-systemd` after changing the list.
+  - **Unchanged:** `data_volume` on its own works as before. See
+    [README_RESTIC.md](README_RESTIC.md#more-than-one-file-volume). (#103)
+- **`dk worktree seed` (and `create`) can seed more than one file volume.** Only the media
+  volume was copied, so files in other named volumes were missing from the worktree while
+  their database rows were copied.
+  - **What's seeded:** every `ops.restic.data_volumes` entry, plus any listed under the new
+    `worktree.seed_volumes`. Each gets its own outcome line.
+  - **Unseeded volumes are named:** a volume the web service mounts but nothing seeds is now
+    named in the output rather than passed over silently.
+  - See [docs/WORKTREES.md](docs/WORKTREES.md#seeding-more-than-one-file-volume). (#103)
+- **dk's containers work with SELinux enforcing (Fedora, RHEL).** When `docker info`
+  reports SELinux, the local proxy and the one-off helpers that bind-mount host paths
+  (media pull and push, SBOM and ORAS, restic with a DC backup CA) run with
+  `--security-opt label=disable`, so they can read their mounts without dk relabelling host
+  files. Nothing changes where SELinux is off, including macOS. An existing proxy created
+  without the flag is recreated, keeping its CA. `DK_SELINUX_LABEL_DISABLE=1`/`0` overrides
+  the detection. Project compose files still need `:z` on their own bind mounts; see
+  [docs/PODMAN.md](docs/PODMAN.md) section 2.
+  ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+
+- **`dk` stops when the local proxy exits straight after starting.** `docker run -d` and
+  `docker start` succeed even if the container dies a moment later, so dk used to carry on
+  with no proxy. It now waits briefly, and if the proxy has exited it prints the exit code
+  and the end of `docker logs`, with an SELinux hint when the engine has it on.
+  ([#128](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/128))
+
+## 1.6.1
+
+### Added
+
+- **Claude Code gets the same agent guardrails as Cursor.** It reads neither `.cursor/rules/`
+  nor `.cursorignore`, so until now the secrets and remote-environment rules reached only
+  Cursor. `setup-agents` now also writes each rule as `.claude/rules/<rule>.md`, converted
+  from the same source (Cursor `globs` become Claude `paths`). It also adds a `Read(...)`
+  deny rule for each `.cursorignore` pattern to `.claude/settings.json`: the project's own
+  `.cursorignore` if it has taken it over, otherwise the bundled one. It merges into the
+  project's file and records the entries it added in `.claude/setup-agents.json`, so
+  `--remove` and later upgrades take out only those. The deny rules are not a full
+  exclusion: Claude Code doesn't apply them to every shell command, and they can't carve out
+  `.env.example`. [docs/AGENTS_AND_SECRETS.md](docs/AGENTS_AND_SECRETS.md) covers both.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
+- **`uv run setup-agents` installs and updates the agent files.** It writes `.cursorignore`,
+  the Cursor rules and the `dk-stack` skill from the installed tooling version, replacing the
+  manual `cp` from a tooling checkout. Optional rules and skills are chosen under `agents:` in
+  `tooling.yaml`. `--status` exits 1 when any file is missing or would change, so a
+  tooling bump shows which agent files are out of date, as `setup-vscode --status` does for
+  tasks. Installed files carry a managed line. A file without it is the project's own and is
+  left alone unless `--force` is used, except that a hand-copied file identical to the bundled
+  one is adopted. The bundled sources moved from `scripts/cursor-rules/`,
+  `scripts/cursorignore.template` and `scripts/agent-skills/` to
+  `src/catalpa_tooling/share/agents/`, so installing no longer needs a tooling checkout.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
+- **A `dk-stack` agent skill for consumer repos.** `src/catalpa_tooling/share/agents/skills/dk-stack/SKILL.md`
+  tells an agent how to bring up and reach the local `dk dev` stack, in the main checkout or
+  a worktree: read names and origins from `dk context --json`, wait for the URL instead of `ps`, the
+  worktree traps (`--base-branch` defaults to `HEAD`, seeding copies main's data, one
+  hostname and no host-port remap), and not claiming a UI check without a browser. It
+  collects what swlt_ws2's `run-app` skill had learned about the tooling, so projects copy
+  it instead of rewriting it. `setup-agents` installs it by default.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+- **`dk context` reports a project's envs for agents, from the main checkout or a worktree.**
+  For each env it gives every origin (role hosts and `DJANGO_EXTRA_ORIGINS` included), the
+  compose project, and whether it's local or remote. It also gives the web service, and inside a
+  worktree, the branch and what it was cut from. It reads config only, with no SOPS, ssh or
+  docker, so it's safe to call first. `--status` adds the containers of each local env, and
+  `--env NAME` narrows to one env. `--json` output is versioned (`"schema": 1`).
+  `dk worktree context --json` stays, but only works inside a worktree and gives one origin;
+  `dk dev --dry-run` prints only the first.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+- **`dk worktree create` records what a new worktree was cut from.** `.catalpa-worktree.yaml`
+  now carries `base_ref` and `base_commit`. `--base-branch` defaults to `HEAD`, so before this
+  a worktree cut from a stale checkout gave no sign of it.
+  ([#126](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/126))
+
+- **`dk` runs on rootless Podman on Linux.** [docs/PODMAN.md](docs/PODMAN.md) covers the
+  setup (docker CLI pointed at the Podman socket, low ports) and the two things that stop a
+  first run on Fedora: SELinux blocking unlabelled bind mounts, and the local proxy clashing
+  with another proxy already on port 443.
+  ([#55](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/55))
+
+### Fixed
+
+- **`dk worktree context --json` prints only JSON on stdout.** The `$ git rev-parse …` lines
+  it echoed while gathering the payload went to stdout ahead of the JSON, so `| jq` and
+  `json.loads` failed on it. They now go to stderr.
+- **An env named like a top-level command no longer hijacks it.** An env such as `digoc`
+  already got no `dk <env>` subparser, but `dk digoc droplets list` was still routed as an env
+  command and refused as an unknown subcommand. `worktree` and `context` are now reserved too.
+- **`dk <env> db restore` no longer drops the database when it is run without a TTY.**
+  Without a terminal on stdin, the restore didn't use the configured dump. It read the
+  archive from stdin instead. It also dropped the app database before checking that archive,
+  so `dk dev db restore --dumps` from a script or CI job emptied the database and then
+  failed with "stdin is not a pg_dump -Fc archive". The restore now always reads the file
+  given by `--file` or the configured dump, whether or not a TTY is attached. It checks each
+  archive it is about to restore before dropping anything: the app dump, and the Metabase
+  dump when configured. A missing or non-`pg_dump -Fc` file is refused, and both databases
+  are left as they were.
+  ([#124](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/124))
+
+- **`dk <env> manage` can run as the image's app user instead of root.** It used
+  `docker compose exec` with no `--user`. Images that drop privileges in the entrypoint
+  (no `USER` line; `runuser`/`gosu`) never go through that entrypoint on `exec`, so every
+  manage command ran as root. Files it wrote to mounted volumes were then root-owned, and the
+  app hit `PermissionError` on them later. Pre-creating upload directories can't cover dated
+  or per-instance `upload_to` paths. The new optional `stack.manage_user` in `tooling.yaml`
+  is passed as `--user` to `dk <env> manage` and to the post-restore `manage_commands`
+  hooks. `dk <env> manage --user USER …` overrides it for one call. Smoke-test
+  `compose run` is unchanged, because it goes through the entrypoint already.
+  ([#86](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/86))
+
+- **Provisioned hosts now rotate container logs.** The droplet bootstrap wrote no
+  `/etc/docker/daemon.json`, so every host ran Docker's default `json-file` driver with no
+  size cap. Logs from long-lived containers (db, redis, caddy, backup), which are rarely
+  recreated, grew until the disk filled. The bootstrap now sets the `local` driver with
+  `max-size: 20m`, `max-file: 5` (about 100 MB per container) before Docker first starts.
+  For hosts provisioned earlier, `dk <env> host logging` checks the daemon and names each
+  container that still logs without a cap. `--apply` merges the setting into `daemon.json`,
+  validates the file and restarts docker, and `--target backup` covers
+  `dc_backup_docker_host`. `dk <env> host --check-remote` reports the same thing as a
+  warning. Runbook: TROUBLESHOOTING.md § Container log rotation.
+  ([#109](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/109))
+
+## 1.6.0
+
+### Fixed
+
+- **A mistyped `dk <env>` subcommand no longer starts the stack.** Any first token that was
+  not a known dk subcommand fell through to implicit compose passthrough, and an empty
+  passthrough defaults to `up -d` — so typing a command that does not exist brought the
+  stack up or recreated it. `dk dev context` was the reported case: `context` is a
+  `dk worktree` subcommand, and aiming it at an environment started that environment.
+  Passthrough is now limited to actual compose verbs, and anything else is refused with a
+  message naming both vocabularies — the dk subcommands *and* the compose verbs — because
+  argparse alone would have listed only its own choices, leaving out `up` and `logs` and
+  implying they were invalid too.
+  ([#85](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/85))
+
+- **`dk push` no longer ships images without checking their architecture.** The build is a
+  plain `docker compose build` and took the platform entirely from the consumer's `platform:`
+  keys, with nothing afterwards verifying what came out. That assumption does not hold on
+  every engine: against Podman's Docker-compat API compose silently drops the platform and
+  builds native, so `dk push` from such a host built arm64 images, tagged them, pushed them
+  and attached SBOMs without a word — and the failure surfaced later on an amd64 server as
+  containers that would not start. Built stack images are now inspected between build and
+  tag. An image that does not match its service's declared `platform:` fails the push, naming
+  the image, what was asked for and what was built; `dk push` runs unattended in CI, where a
+  warning would scroll past. A service that declares no platform warns instead, naming the
+  architecture being pushed, since the local host's architecture is not a safe default for a
+  deploy artifact.
+  ([#114](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/114))
+
+- **`dk --worktree <slug>` no longer crashes when run from inside another worktree.**
+  `dk_cli` used `Path` to build the label it prints when the target worktree is not relative
+  to the current repo root — the case that arises precisely when the cwd is itself a worktree —
+  but never imported it, so the fallback raised `NameError` instead of printing a path. Any
+  `dk --worktree` / `-W` command issued from one worktree against another hit it.
+  ([#104](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/104))
+
+- **`dk worktree remove --dry-run` no longer says it removed a worktree it did not touch.**
+  The confirmation line ran unconditionally after the `git worktree remove`, so a preview
+  ended with `Removed worktree '<slug>' (…)` while `git worktree list` still showed it. That
+  output is read to decide whether to run the real `--wipe`, which makes a false claim of
+  removal the one thing it must not make. A dry run now says `Would remove worktree …`.
+  ([#108](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/108))
+
+- **A second compose service building a stack image no longer leaves the stack permanently
+  stale.** The `catalpa.*` build labels were stamped onto `stack_build_services` — the three
+  roles `db` / `web` / `proxy` — which assumes one building service per stack image. A project
+  that points a second service at the app image, a one-shot `migrate` being the common case,
+  breaks that assumption without doing anything exotic: compose builds the tag once per service
+  in a single `up --build` and the last build owns it, so when the unlabelled definition won,
+  the image came out with no `catalpa.*` labels at all. `stale_stack` then reported
+  `image carries no catalpa.* build labels (built outside dk)` about an image dk had built
+  moments earlier, on **every** run, and rebuilt the stack every time with no way to converge.
+  Worse than the wasted pass: the check could never answer "current" for such a project, so a
+  real staleness event had nowhere to show up. The label override's targets are now derived
+  from the resolved compose config — every service whose `image:` is a stack image and which
+  carries a `build:` — rather than from the three role names. Projects need no compose change.
+  Where the config cannot be resolved the targets fall back to the three roles, so the previous
+  behaviour is the floor.
+  ([#99](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/99))
+
+- **`dk <env> up` no longer builds the stack images twice.** Every `up` on an unpinned env ran
+  `_ensure_local_stack_images_built` — a full `docker compose build` of db / web / proxy —
+  before going on to the `up`, which compose then runs with its own injected `--build`. The
+  first of those is redundant whichever way the stale-stack hook answered a moment earlier:
+  either the images already matched the checkout, or the hook rebuilt them with that very same
+  call. It is now skipped in that case, which halves the build passes on the inner-loop
+  command and leaves a genuine rebuild something you can actually see in the output.
+  Compose's own `--build` on the `up` still runs, so a Dockerfile edited at an unchanged
+  commit is still rebuilt — the labels carry the *committed* SHA and would not have noticed.
+  The skip additionally requires the db image to be present locally, which the label check
+  does not establish: it is satisfied by a matching running *container* without ever looking
+  for the image, and `materialize_configs` runs one-off containers from that image before the
+  `up` could build it. Pinned pre-pulled envs, `DK_SKIP_STALE_STACK=1`, a dry run, and a
+  failed `git rev-parse` all keep building exactly as before.
+  ([#75](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/75))
+
+- **pgBackRest one-off `docker run` helpers no longer assume the consumer pins
+  `linux/amd64`.** `_compose_db_platform_args` returned a hardcoded `--platform
+  linux/amd64` — its docstring said it matched the `db` service's platform, but a constant
+  cannot match anything. A project whose dev stack does not pin amd64 builds a correct
+  native image and then fails on its own image with
+  `docker: Error response from daemon: manifest unknown`, because `dk` asks for a platform
+  that image does not provide and the fallback pull finds no such manifest. The helpers now
+  take the platform from the image they are about to run (`docker image inspect`, cached per
+  image and engine, since one tag can differ between a local daemon and a remote `ssh://`
+  one). A project that still pins amd64 gets byte-identical commands, and the previous
+  constant remains the fallback whenever the image cannot be inspected.
+  ([#111](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/111))
+
+### Added
+
+- **`dk` says when more than one compose service builds the same stack image.** Labels were one
+  casualty of the last-build-wins behaviour above; they are not the only one. Nothing in a
+  compose file merges two service definitions of one tag, so whatever the losing definition
+  carried is dropped silently — including `platform:`, which tooling does not own and cannot
+  fix. That is how
+  [swlt_ws2#886](https://github.com/catalpainternational/swlt_ws2/issues/886) happened: only
+  one of two builders was pinned to `linux/amd64`, the unpinned build won on an Apple Silicon
+  host, and the service then refused to start against its own pin with "does not provide the
+  specified platform". `dk` now prints a one-line note naming the image and the services that
+  build it, once per command, so the situation is visible at the point of confusion rather than
+  after a debugging session.
+  ([#99](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/99))
+
+## 1.5.0
+
+### Fixed
+
+- **`dk <env>` no longer sends the stack and the local proxy to different container
+  engines.** The stack is pinned per environment via `DOCKER_HOST` in `env_add`, but the
+  local-proxy helpers built their own `docker` argv and inherited the ambient environment
+  instead. With a `DOCKER_HOST` exported to a second local engine — Podman, or OrbStack
+  alongside Docker Desktop — one `dk dev up` put the stack on the local daemon, failed to
+  find `catalpa-local-proxy` on the *other* engine, and tried to create a second proxy
+  against host ports the first one already held
+  (`listen tcp 127.0.0.1:2019: bind: address already in use`), stranding a `Created`
+  container. The proxy now follows the engine the stack is using. Standalone `dk proxy`
+  has no environment context and still uses the ambient engine, guarded as before; remote
+  `ssh://` endpoints were already refused by `require_local_docker_endpoint`.
+  ([#96](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/96))
+
+- **`dk <env> build <service>` and `dk <env> compose build …` no longer crash in
+  `merge_extra_compose_files`.** The helper returned `None` for an empty result but could not
+  accept `None` as an argument, so any compose run that may build — where the caller merges the
+  label override into its own already-merged list — died with
+  `TypeError: 'NoneType' object is not iterable` before reaching docker. It now skips empty
+  groups, which makes it safe to call on its own output.
+  ([#76](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/76),
+  [#83](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/83))
+
+- **`tests ci` says what is wrong when host `node_modules` is missing.** On the host fallback
+  path — taken by any project whose compose has no `node` service, including every
+  multi-`paths.frontend` project — the frontend build ran the package script without checking
+  that dependencies were installed, so a fresh checkout failed with a missing-binary error
+  (`vue-tsc: command not found`) that pointed at the wrong thing. It now fails with
+  ``smoke: <dir>/node_modules missing — run `<pm> install --frozen-lockfile` in <dir>``.
+  Nothing is installed automatically.
+  ([#80](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/80))
+
+- **`dk worktree seed` copies the media the stack actually serves.** It copied one host
+  directory to another (`<repo>/media` → `<worktree>/media`). A Docker project serves media from
+  a named volume, so the copy never reached the new stack: every photograph on a freshly seeded
+  worktree rendered as alt text. Seeding now resolves both sides' **media storage** — the named
+  volume (honouring compose `name:` and `ops.restic.data_volume`) or the host bind — and copies
+  between them with the same rsync/tar machinery `dk transfer` uses. The destination volume is
+  pre-created with Compose labels first, so a later `compose up` does not warn about a volume it
+  did not create. The copy replaces whatever the destination held, and takes the whole storage,
+  Wagtail originals and renditions together, from the same source stack as the database dump, so
+  image rows and the files they point at stay consistent.
+  ([#88](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/88))
+
+- **Seed steps report what they actually did.** `worktree seed: media copy done.` printed even
+  when the copy had been skipped a line earlier, and the run always ended `worktree seed:
+  complete.` Each step now records its outcome and the final line summarises them — e.g.
+  `worktree seed: complete (db: restored; media: skipped, source volume swlt_dev_django_media is
+  empty or missing)`. A source with no media is legitimate, so that case stays exit 0.
+  `--dry-run` prints both resolved storages.
+
+- **`seeded` in `dk worktree context` is volume-aware.** It looked only at the host media tree,
+  so it reported `false` for every volume-based project however well seeded. It now reads the
+  worktree's resolved media storage.
+
+### Changed
+
+- **`tests ci` / `tests guest` / `tests functional` refuse to run inside a worktree.** None of
+  them applied the worktree overlay, so an `up` from a worktree recreated that worktree's
+  containers from the base env's compose config and tried to publish host port 80 — which the
+  shared `catalpa-local-proxy` holds. The worktree's caddy was left `created`, and every later
+  `dk --worktree <slug> …` failed with an unrelated-looking error. They now print what is wrong
+  and exit 2. Honouring the overlay properly is still open as an enhancement.
+  ([#77](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/77))
+
+### Removed
+
+- **`dk <env> db pgrestore` / `bkp_db pgrestore`.** `db restore` covers the same ground:
+  `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured)
+  without consulting pgBackRest or auto-fetching, and the new `--file PATH` restores the app
+  database from one custom-format archive. Both start `db` if needed, drop and recreate the app
+  database first, honour `native.reset_db.postgis` / `restore_as_super` / `pg_restore_args`, and
+  run the `ops.post_db_restore` hooks. Replace `db pgrestore --file X` with `db restore --file X`,
+  and bare `db pgrestore` with `db restore --dumps`.
+  ([#42](https://github.com/catalpainternational/catalpa-workspace-tooling/issues/42))
+
+### Added
+
+- **`dk <env> db restore --file PATH`** restores the app database from a single `pg_dump -Fc`
+  archive. It implies `--dumps`, skips the Metabase leg (one archive names one database), and
+  works with `--dry-run`.
+
+## 1.4.3
+
+### Fixed
+
+- **`dk dev up` builds the images it is about to run.** Before starting a local stack, and when
+  rebuilding a stale one, tooling built the production compose file (`paths.deploy.default_compose`)
+  even when the env runs a different one (`info.yaml` `compose_file`, usually `compose.dev.yaml`).
+  Projects whose dev file builds different targets paid for a full production build on every new
+  commit, and the stale check, which reads the env's file, could keep finding the dev images stale.
+  The pre-`up` build now uses the env's compose file; `dk build` and `dk push` still build the
+  production one.
+
+- **A stale stack comes back behind the local proxy.** When a command such as `dk dev db restore`
+  found the running stack out of date, it rebuilt and recreated the containers without the local
+  proxy override, so `caddy` tried to publish ports 80/443 that `dk proxy` already holds and the
+  stack stayed half-down. The recreate also ran `up --build` without the label override, which
+  could retag the fresh images unlabelled and make the next command rebuild again. It now recreates
+  with the proxy override and without a second build.
+
+## 1.4.2
+
+### Fixed
+
+- **`dk clean-images` nested GHCR package names.** Registries like
+  `ghcr.io/org/swlt_ws2` publish packages as `swlt_ws2/swlt-django`. Cleanup now
+  qualifies component names with that namespace so the Packages API no longer
+  404s on nested registries (flat `ghcr.io/org` registries are unchanged).
+
+## 1.4.1
+
+### Added
+
 - **Stale local stack detection and auto-rebuild.** For **unpinned** managed envs
   (`use_prepulled_registry` false — typically `dev` / `full`), `dk <env> …` now refuses to keep
   using containers or images built from another branch or an older HEAD. On a mismatch it rebuilds
@@ -56,7 +443,114 @@
   `dev` bind-mounts still pick up code, but `full` needs an explicit rebuild for uncommitted baked
   changes. The dev-only `node` service is not covered yet (#67).
 
+### Changed
+
+- **`dk worktree remove` now stops the worktree's stack** before retiring the checkout. It used to
+  remove the git worktree and leave the containers running under a `COMPOSE_PROJECT_NAME` that
+  nothing could look up any more — `dk worktree context` needs the checkout to tell you the
+  project name, so the stack became effectively anonymous the moment it was orphaned.
+
+  This is the half of [#64] that `--wipe` did not cover. That fix made `--wipe` finish the job;
+  the *default* path still leaked, and it is the path people take when they want to keep the
+  data.
+
+  **Volumes are still kept without `--wipe`** — the user did not ask for the database to go. But
+  the command now says what survived and how to reclaim it, rather than leaving it to be found by
+  `docker volume ls` months later:
+
+  ```console
+  $ dk worktree remove ds_180 -y
+  Removed worktree 'ds_180' (/repo/.worktrees/ds_180)
+  Its volumes are kept (use --wipe to remove them). To reclaim later:
+    docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=app_dev_ds_180)
+  ```
+
+  A failed teardown keeps the checkout, so the command can simply be re-run — the same rule
+  `--wipe` already followed. If the Docker daemon is not running and you want the checkout gone
+  regardless, **`--keep-stack`** restores the old behaviour.
+
 ### Fixed
+
+- **`dk worktree up` ran the *main* checkout's code in the worktree's stack** ([#62]). The stack
+  got the worktree's `COMPOSE_PROJECT_NAME`, its own volumes and its own hostname — and the main
+  checkout's source bind-mounted in. Every identity signal said "worktree"; only the mounts
+  disagreed, so the failure presented as "the change I just made doesn't show up", which people
+  reasonably misattribute to caching, migrations or their own code.
+
+  The cwd decided it. `_resolve_compose_file_from_info` returned a repo-relative path and
+  `_compose` never chdirs, so `-f compose.dev.yaml` resolved against the *process* cwd. Run from
+  the main checkout — the documented workflow, and what `dk worktree create` prints — that is the
+  main compose file, whose relative binds then point at the main tree. The module was already
+  internally inconsistent about this: `status` and `wipe` built an absolute path, `up` / `down` /
+  `restart` / `logs` did not.
+
+  Compose file paths are now absolute at the point of resolution, so every caller is cwd-
+  independent and the same command produces the same stack from anywhere. Worktree containers
+  created before this fix keep their wrong mounts until recreated; `dk worktree up` after
+  upgrading does that, since the changed bind source makes Compose recreate them.
+
+- **`dk worktree … --dry-run` reported the main env's identity** ([#62]). The early exit that
+  skips the SOPS decrypt also skipped the worktree overlay, so the output named the main env's
+  origin and omitted the `worktree overlay:` line entirely — nothing hinted a step had been
+  missed. `--dry-run` is the natural "which stack am I pointed at?" check, so this actively
+  obstructed diagnosing the mount bug above.
+
+- **`dk worktree up --dry-run` wrote `AGENTS.local.md`** ([#62]). A dry run now leaves the tree
+  alone; the refreshed content differs whenever the overlay or media path has moved.
+
+- **`dk worktree remove --wipe` now removes the worktree's `external:` volumes** ([#64]). Compose
+  never deletes a volume declared `external: true` — it does not own what it did not create — so
+  `down -v` left every one of them behind, including the seeded `postgres_data`. The command
+  reported success and the git worktree really was gone, so the orphans were only found by going
+  looking. `dk dev wipe` already closed this gap for PGDATA and media; the worktree path never
+  called it.
+
+  The worktree path removes **all five** external volumes (`postgres_data`, `django_media`,
+  `caddy_data`, `postgres_conf`, `pgbackrest_conf`), not just the two `dev wipe` removes: the
+  `COMPOSE_PROJECT_NAME` is being retired, so nothing will ever mount the conf volumes again.
+  `dk dev wipe` is unchanged — that env stays reusable and `db configure` rewrites its conf
+  volumes on the next `up`.
+
+  Every volume is attempted even if one cannot be removed (a container still using it, say), so
+  the report covers all five rather than stopping at the first problem. If any fail, the checkout
+  is kept and the command exits non-zero — stranding volumes behind a removed worktree is the
+  silent-orphan failure this fixes. Re-run once the volume is free; those already removed are
+  skipped.
+
+  Built images tagged with the worktree's project name are still left behind; removing those is
+  a separate decision.
+
+- **`dk proxy up` recovers from a stale `catalpa-local-proxy`** ([#58]). The container is
+  machine-wide but it bind-mounts the bundled `Caddyfile` from whichever project venv created it.
+  Rebuilding that venv, moving the project or a Python minor bump (3.12 → 3.14) deletes the path,
+  and `docker start` then failed with an opaque rootfs error — from an unrelated project, since
+  the proxy is shared. `proxy up` now checks the bind source first and recreates the container
+  when it has vanished. The local dev CA is persisted on the host and is kept, so nothing needs
+  re-trusting. If removing the stale container fails, `proxy up` reports why and stops rather
+  than continuing into a "container name already in use" collision that hides the real cause.
+
+- **`dk proxy` now refuses to operate against a remote Docker engine.** The local dev proxy
+  publishes ports 80/443 on *your* machine, bind-mounts its Caddyfile from *your* filesystem, and
+  issues certificates for *your* browsers — none of which holds for a remote engine, so every
+  operation there was either meaningless or destructive to whatever was running on it. With
+  `DOCKER_HOST` exported, the staleness check above compared the mount path against the local
+  filesystem while the container lived elsewhere, so a healthy shared proxy got force-recreated
+  pointing at a path the engine did not have.
+
+  The endpoint comes from `docker context inspect`, which resolves the full precedence chain
+  (`DOCKER_HOST`, then `DOCKER_CONTEXT`, then the active context) rather than reading one
+  variable. It is a local config lookup, so there is no latency and nothing hangs when the remote
+  is unreachable. `unix://`, `npipe://`, a bare socket path, and `tcp://` to
+  localhost/127.0.0.1/::1 count as local; `ssh://`, other `tcp://` hosts and unknown schemes do
+  not.
+
+  The guard sits on `ensure_proxy_running` / `stop_proxy` as well as the CLI, so the paths that
+  drive the proxy indirectly — `dk <env> up` and `dk worktree up` — are covered too. Read-only
+  subcommands refuse as well: `dk proxy status` against a remote engine reports on a container
+  that is not the proxy this machine uses, which is worse than no answer.
+
+  A mount pointing at a *different but still live* install is left alone: it is the same bundled
+  asset, and recreating would make the shared proxy bounce between projects.
 
 - **A missing stack image no longer reports itself as missing pgBackRest config.** The probe that
   checks the `pgbackrest_conf` volume for the managed drop-in runs a throwaway container from the
@@ -90,6 +584,10 @@
 - **A failure to clear stale `*.conf` drop-ins is no longer silent.** `_docker_run_rm_other_confs`
   ignored its exit code, so a genuine failure left pgBackRest merging duplicate keys from a
   leftover file — a config nobody wrote, with no error anywhere.
+
+[#58]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/58
+[#62]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/62
+[#64]: https://github.com/catalpainternational/catalpa-workspace-tooling/issues/64
 
 ## 1.4.0
 

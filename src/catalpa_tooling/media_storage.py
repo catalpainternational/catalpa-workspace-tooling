@@ -364,6 +364,72 @@ def resolve_media_storage(
     return MediaStorage(MediaStorageKind.BIND, str(host_path))
 
 
+@dataclass(frozen=True)
+class StackVolumes:
+    """Named volumes a stack declares, and which of them its web service mounts."""
+
+    # Compose volume key → Docker volume name (honours top-level ``name:``).
+    names: dict[str, str]
+    # Keys the web service mounts as named volumes, in compose order.
+    web_mounts: tuple[str, ...]
+
+
+def resolve_stack_volumes(
+    *,
+    compose_file: str,
+    env: dict[str, str],
+    config: ProjectConfig,
+    repo_root: Path | None = None,
+) -> StackVolumes:
+    """Every named volume the stack declares, mapped to its Docker volume name.
+
+    Used to seed file volumes beyond the one media storage :func:`resolve_media_storage`
+    picks (issue #103). Like that function, prefers merged ``docker compose config`` and
+    falls back to the raw YAML.
+    """
+    root = (repo_root or config.repo_root).resolve()
+    compose_path = Path(compose_file)
+    if not compose_path.is_absolute():
+        compose_path = (root / compose_path).resolve()
+    project = (env.get("COMPOSE_PROJECT_NAME") or "").strip() or _default_compose_project(config)
+
+    data = load_compose_config(str(compose_path), env, cwd=root)
+    if data is None and compose_path.is_file():
+        try:
+            data = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            data = None
+    if not isinstance(data, dict):
+        return StackVolumes(names={}, web_mounts=())
+
+    vols = data.get("volumes")
+    compose_volumes = vols if isinstance(vols, dict) else {}
+    names = {
+        str(key): _docker_volume_name_for_key(
+            str(key),
+            project=project,
+            config=config,
+            compose_volumes=compose_volumes,
+        )
+        for key in compose_volumes
+    }
+
+    web_mounts: list[str] = []
+    services = data.get("services")
+    if isinstance(services, dict):
+        web = next((s for s in _preferred_service_order(config) if s in services), None)
+        svc = services.get(web) if web else None
+        entries = svc.get("volumes") if isinstance(svc, dict) else None
+        for entry in entries if isinstance(entries, list) else []:
+            parsed = _parse_volume_entry(entry)
+            if parsed is None or parsed[0] != "volume":
+                continue
+            key = parsed[1].strip()
+            if key in names and key not in web_mounts:
+                web_mounts.append(key)
+    return StackVolumes(names=names, web_mounts=tuple(web_mounts))
+
+
 def media_storage_label(storage: MediaStorage) -> str:
     """Short label for logs / confirmation."""
     return storage.describe()

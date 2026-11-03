@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import os
@@ -14,6 +15,11 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TextIO
 
+from catalpa_tooling.docker_selinux import (
+    SELINUX_LABEL_DISABLE_ENV,
+    engine_reports_selinux,
+    selinux_label_disable_args,
+)
 from catalpa_tooling.local_proxy_assets import local_proxy_caddyfile_path
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import (
@@ -472,6 +478,120 @@ def proxy_container_exists() -> bool:
     return bool((result.stdout or "").strip())
 
 
+CADDYFILE_CONTAINER_PATH = "/etc/caddy/Caddyfile"
+
+
+def proxy_caddyfile_mount_source() -> str | None:
+    """Host path the existing proxy bind-mounts at ``/etc/caddy/Caddyfile``, if any."""
+    result = run_cmd(
+        ["docker", "inspect", LOCAL_PROXY_CONTAINER, "--format", "{{json .Mounts}}"],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        mounts = json.loads((result.stdout or "").strip() or "[]")
+    except json.JSONDecodeError:
+        return None
+    for mount in mounts or []:
+        if isinstance(mount, dict) and mount.get("Destination") == CADDYFILE_CONTAINER_PATH:
+            source = mount.get("Source")
+            return source if isinstance(source, str) else None
+    return None
+
+
+def proxy_caddyfile_mount_is_stale() -> bool:
+    """True when the existing proxy's Caddyfile bind source has vanished from the host.
+
+    The container is machine-wide but the mount is project-venv-specific
+    (``<install>/catalpa_tooling/local_proxy/Caddyfile``). Rebuilding a venv, moving a project or
+    a Python minor bump deletes that path, and ``docker start`` then fails with an opaque
+    "not a directory" rootfs error instead of anything actionable. See issue #58.
+
+    A source that merely points at a *different* live install is left alone: the bundled Caddyfile
+    is the same asset, and recreating would make the shared proxy bounce between projects.
+
+    The path is resolved against *this* machine's filesystem, which is only the same filesystem
+    the mount refers to when the Docker engine is local. ``require_local_docker_endpoint`` is what
+    makes that true; without it a remote engine would give a false "stale" verdict here and
+    force-recreate a healthy shared proxy.
+    """
+    source = proxy_caddyfile_mount_source()
+    if source is None:
+        return False
+    return not Path(source).is_file()
+
+
+_LOCAL_DOCKER_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def effective_docker_endpoint() -> str:
+    """The Docker endpoint this process would actually talk to.
+
+    Asks the Docker CLI, which resolves the whole precedence chain — ``DOCKER_HOST``, then
+    ``DOCKER_CONTEXT``, then the active context — rather than guessing from one env var. This
+    reads local config only, so it stays fast and does not hang on an unreachable endpoint.
+    """
+    proc = run_cmd(
+        ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        check=False,
+        capture_output=True,
+        text=True,
+        print_cmd=False,
+    )
+    if proc.returncode == 0 and (proc.stdout or "").strip():
+        return proc.stdout.strip()
+    return (os.environ.get("DOCKER_HOST") or "").strip()
+
+
+def docker_endpoint_is_local(endpoint: str) -> bool:
+    """True when ``endpoint`` is a Docker daemon on this machine.
+
+    Unknown schemes count as remote: the proxy binds host ports and host paths, so guessing wrong
+    in that direction is the expensive mistake.
+    """
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        return True  # default local socket
+    scheme, sep, _ = endpoint.partition("://")
+    if not sep:
+        return True  # a bare socket path
+    scheme = scheme.lower()
+    if scheme in ("unix", "npipe", "fd"):
+        return True
+    if scheme in ("tcp", "http", "https"):
+        from urllib.parse import urlparse
+
+        hostname = (urlparse(endpoint).hostname or "").lower()
+        return hostname in _LOCAL_DOCKER_HOSTNAMES
+    return False
+
+
+def require_local_docker_endpoint(*, action: str) -> int:
+    """0 when the Docker engine is local; 1 with an explanation when it is not.
+
+    The local proxy is a machine-wide dev convenience: it publishes ports 80/443 on *this*
+    machine, bind-mounts a Caddyfile from *this* filesystem, and terminates TLS with a CA trusted
+    by *this* machine's browsers. Pointed at a remote engine none of that holds, so every
+    operation is either meaningless or actively destructive to whatever runs there.
+    """
+    endpoint = effective_docker_endpoint()
+    if docker_endpoint_is_local(endpoint):
+        return 0
+    print(
+        f"dk proxy: refusing to {action} against a remote Docker engine ({endpoint}).\n"
+        "  The local dev proxy publishes ports 80/443 on this machine, bind-mounts its\n"
+        "  Caddyfile from this filesystem, and issues certificates for this machine's browsers.\n"
+        "  None of that applies to a remote engine.\n"
+        "  Unset DOCKER_HOST (or `docker context use` a local context) and retry.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def ensure_proxy_network(*, dry_run: bool = False) -> int:
     """Create the shared external network for project stacks and the dev proxy."""
     inspect = run_cmd(
@@ -539,6 +659,11 @@ def ensure_proxy_on_network(*, dry_run: bool = False) -> int:
 
 def ensure_proxy_running(*, dry_run: bool = False) -> int:
     """Start ``catalpa-local-proxy`` if it is not already running."""
+    # Guarded here rather than only in `dk proxy`, because `dk <env> up` and `worktree up` reach
+    # this too — and this is where the container gets recreated.
+    rc = require_local_docker_endpoint(action="start the local dev proxy")
+    if rc != 0:
+        return rc
     rc = ensure_proxy_network(dry_run=dry_run)
     if rc != 0:
         return rc
@@ -559,12 +684,46 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         )
         return 0
 
+    selinux_args = selinux_label_disable_args()
     if proxy_container_exists():
-        print(f"Starting existing container {LOCAL_PROXY_CONTAINER!r}...", file=sys.stderr)
-        start = run_cmd(["docker", "start", LOCAL_PROXY_CONTAINER], check=False)
-        if start.returncode != 0:
-            return start.returncode
-        return ensure_proxy_on_network(dry_run=dry_run)
+        recreate_reason = ""
+        if proxy_caddyfile_mount_is_stale():
+            stale = proxy_caddyfile_mount_source()
+            recreate_reason = f"bind-mounts a Caddyfile that no longer exists ({stale})"
+        elif selinux_args and not proxy_has_label_disable():
+            recreate_reason = (
+                "was created without `--security-opt label=disable`, so SELinux stops it "
+                "reading its bind mounts"
+            )
+        if recreate_reason:
+            print(
+                f"Existing {LOCAL_PROXY_CONTAINER!r} {recreate_reason}; recreating it from "
+                f"{caddyfile}. The local CA is persisted on the host and is kept.",
+                file=sys.stderr,
+            )
+            removed = run_cmd(
+                ["docker", "rm", "-f", LOCAL_PROXY_CONTAINER],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if removed.returncode != 0:
+                # Falling through to `docker run --name` would report "container name already
+                # in use" and bury the real cause — the opaque-error problem this path fixes.
+                print(
+                    f"dk proxy up: could not remove the stale {LOCAL_PROXY_CONTAINER!r}: "
+                    f"{(removed.stderr or removed.stdout or '').strip()}",
+                    file=sys.stderr,
+                )
+                return removed.returncode
+        else:
+            print(f"Starting existing container {LOCAL_PROXY_CONTAINER!r}...", file=sys.stderr)
+            start = run_cmd(["docker", "start", LOCAL_PROXY_CONTAINER], check=False)
+            if start.returncode != 0:
+                return start.returncode
+            if not wait_for_proxy_to_stay_up():
+                return 1
+            return ensure_proxy_on_network(dry_run=dry_run)
 
     data_dir = local_proxy_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -574,6 +733,7 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         "-d",
         "--name",
         LOCAL_PROXY_CONTAINER,
+        *selinux_args,
         "--network",
         LOCAL_PROXY_NETWORK,
         "--add-host=host.docker.internal:host-gateway",
@@ -601,7 +761,104 @@ def ensure_proxy_running(*, dry_run: bool = False) -> int:
         file=sys.stderr,
     )
     created = run_cmd(cmd, check=False)
-    return created.returncode
+    if created.returncode != 0:
+        return created.returncode
+    return 0 if wait_for_proxy_to_stay_up() else 1
+
+
+def proxy_has_label_disable() -> bool:
+    """True when the existing proxy container runs with ``--security-opt label=disable``."""
+    result = run_cmd(
+        ["docker", "inspect", LOCAL_PROXY_CONTAINER, "--format", "{{json .HostConfig.SecurityOpt}}"],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        # Can't tell, so don't churn the shared proxy over it.
+        return True
+    return any(opt in (result.stdout or "") for opt in ("label=disable", "label:disable"))
+
+
+# Long enough for Caddy to fail on an unreadable Caddyfile; it answers its admin API well inside it.
+PROXY_SETTLE_SECONDS = 3.0
+
+
+def _proxy_state() -> tuple[bool, str] | None:
+    """``(running, exit_code)`` for the proxy container, or ``None`` if it can't be inspected."""
+    result = run_cmd(
+        [
+            "docker",
+            "inspect",
+            LOCAL_PROXY_CONTAINER,
+            "--format",
+            "{{.State.Running}} {{.State.ExitCode}}",
+        ],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    parts = (result.stdout or "").split()
+    if result.returncode != 0 or len(parts) != 2 or parts[0] not in ("true", "false"):
+        return None
+    return parts[0] == "true", parts[1]
+
+
+def wait_for_proxy_to_stay_up(*, timeout: float | None = None, interval: float = 0.3) -> bool:
+    """After ``docker run -d`` / ``docker start``, confirm the proxy did not exit straight away.
+
+    Both commands succeed even when the container dies a moment later — under SELinux the
+    proxy exits 1 with an empty log because it cannot read its Caddyfile (#128). Returns
+    ``True`` once the admin API answers or the settle window passes with the container up;
+    on an early exit, prints the exit code and log and returns ``False``.
+    """
+    import time
+
+    deadline = time.monotonic() + (PROXY_SETTLE_SECONDS if timeout is None else timeout)
+    while True:
+        state = _proxy_state()
+        if state is not None and not state[0]:
+            _report_proxy_exited(state[1])
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        try:
+            status, _ = _admin_request("GET", "/config/", timeout=1.0)
+            if status < 500:
+                return True
+        except LocalProxyConfigError:
+            pass
+        time.sleep(interval)
+
+
+def _report_proxy_exited(exit_code: str) -> None:
+    print(
+        f"dk proxy: {LOCAL_PROXY_CONTAINER!r} exited straight after starting (exit code {exit_code}).",
+        file=sys.stderr,
+    )
+    logs = run_cmd(
+        ["docker", "logs", "--tail", "30", LOCAL_PROXY_CONTAINER],
+        check=False,
+        print_cmd=False,
+        capture_output=True,
+        text=True,
+    )
+    output = ((logs.stdout or "") + (logs.stderr or "")).strip()
+    if output:
+        print(f"Last lines of `docker logs {LOCAL_PROXY_CONTAINER}`:", file=sys.stderr)
+        print(output, file=sys.stderr)
+    else:
+        print(f"`docker logs {LOCAL_PROXY_CONTAINER}` is empty.", file=sys.stderr)
+    if engine_reports_selinux():
+        print(
+            "The engine has SELinux enabled. An exit with no log usually means the container "
+            "cannot read its bind mounts. Recreate it with `dk proxy down && dk proxy up`, "
+            f"or set {SELINUX_LABEL_DISABLE_ENV}=1 to force `--security-opt label=disable`. "
+            "See docs/PODMAN.md section 2.",
+            file=sys.stderr,
+        )
 
 
 def wait_for_proxy_admin(*, timeout: float = 15.0, interval: float = 0.3) -> bool:
@@ -648,6 +905,9 @@ def wait_for_ca_root(*, timeout: float = 10.0, interval: float = 0.5) -> bool:
 
 def stop_proxy(*, dry_run: bool = False) -> int:
     """Stop and remove ``catalpa-local-proxy`` (does not delete the data volume)."""
+    rc = require_local_docker_endpoint(action="stop the local dev proxy")
+    if rc != 0:
+        return rc
     if not proxy_container_exists():
         if dry_run:
             print(f"dry-run: {LOCAL_PROXY_CONTAINER!r} is not present.", file=sys.stderr)
@@ -1046,6 +1306,32 @@ def local_proxy_extra_compose_files(
     return [str(override)]
 
 
+@contextlib.contextmanager
+def stack_engine_env(env_add: dict[str, str] | None):
+    """Point this process's ``docker`` calls at the engine the stack is using.
+
+    The proxy helpers build their own argv and inherit the ambient environment, while
+    ``dk <env>`` pins ``DOCKER_HOST`` per environment in ``env_add`` (empty for a local env).
+    Without this, one command addresses two engines: the stack on the local daemon and the
+    proxy on whatever ``DOCKER_HOST`` the shell exports, so the proxy is looked for on an
+    engine that does not have it and a second one is created against already-bound host ports.
+
+    Standalone ``dk proxy`` has no environment context and keeps using the ambient engine.
+    """
+    if env_add is None or "DOCKER_HOST" not in env_add:
+        yield
+        return
+    previous = os.environ.get("DOCKER_HOST")
+    os.environ["DOCKER_HOST"] = str(env_add["DOCKER_HOST"])
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("DOCKER_HOST", None)
+        else:
+            os.environ["DOCKER_HOST"] = previous
+
+
 def sync_local_proxy_for_compose_action(
     info: dict[str, Any],
     config: ProjectConfig,
@@ -1073,40 +1359,41 @@ def sync_local_proxy_for_compose_action(
         return 0
 
     verb = compose_args[0]
-    if verb == "up":
-        rc = ensure_proxy_network(dry_run=dry_run)
-        if rc != 0:
-            return rc
-        rc = ensure_proxy_running(dry_run=dry_run)
-        if rc != 0:
-            return rc
-        if not dry_run and not wait_for_proxy_admin():
-            print(
-                "Local proxy admin API did not become ready; retry `dk proxy up` "
-                "or re-run once the proxy is up.",
-                file=sys.stderr,
-            )
-            return 1
-        for entry in routes:
-            rc = upsert_route(
-                entry.route_id,
-                entry.host,
-                entry.upstream_dial,
-                upstream_host_header=entry.upstream_host_header,
-                dry_run=dry_run,
-            )
+    with stack_engine_env(env_add):
+        if verb == "up":
+            rc = ensure_proxy_network(dry_run=dry_run)
             if rc != 0:
                 return rc
-        print_local_proxy_url(info, config, env_name)
-        print_ca_trust_hint(env_name)
-        return 0
+            rc = ensure_proxy_running(dry_run=dry_run)
+            if rc != 0:
+                return rc
+            if not dry_run and not wait_for_proxy_admin():
+                print(
+                    "Local proxy admin API did not become ready; retry `dk proxy up` "
+                    "or re-run once the proxy is up.",
+                    file=sys.stderr,
+                )
+                return 1
+            for entry in routes:
+                rc = upsert_route(
+                    entry.route_id,
+                    entry.host,
+                    entry.upstream_dial,
+                    upstream_host_header=entry.upstream_host_header,
+                    dry_run=dry_run,
+                )
+                if rc != 0:
+                    return rc
+            print_local_proxy_url(info, config, env_name)
+            print_ca_trust_hint(env_name)
+            return 0
 
-    if verb == "down":
-        rc = 0
-        for entry in routes:
-            route_rc = remove_route(entry.route_id, dry_run=dry_run)
-            if route_rc != 0:
-                rc = route_rc
-        return rc
+        if verb == "down":
+            rc = 0
+            for entry in routes:
+                route_rc = remove_route(entry.route_id, dry_run=dry_run)
+                if route_rc != 0:
+                    rc = route_rc
+            return rc
 
     return 0

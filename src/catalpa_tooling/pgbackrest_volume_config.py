@@ -8,7 +8,9 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from catalpa_tooling.config import DEFAULT_PGBR_PG1_PATH, ProjectConfig
@@ -195,7 +197,7 @@ def read_managed_pgbackrest_repo_settings(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -403,9 +405,49 @@ def _db_volumes_with_compose_keys(
     )
 
 
-def _compose_db_platform_args() -> list[str]:
-    """Match ``compose.yml`` ``db`` service ``platform: linux/amd64`` for one-off ``docker run``."""
-    return ["--platform", "linux/amd64"]
+# What these helpers asked for unconditionally before #111. Kept as the fallback so a
+# project that still pins amd64 sees byte-identical commands, including when the image
+# is not present locally and nothing can be inspected.
+_LEGACY_DB_PLATFORM = "linux/amd64"
+
+
+@lru_cache(maxsize=32)
+def _image_platform(image: str, docker_host: str) -> str:
+    """``<os>/<arch>`` of ``image`` as it exists on this engine; legacy default if unknown.
+
+    #111: these one-off ``docker run`` helpers hardcoded ``linux/amd64``, which is correct
+    only while every consumer project pins that platform. Asking the image keeps a pinned
+    project identical and lets an unpinned one run native instead of failing with
+    ``manifest unknown`` on an image that is present and correct.
+
+    ``docker_host`` is part of the cache key, not just context: the same tag can be a
+    different architecture on a local engine and on a remote ``ssh://`` one.
+    """
+    env = dict(os.environ)
+    if docker_host:
+        env["DOCKER_HOST"] = docker_host
+    r = run_cmd(
+        ["docker", "image", "inspect", image, "--format", "{{.Os}}/{{.Architecture}}"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        print_cmd=False,
+    )
+    if r.returncode != 0:
+        return _LEGACY_DB_PLATFORM
+    platform = (r.stdout or "").strip().splitlines()[0].strip() if (r.stdout or "").strip() else ""
+    # A malformed or partial value is worse than the old constant — fall back rather than
+    # hand docker something it will reject.
+    if platform.count("/") != 1 or platform.startswith("/") or platform.endswith("/"):
+        return _LEGACY_DB_PLATFORM
+    return platform
+
+
+def _compose_db_platform_args(image: str, docker_env: dict[str, str]) -> list[str]:
+    """Match the platform of the image being run for one-off ``docker run`` (#111)."""
+    platform = _image_platform(image, (docker_env.get("DOCKER_HOST") or "").strip())
+    return ["--platform", platform]
 
 
 def _docker_run_s3_network_args(env: dict[str, str]) -> list[str]:
@@ -430,7 +472,7 @@ def _pgdata_has_control_file(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -899,20 +941,21 @@ def ensure_postgres_data_volume(
     return 0
 
 
-def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
-    """Remove external PGDATA and ``django_media`` volumes after ``compose down -v``.
+def _remove_volumes(
+    names: Sequence[str], env: dict[str, str], *, dry_run: bool = False
+) -> int:
+    """``docker volume rm`` each name; already-absent volumes count as success.
 
-    Compose does not delete ``external:`` volumes; this finishes a destructive wipe of database
-    PGDATA and Django/Wagtail uploads. Uses the same ``DOCKER_HOST`` as other deploy volume ops.
-
-    Missing volumes (e.g. already removed) are treated as success.
+    Every volume is attempted even when one fails, so the caller reports the full picture rather
+    than the first problem. One volume still in use would otherwise hide whether the rest were
+    removed — and the whole point of the wipe is to leave nothing orphaned unnoticed.
     """
     docker_env = _docker_env_for_remote(env)
-    targets = (
-        postgres_data_volume_name(env, config=config),
-        django_media_volume_name(env, config=config),
-    )
-    for name in targets:
+    failed: list[str] = []
+    for name in names:
+        if dry_run:
+            print(f"dry-run: docker volume rm {name}", file=sys.stderr)
+            continue
         r = run_cmd(
             ["docker", "volume", "rm", name],
             env=docker_env,
@@ -929,17 +972,60 @@ def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | Non
             print(f"wipe: volume {name} already absent (skipped)", file=sys.stderr)
             continue
         print(
-            f"wipe: docker volume rm failed for {name!r}: {r.stderr or r.stdout}",
+            f"wipe: docker volume rm failed for {name!r}: "
+            f"{(r.stderr or r.stdout or '').strip()}",
+            file=sys.stderr,
+        )
+        failed.append(name)
+    if failed:
+        print(
+            f"wipe: {len(failed)} volume(s) could not be removed: {', '.join(failed)}",
             file=sys.stderr,
         )
         return 1
     return 0
 
 
-def _docker_run_volume_work_args() -> list[str]:
+def remove_wipe_data_volumes(env: dict[str, str], *, config: ProjectConfig | None = None) -> int:
+    """Remove external PGDATA and ``django_media`` volumes after ``compose down -v``.
+
+    Compose does not delete ``external:`` volumes; this finishes a destructive wipe of database
+    PGDATA and Django/Wagtail uploads. Uses the same ``DOCKER_HOST`` as other deploy volume ops.
+
+    The conf volumes are deliberately kept: the env is reusable, and ``db configure`` rewrites
+    them on the next ``up``. To destroy the whole namespace instead (an env that will never be
+    brought up again, e.g. a removed worktree), use :func:`remove_all_external_stack_volumes`.
+
+    Missing volumes (e.g. already removed) are treated as success.
+    """
+    return _remove_volumes(
+        (
+            postgres_data_volume_name(env, config=config),
+            django_media_volume_name(env, config=config),
+        ),
+        env,
+    )
+
+
+def remove_all_external_stack_volumes(
+    env: dict[str, str], *, config: ProjectConfig | None = None, dry_run: bool = False
+) -> int:
+    """Remove every ``external: true`` volume for this compose project after ``compose down -v``.
+
+    For a stack whose ``COMPOSE_PROJECT_NAME`` is being retired, the conf volumes
+    ``remove_wipe_data_volumes`` keeps are orphans too — nothing will ever mount them again.
+
+    Missing volumes (e.g. already removed) are treated as success.
+    """
+    return _remove_volumes(
+        external_stack_volume_names(env, config=config), env, dry_run=dry_run
+    )
+
+
+def _docker_run_volume_work_args(image: str, docker_env: dict[str, str]) -> list[str]:
     """One-off volume writes use the db image (often USER postgres) against root-owned named volumes."""
     return [
-        *_compose_db_platform_args(),
+        *_compose_db_platform_args(image, docker_env),
         "--user",
         "0",
     ]
@@ -964,7 +1050,7 @@ def _docker_run_cp(
             "run",
             "--rm",
             "-i",
-            *_docker_run_volume_work_args(),
+            *_docker_run_volume_work_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -995,7 +1081,7 @@ def _docker_run_rm(
             "docker",
             "run",
             "--rm",
-            *_docker_run_volume_work_args(),
+            *_docker_run_volume_work_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -1023,7 +1109,7 @@ def _docker_run_rm_other_confs(
             "docker",
             "run",
             "--rm",
-            *_docker_run_volume_work_args(),
+            *_docker_run_volume_work_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -1165,7 +1251,7 @@ def pgbackrest_stanza_exists_in_repo(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             *_docker_run_s3_network_args(env),
             "--entrypoint",
             "pgbackrest",
@@ -1197,7 +1283,7 @@ def pgbackrest_stanza_exists_in_repo(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "pgbackrest",
             "-v",
@@ -1263,7 +1349,7 @@ def run_pgbackrest_stanza_create(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             *_docker_run_s3_network_args(env),
             "--entrypoint",
             "/bin/sh",
@@ -1305,7 +1391,7 @@ def pgbackrest_managed_conf_materialized(
             "docker",
             "run",
             "--rm",
-            *_compose_db_platform_args(),
+            *_compose_db_platform_args(image, docker_env),
             "--entrypoint",
             "/bin/sh",
             "-v",

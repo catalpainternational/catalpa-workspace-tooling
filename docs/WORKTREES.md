@@ -28,6 +28,7 @@ uv run dk --worktree my_feature dev manage migrate
 | `dk --worktree <slug> …` / `dk -W <slug> …` | Retarget any `dk` command at `.worktrees/<slug>` (process `chdir` only — no shell direnv) |
 | `dk worktree up/down/restart/logs/status` | Lifecycle for the remapped stack without spelling `dev up -d` |
 | `dk worktree context [--json]` | Agent/human identity (refreshes `AGENTS.local.md`) |
+| `dk context [--json]` | Every env's origins and compose project, plus the worktree's `base_ref`/`base_commit`; also works in the main checkout |
 | `dk worktree seed <slug>` | Re-seed that worktree from main without entering it |
 
 Examples:
@@ -58,10 +59,16 @@ When `.catalpa-worktree.yaml` is present and you run `dk <base_env>` (default `b
 
 - Remaps `COMPOSE_PROJECT_NAME` → `{compose_project_default}_dev_{slug}`
 - Remaps `site_origin` → `https://{project}-dev-{slug}.{site_origin_base}`
+
+`create` also records what a new branch was cut from: `base_ref` (the branch or tag name;
+`--base-branch` defaults to `HEAD`, which resolves to the main checkout's current branch) and
+`base_commit`. Neither is recorded when `--branch` names a branch that already exists, or for
+worktrees created before this was added. `base_ref` is omitted when `HEAD` was detached.
+`dk context` and `dk worktree context` report both.
 - Rewrites role / Caddy origins (`admin.*`, `stats.*`, etc.) from the new primary
 - **Does not** remap remote envs (`docker_host: ssh://…`)
 
-`dk full`, `staging`, `prod` are unchanged. Host `media/` for `dk dev` is already per-checkout (bind mount); seed copies that tree from the main checkout.
+`dk full`, `staging`, `prod` are unchanged. Media is seeded between the two stacks' **media storages** — the named volume a Docker project serves from, or its host bind — so the copy reaches the stack rather than a host directory the stack never mounts.
 
 **Proxy:** `dk worktree up` ensures the shared reverse proxy and registers remapped routes on compose `up`. Main and worktree stacks get distinct hostnames and upstreams.
 
@@ -79,18 +86,85 @@ dk worktree context [slug] [--json]
 dk worktree list
 dk worktree info [slug]
 dk worktree seed [slug] [--db|--media] [--from DIR] [--dry-run] [-y]
-dk worktree remove <slug> [--wipe] [--dry-run] [-y]
+dk worktree remove <slug> [--wipe] [--keep-stack] [--dry-run] [-y]
 ```
 
-- **create** — worktree + overlay + `AGENTS.local.md` + submodule init; seeds DB + host media from the main checkout's base env by default (`--no-seed` to skip). Pass **`--up`** to proxy + compose up after create.
+- **create** — worktree + overlay + `AGENTS.local.md` + submodule init; seeds DB + media from the main checkout's base env by default (`--no-seed` to skip). Pass **`--up`** to proxy + compose up after create.
 - **up / down / restart / logs** — remapped compose lifecycle via the worktree overlay (volumes kept on `down`).
 - **status / context** — stack status (`running` / `stopped` / `unknown`) and agent-oriented identity.
-- **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus host `media/` copy.
-- **remove** — git worktree remove only (stack may keep running).
-- **remove --wipe** — also `compose down -v` for the remapped project (destroys that worktree’s Docker volumes).
+- **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus a copy of that stack's media storage (volume or bind) onto the worktree's. The media copy replaces whatever the destination held, and takes Wagtail originals and renditions together from the same source stack as the dump, so image rows and files stay consistent. A source with no media is skipped, not an error; the final line reports what each step did. After the database step, the project's `ops.post_db_restore` hooks run against the worktree's stack (subject to their `envs` list, matched against the base env). The copied rows still name the main checkout's hosts, so a hook that rewrites them, such as Wagtail `Site` rows, should take the worktree's host from `{site_host}` or `{site_origin}`. See [post-restore hooks](../README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
+
+### Seeding more than one file volume
+
+The media storage is one volume, chosen from `ops.restic.data_volume` (default `django_media`).
+If the project keeps files in other named volumes as well, such as private uploads or public
+documents, the seed copies those too when they are listed in either of two places in
+`tooling.yaml`:
+
+- **`ops.restic.data_volumes`**: every volume restic backs up is seeded, so a project that lists
+  its file volumes there for backups needs nothing more
+  ([README_RESTIC.md](../README_RESTIC.md#more-than-one-file-volume)).
+- **`worktree.seed_volumes`**: for volumes to seed that restic doesn't back up.
+
+```yaml
+worktree:
+  seed_volumes:
+    - django_private_uploads
+    - django_public_documents
+```
+
+Each entry is a compose volume key, the same kind of name as `ops.restic.data_volume`. Each is
+copied from the main checkout's stack to the worktree's in the same way as the media storage,
+and gets its own line in the output and in the final summary. A key that either stack's compose
+file does not declare is reported as skipped. Listing the media volume again is harmless.
+
+Otherwise, `seed` prints a line for every other named volume the web service mounts,
+saying it was not seeded. The database is copied whole, so rows that point at files in an
+unseeded volume will be missing their files in the worktree. Volumes the app regenerates, such
+as collected static files, don't need seeding; ignore their lines.
+- **remove** — `compose down` for the remapped project, then git worktree remove. **Volumes are
+  kept**; the command prints how to reclaim them. Since 1.4.1: before that, the stack was left
+  running for a project name that no longer had a checkout.
+- **remove --wipe** — the same, but `compose down -v`, then removes the `external:` volumes
+  Compose will not touch (`postgres_data`, `django_media`, `caddy_data`, `postgres_conf`,
+  `pgbackrest_conf`). Destroys that worktree’s database and uploads — there is no undo. Built
+  images tagged with the worktree’s project name are left in place.
+- **remove --keep-stack** — the pre-1.4.1 behaviour: retire the checkout and leave the stack up.
+  Mostly useful when the Docker daemon is not running and you want the checkout gone anyway.
+
+If the teardown fails, the checkout is deliberately **kept** so the command can be re-run —
+removing it would strand whatever could not be cleared under a name nothing can look up.
 
 ## Agents
 
-Prefer `dk worktree create --up` for parallel feature work. Each worktree gets `AGENTS.local.md` with slug, origins, and command hints. Use `dk worktree context --json` from automation. Control stacks with `dk worktree up/down` or `dk --worktree <slug> …` from the main checkout. Never use worktree overlays for remote deploy envs.
+A project that lists `worktrees` under `agents.rules` in `tooling.yaml` opts in to
+**worktree-first development**: agents do every development task in a `dk worktree`, never in
+the main checkout. `uv run setup-agents` installs the always-on `worktrees` rule (Cursor and
+Claude Code) and Claude Code's worktree hooks below.
+
+### Claude Code worktrees
+
+Claude Code makes its own worktrees with a plain `git worktree add` under `.claude/worktrees/`.
+That happens for `claude --worktree <name>`, EnterWorktree, and subagents with
+`isolation: worktree`. Such a worktree has no overlay, so it would share the main checkout's
+stack. With the `worktrees` rule, setup-agents adds two hooks to `.claude/settings.json`, and
+Claude Code runs them instead:
+
+| Hook | Runs | Does |
+|------|------|------|
+| `WorktreeCreate` | `dk worktree claude-hook create` | Asks `origin` for its default branch (`git ls-remote --symref`, since the local `origin/HEAD` can be stale), fetches it, and runs `dk worktree create <name> --base-branch origin/<default> --no-seed`. The new `.worktrees/<slug>` path is the only output on stdout; everything else goes to stderr. |
+| `WorktreeRemove` | `dk worktree claude-hook remove` | Runs `dk worktree remove <slug> -y`, which stops the stack and keeps its volumes. Then `git branch -d` on the worktree's branch, which keeps it unless it is merged or fully pushed. It refuses any path outside `.worktrees/`. |
+
+Some details:
+
+- The hooks run `uv run dk` in `$CLAUDE_PROJECT_DIR`, the main checkout, using that checkout's
+  installed tooling version.
+- No seed and no stack keeps parallel subagents cheap. Run `dk worktree seed <slug> -y` and
+  `dk worktree up <slug>` when the task needs the running app.
+- Claude Code doesn't remove subagents' worktrees. Remove them with `dk worktree remove`.
+- If the stack can't be stopped (for example, Docker isn't running), remove fails and leaves
+  the worktree in place, as `dk worktree remove` does.
+
+Without the rule: prefer `dk worktree create --up` for parallel feature work. Each worktree gets `AGENTS.local.md` with slug, origins, and command hints. Use `dk worktree context --json` from automation. Control stacks with `dk worktree up/down` or `dk --worktree <slug> …` from the main checkout. Never use worktree overlays for remote deploy envs.
 
 See also [AGENTS_AND_SECRETS.md](AGENTS_AND_SECRETS.md) and [DK_COMMAND_TREE.md](DK_COMMAND_TREE.md).

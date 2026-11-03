@@ -53,6 +53,8 @@ RESERVED_DK_TOP_COMMANDS = frozenset(
         "proxy",
         "cut-release",
         "next-branch",
+        "worktree",
+        "context",
     }
 )
 
@@ -174,16 +176,19 @@ def _attach_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> N
         p_pgdump = sub.add_parser("pgdump", help="pg_dump custom-format archive to stdout.")
         p_pgdump.add_argument("pg_dump_args", nargs=argparse.REMAINDER)
 
-        p_pgrestore = sub.add_parser("pgrestore", help="pg_restore into app database.")
-        p_pgrestore.add_argument("--file", dest="archive_file", default=None, metavar="PATH")
-        p_pgrestore.add_argument("pg_restore_args", nargs=argparse.REMAINDER)
-
         p_restore = sub.add_parser("restore", help="Offline pgBackRest restore.")
         p_restore.add_argument(
             "--dumps",
             action="store_true",
             dest="restore_from_dumps",
             help="Restore from local custom-format dumps only (never pgBackRest; never auto-fetch).",
+        )
+        p_restore.add_argument(
+            "--file",
+            dest="archive_file",
+            default=None,
+            metavar="PATH",
+            help="Restore the app database from this pg_dump -Fc archive (implies --dumps).",
         )
         p_restore.add_argument(
             "--dry-run",
@@ -380,8 +385,24 @@ def _attach_env_command_parsers(
 
     p_host = cmd_sub.add_parser("host", help="Verify droplet / print or patch docker_host.")
     host_sub = p_host.add_subparsers(dest="host_command", required=False)
-    p_host_create = host_sub.add_parser("create", help="Provision a new droplet.")
+    # add_help=False: `host create --help` goes to the command's own parser, which lists the options.
+    p_host_create = host_sub.add_parser("create", help="Provision a new droplet.", add_help=False)
     p_host_create.add_argument("host_create_args", nargs=argparse.REMAINDER)
+    p_host_logging = host_sub.add_parser(
+        "logging",
+        help="Check (or --apply) the host-wide Docker log rotation default in daemon.json.",
+    )
+    p_host_logging.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the log-driver default into /etc/docker/daemon.json and restart docker.",
+    )
+    p_host_logging.add_argument(
+        "--target",
+        choices=("app", "backup"),
+        default="app",
+        help="app docker_host (default) or dc_backup_docker_host.",
+    )
     p_host.add_argument("--write", action="store_true", help="Write docker_host from droplet public IPv4.")
     p_host.add_argument(
         "--sync-dns",
@@ -391,7 +412,7 @@ def _attach_env_command_parsers(
     p_host.add_argument(
         "--check-remote",
         action="store_true",
-        help="SSH probe docker_host (and dc_backup_docker_host): reachability + timedatectl.",
+        help="SSH probe docker_host (and dc_backup_docker_host): reachability, timedatectl, Docker log rotation.",
     )
 
     _attach_zabbix_commands(cmd_sub, env_name)
@@ -413,7 +434,16 @@ def _attach_env_command_parsers(
         help="Trust Caddy local CA (global local proxy or stack proxy service).",
     )
 
-    p_manage = cmd_sub.add_parser("manage", help="docker compose exec web ./manage.py …")
+    p_manage = cmd_sub.add_parser(
+        "manage",
+        help="docker compose exec web ./manage.py … (as stack.manage_user when set).",
+    )
+    p_manage.add_argument(
+        "--user",
+        metavar="USER",
+        default=None,
+        help="Exec as this user instead of stack.manage_user (e.g. root for a one-off).",
+    )
     p_manage.add_argument("manage_args", nargs=argparse.REMAINDER)
 
     p_pull = cmd_sub.add_parser("pull_media", help="Copy django_media volume to local directory.")

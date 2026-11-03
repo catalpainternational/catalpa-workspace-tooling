@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.context_cli import attach_context_arguments
 from catalpa_tooling.digoc_parser import attach_digoc_subcommands
 from catalpa_tooling.dk_transfer import populate_transfer_arguments
 from catalpa_tooling.dk_fetch import populate_fetch_arguments
@@ -42,7 +43,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             f"  dk full info -e\n"
             f"\n"
             f"Top-level commands (no env): build, push, clean-images, transfer, fetch, digoc, "
-            f"proxy, cut-release, next-branch, worktree.\n"
+            f"proxy, cut-release, next-branch, worktree, context.\n"
             f"Environments: directories under {envs_dir}/<name>/ with info.yaml.\n"
             f"Use --worktree / -W <slug> from the main checkout to target .worktrees/<slug> "
             f"without cd (no direnv)."
@@ -284,6 +285,17 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     attach_worktree_subcommands(p_worktree)
+
+    p_context = sub.add_parser(
+        "context",
+        help="Names, origins and compose projects for every env (works in worktrees too).",
+        description=(
+            "Report the project's envs: every origin, compose project, web service, and "
+            "whether each env is local or remote. Inside a worktree, also the worktree's "
+            "branch and what it was cut from. Reads config only; --status adds docker ps."
+        ),
+    )
+    attach_context_arguments(p_context)
 
     attach_env_subparsers(sub, config)
 

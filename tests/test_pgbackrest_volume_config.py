@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, patch
 
 from catalpa_tooling.config import load_project_config
 from catalpa_tooling.pgbackrest_volume_config import (
+    _compose_db_platform_args,
+    _docker_run_volume_work_args,
+    _image_platform,
     PgbackrestRepoSettings,
     caddy_data_volume_name,
     conflict_error_message,
@@ -24,6 +27,8 @@ from catalpa_tooling.pgbackrest_volume_config import (
     pgdata_volume_mount,
     read_managed_pgbackrest_repo_settings,
     postgres_data_volume_name,
+    remove_all_external_stack_volumes,
+    remove_wipe_data_volumes,
     postgres_image_from_env,
     render_pgbackrest_ini,
     render_postgres_archive_conf,
@@ -625,6 +630,175 @@ class TestPgdataVolumeMount(unittest.TestCase):
         self.assertEqual(
             pgdata_volume_mount("/var/lib/postgresql/data"),
             "/var/lib/postgresql/data",
+        )
+
+
+class RemoveExternalStackVolumesTests(unittest.TestCase):
+    """Issue #64: Compose never deletes ``external:`` volumes, so a wipe must finish the job."""
+
+    _ENV = {"COMPOSE_PROJECT_NAME": "swlt_dev_ds_180"}
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_removes_every_external_volume(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 0
+        )
+        removed = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(
+            removed, list(external_stack_volume_names(self._ENV, config=_MINIMAL_CONFIG))
+        )
+        # The reported orphans, by name — PGDATA above all.
+        self.assertIn("swlt_dev_ds_180_postgres_data", removed)
+        self.assertIn("swlt_dev_ds_180_caddy_data", removed)
+        self.assertIn("swlt_dev_ds_180_pgbackrest_conf", removed)
+        for call in mock_run.call_args_list:
+            self.assertEqual(call[0][0][:3], ["docker", "volume", "rm"])
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_missing_volume_is_success(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Error: No such volume: x"
+        )
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 0
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_real_failure_returns_1(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="volume is in use - [abc123]"
+        )
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 1
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_one_stuck_volume_does_not_hide_the_others(self, mock_run: MagicMock) -> None:
+        """Every volume is attempted even when one fails.
+
+        Stopping at the first failure left the remaining volumes unexamined, so the user could
+        not tell whether they were orphaned too — in a command whose whole purpose is to leave
+        nothing behind unnoticed.
+        """
+        names = list(external_stack_volume_names(self._ENV, config=_MINIMAL_CONFIG))
+        stuck = names[0]
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[3] == stuck:
+                return MagicMock(returncode=1, stdout="", stderr="volume is in use - [abc]")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+        self.assertEqual(
+            remove_all_external_stack_volumes(self._ENV, config=_MINIMAL_CONFIG), 1
+        )
+        attempted = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(attempted, names)
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_dry_run_removes_nothing(self, mock_run: MagicMock) -> None:
+        self.assertEqual(
+            remove_all_external_stack_volumes(
+                self._ENV, config=_MINIMAL_CONFIG, dry_run=True
+            ),
+            0,
+        )
+        mock_run.assert_not_called()
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_dev_wipe_still_keeps_the_conf_volumes(self, mock_run: MagicMock) -> None:
+        """``dev wipe`` leaves a reusable env; only ``remove_all_*`` destroys the namespace."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        self.assertEqual(remove_wipe_data_volumes(self._ENV, config=_MINIMAL_CONFIG), 0)
+        removed = [c[0][0][3] for c in mock_run.call_args_list]
+        self.assertEqual(
+            removed, ["swlt_dev_ds_180_postgres_data", "swlt_dev_ds_180_django_media"]
+        )
+
+
+class TestDbImagePlatformArgs(unittest.TestCase):
+    """#111: one-off ``docker run`` helpers must match the image, not a hardcoded amd64."""
+
+    def setUp(self) -> None:
+        _image_platform.cache_clear()
+
+    def tearDown(self) -> None:
+        _image_platform.cache_clear()
+
+    @staticmethod
+    def _inspect(stdout: str, returncode: int = 0) -> MagicMock:
+        return MagicMock(returncode=returncode, stdout=stdout, stderr="")
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_amd64_image_keeps_the_legacy_flag(self, mock_run: MagicMock) -> None:
+        """A project that still pins amd64 must see the exact command it saw before #111."""
+        mock_run.return_value = self._inspect("linux/amd64\n")
+        self.assertEqual(
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/amd64"],
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_arm64_image_requests_arm64(self, mock_run: MagicMock) -> None:
+        """An unpinned project builds native; asking for amd64 is what broke it."""
+        mock_run.return_value = self._inspect("linux/arm64\n")
+        self.assertEqual(
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/arm64"],
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_inspect_failure_falls_back_to_legacy(self, mock_run: MagicMock) -> None:
+        """Image absent locally: keep the old constant rather than change behaviour."""
+        mock_run.return_value = self._inspect("", returncode=1)
+        self.assertEqual(
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/amd64"],
+        )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_malformed_inspect_output_falls_back(self, mock_run: MagicMock) -> None:
+        """Never hand docker a value it will reject."""
+        for junk in ("", "garbage", "linux/", "/amd64", "a/b/c"):
+            with self.subTest(junk=junk):
+                _image_platform.cache_clear()
+                mock_run.return_value = self._inspect(junk)
+                self.assertEqual(
+                    _compose_db_platform_args("ghcr.io/x/pg:tag", {}),
+                    ["--platform", "linux/amd64"],
+                )
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_docker_host_is_part_of_the_cache_key(self, mock_run: MagicMock) -> None:
+        """The same tag can be a different arch on a local engine and a remote ssh:// one."""
+        mock_run.side_effect = [
+            self._inspect("linux/arm64\n"),
+            self._inspect("linux/amd64\n"),
+        ]
+        local = _compose_db_platform_args("ghcr.io/x/pg:tag", {})
+        remote = _compose_db_platform_args(
+            "ghcr.io/x/pg:tag", {"DOCKER_HOST": "ssh://root@example"}
+        )
+        self.assertEqual(local, ["--platform", "linux/arm64"])
+        self.assertEqual(remote, ["--platform", "linux/amd64"])
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_repeated_calls_inspect_once(self, mock_run: MagicMock) -> None:
+        """Eight call sites share one answer per (image, engine)."""
+        mock_run.return_value = self._inspect("linux/amd64\n")
+        for _ in range(5):
+            _compose_db_platform_args("ghcr.io/x/pg:tag", {})
+        self.assertEqual(mock_run.call_count, 1)
+
+    @patch("catalpa_tooling.pgbackrest_volume_config.run_cmd")
+    def test_volume_work_args_keep_user_root(self, mock_run: MagicMock) -> None:
+        """Threading the image through must not disturb the --user 0 the helpers rely on."""
+        mock_run.return_value = self._inspect("linux/arm64\n")
+        self.assertEqual(
+            _docker_run_volume_work_args("ghcr.io/x/pg:tag", {}),
+            ["--platform", "linux/arm64", "--user", "0"],
         )
 
 

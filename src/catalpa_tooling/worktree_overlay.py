@@ -57,6 +57,8 @@ class WorktreeOverlay:
     site_origin: str
     parent_repo_root: str | None = None
     branch: str | None = None
+    base_ref: str | None = None
+    base_commit: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -70,6 +72,10 @@ class WorktreeOverlay:
             out["parent_repo_root"] = self.parent_repo_root
         if self.branch:
             out["branch"] = self.branch
+        if self.base_ref:
+            out["base_ref"] = self.base_ref
+        if self.base_commit:
+            out["base_commit"] = self.base_commit
         return out
 
 
@@ -136,6 +142,8 @@ def build_worktree_overlay(
     base_env: str = DEFAULT_BASE_ENV,
     parent_repo_root: Path | None = None,
     branch: str | None = None,
+    base_ref: str | None = None,
+    base_commit: str | None = None,
 ) -> WorktreeOverlay:
     """Derive a new overlay from project config + slug."""
     clean = sanitize_worktree_slug(slug)
@@ -150,6 +158,8 @@ def build_worktree_overlay(
         site_origin=derive_worktree_site_origin(config, base_env=env, slug=clean),
         parent_repo_root=str(parent_repo_root.resolve()) if parent_repo_root else None,
         branch=branch.strip() if branch else None,
+        base_ref=base_ref.strip() if base_ref else None,
+        base_commit=base_commit.strip() if base_commit else None,
     )
 
 
@@ -174,6 +184,8 @@ def load_worktree_overlay(repo_root: Path) -> WorktreeOverlay | None:
             )
         parent = raw.get("parent_repo_root")
         branch = raw.get("branch")
+        base_ref = raw.get("base_ref")
+        base_commit = raw.get("base_commit")
         return WorktreeOverlay(
             version=version,
             slug=sanitize_worktree_slug(slug),
@@ -182,6 +194,8 @@ def load_worktree_overlay(repo_root: Path) -> WorktreeOverlay | None:
             site_origin=normalize_site_origin_entry(origin),
             parent_repo_root=str(parent).strip() if parent else None,
             branch=str(branch).strip() if branch else None,
+            base_ref=str(base_ref).strip() if base_ref else None,
+            base_commit=str(base_commit).strip() if base_commit else None,
         )
     except (TypeError, ValueError) as exc:
         raise WorktreeOverlayError(f"{path}: {exc}") from exc

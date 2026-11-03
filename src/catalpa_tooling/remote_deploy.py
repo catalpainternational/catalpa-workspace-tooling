@@ -119,8 +119,12 @@ def _ensure_local_stack_images_built(
     env_add: dict[str, str],
     *,
     use_prepulled_registry: bool,
+    compose_file: str | None = None,
 ) -> int:
-    """When not using pinned pre-pulled images, ``docker compose build`` stack images before volume init."""
+    """When not using pinned pre-pulled images, ``docker compose build`` stack images before volume init.
+
+    ``compose_file`` is the environment's compose file; without it the production one is built.
+    """
     if use_prepulled_registry:
         return 0
     # Image builds interpolate the whole compose file but do not bake runtime
@@ -129,7 +133,9 @@ def _ensure_local_stack_images_built(
     # fail interpolation during the implicit pre-`up` build.
     build_env = dict(env_add)
     _apply_build_placeholders(build_env, config.stack.build_placeholders)
-    return compose_yml_build(config, env_add=build_env, services=None)
+    return compose_yml_build(
+        config, env_add=build_env, services=None, compose_file=compose_file
+    )
 
 
 def _compose_up_service_index(compose_args: list[str]) -> int:

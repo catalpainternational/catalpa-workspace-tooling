@@ -289,14 +289,20 @@ def test_parse_functional_rest_headed_and_flags() -> None:
     assert (headed, no_up, env, extra) == (True, True, "dev", ["-k", "lesson"])
 
 
+def _write_frontend(directory, package_json: str, *, deps: bool = True) -> None:
+    """Create a frontend directory with ``package.json`` and (by default) ``node_modules``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "package.json").write_text(package_json, encoding="utf-8")
+    if deps:
+        (directory / "node_modules").mkdir(exist_ok=True)
+
+
 def test_run_frontend_build_skips_duplicate_typecheck_when_build_chains_it(
     minimal_project, tmp_path
 ) -> None:
-    frontend = minimal_project.frontend_dir
-    frontend.mkdir(parents=True, exist_ok=True)
-    (frontend / "package.json").write_text(
+    _write_frontend(
+        minimal_project.frontend_dir,
         '{"scripts":{"type-check":"tsc --noEmit","build":"pnpm run type-check && webpack"}}',
-        encoding="utf-8",
     )
     with patch("catalpa_tooling.native_cli._run_pkg_script", return_value=0) as run_script:
         assert _run_frontend_build(minimal_project) == 0
@@ -305,11 +311,9 @@ def test_run_frontend_build_skips_duplicate_typecheck_when_build_chains_it(
 
 
 def test_run_frontend_build_runs_typecheck_then_build(minimal_project) -> None:
-    frontend = minimal_project.frontend_dir
-    frontend.mkdir(parents=True, exist_ok=True)
-    (frontend / "package.json").write_text(
+    _write_frontend(
+        minimal_project.frontend_dir,
         '{"scripts":{"type-check":"tsc --noEmit","build":"webpack"}}',
-        encoding="utf-8",
     )
     with patch("catalpa_tooling.native_cli._run_pkg_script", return_value=0) as run_script:
         assert _run_frontend_build(minimal_project) == 0
@@ -317,11 +321,9 @@ def test_run_frontend_build_runs_typecheck_then_build(minimal_project) -> None:
 
 
 def test_run_frontend_build_prefers_compose_node_service(minimal_project) -> None:
-    frontend = minimal_project.frontend_dir
-    frontend.mkdir(parents=True, exist_ok=True)
-    (frontend / "package.json").write_text(
+    _write_frontend(
+        minimal_project.frontend_dir,
         '{"scripts":{"type-check":"tsc --noEmit","build":"pnpm run type-check && webpack"}}',
-        encoding="utf-8",
     )
     with (
         patch(
@@ -351,12 +353,7 @@ def test_run_frontend_build_prefers_compose_node_service(minimal_project) -> Non
 def test_run_frontend_build_falls_back_to_host_without_node_service(
     minimal_project,
 ) -> None:
-    frontend = minimal_project.frontend_dir
-    frontend.mkdir(parents=True, exist_ok=True)
-    (frontend / "package.json").write_text(
-        '{"scripts":{"build":"webpack"}}',
-        encoding="utf-8",
-    )
+    _write_frontend(minimal_project.frontend_dir, '{"scripts":{"build":"webpack"}}')
     with (
         patch(
             "catalpa_tooling.smoke_cli._compose_service_names",
@@ -401,10 +398,9 @@ def _two_frontend_project(tmp_path):
     )
     config = load_project_config(tmp_path)
     for name in ("web", "admin"):
-        (tmp_path / name).mkdir(parents=True, exist_ok=True)
-        (tmp_path / name / "package.json").write_text(
+        _write_frontend(
+            tmp_path / name,
             '{"scripts":{"type-check":"tsc --noEmit","build":"webpack"}}',
-            encoding="utf-8",
         )
     return config
 
@@ -487,3 +483,94 @@ def test_run_frontend_build_skips_a_frontend_with_no_build_scripts(tmp_path) -> 
     with patch("catalpa_tooling.native_cli._run_pkg_script", return_value=0) as run_script:
         assert _run_frontend_build(config) == 0
         assert [c.args[1].name for c in run_script.call_args_list] == ["web", "web"]
+
+def test_run_smoke_refuses_inside_a_worktree(
+    tmp_path, isolated_tooling, capsys
+) -> None:
+    """`tests ci` in a worktree would recreate its caddy on host port 80 (#77)."""
+    from catalpa_tooling.config import load_project_config
+    from catalpa_tooling.worktree_overlay import WorktreeOverlay, write_worktree_overlay
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    write_worktree_overlay(
+        tmp_path,
+        WorktreeOverlay(
+            version=1,
+            slug="img337",
+            base_env="dev",
+            compose_project_name="app_compose_dev_img337",
+            site_origin="https://minimal-dev-img337.localdev.temp.build",
+            parent_repo_root="/main/checkout",
+            branch="worktree/img337",
+        ),
+    )
+    config = load_project_config(tmp_path)
+
+    with patch("catalpa_tooling.smoke_cli._resolve_deploy_context") as resolve:
+        assert run_smoke(config, no_up=True, log_prefix="ci") == 2
+        resolve.assert_not_called()
+
+    err = capsys.readouterr().err
+    assert "not worktree-aware" in err
+    assert "img337" in err
+    assert "/main/checkout" in err
+
+
+def test_run_frontend_build_host_fallback_requires_node_modules(
+    minimal_project, capsys
+) -> None:
+    """The host path assumed deps; a fresh checkout died on a missing binary (#80)."""
+    _write_frontend(
+        minimal_project.frontend_dir,
+        '{"scripts":{"type-check":"tsc --noEmit","build":"webpack"}}',
+        deps=False,
+    )
+    with (
+        patch(
+            "catalpa_tooling.smoke_cli._compose_service_names",
+            return_value=frozenset({"django", "db"}),
+        ),
+        patch("catalpa_tooling.native_cli._run_pkg_script") as host_run,
+    ):
+        rc = _run_frontend_build(
+            minimal_project,
+            compose_file="compose.yaml",
+            env_add={},
+        )
+
+    assert rc != 0
+    host_run.assert_not_called()
+    err = capsys.readouterr().err
+    assert "node_modules missing" in err
+    assert "install --frozen-lockfile" in err
+
+
+def test_run_frontend_build_compose_path_ignores_missing_node_modules(
+    minimal_project,
+) -> None:
+    """node_modules lives in the image on the compose path, so no host check applies."""
+    _write_frontend(
+        minimal_project.frontend_dir,
+        '{"scripts":{"build":"webpack"}}',
+        deps=False,
+    )
+    with (
+        patch(
+            "catalpa_tooling.smoke_cli._compose_service_names",
+            return_value=frozenset({"django", "node", "db"}),
+        ),
+        patch(
+            "catalpa_tooling.smoke_cli._run_frontend_script_in_compose",
+            return_value=0,
+        ) as compose_run,
+    ):
+        assert (
+            _run_frontend_build(
+                minimal_project,
+                compose_file="compose.yaml",
+                env_add={},
+            )
+            == 0
+        )
+    compose_run.assert_called_once()

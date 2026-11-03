@@ -9,9 +9,14 @@ import pytest
 import yaml
 
 from catalpa_tooling.cli.dk_argv import peel_worktree_flag
-from catalpa_tooling.config import load_project_config
+from catalpa_tooling.config import (
+    ProjectConfig as ProjectConfigT,
+    ProjectConfigError,
+    load_project_config,
+)
 from catalpa_tooling.dk_cli import _load_config_for_argv
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
+from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind, StackVolumes
 from catalpa_tooling.worktree import (
     AGENTS_LOCAL_NAME,
     ensure_worktree_gitignore,
@@ -20,6 +25,7 @@ from catalpa_tooling.worktree import (
     worktree_context,
     worktree_create,
     worktree_list,
+    worktree_remove,
     worktree_seed,
     worktree_stack_status,
     worktree_status,
@@ -33,48 +39,54 @@ from catalpa_tooling.worktree_overlay import (
     sanitize_worktree_slug,
     write_worktree_overlay,
 )
-from tests.helpers import write_minimal_tooling_tree
+from tests.helpers import git_init_commit, write_dev_env, write_minimal_tooling_tree
 
 
-def _write_dev_env(repo: Path) -> None:
-    env_dir = repo / "docker" / "envs" / "dev"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    (repo / "compose.dev.yaml").write_text("services: {}\n", encoding="utf-8")
-    info = {
-        "compose_file": "compose.dev.yaml",
-        "credentials_decrypt_optional": True,
-        "site_origin": "https://minimal-dev.localdev.temp.build",
-        "local_proxy": {"roles": ["admin", "stats"]},
-        "env": {
-            "compose_project_name": "app_compose_dev",
-            "bero_origin": "https://minimal-dev.localdev.temp.build",
-            "django_origin": "https://admin.minimal-dev.localdev.temp.build",
-            "metabase_origin": "https://stats.minimal-dev.localdev.temp.build",
-            "caddy_site_address": "http://minimal-dev.localdev.temp.build",
-            "postgres_password": "dev",
-        },
-    }
-    (env_dir / "info.yaml").write_text(yaml.safe_dump(info), encoding="utf-8")
-    tooling = (repo / "tooling.yaml").read_text(encoding="utf-8")
-    if "credentials_optional_envs:" in tooling and "- dev" not in tooling:
-        tooling = tooling.replace(
-            "credentials_optional_envs:\n      - local\n",
-            "credentials_optional_envs:\n      - local\n      - dev\n",
-        )
-        (repo / "tooling.yaml").write_text(tooling, encoding="utf-8")
+def _patch_media_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[dict],
+    *,
+    source_has_content: bool | None = True,
+    transfer_rc: int = 0,
+    stack_volumes: dict[str, str] | None = None,
+    web_mounts: tuple[str, ...] = (),
+) -> tuple[MediaStorage, MediaStorage]:
+    """Stand in for the volume machinery: resolve, probe and transfer.
 
+    Returns the ``(source, destination)`` storages the patched resolver hands out. The
+    destination carries the worktree's compose project, which is what the copy has to reach.
+    ``stack_volumes`` maps compose volume keys to the suffix after each stack's project name.
+    """
+    src_media = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_django_media")
+    dst_media = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_feat_a_django_media")
 
-def _git_init_commit(repo: Path) -> None:
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
+    def fake_resolve(*, compose_file, env, config, repo_root=None):
+        project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+        return dst_media if project.endswith("_feat_a") else src_media
+
+    monkeypatch.setattr("catalpa_tooling.worktree.resolve_media_storage", fake_resolve)
+
+    def fake_stack_volumes(*, compose_file, env, config, repo_root=None):
+        project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
+        names = {key: f"{project}_{suffix}" for key, suffix in (stack_volumes or {}).items()}
+        return StackVolumes(names=names, web_mounts=web_mounts)
+
+    monkeypatch.setattr("catalpa_tooling.worktree.resolve_stack_volumes", fake_stack_volumes)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.media_storage_has_content",
+        lambda storage, env, **k: source_has_content,
     )
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._ensure_destination_media_volume",
+        lambda *a, **k: None,
+    )
+
+    def fake_transfer(src_env, dst_env, **kwargs):
+        calls.append({"src_env": src_env, "dst_env": dst_env, **kwargs})
+        return transfer_rc
+
+    monkeypatch.setattr("catalpa_tooling.worktree.run_transfer_media", fake_transfer)
+    return src_media, dst_media
 
 
 def test_sanitize_worktree_slug() -> None:
@@ -104,7 +116,7 @@ def test_peel_worktree_flag() -> None:
 
 def test_build_and_apply_overlay(tmp_path: Path, isolated_tooling: None) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     config = load_project_config(tmp_path)
     overlay = build_worktree_overlay(
         config, slug="foo", base_env="dev", parent_repo_root=tmp_path
@@ -152,7 +164,7 @@ def test_load_managed_deploy_applies_overlay(
     tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     config = load_project_config(tmp_path)
     overlay = build_worktree_overlay(config, slug="bar", parent_repo_root=tmp_path)
     write_worktree_overlay(tmp_path, overlay)
@@ -210,11 +222,17 @@ def test_ensure_worktree_gitignore(tmp_path: Path) -> None:
 
 
 def test_worktree_create_list_remove_git(
-    tmp_path: Path, isolated_tooling: None
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # `remove` now stops the stack, so without this the test would shell out to a real
+    # `docker compose down` and depend on a running daemon.
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
 
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="feat-a", dry_run=False, seed=False) == 0
@@ -226,22 +244,27 @@ def test_worktree_create_list_remove_git(
     assert worktree_list(config) == 0
 
     wt_config = load_project_config(wt)
-    (tmp_path / "media").mkdir()
-    (tmp_path / "media" / "x.txt").write_text("hi", encoding="utf-8")
+    assert media_dir_for_config(wt_config) == wt / "media"
+
+    # Media is a stack-to-stack copy now; the storages and the transfer are covered in
+    # their own tests below, so here just confirm the step wiring runs end to end.
+    src_media, dst_media = _patch_media_transfer(monkeypatch, calls := [])
     assert worktree_seed(
         wt_config, do_db=False, do_media=True, dry_run=True, yes=True
     ) == 0
+    assert calls == []
     assert worktree_seed(
         wt_config, do_db=False, do_media=True, dry_run=False, yes=True
     ) == 0
-    assert (wt / "media" / "x.txt").read_text(encoding="utf-8") == "hi"
-    assert media_dir_for_config(wt_config) == wt / "media"
+    assert len(calls) == 1
+    assert calls[0]["src_media"] == src_media
+    assert calls[0]["dst_media"] == dst_media
 
-    (wt / "media" / "x.txt").unlink()
+    calls.clear()
     assert worktree_seed(
         config, slug="feat_a", do_db=False, do_media=True, dry_run=False, yes=True
     ) == 0
-    assert (wt / "media" / "x.txt").read_text(encoding="utf-8") == "hi"
+    assert len(calls) == 1
 
     from catalpa_tooling.worktree import worktree_remove
 
@@ -255,12 +278,12 @@ def test_worktree_create_inits_submodules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     (tmp_path / ".gitmodules").write_text(
         '[submodule "bero"]\n\tpath = bero\n\turl = https://example.com/bero.git\n',
         encoding="utf-8",
     )
-    _git_init_commit(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
 
     calls: list[tuple[str, ...]] = []
@@ -339,12 +362,12 @@ def test_worktree_create_dry_run_mentions_submodules(
     tmp_path: Path, isolated_tooling: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     (tmp_path / ".gitmodules").write_text('[submodule "bero"]\npath = bero\n', encoding="utf-8")
     bero = tmp_path / "bero"
     bero.mkdir()
     (bero / ".git").mkdir()
-    _git_init_commit(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="dry", dry_run=True, seed=False) == 0
     err = capsys.readouterr().err
@@ -360,8 +383,8 @@ def test_worktree_create_seeds_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
 
     seed_calls: list[dict] = []
@@ -398,8 +421,8 @@ def test_worktree_create_dry_run_prints_seed(
     tmp_path: Path, isolated_tooling: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="dry-seed", dry_run=True, init_submodules=False) == 0
     err = capsys.readouterr().err
@@ -412,8 +435,8 @@ def test_resolve_worktree_root_and_retarget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="onboarding", dry_run=False, seed=False) == 0
     wt = resolve_worktree_root(tmp_path, "onboarding")
@@ -445,8 +468,8 @@ def test_worktree_create_writes_agents_local(
     tmp_path: Path, isolated_tooling: None
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="agents", dry_run=False, seed=False) == 0
     wt = tmp_path / ".worktrees" / "agents"
@@ -464,8 +487,8 @@ def test_worktree_create_bring_up_calls_worktree_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
 
     up_calls: list[dict] = []
@@ -501,8 +524,8 @@ def test_worktree_context_json_shape(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="ctx", dry_run=False, seed=False) == 0
 
@@ -511,7 +534,7 @@ def test_worktree_context_json_shape(
         lambda *a, **k: "running",
     )
     monkeypatch.setattr(
-        "catalpa_tooling.worktree._media_dir_seeded",
+        "catalpa_tooling.worktree._media_seeded",
         lambda *a, **k: True,
     )
     monkeypatch.setattr(
@@ -529,6 +552,8 @@ def test_worktree_context_json_shape(
     assert payload["seeded"] is True
     assert payload["compose_project_name"] == "app_compose_dev_ctx"
     assert payload["base_env"] == "dev"
+    assert payload["base_ref"]
+    assert payload["base_commit"]
     assert "head_commit" in payload
     assert "worktree" in payload
 
@@ -540,8 +565,8 @@ def test_list_and_status_tolerate_docker_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
-    _git_init_commit(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
     config = load_project_config(tmp_path)
     assert worktree_create(config, slug="nodocker", dry_run=False, seed=False) == 0
 
@@ -586,7 +611,7 @@ def test_cmd_worktree_dispatches_up(
     from catalpa_tooling.worktree_cli import cmd_worktree
 
     write_minimal_tooling_tree(tmp_path)
-    _write_dev_env(tmp_path)
+    write_dev_env(tmp_path)
     config = load_project_config(tmp_path)
 
     called: list[str] = []
@@ -599,3 +624,845 @@ def test_cmd_worktree_dispatches_up(
     ns = argparse.Namespace(worktree_command="up", slug="feat", dry_run=False)
     assert cmd_worktree(ns, config) == 0
     assert called == ["feat"]
+
+
+# --- issue #64: `worktree remove --wipe` must not leave the external: volumes behind ----------
+
+
+def _wipe_recording_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A worktree plus recorders for the compose call and the volume removals."""
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
+
+    compose_calls: list[tuple] = []
+
+    def fake_compose(*args, **kwargs):
+        compose_calls.append(args)
+        return subprocess.CompletedProcess(list(args), 0)
+
+    removed: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if list(cmd[:3]) == ["docker", "volume", "rm"]:
+            removed.append(cmd[3])
+            return subprocess.CompletedProcess(list(cmd), 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(list(cmd), 0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.worktree._compose", fake_compose)
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+    return config, compose_calls, removed
+
+
+def test_worktree_remove_wipe_removes_external_volumes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#64: `compose down -v` alone left PGDATA and the conf volumes orphaned."""
+    config, compose_calls, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+
+    assert compose_calls, "compose down -v must still run first"
+    assert "down" in compose_calls[0] and "-v" in compose_calls[0]
+
+    # Every external: volume for the retired project name, PGDATA included.
+    assert removed, "no docker volume rm issued — the external volumes would survive"
+    for expected in ("postgres_data", "django_media", "caddy_data", "postgres_conf", "pgbackrest_conf"):
+        assert any(name.endswith(expected) for name in removed), f"{expected} left behind: {removed}"
+
+
+def test_worktree_remove_wipe_attempts_every_volume_and_keeps_the_checkout(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """One stuck volume must not hide the rest, nor silently strand them.
+
+    The checkout is kept on purpose so the command can simply be re-run; removing it would
+    leave orphans nobody goes looking for, which is the failure #64 is about.
+    """
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
+
+    attempted: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if list(cmd[:3]) == ["docker", "volume", "rm"]:
+            attempted.append(cmd[3])
+            if cmd[3].endswith("postgres_data"):  # the first one, and it is stuck
+                return subprocess.CompletedProcess(
+                    list(cmd), 1, stdout="", stderr="volume is in use - [abc123]"
+                )
+        return subprocess.CompletedProcess(list(cmd), 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+
+    wt = tmp_path / ".worktrees" / "ds_180"
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) != 0
+
+    for expected in ("postgres_data", "django_media", "caddy_data", "postgres_conf", "pgbackrest_conf"):
+        assert any(n.endswith(expected) for n in attempted), f"{expected} never attempted: {attempted}"
+    assert wt.is_dir(), "checkout must survive so the wipe can be re-run"
+    err = capsys.readouterr().err
+    assert "could not be removed" in err
+    assert "re-run" in err
+
+
+def test_worktree_remove_wipe_dry_run_removes_nothing(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
+    assert removed == []
+
+
+def test_worktree_remove_dry_run_does_not_claim_it_removed_anything(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """#108: `--dry-run` is read as a preview of a real `--wipe`; it must not report a removal."""
+    config, _, _ = _wipe_recording_repo(tmp_path, monkeypatch)
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
+    err = capsys.readouterr().err
+    assert "Would remove worktree" in err
+    assert "Removed worktree" not in err
+
+
+def test_worktree_remove_without_dry_run_still_reports_the_removal(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    config, _, _ = _wipe_recording_repo(tmp_path, monkeypatch)
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "Removed worktree" in err
+    assert "Would remove worktree" not in err
+
+
+# --- `remove` without --wipe must still stop the stack ----------------------------------------
+
+
+def test_worktree_remove_stops_the_stack_but_keeps_volumes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Retiring the checkout must not leave containers running for a project nothing can name.
+
+    Volumes are a different question: the user did not ask for the data to go, so it stays —
+    but the command says so, and says how to reclaim it.
+    """
+    config, compose_calls, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", yes=True) == 0
+
+    assert compose_calls, "no compose call — the stack would be left running"
+    assert "down" in compose_calls[0]
+    assert "-v" not in compose_calls[0], "plain remove must not destroy volumes"
+    assert removed == [], f"plain remove must not delete volumes, removed {removed}"
+    assert not (tmp_path / ".worktrees" / "ds_180").exists()
+
+    err = capsys.readouterr().err
+    assert "--wipe" in err, "must point at the flag that would have reclaimed the volumes"
+    assert "docker volume rm" in err, "must give a reclaim command for the kept volumes"
+
+
+def test_worktree_remove_keep_stack_preserves_the_old_behaviour(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The escape hatch for anyone who was relying on remove leaving the stack up."""
+    config, compose_calls, removed = _wipe_recording_repo(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", keep_stack=True, yes=True) == 0
+
+    assert compose_calls == [], f"--keep-stack must not touch the stack, got {compose_calls}"
+    assert removed == []
+    assert not (tmp_path / ".worktrees" / "ds_180").exists()
+
+
+def test_worktree_remove_keeps_the_checkout_when_the_stack_will_not_stop(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed `down` must not retire the checkout — that is how orphans are born."""
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
+
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 1),
+    )
+
+    assert worktree_remove(config, slug="ds_180", yes=True) != 0
+    assert (tmp_path / ".worktrees" / "ds_180").is_dir(), "checkout must survive a failed down"
+
+
+# --- issue #62: the worktree stack must run the worktree's code, whatever the cwd -------------
+
+
+def _worktree_with_stack(tmp_path: Path) -> tuple[object, Path]:
+    """A main checkout plus a real worktree checkout, both with a compose file."""
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="mount_probe", dry_run=False, seed=False) == 0
+    return config, tmp_path / ".worktrees" / "mount_probe"
+
+
+@pytest.mark.parametrize("run_from", ["main", "worktree"])
+def test_worktree_up_targets_the_worktree_compose_file_from_any_cwd(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    run_from: str,
+) -> None:
+    """`dk worktree up` must not depend on the process cwd.
+
+    `_compose` never chdirs, so a repo-relative `-f` resolved against the caller's cwd. Driven
+    from the main checkout — the documented workflow — the worktree stack picked up the main
+    checkout's compose file and, through its relative binds, the main checkout's *source code*,
+    while COMPOSE_PROJECT_NAME still said "worktree". Silent, and every cheap identity signal
+    looked correct.
+    """
+    from catalpa_tooling.worktree import worktree_up
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    monkeypatch.chdir(tmp_path if run_from == "main" else wt_root)
+
+    compose_calls: list[str] = []
+
+    def fake_compose(compose_file, *args, **kwargs):
+        compose_calls.append(str(compose_file))
+        return subprocess.CompletedProcess([str(compose_file), *args], 0)
+
+    monkeypatch.setattr("catalpa_tooling.compose._compose", fake_compose)
+    monkeypatch.setattr("catalpa_tooling.env_handlers._compose", fake_compose)
+    monkeypatch.setattr("catalpa_tooling.local_proxy.ensure_proxy_running", lambda **_: 0)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_proxy_running", lambda **_: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.env_handlers.ensure_stack_matches_checkout", lambda *a, **k: (0, None)
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.env_handlers.sync_local_proxy_for_compose_action", lambda *a, **k: 0
+    )
+    monkeypatch.setattr("catalpa_tooling.env_handlers._ensure_stack_volumes", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.env_handlers._ensure_local_stack_images_built", lambda *a, **k: 0
+    )
+    monkeypatch.setattr("catalpa_tooling.env_handlers.materialize_configs", lambda *a, **k: 0)
+
+    assert worktree_up(config, slug="mount_probe", dry_run=False) == 0
+
+    assert compose_calls, "no compose invocation captured"
+    target = Path(compose_calls[0])
+    assert target.is_absolute(), f"relative -f resolves against cwd, not the worktree: {target}"
+    assert target == (wt_root / "compose.dev.yaml").resolve(), (
+        f"worktree stack pointed at {target}, not the worktree's own compose file"
+    )
+
+
+def test_resolve_compose_file_is_absolute_and_rooted_at_its_config(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    """The main checkout and a worktree must resolve to their *own* compose files."""
+    from catalpa_tooling.managed_deploy_env import resolve_compose_file_from_info
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    info = yaml.safe_load(
+        (tmp_path / "docker" / "envs" / "dev" / "info.yaml").read_text(encoding="utf-8")
+    )
+    wt_config = load_project_config(wt_root)
+
+    main_target = resolve_compose_file_from_info(info, config)
+    wt_target = resolve_compose_file_from_info(info, wt_config)
+
+    assert Path(main_target).is_absolute() and Path(wt_target).is_absolute()
+    assert Path(main_target) == (tmp_path / "compose.dev.yaml").resolve()
+    assert Path(wt_target) == (wt_root / "compose.dev.yaml").resolve()
+    assert main_target != wt_target, "both checkouts resolved to the same compose file"
+
+
+def test_worktree_up_dry_run_reports_the_worktree_identity(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """`--dry-run` is the natural "which stack am I pointed at?" check.
+
+    The early exit skips the context load to avoid a SOPS decrypt, and the overlay is applied in
+    there — so it answered with the *main* env's origin while the real run used the worktree's.
+    That actively obstructed diagnosing the mount bug above.
+    """
+    from catalpa_tooling.worktree import worktree_up
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_proxy_running", lambda **_: 0)
+
+    assert worktree_up(config, slug="mount_probe", dry_run=True) == 0
+
+    err = capsys.readouterr().err
+    assert "worktree overlay:" in err, "no hint that an overlay applies to this stack"
+    assert "app_compose_dev_mount_probe" in err
+    assert "minimal-dev-mount-probe.localdev.temp.build" in err
+
+
+def test_worktree_up_dry_run_does_not_write_agents_local(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run must not touch the tree; the refreshed content differs when paths have moved."""
+    from catalpa_tooling.worktree import worktree_up
+
+    config, wt_root = _worktree_with_stack(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_proxy_running", lambda **_: 0)
+
+    agents = wt_root / AGENTS_LOCAL_NAME
+    agents.write_text("sentinel\n", encoding="utf-8")
+    before = agents.stat().st_mtime_ns
+
+    assert worktree_up(config, slug="mount_probe", dry_run=True) == 0
+
+    assert agents.read_text(encoding="utf-8") == "sentinel\n"
+    assert agents.stat().st_mtime_ns == before
+
+
+def _seedable_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slug: str = "feat-a"
+) -> tuple[ProjectConfigT, Path]:
+    """Main checkout with one worktree, and `_compose` stubbed out."""
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug=slug, dry_run=False, seed=False) == 0
+    return config, tmp_path / ".worktrees" / sanitize_worktree_slug(slug)
+
+
+def test_worktree_seed_media_copies_between_volumes(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy reaches the stack's named volume, not a host directory (#88)."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    src_media, dst_media = _patch_media_transfer(monkeypatch, calls)
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["src_media"] == src_media
+    assert call["dst_media"] == dst_media
+    # The destination env must name the worktree's compose project, or the copy lands
+    # in the main checkout's volume.
+    assert call["dst_env"]["COMPOSE_PROJECT_NAME"] == "app_compose_dev_feat_a"
+    assert call["src_env"]["COMPOSE_PROJECT_NAME"] != "app_compose_dev_feat_a"
+    # The staging directory lives under the session tmpdir and is cleaned up afterwards.
+    assert call["media_dir"].name == "media"
+    assert not call["media_dir"].exists()
+
+
+def test_worktree_seed_skips_an_empty_source_without_failing(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A project with no media is legitimate: skip, say so, exit 0 (#88)."""
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    _patch_media_transfer(monkeypatch, calls, source_has_content=False)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "skipped" in err
+    assert "app_compose_dev_django_media" in err
+    assert "media copy done" not in err
+
+
+def test_worktree_seed_summary_reports_each_step(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The final line is built from the outcomes, not asserted (#88)."""
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [], source_has_content=False)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "worktree seed: complete (db: not requested; media: skipped" in err
+
+    _patch_media_transfer(monkeypatch, [], source_has_content=True)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._seed_database",
+        lambda *a, **k: (0, "restored"),
+    )
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "worktree seed: complete (db: restored; media: copied volume " in err
+
+
+def test_worktree_seed_dry_run_prints_both_storages(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    _patch_media_transfer(monkeypatch, calls)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, dry_run=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "volume app_compose_dev_django_media" in err
+    assert "volume app_compose_dev_feat_a_django_media" in err
+    assert calls == []
+
+
+def test_worktree_seed_media_failure_is_fatal(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [], transfer_rc=3)
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 3
+
+
+def _with_seed_volumes(config: ProjectConfigT, wt: Path, keys: list[str]) -> None:
+    """Add ``worktree.seed_volumes`` to the worktree's tooling.yaml (the seed reads that one)."""
+    del config
+    tooling = wt / "tooling.yaml"
+    tooling.write_text(
+        tooling.read_text(encoding="utf-8")
+        + yaml.safe_dump({"worktree": {"seed_volumes": keys}}),
+        encoding="utf-8",
+    )
+
+
+def test_worktree_seed_volumes_config_parses_and_dedupes(tmp_path: Path) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    assert load_project_config(tmp_path).worktree.seed_volumes == ()
+    _with_seed_volumes(load_project_config(tmp_path), tmp_path, ["private_uploads", "docs", "docs"])
+    assert load_project_config(tmp_path).worktree.seed_volumes == ("private_uploads", "docs")
+
+
+def test_worktree_seed_volumes_config_rejects_bad_key(tmp_path: Path) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    _with_seed_volumes(load_project_config(tmp_path), tmp_path, ["not a volume"])
+    with pytest.raises(ProjectConfigError, match="worktree.seed_volumes"):
+        load_project_config(tmp_path)
+
+
+def test_worktree_seed_copies_every_listed_volume(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Files outside the media volume reach the worktree too, each with its own line (#103)."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["django_media", "private_uploads", "public_documents"])
+    calls: list[dict] = []
+    _patch_media_transfer(
+        monkeypatch,
+        calls,
+        stack_volumes={
+            "django_media": "django_media",
+            "private_uploads": "private_uploads",
+            "public_documents": "public_documents",
+        },
+    )
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+
+    pairs = [(c["src_media"].location, c["dst_media"].location) for c in calls]
+    assert pairs == [
+        ("app_compose_dev_django_media", "app_compose_dev_feat_a_django_media"),
+        ("app_compose_dev_private_uploads", "app_compose_dev_feat_a_private_uploads"),
+        ("app_compose_dev_public_documents", "app_compose_dev_feat_a_public_documents"),
+    ]
+    assert len({c["media_dir"] for c in calls}) == 3
+    err = capsys.readouterr().err
+    assert "worktree seed: volume private_uploads copied volume " in err
+    assert "; volume public_documents: copied volume app_compose_dev_public_documents" in err
+
+
+def test_worktree_seed_includes_restic_data_volumes(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What restic backs up holds files the database refers to, so it is seeded by default."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    tooling = wt / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    assert "  zabbix:" in text
+    tooling.write_text(
+        text.replace(
+            "  zabbix:",
+            "  restic:\n    data_volumes: [django_media, private_uploads]\n  zabbix:",
+        ),
+        encoding="utf-8",
+    )
+    _with_seed_volumes(config, wt, ["private_uploads", "scratch"])
+    calls: list[dict] = []
+    _patch_media_transfer(
+        monkeypatch,
+        calls,
+        stack_volumes={"private_uploads": "private_uploads", "scratch": "scratch"},
+    )
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    assert [c["dst_media"].location for c in calls] == [
+        "app_compose_dev_feat_a_django_media",
+        "app_compose_dev_feat_a_private_uploads",
+        "app_compose_dev_feat_a_scratch",
+    ]
+
+
+def test_worktree_seed_reports_a_listed_volume_the_stack_lacks(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["gone"])
+    calls: list[dict] = []
+    _patch_media_transfer(monkeypatch, calls)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    assert len(calls) == 1
+    err = capsys.readouterr().err
+    assert "volume gone: skipped, not declared" in err
+
+
+def test_worktree_seed_names_web_volumes_it_does_not_copy(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without the setting, an unseeded file volume is named, not passed over silently (#103)."""
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(
+        monkeypatch,
+        [],
+        stack_volumes={"django_media": "django_media", "private_uploads": "private_uploads"},
+        web_mounts=("django_media", "private_uploads"),
+    )
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, dry_run=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert "volume private_uploads is mounted by the web service but not seeded" in err
+    assert "volume django_media is mounted" not in err
+
+
+def test_worktree_seed_dry_run_lists_extra_volumes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["private_uploads"])
+    calls: list[dict] = []
+    _patch_media_transfer(
+        monkeypatch,
+        calls,
+        stack_volumes={"private_uploads": "private_uploads"},
+        web_mounts=("private_uploads",),
+    )
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=False, dry_run=True, yes=True) == 0
+    err = capsys.readouterr().err
+    assert (
+        "dry-run: volume private_uploads volume app_compose_dev_private_uploads → "
+        "volume app_compose_dev_feat_a_private_uploads"
+    ) in err
+    assert "not seeded" not in err
+    assert calls == []
+
+
+def test_media_seeded_reads_the_stack_volume(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`seeded` used to read the host tree, so a volume project always reported false."""
+    from catalpa_tooling.worktree import _media_seeded
+
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    del config
+    wt_config = load_project_config(wt)
+    overlay = load_worktree_overlay(wt)
+    assert overlay is not None
+
+    storage = MediaStorage(MediaStorageKind.VOLUME, "app_compose_dev_feat_a_django_media")
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._worktree_media_storage",
+        lambda *a, **k: (storage, {"COMPOSE_PROJECT_NAME": "app_compose_dev_feat_a"}),
+    )
+
+    # The host tree is empty either way; only the volume decides.
+    for has_content, expected in ((True, True), (False, False), (None, False)):
+        monkeypatch.setattr(
+            "catalpa_tooling.worktree.media_storage_has_content",
+            lambda s, e, **k: has_content,
+        )
+        assert _media_seeded(wt_config, overlay) is expected
+
+
+def _rev_parse(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_worktree_create_records_base_ref_and_commit(
+    tmp_path: Path, isolated_tooling: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    main_branch = _rev_parse(tmp_path, "--abbrev-ref", "HEAD")
+    subprocess.run(["git", "branch", "release-x"], cwd=tmp_path, check=True)
+    config = load_project_config(tmp_path)
+
+    assert worktree_create(config, slug="from-head", dry_run=False, seed=False) == 0
+    assert worktree_create(
+        config, slug="from-rel", base_branch="release-x", dry_run=False, seed=False
+    ) == 0
+
+    head = load_worktree_overlay(tmp_path / ".worktrees" / "from_head")
+    assert head is not None
+    assert head.base_ref == main_branch  # HEAD resolves to the checked-out branch
+    assert head.base_commit == _rev_parse(tmp_path, "HEAD")
+    rel = load_worktree_overlay(tmp_path / ".worktrees" / "from_rel")
+    assert rel is not None
+    assert rel.base_ref == "release-x"
+    assert rel.base_commit == _rev_parse(tmp_path, "release-x")
+
+
+def test_worktree_create_detached_base_records_commit_only(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    sha = _rev_parse(tmp_path, "HEAD")
+    subprocess.run(["git", "checkout", "-q", "--detach"], cwd=tmp_path, check=True)
+
+    assert worktree_create(
+        load_project_config(tmp_path), slug="det", dry_run=False, seed=False
+    ) == 0
+    overlay = load_worktree_overlay(tmp_path / ".worktrees" / "det")
+    assert overlay is not None
+    assert overlay.base_ref is None
+    assert overlay.base_commit == sha
+
+
+def test_worktree_create_existing_branch_records_no_base(
+    tmp_path: Path, isolated_tooling: None
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    subprocess.run(["git", "branch", "worktree/old"], cwd=tmp_path, check=True)
+
+    assert worktree_create(
+        load_project_config(tmp_path), slug="old", dry_run=False, seed=False
+    ) == 0
+    raw = yaml.safe_load((tmp_path / ".worktrees" / "old" / ".catalpa-worktree.yaml").read_text())
+    assert "base_ref" not in raw and "base_commit" not in raw
+
+
+def test_marker_without_base_fields_still_loads(tmp_path: Path) -> None:
+    (tmp_path / ".catalpa-worktree.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "slug": "legacy",
+                "base_env": "dev",
+                "compose_project_name": "app_compose_dev_legacy",
+                "site_origin": "https://minimal-dev-legacy.localdev.temp.build",
+            }
+        ),
+        encoding="utf-8",
+    )
+    overlay = load_worktree_overlay(tmp_path)
+    assert overlay is not None
+    assert overlay.base_ref is None and overlay.base_commit is None
+
+
+def test_worktree_context_json_stdout_is_only_json(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ctx", dry_run=False, seed=False) == 0
+    monkeypatch.setattr("catalpa_tooling.worktree.worktree_stack_status", lambda *a, **k: "stopped")
+    monkeypatch.setattr("catalpa_tooling.worktree._media_seeded", lambda *a, **k: False)
+    capsys.readouterr()
+
+    # real _git_head_info: its ``$ git rev-parse …`` echoes must not reach stdout
+    assert worktree_context(config, slug="ctx", as_json=True) == 0
+    out = capsys.readouterr()
+    import json
+
+    assert json.loads(out.out)["branch"] == "worktree/ctx"
+    assert "$ git rev-parse" in out.err
+
+
+def _patch_post_db_restore(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[dict],
+    *,
+    applies: bool = True,
+    rc: int = 0,
+) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._seed_database",
+        lambda *a, **k: (calls.append({"step": "seed_database"}), (0, "restored"))[1],
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.post_db_restore_applies", lambda config, env_name: applies
+    )
+
+    def fake_hooks(config, **kwargs):
+        calls.append({"step": "hooks", "config": config, **kwargs})
+        return rc
+
+    monkeypatch.setattr("catalpa_tooling.worktree.run_post_db_restore_manage_commands", fake_hooks)
+
+
+def test_worktree_seed_runs_post_db_restore_hooks_against_the_worktree(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Copied rows still name the main checkout's hosts until the hooks rewrite them (#140)."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls)
+    overlay = load_worktree_overlay(wt)
+    assert overlay is not None
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, do_media=False, yes=True) == 0
+
+    assert [c["step"] for c in calls] == ["seed_database", "hooks"]
+    hook = calls[1]
+    assert hook["config"].repo_root.resolve() == wt.resolve()
+    assert hook["env_name"] == "dev"
+    assert hook["env_add"]["COMPOSE_PROJECT_NAME"] == "app_compose_dev_feat_a"
+    assert hook["env_add"]["SITE_ORIGIN"] == overlay.site_origin
+    assert Path(hook["compose_file"]).is_relative_to(wt.resolve())
+    assert "db: restored, post_db_restore hooks ran" in capsys.readouterr().err
+
+
+def test_worktree_seed_skips_hooks_that_do_not_apply(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls, applies=False)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, do_media=False, yes=True) == 0
+    assert [c["step"] for c in calls] == ["seed_database"]
+    assert "worktree seed: complete (db: restored;" in capsys.readouterr().err
+
+
+def test_worktree_seed_media_only_runs_no_hooks(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls)
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    assert calls == []
+
+
+def test_worktree_seed_hook_failure_is_fatal_with_a_retry_hint(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    _patch_post_db_restore(monkeypatch, [], rc=4)
+
+    capsys.readouterr()
+    assert worktree_seed(config, slug="feat_a", do_db=True, do_media=False, yes=True) == 4
+    err = capsys.readouterr().err
+    assert "db: restored, post_db_restore hooks failed" in err
+    assert "Retry: uv run dk worktree seed feat_a --db -y" in err
+    assert "worktree seed: complete" not in err
+
+
+def test_worktree_seed_dry_run_plans_the_hooks(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    _patch_media_transfer(monkeypatch, [])
+    calls: list[dict] = []
+    _patch_post_db_restore(monkeypatch, calls)
+
+    assert worktree_seed(config, slug="feat_a", do_media=False, dry_run=True, yes=True) == 0
+    assert [c["step"] for c in calls] == ["hooks"]
+    assert calls[0]["dry_run"] is True

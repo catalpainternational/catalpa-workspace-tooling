@@ -194,6 +194,32 @@ def test_create_droplet_env_overrides_manifest_in_dry_run(
     assert "--region sgp1" in err
 
 
+def test_create_droplet_env_image_overrides_tooling_yaml(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    do_config = DigitalOceanConfig(
+        project_name=None,
+        project_id=None,
+        context=None,
+        timezone=None,
+        region="sgp1",
+        size="s-1vcpu-2gb",
+        image="ubuntu-22-04-x64",
+        ssh_keys=("aa:bb:cc",),
+    )
+    rc = create_droplet(
+        "my-host",
+        project_id="proj-uuid",
+        env_image="ubuntu-26-04-x64",
+        dry_run=True,
+        do_config=do_config,
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "--image ubuntu-26-04-x64" in err
+    assert "ubuntu-22-04-x64" not in err
+
+
 def test_create_droplet_dry_run(capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
     mock_run = MagicMock()
     monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", mock_run)

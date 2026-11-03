@@ -12,7 +12,9 @@ from catalpa_tooling.config import load_project_config
 from catalpa_tooling.ghcr_cleanup import (
     PackageVersion,
     _parse_older_than,
+    _parse_registry,
     _parse_registry_owner,
+    _qualify_package_names,
     collect_deploy_tags,
     plan_deletions,
     resolve_ghcr_cleanup_plan,
@@ -38,6 +40,20 @@ def test_parse_registry_owner() -> None:
     assert _parse_registry_owner("ghcr.io/example/app") == "example"
 
 
+def test_parse_registry() -> None:
+    assert _parse_registry("ghcr.io/catalpainternational") == ("catalpainternational", "")
+    assert _parse_registry("ghcr.io/example/app") == ("example", "app")
+    assert _parse_registry("ghcr.io/org/swlt_ws2/") == ("org", "swlt_ws2")
+
+
+def test_qualify_package_names() -> None:
+    assert _qualify_package_names(("swlt-django",), "") == ("swlt-django",)
+    assert _qualify_package_names(("swlt-django",), "swlt_ws2") == ("swlt_ws2/swlt-django",)
+    assert _qualify_package_names(("swlt_ws2/swlt-django",), "swlt_ws2") == (
+        "swlt_ws2/swlt-django",
+    )
+
+
 def test_parse_older_than() -> None:
     assert _parse_older_than("180 days") == timedelta(days=180)
     assert _parse_older_than("2 weeks") == timedelta(weeks=2)
@@ -57,7 +73,7 @@ ghcr_cleanup:
     _write_env_info(minimal_project.repo_root, "staging", "image_tag: v1.0.0\n")
     plan = resolve_ghcr_cleanup_plan(minimal_project)
     assert plan.owner == "example"
-    assert plan.packages == ("app-web", "app-proxy", "app-db")
+    assert plan.packages == ("app/app-web", "app/app-proxy", "app/app-db")
     assert plan.keep_n_tagged == 5
     assert plan.older_than == timedelta(days=30)
     assert "v1.0.0" in plan.exclude_tags
@@ -111,15 +127,16 @@ def test_plan_deletions_retention() -> None:
         packages=("app-web",),
         extra_exclude_tags=("v9.9.9",),
     )
+    assert plan.packages == ("app/app-web",)
     versions = [
-        PackageVersion("app-web", 1, ("v9.9.9",), now - timedelta(days=400)),
-        PackageVersion("app-web", 2, ("v1.0.0",), now - timedelta(days=200)),
-        PackageVersion("app-web", 3, ("v1.1.0",), now - timedelta(days=150)),
-        PackageVersion("app-web", 4, ("v1.2.0",), now - timedelta(days=120)),
-        PackageVersion("app-web", 5, ("v2.0.0",), now - timedelta(days=10)),
-        PackageVersion("app-web", 6, tuple(), now - timedelta(days=5)),
+        PackageVersion("app/app-web", 1, ("v9.9.9",), now - timedelta(days=400)),
+        PackageVersion("app/app-web", 2, ("v1.0.0",), now - timedelta(days=200)),
+        PackageVersion("app/app-web", 3, ("v1.1.0",), now - timedelta(days=150)),
+        PackageVersion("app/app-web", 4, ("v1.2.0",), now - timedelta(days=120)),
+        PackageVersion("app/app-web", 5, ("v2.0.0",), now - timedelta(days=10)),
+        PackageVersion("app/app-web", 6, tuple(), now - timedelta(days=5)),
     ]
-    staged = plan_deletions(plan, {"app-web": versions}, now=now)
+    staged = plan_deletions(plan, {"app/app-web": versions}, now=now)
     ids = {item.version_id for item in staged}
     assert 1 not in ids  # excluded deploy tag
     assert 5 not in ids  # within older_than window

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from catalpa_tooling.compose import _compose, run_docker_passthrough
+from catalpa_tooling.compose import _compose, manage_exec_args, run_docker_passthrough
 from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
@@ -25,6 +25,7 @@ from catalpa_tooling.doctl_spaces_provision import (
     restic_write_configured,
 )
 from catalpa_tooling.managed_deploy_env import (
+    apply_worktree_overlay_for_env,
     load_managed_deploy_context,
     print_managed_deploy_header,
     resolve_compose_file_from_info,
@@ -32,18 +33,14 @@ from catalpa_tooling.managed_deploy_env import (
 from catalpa_tooling.media_pull import run_pull_media
 from catalpa_tooling.media_rsync import resolve_push_media_source, run_push_media_rsync
 from catalpa_tooling.pgbackrest_db import (
-    compose_pg_restore_extras_for_config,
     db_service_responds,
-    ensure_db_service_running,
     run_backup as run_pgbackrest_backup_online,
     run_bkp_db_init,
     run_bkp_db_stanza_create_flow,
     run_check_online,
     run_configure_verify_online_check,
-    run_drop_create_app_database,
     run_info,
     run_pg_dump,
-    run_pg_restore,
     run_version,
 )
 from catalpa_tooling.pgbackrest_volume_config import (
@@ -54,7 +51,6 @@ from catalpa_tooling.pgbackrest_volume_config import (
     run_pgbackrest_verify,
     should_materialize_for_compose,
 )
-from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
 from catalpa_tooling.remote_deploy import (
     _confirm_deploy_wipe,
     _dry_run_exits_before_compose_env,
@@ -71,6 +67,7 @@ from catalpa_tooling.remote_deploy import (
 from catalpa_tooling.stale_stack import (
     drop_no_build_when_stale,
     ensure_stack_matches_checkout,
+    pre_up_build_is_redundant,
     should_ensure_stack_checkout,
     write_label_override,
 )
@@ -216,6 +213,7 @@ def _run_compose_path(
     site_origin: str,
     docker_host: str,
     storage_volumes: dict,
+    stack_images_already_built: bool = False,
 ) -> int:
     repo_root = config.repo_root
     dry_run = bool(getattr(ns, "dry_run", False))
@@ -234,13 +232,21 @@ def _run_compose_path(
         )
         if rc != 0:
             return rc
-        rc = _ensure_local_stack_images_built(
-            config,
-            env_add,
-            use_prepulled_registry=use_prepulled_registry,
-        )
-        if rc != 0:
-            return rc
+        # The central stale-stack hook makes this build redundant whichever way it answered:
+        # either the images already matched the checkout, or it rebuilt them with the identical
+        # `_ensure_local_stack_images_built` call a moment ago. Only `materialize_configs`
+        # below depends on the result, and the caller has confirmed the db image is here. See
+        # #75; compose's own `--build` on the `up` still runs, so a changed Dockerfile at an
+        # unchanged SHA is still rebuilt.
+        if not stack_images_already_built:
+            rc = _ensure_local_stack_images_built(
+                config,
+                env_add,
+                use_prepulled_registry=use_prepulled_registry,
+                compose_file=compose_file,
+            )
+            if rc != 0:
+                return rc
         rc = materialize_configs(
             env_add,
             dry_run=False,
@@ -318,7 +324,9 @@ def _run_compose_path(
     # Stamp catalpa.* build labels whenever this compose run may build, so `stale_stack` can tell
     # which branch and commit the resulting images came from.
     label_override = (
-        write_label_override(config) if _compose_args_may_build(compose_args) else None
+        write_label_override(config, compose_file, env_add)
+        if _compose_args_may_build(compose_args)
+        else None
     )
     if label_override:
         extra_compose_files = merge_extra_compose_files(
@@ -408,6 +416,17 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 tail,
                 global_dry_run=dry_run,
             )
+        if getattr(ns, "host_command", None) == "logging":
+            from catalpa_tooling.docker_logging import cmd_host_logging
+
+            return cmd_host_logging(
+                config,
+                env_name,
+                target=ns.target,
+                apply=bool(ns.apply),
+                dry_run=dry_run,
+                yes=bool(ns.yes),
+            )
         if ns.write and ns.sync_dns:
             print("cannot use --write and --sync-dns together", file=sys.stderr)
             return 2
@@ -431,8 +450,17 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if dry_run and _dry_run_exits_before_compose_env(peek) and env_command in (None, "compose"):
         if compose_file is None:
             return 1
+        # This exit skips the context load to avoid a SOPS decrypt, and the worktree overlay is
+        # applied in there — so the header used to describe the *main* env while the real run
+        # used the worktree's. `--dry-run` is the natural "which stack am I pointed at?" check,
+        # so answering with the wrong stack actively obstructed diagnosing #62.
+        ok, dry_run_info, _overlay, _applied = apply_worktree_overlay_for_env(
+            info, config.repo_root, env_name
+        )
+        if not ok:
+            return 1
         print_managed_deploy_header(
-            config, env_name, info, compose_file, tag_override=tag_override
+            config, env_name, dry_run_info, compose_file, tag_override=tag_override
         )
         return 0
 
@@ -459,6 +487,11 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         compose_file, env_add, config=config, dk_env_name=env_name
     )
 
+    # False unless the central hook below both ran and left the stack images in a known-good
+    # state. Defaulting to False means every path that does not reach the hook — a pinned
+    # pre-pulled env, DK_SKIP_STALE_STACK=1, a dry run — keeps building exactly as before.
+    stack_images_already_built = False
+
     # One central check, before any branching on env_command, so `db restore`, `files restore`
     # and `manage` are all covered without enumerating subcommands. Opt-out, not an allowlist.
     if compose_file and should_ensure_stack_checkout(
@@ -469,6 +502,15 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         caller_runs_up = env_command in (None, "compose") and (
             not compose_args or compose_args[0] == "up"
         )
+        try:
+            recreate_files = (
+                []
+                if caller_runs_up
+                else local_proxy_extra_compose_files(info, config, env_name, env_add, ["up"])
+            )
+        except LocalProxyConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
         rc, stale_reason = ensure_stack_matches_checkout(
             config,
             compose_file,
@@ -476,11 +518,15 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             use_prepulled_registry=use_prepulled_registry,
             dry_run=dry_run,
             recreate=not caller_runs_up,
+            extra_compose_files=recreate_files,
         )
         if rc != 0:
             return rc
         if stale_reason is not None and caller_runs_up:
             compose_args = drop_no_build_when_stale(compose_args)
+        stack_images_already_built = pre_up_build_is_redundant(
+            config, compose_file, env_add, dry_run=dry_run
+        )
 
     if env_command == "docker":
         return run_docker_passthrough(
@@ -568,10 +614,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             return 1
         return _compose(
             compose_file,
-            "exec",
-            config.stack_service("web"),
-            "./manage.py",
-            *manage_args,
+            *manage_exec_args(config, manage_args, tty=True, user=getattr(ns, "user", None)),
             env_add=env_add,
         ).returncode
 
@@ -624,6 +667,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         site_origin=site_origin,
         docker_host=docker_host,
         storage_volumes=ctx.storage_volumes,
+        stack_images_already_built=stack_images_already_built,
     )
 
 
@@ -834,12 +878,14 @@ def _handle_bkp_db(
         )
 
     if sub == "restore":
+        archive_file = getattr(ns, "archive_file", None)
         return run_unified_db_restore(
             config,
             compose_file=compose_file,
             env_add=env_add,
             env_name=env_name,
             force_dumps=bool(getattr(ns, "restore_from_dumps", False)),
+            archive_path=Path(archive_file).expanduser() if archive_file else None,
             dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
             skip_confirm=bool(ns.yes),
             extra_pgbackrest_args=list(getattr(ns, "pgbackrest_restore_args", None) or []),
@@ -877,43 +923,6 @@ def _handle_bkp_db(
             )
             return 1
         return run_pg_dump(compose_file, env_add, list(getattr(ns, "pg_dump_args", None) or []))
-
-    if sub == "pgrestore":
-        extras = list(getattr(ns, "pg_restore_args", None) or [])
-        if getattr(ns, "archive_file", None):
-            extras = ["--file", str(ns.archive_file), *extras]
-        restore_extras = compose_pg_restore_extras_for_config(
-            config,
-            extras,
-            default_archive=config.fetch_db_dump_path,
-        )
-        if "--file" not in restore_extras and sys.stdin.isatty():
-            return 1
-        rc = ensure_db_service_running(
-            compose_file, env_add, config=config, dk_env_name=env_name
-        )
-        if rc != 0:
-            return rc
-        print(
-            "bkp_db pgrestore: replacing app database with an empty database before restore …",
-            file=sys.stderr,
-        )
-        rc = run_drop_create_app_database(
-            compose_file,
-            env_add,
-            postgis=config.native.reset_db.postgis,
-        )
-        if rc != 0:
-            return rc
-        rc = run_pg_restore(compose_file, env_add, restore_extras, config=config)
-        if rc != 0:
-            return rc
-        return run_post_db_restore_manage_commands(
-            config,
-            compose_file=compose_file,
-            env_add=env_add,
-            env_name=env_name,
-        )
 
     print(f"Unknown db subcommand: {sub!r}", file=sys.stderr)
     return 1

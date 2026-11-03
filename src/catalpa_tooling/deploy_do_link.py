@@ -21,6 +21,7 @@ digitalocean:
   disabled: false             # true: manual docker_host only (no droplet / DO DNS API)
   size: s-2vcpu-4gb           # optional; for `dk <env> host create`
   region: sgp1                # optional; for `dk <env> host create`
+  image: ubuntu-24-04-x64     # optional; for `dk <env> host create`
   dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300)
 """
 
@@ -32,6 +33,18 @@ class EnvDoLink:
     explicit_droplet_name: bool = False
     size: str | None = None
     region: str | None = None
+    image: str | None = None
+
+
+@dataclass(frozen=True)
+class EnvDoBlock:
+    """The ``digitalocean`` block of an env's ``info.yaml``, before droplet-name resolution."""
+
+    droplet_name: str | None = None
+    ssh_user: str = DEFAULT_SSH_USER
+    size: str | None = None
+    region: str | None = None
+    image: str | None = None
 
 
 def normalize_droplet_hostname(name: str) -> str:
@@ -70,27 +83,36 @@ def is_digitalocean_host_disabled(info: dict[str, Any]) -> bool:
     return _truthy(raw.get("disabled"))
 
 
-def _parse_env_do_block(raw: Any) -> tuple[str | None, str, str | None, str | None]:
-    """Return ``(droplet_name, ssh_user, size, region)`` from ``info.yaml`` ``digitalocean``."""
+def _parse_env_do_block(raw: Any) -> EnvDoBlock:
+    """Return the ``digitalocean`` block fields from an env's ``info.yaml``."""
     if not isinstance(raw, dict):
-        return None, DEFAULT_SSH_USER, None, None
-    droplet_name = _env_do_str(raw, "droplet_name")
-    ssh_user = _env_do_str(raw, "ssh_user") or DEFAULT_SSH_USER
-    return droplet_name, ssh_user, _env_do_str(raw, "size"), _env_do_str(raw, "region")
+        return EnvDoBlock()
+    return EnvDoBlock(
+        droplet_name=_env_do_str(raw, "droplet_name"),
+        ssh_user=_env_do_str(raw, "ssh_user") or DEFAULT_SSH_USER,
+        size=_env_do_str(raw, "size"),
+        region=_env_do_str(raw, "region"),
+        image=_env_do_str(raw, "image"),
+    )
+
+
+def _link_from_block(block: EnvDoBlock, droplet_name: str, *, explicit: bool) -> EnvDoLink:
+    return EnvDoLink(
+        droplet_name=droplet_name,
+        ssh_user=block.ssh_user,
+        size=block.size,
+        region=block.region,
+        image=block.image,
+        explicit_droplet_name=explicit,
+    )
 
 
 def read_env_do_link(info: dict[str, Any]) -> EnvDoLink | None:
     """Parse ``digitalocean`` block when ``droplet_name`` is set explicitly in info.yaml."""
-    droplet_name, ssh_user, size, region = _parse_env_do_block(info.get("digitalocean"))
-    if not droplet_name:
+    block = _parse_env_do_block(info.get("digitalocean"))
+    if not block.droplet_name:
         return None
-    return EnvDoLink(
-        droplet_name=normalize_droplet_hostname(droplet_name),
-        ssh_user=ssh_user,
-        size=size,
-        region=region,
-        explicit_droplet_name=True,
-    )
+    return _link_from_block(block, normalize_droplet_hostname(block.droplet_name), explicit=True)
 
 
 def resolve_env_do_link(
@@ -99,22 +121,11 @@ def resolve_env_do_link(
     info: dict[str, Any],
 ) -> EnvDoLink:
     """Resolve droplet link: explicit ``digitalocean.droplet_name`` or ``{project}-{env}``."""
-    droplet_name, ssh_user, size, region = _parse_env_do_block(info.get("digitalocean"))
-    if droplet_name:
-        return EnvDoLink(
-            droplet_name=normalize_droplet_hostname(droplet_name),
-            ssh_user=ssh_user,
-            size=size,
-            region=region,
-            explicit_droplet_name=True,
-        )
-    return EnvDoLink(
-        droplet_name=default_droplet_name(config, env_name),
-        ssh_user=ssh_user,
-        size=size,
-        region=region,
-        explicit_droplet_name=False,
-    )
+    link = read_env_do_link(info)
+    if link is not None:
+        return link
+    block = _parse_env_do_block(info.get("digitalocean"))
+    return _link_from_block(block, default_droplet_name(config, env_name), explicit=False)
 
 
 def public_ipv4(droplet: dict[str, Any]) -> str:
@@ -651,6 +662,7 @@ def _cmd_env_host_manual(
         remote_rc = _probe_manual_hosts_remote(
             docker_host=value,
             dc_backup_docker_host=backup_host or None,
+            env_name=env_name,
         )
 
     if dns_rc != 0:
@@ -707,8 +719,10 @@ def parse_timedatectl_status(text: str) -> TimedatectlInfo:
     return TimedatectlInfo(timezone=tz, ntp_synchronized=ntp, system_clock_synchronized=sys_clock)
 
 
-def _probe_one_host_remote(label: str, docker_host_url: str) -> TimedatectlInfo | None:
-    """SSH reachability + timedatectl; return clock info or None if unreachable."""
+def _probe_one_host_remote(
+    label: str, docker_host_url: str, *, env_name: str
+) -> TimedatectlInfo | None:
+    """SSH reachability, timedatectl and Docker log rotation; clock info or None if unreachable."""
     from catalpa_tooling.dc_backup.ssh_install import remote_run_capture
     from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
     from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
@@ -764,6 +778,13 @@ def _probe_one_host_remote(label: str, docker_host_url: str) -> TimedatectlInfo 
             f"(check timedatectl on the host).",
             file=sys.stderr,
         )
+
+    from catalpa_tooling.docker_logging import probe_host_logging, report_host_logging
+
+    # Advisory like the clock check: an uncapped container log fills the disk (#109).
+    log_status = probe_host_logging(ssh)
+    if log_status is not None:
+        report_host_logging(label, log_status, env_name=env_name)
     return info
 
 
@@ -771,12 +792,15 @@ def _probe_manual_hosts_remote(
     *,
     docker_host: str,
     dc_backup_docker_host: str | None,
+    env_name: str,
 ) -> int:
     """Probe app (+ optional backup) hosts; advisory clock warnings; 0 unless SSH hard-fail."""
-    app_info = _probe_one_host_remote("app", docker_host)
+    app_info = _probe_one_host_remote("app", docker_host, env_name=env_name)
     backup_info: TimedatectlInfo | None = None
     if dc_backup_docker_host:
-        backup_info = _probe_one_host_remote("dc_backup", dc_backup_docker_host)
+        backup_info = _probe_one_host_remote(
+            "dc_backup", dc_backup_docker_host, env_name=env_name
+        )
 
     if (
         app_info
@@ -984,6 +1008,7 @@ def cmd_env_host(
         return _probe_manual_hosts_remote(
             docker_host=configured_host or docker_host,
             dc_backup_docker_host=backup or None,
+            env_name=env_name,
         )
     return 0
 
@@ -1018,7 +1043,7 @@ def _host_create_parser(env_name: str) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--image",
-        help="Image slug (default: ubuntu-24-04-x64 or digitalocean.image)",
+        help="Image slug (default: info.yaml digitalocean.image, then tooling.yaml, then ubuntu-24-04-x64)",
     )
     p.add_argument(
         "--region",
@@ -1124,6 +1149,7 @@ def cmd_env_host_create(
         region=ns.region,
         env_size=link.size,
         env_region=link.region,
+        env_image=link.image,
         project_id=project_id,
         ssh_keys=tuple(ns.ssh_keys),
         timezone=ns.timezone,

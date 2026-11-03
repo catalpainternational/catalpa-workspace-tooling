@@ -13,6 +13,7 @@ from catalpa_tooling.media_storage import (
     find_media_mount_in_compose,
     find_media_mount_in_config,
     resolve_media_storage,
+    resolve_stack_volumes,
 )
 
 
@@ -310,3 +311,76 @@ def test_load_compose_config_failure_returns_none(
     m.stderr = "boom"
     monkeypatch.setattr("catalpa_tooling.media_storage.run_cmd", lambda *a, **k: m)
     assert load_compose_config(str(tmp_path / "c.yml"), {}) is None
+
+
+def test_resolve_stack_volumes_names_every_declared_volume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_project
+) -> None:
+    """Every file volume is resolvable, not only the media one (#103)."""
+    compose = tmp_path / "compose.yml"
+    compose.write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "catalpa_tooling.media_storage.load_compose_config",
+        lambda *a, **k: {
+            "services": {
+                "web": {
+                    "volumes": [
+                        {"type": "volume", "source": "django_media", "target": "/django_media"},
+                        {"type": "volume", "source": "private_uploads", "target": "/private"},
+                        {"type": "bind", "source": "/srv/src", "target": "/app"},
+                    ],
+                },
+                "db": {
+                    "volumes": [
+                        {"type": "volume", "source": "postgres_data", "target": "/var/lib/pg"}
+                    ],
+                },
+            },
+            "volumes": {
+                "django_media": {"name": "app_full_django_media"},
+                "private_uploads": {"name": "custom_private"},
+                "postgres_data": {},
+            },
+        },
+    )
+    vols = resolve_stack_volumes(
+        compose_file=str(compose),
+        env={"COMPOSE_PROJECT_NAME": "app_full"},
+        config=minimal_project,
+        repo_root=tmp_path,
+    )
+    assert vols.names == {
+        "django_media": "app_full_django_media",
+        "private_uploads": "custom_private",
+        "postgres_data": "app_full_postgres_data",
+    }
+    assert vols.web_mounts == ("django_media", "private_uploads")
+
+
+def test_resolve_stack_volumes_falls_back_to_yaml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, minimal_project
+) -> None:
+    compose = tmp_path / "compose.yml"
+    compose.write_text(
+        "services:\n"
+        "  web:\n"
+        "    volumes:\n"
+        "      - django_media:/media\n"
+        "      - public_documents:/public\n"
+        "volumes:\n"
+        "  django_media:\n"
+        "  public_documents:\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.media_storage.load_compose_config",
+        lambda *a, **k: None,
+    )
+    vols = resolve_stack_volumes(
+        compose_file=str(compose),
+        env={"COMPOSE_PROJECT_NAME": "app"},
+        config=minimal_project,
+        repo_root=tmp_path,
+    )
+    assert vols.names["public_documents"] == "app_public_documents"
+    assert vols.web_mounts == ("django_media", "public_documents")

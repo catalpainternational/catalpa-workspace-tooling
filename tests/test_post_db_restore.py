@@ -316,3 +316,86 @@ def test_db_psql_only_skips_compose(minimal_project, tmp_path) -> None:
             == 0
         )
         compose.assert_not_called()
+
+def _run_and_capture_exec(cfg, *, env_add, env_name="dev") -> tuple[int, list[str]]:
+    exec_args: list[str] = []
+
+    def fake_compose(compose_file: str, *args: str, **kwargs: object) -> MagicMock:
+        if args and args[0] == "exec":
+            exec_args.extend(args)
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    with (
+        patch("catalpa_tooling.post_db_restore._ensure_stack_volumes", return_value=0),
+        patch("catalpa_tooling.post_db_restore._compose", side_effect=fake_compose),
+    ):
+        rc = run_post_db_restore_manage_commands(
+            cfg,
+            compose_file="compose.yml",
+            env_add=env_add,
+            env_name=env_name,
+        )
+    return rc, exec_args
+
+
+def test_expands_site_and_worktree_placeholders(minimal_project) -> None:
+    """A worktree's hooks see its own origin and slug, not the main checkout's (#140)."""
+    from catalpa_tooling.worktree_overlay import build_worktree_overlay, write_worktree_overlay
+
+    overlay = build_worktree_overlay(minimal_project, slug="altcha-985", base_env="dev")
+    write_worktree_overlay(minimal_project.repo_root, overlay)
+    cfg = _config_with_hooks(
+        minimal_project,
+        commands=(
+            (
+                "sync_wagtail_sites",
+                "--profile",
+                "{env_name}",
+                "--primary-host",
+                "{site_host}",
+                "--origin={site_origin}",
+                "--slug={worktree_slug}",
+            ),
+        ),
+    )
+
+    rc, exec_args = _run_and_capture_exec(
+        cfg, env_add={"SITE_ORIGIN": "https://app-dev-altcha-985.localdev.temp.build"}
+    )
+
+    assert rc == 0
+    assert exec_args[4:] == [
+        "sync_wagtail_sites",
+        "--profile",
+        "dev",
+        "--primary-host",
+        "app-dev-altcha-985.localdev.temp.build",
+        "--origin=https://app-dev-altcha-985.localdev.temp.build",
+        "--slug=altcha_985",
+    ]
+
+
+def test_worktree_slug_is_empty_outside_a_worktree(minimal_project) -> None:
+    cfg = _config_with_hooks(minimal_project, commands=(("noop", "--slug={worktree_slug}"),))
+    rc, exec_args = _run_and_capture_exec(cfg, env_add={})
+    assert rc == 0
+    assert exec_args[4:] == ["noop", "--slug="]
+
+
+def test_site_placeholder_without_site_origin_refuses_to_run(minimal_project, capsys) -> None:
+    cfg = _config_with_hooks(
+        minimal_project, commands=(("sync_wagtail_sites", "--primary-host", "{site_host}"),)
+    )
+    with (
+        patch("catalpa_tooling.post_db_restore._ensure_stack_volumes") as ensure_volumes,
+        patch("catalpa_tooling.post_db_restore._compose") as compose,
+    ):
+        rc = run_post_db_restore_manage_commands(
+            cfg, compose_file="compose.yml", env_add={}, env_name="dev"
+        )
+    assert rc == 1
+    ensure_volumes.assert_not_called()
+    compose.assert_not_called()
+    assert "SITE_ORIGIN is not set" in capsys.readouterr().err

@@ -162,10 +162,16 @@ def dc_backup_tls_extra_compose_files(
     return [str(override)]
 
 
-def merge_extra_compose_files(*groups: list[str]) -> list[str] | None:
-    """Concatenate override path lists; return ``None`` when empty."""
+def merge_extra_compose_files(*groups: list[str] | None) -> list[str] | None:
+    """Concatenate override path lists; return ``None`` when empty.
+
+    ``None`` groups are skipped, so the function is safe to call on its own output —
+    callers that add an override to an already-merged list pass ``None`` back in.
+    """
     out: list[str] = []
     for g in groups:
+        if not g:
+            continue
         out.extend(g)
     return out or None
 

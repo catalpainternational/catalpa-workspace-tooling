@@ -128,6 +128,7 @@ Override the manifest path with `TOOLING_CONFIG=/path/to/tooling.yaml` if needed
 | `stack.healthcheck`                   | Service + URL for smoke / wait-for-healthy.                                               |                                                                                              |
 | `stack.origin_env_keys`               | Optional; defaults include `SITE_ORIGIN`, `DJANGO_ORIGIN`, `BERO_ORIGIN`.                 |                                                                                              |
 | `stack.build_placeholders`            | Dummy secrets so `dk build` / `dk push` can interpolate Compose without real credentials. |                                                                                              |
+| `stack.manage_user`                   | Optional; user (`django` or `uid:gid`) for `exec … ./manage.py`.                          | Set it when the image has no `USER` and drops privileges in its entrypoint. See below.        |
 
 ### `ops` (backups, systemd, transfer)
 
@@ -146,7 +147,7 @@ Volume keys you later bind with `storage.volumes` in `info.yaml` must be one of:
 
 ### `digitalocean` (defaults for `dk <env> host create`)
 
-Add this when the first remote env will be a DigitalOcean droplet. Per-env overrides go in `docker/envs/<env>/info.yaml` (see §4). For `size` and `region`, resolution is **CLI flag → env `info.yaml` → `tooling.yaml`**.
+Add this when the first remote env will be a DigitalOcean droplet. Per-env overrides go in `docker/envs/<env>/info.yaml` (see §4). For `size`, `region` and `image`, resolution is **CLI flag → env `info.yaml` → `tooling.yaml`**.
 
 ```yaml
 digitalocean:
@@ -242,6 +243,7 @@ Declare three **roles** in `tooling.yaml` and use those exact Compose service na
 
 - **`db`** — Postgres. `dk <env> db …`, `dk transfer`, and `tests ci` exec this service. Give it a healthcheck (`pg_isready`). Keep the service name stable (`db` is the usual choice).
 - **`web`** — the container that has `./manage.py` on `PATH` / `WORKDIR` (`dk <env> manage`, post-restore hooks, smoke empty-migrate). Extra workers (`listen`, `migrate` oneshot) can share the same image; only the role name is special.
+  - `dk <env> manage` and the post-restore `manage_commands` use `docker compose exec`, which **skips the entrypoint**. If your image has no `USER` line and drops privileges in the entrypoint (`runuser`, `gosu`, `su-exec`), those commands run as **root**. Any file they write to a mounted volume (uploads, generated documents) is then root-owned, and the app fails on it later with `PermissionError`. Set `stack.manage_user` to the app user so they run as that user. For a one-off that really needs another user: `dk <env> manage --user root …`.
 - **`proxy`** — Caddy (or equivalent) listening on **container port 80**. The machine-wide local proxy attaches this service to `catalpa-local-proxy-net` and strips published host ports. Dev backends (Vite, runserver) stay **internal**; Caddy is the only front door.
 
 You may add redis, Metabase, `node`, oneshots, etc. They are invisible to role-based commands unless you wire them in scripts.
@@ -325,7 +327,7 @@ storage:
 
 Tooling materializes stanza / `pg1-path` / S3 into the **`pgbackrest_conf` volume** (`/etc/pgbackrest/conf.d/…`). The file baked into the Postgres image is only for process paths the `postgres` user can write (`lock-path`, `log-path`, `spool-path`) plus comments. **Do not set `pg1-path` (or `repo1-*`) in the image file** — that duplicates the drop-in and pgBackRest exits `[031]`. Create and `chown` those lock/log/spool directories in the Dockerfile. See a consumer's `docker/postgres/pgbackrest.conf` for a worked example.
 
-`dk <env> db restore` / `files restore` are for backups **this stack** wrote. To load an Ansible-era or package-install cluster, use a custom-format dump (`db pgrestore` / `db restore --dumps`) and `dk fetch media` + `files push` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)).
+`dk <env> db restore` / `files restore` are for backups **this stack** wrote. To load an Ansible-era or package-install cluster, use a custom-format dump (`db restore --dumps` / `db restore --file`) and `dk fetch media` + `files push` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)).
 
 ### Django / smoke-test env names
 
@@ -374,7 +376,7 @@ Prefer `dk <env> host create` over a raw `dk digoc droplets create` so the env i
 2. Create encrypted `credentials.yaml` on a machine that has the team age key. Confirm without printing secrets: `sops -d docker/envs/staging/credentials.yaml >/dev/null && echo OK`.
 3. In `info.yaml`, set `site_origin` to a hostname (or URL) on a **DigitalOcean-managed** DNS zone when you want `host create` to write A records. Also set `env.compose_project_name` (and `PROJECT_NAME` if Compose uses it). Leave `docker_host` unset — `host create` writes it.
 
-Override droplet name, SSH user, size, region, or DNS TTL per env:
+Override droplet name, SSH user, size, region, image, or DNS TTL per env:
 
 ```yaml
 # docker/envs/staging/info.yaml
@@ -383,6 +385,7 @@ digitalocean:
   ssh_user: root
   size: s-2vcpu-4gb
   region: sgp1
+  image: ubuntu-24-04-x64 # optional; default from tooling.yaml
   dns_ttl: 3600 # optional; default 300
 ```
 
@@ -432,7 +435,7 @@ uv run dk staging ps
 uv run dk staging manage migrate
 ```
 
-To copy **application data** from a pre-Docker / Ansible host, do **not** run `dk staging db restore` or `dk staging files restore`. Those replay this stack’s pgBackRest and restic layouts (and `db restore` is offline pgBackRest whenever `pgbr_s3_read_*` / `pgbr_s3_write_*` are set). Dump the old cluster (`pg_dump -Fc`) into `paths.fetch_db_dump`, then `uv run dk staging db pgrestore` or `uv run dk staging db restore --dumps`. For media: `uv run dk fetch media` then `uv run dk staging files push`. Details: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups).
+To copy **application data** from a pre-Docker / Ansible host, do **not** run `dk staging db restore` or `dk staging files restore`. Those replay this stack’s pgBackRest and restic layouts (and `db restore` is offline pgBackRest whenever `pgbr_s3_read_*` / `pgbr_s3_write_*` are set). Dump the old cluster (`pg_dump -Fc`) into `paths.fetch_db_dump`, then `uv run dk staging db restore --dumps` (or `db restore --file <archive>` for one archive). For media: `uv run dk fetch media` then `uv run dk staging files push`. Details: [TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups).
 
 Commit `image_tag` when you want that pin shared.
 
