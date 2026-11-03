@@ -147,7 +147,7 @@ Volume keys you later bind with `storage.volumes` in `info.yaml` must be one of:
 
 ### `digitalocean` (defaults for `dk <env> host create`)
 
-Add this when the first remote env will be a DigitalOcean droplet. Per-env overrides go in `docker/envs/<env>/info.yaml` (see §4). For `size` and `region`, resolution is **CLI flag → env `info.yaml` → `tooling.yaml`**.
+Add this when the first remote env will be a DigitalOcean droplet. Per-env overrides go in `docker/envs/<env>/info.yaml` (see §4). For `size`, `region` and `image`, resolution is **CLI flag → env `info.yaml` → `tooling.yaml`**.
 
 ```yaml
 digitalocean:
@@ -376,7 +376,7 @@ Prefer `dk <env> host create` over a raw `dk digoc droplets create` so the env i
 2. Create encrypted `credentials.yaml` on a machine that has the team age key. Confirm without printing secrets: `sops -d docker/envs/staging/credentials.yaml >/dev/null && echo OK`.
 3. In `info.yaml`, set `site_origin` to a hostname (or URL) on a **DigitalOcean-managed** DNS zone when you want `host create` to write A records. Also set `env.compose_project_name` (and `PROJECT_NAME` if Compose uses it). Leave `docker_host` unset — `host create` writes it.
 
-Override droplet name, SSH user, size, region, or DNS TTL per env:
+Override droplet name, SSH user, size, region, image, or DNS TTL per env:
 
 ```yaml
 # docker/envs/staging/info.yaml
@@ -385,6 +385,7 @@ digitalocean:
   ssh_user: root
   size: s-2vcpu-4gb
   region: sgp1
+  image: ubuntu-24-04-x64 # optional; default from tooling.yaml
   dns_ttl: 3600 # optional; default 300
 ```
 

@@ -21,6 +21,10 @@
 
 ### Fixed
 
+- **`dk <env> host create` reads `digitalocean.image` from the env's `info.yaml`.** It was
+  ignored there while `size` and `region` worked. An env whose `info.yaml` already has an
+  `image:` line now provisions new droplets from it instead of the `tooling.yaml` image, so
+  check `docker/envs/*/info.yaml` for stale values.
 - **`dk worktree seed` runs the `ops.post_db_restore` hooks** (#140). The seed copies the main
   checkout's database but skipped the hooks, so values such as Wagtail `Site` hostnames still
   named the main checkout's stack, and pages in the worktree posted forms to it. The hooks now

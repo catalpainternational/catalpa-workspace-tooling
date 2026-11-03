@@ -242,6 +242,14 @@ def test_resolve_env_do_link_size_region_without_droplet_name(minimal_project) -
     )
 
 
+def test_resolve_env_do_link_reads_image(minimal_project) -> None:
+    info = {"digitalocean": {"image": "ubuntu-26-04-x64"}}
+    assert resolve_env_do_link(minimal_project, "staging", info).image == "ubuntu-26-04-x64"
+    info["digitalocean"]["droplet_name"] = "web-1"
+    assert resolve_env_do_link(minimal_project, "staging", info).image == "ubuntu-26-04-x64"
+    assert read_env_do_link(info).image == "ubuntu-26-04-x64"
+
+
 def test_droplet_name_to_env_map_includes_default_names(tmp_path: Path) -> None:
     config = _load_test_config(tmp_path)
     env_dir = tmp_path / "docker" / "envs" / "prod"
@@ -905,7 +913,7 @@ def test_cmd_env_host_create_uses_info_yaml_size_region(
     env_dir = tmp_path / "docker" / "envs" / "staging"
     env_dir.mkdir(parents=True)
     (env_dir / "info.yaml").write_text(
-        "digitalocean:\n  size: s-1vcpu-2gb\n  region: sgp1\n",
+        "digitalocean:\n  size: s-1vcpu-2gb\n  region: sgp1\n  image: ubuntu-26-04-x64\n",
         encoding="utf-8",
     )
 
@@ -930,8 +938,10 @@ def test_cmd_env_host_create_uses_info_yaml_size_region(
     assert cmd_env_host_create(config, "staging", ["--dry-run"]) == 0
     assert create_kwargs[0]["env_size"] == "s-1vcpu-2gb"
     assert create_kwargs[0]["env_region"] == "sgp1"
+    assert create_kwargs[0]["env_image"] == "ubuntu-26-04-x64"
     assert create_kwargs[0]["size"] is None
     assert create_kwargs[0]["region"] is None
+    assert create_kwargs[0]["image"] is None
 
 
 def test_cmd_env_host_create_cli_overrides_info_yaml(
