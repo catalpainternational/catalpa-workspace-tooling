@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -71,6 +73,11 @@ def _db_shell_vars(target: DbRestoreTarget) -> str:
 
 # PostgreSQL startup log once crash/archive recovery has finished (English messages).
 _PG_RECOVERY_READY_LOG = "database system is ready to accept connections"
+# The official image's entrypoint prints this each time the container starts on an existing data
+# directory; seeing it twice while waiting means `db` is crash-looping.
+_PG_ENTRYPOINT_START_LOG = "Skipping initialization"
+# A data directory from another major version never starts, however long we wait.
+_PG_WRONG_MAJOR_LOG = "database files are incompatible with server"
 
 
 def _merged_process_env(env: dict[str, str]) -> dict[str, str]:
@@ -122,18 +129,25 @@ def _compose_exec_pgbackrest(
     compose_file: str,
     env: dict[str, str],
     *pgbackrest_rest: str,
+    stanza: bool = True,
 ) -> int:
     """``docker compose exec -T -u postgres db pgbackrest …`` (db must be running).
+
+    ``stanza=False`` leaves out ``--stanza``, which commands such as ``version`` reject, and
+    skips the repository settings check, since such commands never reach the repository.
 
     The ``db`` service often runs as root (entrypoint fixes volume permissions); pgBackRest
     must run as ``postgres`` to connect via the local socket (see systemd/pgbackrest-backup.sh).
     """
-    err = validate_pgbackrest_env(env)
-    if err:
-        print(err, file=sys.stderr)
-        return 1
-    stanza = resolve_stanza(env)
-    assert stanza  # validated above
+    stanza_argv: list[str] = []
+    if stanza:
+        err = validate_pgbackrest_env(env)
+        if err:
+            print(err, file=sys.stderr)
+            return 1
+        stanza_name = resolve_stanza(env)
+        assert stanza_name  # validated above
+        stanza_argv = [f"--stanza={stanza_name}"]
     argv = [
         "docker",
         "compose",
@@ -146,7 +160,7 @@ def _compose_exec_pgbackrest(
         "db",
         "pgbackrest",
         *_log_level_argv(env),
-        f"--stanza={stanza}",
+        *stanza_argv,
         *pgbackrest_rest,
     ]
     r = run_cmd(
@@ -413,7 +427,7 @@ def _pg_restore_compose_inner_script(
 ) -> str:
     """Shell script run in the ``db`` container to execute ``pg_restore``."""
     shell_vars = _db_shell_vars(target)
-    pg_restore_cmd = 'pg_restore -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB"'
+    pg_restore_cmd = 'pg_restore -U postgres -d "$APP_DB"'
     if extras:
         pg_restore_cmd += " " + " ".join(shlex.quote(a) for a in extras)
     pg_restore_cmd += _pg_restore_compose_role_suffix(
@@ -426,25 +440,23 @@ def _pg_restore_compose_inner_script(
     if not promote_app_superuser:
         return (
             shell_vars
-            + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
             + pg_restore_cmd
         )
 
     return f"""set -eu
 {shell_vars}
-export PGPASSWORD="$POSTGRES_PASSWORD"
 _promoted=0
 demote_app_user() {{
   if [ "$_promoted" -eq 1 ]; then
-    psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=0 \\
+    psql -U postgres -d postgres -v ON_ERROR_STOP=0 \\
       -c "ALTER ROLE \\"$APP_USER\\" NOSUPERUSER;" >/dev/null 2>&1 || true
   fi
 }}
 trap demote_app_user EXIT
-_super=$(psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -Atqc \\
+_super=$(psql -U postgres -d postgres -Atqc \\
   "SELECT rolsuper FROM pg_roles WHERE rolname = '$APP_USER'")
 if [ "$_super" != "t" ]; then
-  psql -h 127.0.0.1 -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 \\
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \\
     -c "ALTER ROLE \\"$APP_USER\\" SUPERUSER;"
   _promoted=1
 fi
@@ -471,6 +483,13 @@ def run_info(compose_file: str, env: dict[str, str]) -> int:
 
 
 def run_check_online(compose_file: str, env: dict[str, str]) -> int:
+    if resolve_mode(env) == "read":
+        print(
+            "pgBackRest check: skipped in READ mode. `pgbackrest check` tests WAL archiving, "
+            "which a restore-only host never does; use `bkp_db info` and look for `status: ok` to test the repository.",
+            file=sys.stderr,
+        )
+        return 0
     return _compose_exec_pgbackrest(compose_file, env, "check")
 
 
@@ -493,15 +512,17 @@ def run_configure_verify_online_check(compose_file: str, env: dict[str, str]) ->
 
 
 def run_version(compose_file: str, env: dict[str, str]) -> int:
-    return _compose_exec_pgbackrest(compose_file, env, "version")
+    return _compose_exec_pgbackrest(compose_file, env, "version", stanza=False)
 
 
 def _pg_dump_inner_script(extra_pg_dump_args: Sequence[str] | None) -> str:
-    extras = tuple(extra_pg_dump_args or ())
+    extras = list(extra_pg_dump_args or ())
+    # `dk <env> db pgdump -- --schema-only`: the `--` only separates dk's flags from pg_dump's.
+    while extras and extras[0] == "--":
+        extras.pop(0)
     inner = (
         _DJANGO_APP_SHELL_VARS
-        + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
-        + 'exec pg_dump -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -Fc'
+        + 'exec pg_dump -U postgres -d "$APP_DB" -Fc'
     )
     if extras:
         inner = inner + " " + " ".join(shlex.quote(a) for a in extras)
@@ -515,7 +536,7 @@ def run_pg_dump(
 ) -> int:
     """Run ``pg_dump`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``); stream to stdout.
 
-    Uses the superuser inside the container (``postgres`` / ``POSTGRES_PASSWORD``). Optional
+    Runs as the ``postgres`` superuser over the container's local socket. Optional
     ``extra_pg_dump_args`` are appended (shell-quoted). Command echo is suppressed so stdout is
     suitable for ``> file`` or piping.
     """
@@ -528,6 +549,8 @@ def run_pg_dump(
             compose_file,
             "exec",
             "-T",
+            "-u",
+            "postgres",
             "db",
             "sh",
             "-c",
@@ -559,6 +582,8 @@ def run_pg_dump_to_file(
         compose_file,
         "exec",
         "-T",
+        "-u",
+        "postgres",
         "db",
         "sh",
         "-c",
@@ -645,10 +670,9 @@ def run_drop_create_app_database(
     shell_vars = _db_shell_vars(target)
     script = f"""set -eu
 {shell_vars}
-export PGPASSWORD="$POSTGRES_PASSWORD"
-dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
-createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
-psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
+dropdb -U postgres --if-exists --force "$APP_DB"
+createdb -U postgres -O "$APP_USER" "$APP_DB"
+psql -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
 {psql_body}
 EOF
 """
@@ -660,6 +684,8 @@ EOF
             compose_file,
             "exec",
             "-T",
+            "-u",
+            "postgres",
             "db",
             "sh",
             "-c",
@@ -845,6 +871,8 @@ def run_pg_restore(
                     compose_file,
                     "exec",
                     "-T",
+                    "-u",
+                    "postgres",
                     "db",
                     "sh",
                     "-c",
@@ -1092,8 +1120,11 @@ def wait_db_logs_for_recovery_ready(
         start_new_session=True,
     )
     ready = threading.Event()
+    failed: list[str] = []
 
     def _read_loop() -> None:
+        starts = 0
+        last_fatal = ""
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
@@ -1102,6 +1133,19 @@ def wait_db_logs_for_recovery_ready(
                 if _PG_RECOVERY_READY_LOG in line:
                     ready.set()
                     return
+                if "FATAL:" in line:
+                    last_fatal = line.split("FATAL:", 1)[1].strip()
+                if _PG_WRONG_MAJOR_LOG in line:
+                    failed.append(f"PostgreSQL cannot open the restored data: {last_fatal}")
+                    return
+                if _PG_ENTRYPOINT_START_LOG in line:
+                    starts += 1
+                    if starts > 1:
+                        failed.append(
+                            "`db` keeps restarting instead of finishing recovery"
+                            + (f"; last error: {last_fatal}" if last_fatal else ".")
+                        )
+                        return
         except Exception:
             return
 
@@ -1124,6 +1168,8 @@ def wait_db_logs_for_recovery_ready(
                 break
             if ready.wait(timeout=remaining):
                 return True, ""
+            if failed:
+                return False, failed[0]
             if proc.poll() is not None:
                 return (
                     False,
@@ -1146,6 +1192,103 @@ def wait_db_logs_for_recovery_ready(
         signal.signal(signal.SIGINT, old_sigint)
         _terminate_log_follower(proc)
         th.join(timeout=5)
+
+
+def pg_major_of_newest_backup(info_json: str) -> str | None:
+    """PostgreSQL major of the newest backup in ``pgbackrest info --output=json``, if any.
+
+    That is the set a restore with no ``--set`` takes. Each backup names its cluster by ``id``;
+    the stanza's ``db`` list maps that id to a version, which changes after a ``stanza-upgrade``.
+    """
+    try:
+        stanzas = json.loads(info_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(stanzas, list) or not stanzas or not isinstance(stanzas[0], dict):
+        return None
+    backups = stanzas[0].get("backup") or []
+    if not backups:
+        return None
+    db_id = (backups[-1].get("database") or {}).get("id")
+    for db in stanzas[0].get("db") or []:
+        if db.get("id") == db_id:
+            return str(db.get("version") or "").split(".")[0] or None
+    return None
+
+
+def pg_major_from_version_text(text: str) -> str | None:
+    """``postgres (PostgreSQL) 18.6 (Debian …)`` -> ``18``."""
+    match = re.search(r"\(PostgreSQL\)\s+(\d+)", text)
+    return match.group(1) if match else None
+
+
+def check_backup_matches_image(
+    env: dict[str, str],
+    *,
+    compose_file: str,
+    extra_pgbackrest_args: Sequence[str] | None = None,
+) -> int:
+    """Refuse a restore whose newest backup is from another PostgreSQL major than the `db` image.
+
+    The restore itself would succeed and the download take minutes; only then would PostgreSQL
+    refuse to start. Returns 0 when they match, or when either side cannot be read (the restore
+    goes ahead and says so), or when ``--set`` or a point-in-time ``--target`` picks a backup
+    other than the newest.
+    """
+    picks_another = ("--set", "--target")
+    if any(a in picks_another or a.startswith(tuple(f"{p}=" for p in picks_another))
+           for a in extra_pgbackrest_args or ()):
+        return 0
+    stanza = resolve_stanza(env)
+    inner = (
+        "postgres --version; echo ---; "
+        f"pgbackrest --stanza={shlex.quote(stanza or '')} info --output=json"
+    )
+    argv = [
+        "docker",
+        "compose",
+        "-f",
+        compose_file,
+        "run",
+        "-T",
+        "--rm",
+        "--no-deps",
+        "-u",
+        "postgres",
+        "--entrypoint",
+        "/bin/sh",
+        "db",
+        "-c",
+        inner,
+    ]
+    r = subprocess.run(
+        argv,
+        env=_merged_process_env(env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    version_text, _, info_json = (r.stdout or "").partition("---")
+    image_major = pg_major_from_version_text(version_text)
+    backup_major = pg_major_of_newest_backup(info_json.strip())
+    if image_major is None or backup_major is None:
+        print(
+            "pgBackRest restore: could not compare the backup's PostgreSQL version with the "
+            "`db` image's; restoring anyway.",
+            file=sys.stderr,
+        )
+        return 0
+    if image_major != backup_major:
+        print(
+            f"pgBackRest restore: the newest backup is PostgreSQL {backup_major}, but the `db` "
+            f"image runs PostgreSQL {image_major}, so it could not start on the restored data. "
+            f"Build `db` from a PostgreSQL {backup_major} image, or pick an older backup with "
+            "--set.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def build_restore_offline_argv(
@@ -1294,6 +1437,14 @@ def run_restore_offline(
             env,
             config=config,
             skip_configure_confirm=skip_confirm,
+        )
+        != 0
+    ):
+        return 1
+
+    if (
+        check_backup_matches_image(
+            env, compose_file=compose_file, extra_pgbackrest_args=extra_pgbackrest_args
         )
         != 0
     ):

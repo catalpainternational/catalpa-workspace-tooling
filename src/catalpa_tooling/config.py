@@ -297,7 +297,7 @@ class OpsConfig:
     transfer_workdir: str
     pgbackrest: PgbackrestOpsConfig
     restic: ResticOpsConfig
-    zabbix: ZabbixOpsConfig
+    zabbix: ZabbixOpsConfig | None
     systemd_units: SystemdUnitsOpsConfig
     post_db_restore: PostDbRestoreOpsConfig
     post_metabase_db_restore: PostMetabaseDbRestoreOpsConfig
@@ -1192,7 +1192,8 @@ def _parse_deploy_paths(deploy_raw: dict[str, Any]) -> DeployPathsConfig:
             field="paths.deploy.default_compose",
         ),
         dev_compose=_validate_rel_path(
-            _require_str(deploy_raw, "dev_compose", section="paths.deploy"),
+            _optional_str(deploy_raw, "dev_compose")
+            or _require_str(deploy_raw, "default_compose", section="paths.deploy"),
             field="paths.deploy.dev_compose",
         ),
         credentials_optional_envs=_parse_string_list(
@@ -1224,7 +1225,7 @@ def _parse_paths(paths_raw: dict[str, Any]) -> PathsConfig:
         ),
         scripts=_parse_scripts_paths(paths_raw.get("scripts")),
         env_local=_validate_rel_path(
-            _require_str(paths_raw, "env_local", section="paths"), field="paths.env_local"
+            _optional_str(paths_raw, "env_local") or ".env.local", field="paths.env_local"
         ),
         email_backend_dir=_validate_rel_path(
             _require_str(paths_raw, "email_backend_dir", section="paths"),
@@ -1657,7 +1658,9 @@ def _parse_restic_verbose_field(raw: dict[str, Any], key: str, *, section: str) 
 
 def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     pg_raw = _require_mapping(ops_raw.get("pgbackrest"), "ops.pgbackrest")
-    zabbix_raw = _require_mapping(ops_raw.get("zabbix"), "ops.zabbix")
+    zabbix_raw = ops_raw.get("zabbix")
+    if zabbix_raw is not None:
+        zabbix_raw = _require_mapping(zabbix_raw, "ops.zabbix")
     units_raw = _require_mapping(ops_raw.get("systemd_units"), "ops.systemd_units")
     pg_units = _parse_string_list(units_raw.get("pgbackrest"), field="ops.systemd_units.pgbackrest")
     restic_units = _parse_string_list(units_raw.get("restic"), field="ops.systemd_units.restic")
@@ -1733,9 +1736,13 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
                 restic_raw, "restore_verbose", section="ops.restic"
             ),
         ),
-        zabbix=ZabbixOpsConfig(
-            unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
-            userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),
+        zabbix=(
+            ZabbixOpsConfig(
+                unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
+                userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),
+            )
+            if zabbix_raw is not None
+            else None
         ),
         systemd_units=systemd_units,
         post_db_restore=_parse_post_db_restore(ops_raw.get("post_db_restore")),

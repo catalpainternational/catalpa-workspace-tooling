@@ -226,3 +226,50 @@ def _make_project_root() -> Path:
     write_minimal_tooling_tree(root)
     _write_images_yaml(root, "image_registry: ghcr.io/example/app\n")
     return root
+
+
+def test_run_cleanup_skips_a_package_that_was_never_published(minimal_project, capsys) -> None:
+    from catalpa_tooling.ghcr_cleanup import GitHubApiError
+
+    _write_images_yaml(minimal_project.repo_root, "image_registry: ghcr.io/example/app\n")
+    plan = resolve_ghcr_cleanup_plan(minimal_project)
+    missing = plan.packages[0]
+    listed: list[str] = []
+
+    def fake_list(owner: str, package: str, token: str) -> list[PackageVersion]:
+        listed.append(package)
+        if package == missing:
+            raise GitHubApiError(404, f"GitHub API GET …/{package} failed (404): Package not found.")
+        return []
+
+    rc = run_cleanup(plan, dry_run=True, token="test-token", list_versions=fake_list)
+
+    assert rc == 0
+    assert listed == list(plan.packages)
+    assert f"{missing}: not found (never published" in capsys.readouterr().err
+
+
+def test_run_cleanup_still_stops_on_other_api_errors(minimal_project) -> None:
+    from catalpa_tooling.ghcr_cleanup import GitHubApiError
+
+    _write_images_yaml(minimal_project.repo_root, "image_registry: ghcr.io/example/app\n")
+    plan = resolve_ghcr_cleanup_plan(minimal_project)
+
+    def fake_list(owner: str, package: str, token: str) -> list[PackageVersion]:
+        raise GitHubApiError(403, "GitHub API GET … failed (403): Forbidden")
+
+    with pytest.raises(GitHubApiError):
+        run_cleanup(plan, dry_run=True, token="test-token", list_versions=fake_list)
+
+
+def test_run_cleanup_fails_when_no_package_is_found(minimal_project, capsys) -> None:
+    from catalpa_tooling.ghcr_cleanup import GitHubApiError
+
+    _write_images_yaml(minimal_project.repo_root, "image_registry: ghcr.io/example/app\n")
+    plan = resolve_ghcr_cleanup_plan(minimal_project)
+
+    def fake_list(owner: str, package: str, token: str) -> list[PackageVersion]:
+        raise GitHubApiError(404, "GitHub API GET … failed (404): Package not found.")
+
+    assert run_cleanup(plan, dry_run=True, token="test-token", list_versions=fake_list) == 1
+    assert "check image_registry and the token" in capsys.readouterr().err

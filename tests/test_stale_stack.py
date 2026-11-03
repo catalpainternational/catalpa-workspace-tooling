@@ -236,6 +236,19 @@ def test_label_targets_include_the_second_builder(
     assert set(targets) == set(stale_stack.stack_build_services(config)) | {"migrate"}
 
 
+def test_label_targets_leave_out_a_role_with_nothing_to_build(
+    config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dev stack's proxy can run a stock image; a `build:` stamped on it fails the build."""
+    services = _stack_services(config)
+    proxy = stale_stack.stack_build_services(config)[-1]
+    services[proxy] = {"image": "docker.io/library/caddy:2-alpine"}
+    _fake_docker(monkeypatch, services=services, labels={})
+    targets = label_target_services(config, "compose.yml", _env())
+    assert proxy not in targets
+    assert set(targets) == set(stale_stack.stack_build_services(config)) - {proxy}
+
+
 def test_the_override_stamps_the_second_builder_too(
     config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
