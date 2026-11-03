@@ -63,7 +63,6 @@ def test_caddy_django_hosts_include_explicit_extras() -> None:
         config=_config(),  # type: ignore[arg-type]
         env_name="dev",
         site_origin="https://app.localhost",
-        site_origins=["https://app.localhost"],
         behind_local_proxy=True,
     )
     assert env["CADDY_DJANGO_SITE_HOSTS"] == (

@@ -36,7 +36,7 @@ uv run dk next-branch dev-8.0 --execute
 uv run dk cut-release beta
 uv run dk cut-release beta 3
 uv run dk cut-release beta --tag v7.4.1.beta.9   # required on non-dev-* branches
-uv run dk cut-release -C bero beta --execute
+uv run dk cut-release -C <submodule> beta --execute
 ```
 
 ## Beta: branch + tag inference
@@ -82,7 +82,7 @@ dk cut-release --bump minor --set-default --execute           dk cut-release fin
 
 dk cut-release --beta --image-env staging                     dk cut-release beta
 dk cut-release --beta --beta-w 3                              dk cut-release beta 3
-dk cut-release --submodule bero --beta                        dk cut-release -C bero beta
+dk cut-release --submodule <path> --beta                      dk cut-release -C <path> beta
 
 # detached at v7.4.1 (old Mode B):
 dk cut-release --bump minor --execute                         dk next-branch minor --execute

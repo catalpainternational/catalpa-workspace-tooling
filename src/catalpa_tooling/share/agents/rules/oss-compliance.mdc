@@ -40,4 +40,4 @@ Use **`--ci`** in GitHub Actions for non-interactive CI runs.
 
 - Tooling reference: catalpa-workspace-tooling `docs/COMPLIANCE.md`
 - Per-project checklist: consumer `docs/OSS_COMPLIANCE.md` (if present)
-- Bero consumers: also `bero/docs/OSS_COMPLIANCE.md`, `bero/docs/FLAGGED_DEPENDENCIES.md`, `bero/docs/cursor-rules/bero-deps.mdc`
+- Projects whose frontend is a submodule: also that submodule's own `docs/OSS_COMPLIANCE.md`, `docs/FLAGGED_DEPENDENCIES.md` and dependency cursor rule, under `compliance.javascript.cwd`

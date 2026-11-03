@@ -111,10 +111,10 @@ For remote envs (`docker_host: ssh://…`, local proxy off), tooling injects the
 own certificates and serves HTTPS directly (no machine proxy in front):
 
 - `CADDY_SITE_ADDRESS` ← primary `site_origin`.
-- `CADDY_DJANGO_SITE_ADDRESS` ← bero stacks only (`paths.frontend: bero`): from `DJANGO_ORIGIN`
-  if set, else derived `admin.{primary-host}`.
+- `CADDY_DJANGO_SITE_ADDRESS` ← only when `DJANGO_ORIGIN` is declared in `info.yaml` `env:`.
+  Nothing is derived here: a deployed stack that does not declare an admin host gets no
+  admin site block.
 - `CADDY_METABASE_SITE_ADDRESS` ← only when Metabase is routed: explicit `METABASE_ORIGIN` /
-  `METABASE_SITE_ORIGIN`, a `stats` role, a bero stack with Metabase fetch configured, or a
-  second `site_origin` entry.
+  `METABASE_SITE_ORIGIN`, or a declared `stats` role.
 
 All values use `setdefault`, so anything set explicitly in `info.yaml` `env:` wins.

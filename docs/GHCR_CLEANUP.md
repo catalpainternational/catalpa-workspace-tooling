@@ -42,7 +42,7 @@ uv run dk clean-images --apply --yes
 Clean a single package:
 
 ```bash
-uv run dk clean-images --package catalpa_bero-django
+uv run dk clean-images --package myproject-django
 ```
 
 Override retention for one run:

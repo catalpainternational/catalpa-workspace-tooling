@@ -80,7 +80,7 @@ Then:
 ```bash
 uv sync
 # Install frontend deps so JS license lookup can read node_modules (cwd = paths.frontend)
-pnpm install --dir bero   # or: cd bero && pnpm install
+pnpm install --dir <frontend>   # or: cd <frontend> && pnpm install
 uv run test compliance
 uv run test compliance --check-only
 ```
@@ -187,20 +187,21 @@ uv run dk push --tag "$TAG"
 
 Copy [`scripts/compliance-workflow.yml.template`](../scripts/compliance-workflow.yml.template) to `.github/workflows/compliance.yml` in the consumer repo. Adjust branch names and submodule checkout (PAT) for private submodules.
 
-## Example: Bero platform consumers
+## Example: a shared platform submodule
 
-Early adopters (catalpa_bero, jid, ncd, tvi) embed **bero** as `paths.frontend: bero`. Typical config:
+Where several consumers embed the same platform repo as their frontend submodule, every
+compliance path points into that submodule. With `paths.frontend: <frontend>`:
 
-| Field | Bero consumer value |
-|-------|---------------------|
-| `license_files` | `bero/LICENSE` |
-| `python.lockfiles` | `bero/docker/uv.lock` |
-| `javascript.cwd` | `bero` |
-| `bundled_assets` | `[{ path: bero/src/fonts, license_globs: [...] }]` (list; one entry today) |
+| Field | Value |
+|-------|-------|
+| `license_files` | `<frontend>/LICENSE` |
+| `python.lockfiles` | `<frontend>/docker/uv.lock` |
+| `javascript.cwd` | `<frontend>` |
+| `bundled_assets` | `[{ path: <frontend>/src/fonts, license_globs: [...] }]` (list) |
 
-Do **not** add `cyclonedx-bom` / `pip-licenses` to `bero/pyproject.toml` — use the consumer root only.
+Do **not** add `cyclonedx-bom` / `pip-licenses` to the submodule's `pyproject.toml` — use the consumer root only.
 
-Project checklists and copyleft registers live in each consumer repo (`docs/OSS_COMPLIANCE.md`, platform submodule docs). Bero’s template: `bero/docs/OSS_COMPLIANCE.md`, `bero/docs/FLAGGED_DEPENDENCIES.md`.
+Project checklists and copyleft registers live in each consumer repo (`docs/OSS_COMPLIANCE.md`) and in the platform submodule's own `docs/OSS_COMPLIANCE.md` / `docs/FLAGGED_DEPENDENCIES.md`.
 
 ## Related docs
 
