@@ -65,9 +65,40 @@ def _parse_dk(config: ProjectConfig, argv: list[str], parser: argparse.ArgumentP
             if unknown is not None:
                 print(unknown_env_subcommand_message(first, unknown), file=sys.stderr)
                 raise SystemExit(2)
-        return parser.parse_args(env_argv)
+        return _parse_env_argv(parser, env_argv)
 
     return parser.parse_args(root_argv)
+
+
+def _passthrough_dest(parser: argparse.ArgumentParser, ns: argparse.Namespace) -> str | None:
+    """Name of the REMAINDER argument of the subcommand ``ns`` selected, if it has one."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            chosen = action.choices.get(getattr(ns, action.dest, None))
+            if chosen is not None:
+                return _passthrough_dest(chosen, ns)
+            return None
+    for action in parser._actions:
+        if action.nargs == argparse.REMAINDER:
+            return action.dest
+    return None
+
+
+def _parse_env_argv(parser: argparse.ArgumentParser, env_argv: list[str]) -> argparse.Namespace:
+    """Parse ``<env> …``, giving a passthrough subcommand the options argparse left over.
+
+    argparse gives a REMAINDER positional nothing that starts with ``-`` when it comes first,
+    so ``dk staging host create --ssh-key aa`` or ``dk staging docker --version`` were refused
+    as unrecognised (#154). Those leftovers always precede what the REMAINDER did take, so
+    they go back on its front; a subcommand without a passthrough still rejects them.
+    """
+    ns, unknown = parser.parse_known_args(env_argv)
+    if unknown:
+        dest = _passthrough_dest(parser, ns)
+        if dest is None:
+            parser.error("unrecognized arguments: " + " ".join(unknown))
+        setattr(ns, dest, unknown + list(getattr(ns, dest) or []))
+    return ns
 
 
 def _load_config_for_argv(argv: list[str]) -> tuple[ProjectConfig, list[str], str | None]:
