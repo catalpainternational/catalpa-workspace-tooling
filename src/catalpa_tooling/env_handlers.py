@@ -45,6 +45,7 @@ from catalpa_tooling.pgbackrest_db import (
 )
 from catalpa_tooling.pgbackrest_volume_config import (
     ensure_external_stack_volumes,
+    first_up_needs_db_init,
     materialize_configs,
     postgres_image_from_env,
     remove_wipe_data_volumes,
@@ -86,6 +87,7 @@ from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.systemd_remote_install import (
     cmd_install_systemd_backups,
     parse_docker_host_to_ssh_target,
+    rootless_podman_socket,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.dc_backup.hosts import (
@@ -247,6 +249,12 @@ def _run_compose_path(
             )
             if rc != 0:
                 return rc
+        why = first_up_needs_db_init(
+            env_add, image=postgres_image_from_env(env_add, config=config), config=config
+        )
+        if why:
+            print(why, file=sys.stderr)
+            return 1
         rc = materialize_configs(
             env_add,
             dry_run=False,
@@ -573,6 +581,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             env_defaults=env_defaults,
             site_origin=str(site_origin) if site_origin else None,
             target=zabbix_target,
+            podman_socket=rootless_podman_socket(str(docker_host)) if zabbix_target == "app" else None,
         )
 
     if env_command == "ensure_volumes":
