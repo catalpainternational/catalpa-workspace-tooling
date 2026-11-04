@@ -35,6 +35,16 @@
     `{env_name}` is still the base env in a worktree. A hook that uses a site placeholder when
     the env has no `SITE_ORIGIN` fails before anything runs. See
     [README_PGBACKREST.md](README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
+- **`--yes` works anywhere before `--` in dk's own commands.** Without a TTY, restores,
+  `bkp_files push` and others say "Pass --yes", but dk only accepted it right after the env
+  name or as the last word, so `dk <env> db restore --yes -- --type=immediate` failed. Now
+  any `-y` / `--yes` before `--` counts. Everything after `--` goes to pgBackRest unchanged,
+  so `db restore -- --type=immediate --yes` no longer counts as dk's `--yes`; put it before
+  `--`. `compose`, `docker`, `manage` and `db pgdump`, which hand their arguments to another
+  program, still take only a trailing `--yes`, so `dk dev manage somecommand -y …` keeps its
+  `-y`. This follows POSIX guideline 10
+  ([`--` ends the options](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap12.html))
+  and [clig.dev](https://clig.dev/)'s advice to make flags order-independent.
 - **Restic can back up more than one file volume.** `ops.restic.data_volume` names exactly
   one volume, so files an app keeps in other named volumes were never backed up, while
   pgBackRest still backed up the database rows that point at them. swlt_ws2's public documents
