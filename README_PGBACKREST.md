@@ -192,7 +192,7 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
 
-Offline restore may require global `dk --yes` when not attached to a TTY.
+Without a TTY, offline restore refuses unless you pass `--yes`. It can go after the env name or anywhere before `--` (`dk staging db restore --yes -- --type=immediate`). Anything after `--` goes to pgBackRest unchanged, `--yes` included.
 
 After a successful **`restore`**, the tooling may run project-configured hooks (see below). If a hook fails, the database is already restored; re-run with `dk <env> manage …` or the relevant SQL file.
 
