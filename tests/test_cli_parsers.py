@@ -138,6 +138,114 @@ def test_normalize_dk_env_argv_trailing_yes() -> None:
     assert normalize_dk_env_argv(["demo", "wipe", "--yes"]) == ["demo", "--yes", "wipe"]
 
 
+@pytest.mark.parametrize(
+    ("argv", "attr", "value"),
+    [
+        (
+            ["staging", "db", "restore", "--yes", "--", "--type=immediate"],
+            "pgbackrest_restore_args",
+            ["--", "--type=immediate"],
+        ),
+        (
+            ["staging", "db", "restore", "--dry-run", "-y", "--", "--delta"],
+            "pgbackrest_restore_args",
+            ["--", "--delta"],
+        ),
+        (
+            ["staging", "bkp_db", "restore", "--yes", "--", "--type=immediate"],
+            "pgbackrest_restore_args",
+            ["--", "--type=immediate"],
+        ),
+        (["staging", "files", "restore", "-y", "abc123"], "snapshot", "abc123"),
+        (["staging", "bkp_files", "restore", "abc123", "--yes"], "snapshot", "abc123"),
+        (
+            ["staging", "bkp_files", "push", "--yes", "--source", "/srv/media"],
+            "source",
+            "/srv/media",
+        ),
+        (["staging", "--tag", "v9", "files", "restore", "--yes", "abc123"], "snapshot", "abc123"),
+        (["staging", "--tag=v9", "files", "restore", "--yes", "abc123"], "snapshot", "abc123"),
+        (["staging", "--dry-run", "files", "restore", "--yes", "abc123"], "snapshot", "abc123"),
+        # host create parses its own options, so a --yes among them is dk's, not a passthrough's.
+        (
+            ["staging", "host", "create", "--yes", "--size", "s-1vcpu-1gb"],
+            "host_create_args",
+            ["--size", "s-1vcpu-1gb"],
+        ),
+    ],
+)
+def test_dk_parser_accepts_yes_before_double_dash(
+    tooling_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    attr: str,
+    value: object,
+) -> None:
+    """The no-TTY refusals say "Pass --yes", so dk's own commands take it anywhere before ``--``."""
+    from catalpa_tooling import dk_cli
+
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    ns = dk_cli._parse_dk(config, argv, build_dk_parser(config))
+    assert ns.yes is True
+    assert getattr(ns, attr) == value
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        ["--type=immediate", "--yes", "--delta"],
+        ["--type=immediate", "--yes"],
+        ["--yes", "--type=immediate"],
+    ],
+)
+def test_dk_parser_leaves_yes_after_double_dash_to_pgbackrest(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch, tail: list[str]
+) -> None:
+    """Everything after ``--`` is pgBackRest's, wherever ``--yes`` sits in it."""
+    from catalpa_tooling import dk_cli
+
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    ns = dk_cli._parse_dk(config, ["staging", "db", "restore", "--", *tail], build_dk_parser(config))
+    assert ns.yes is False
+    assert ns.pgbackrest_restore_args == ["--", *tail]
+
+
+def test_dk_parser_keeps_env_level_yes(tooling_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tooling_repo)
+    parser = build_dk_parser(load_project_config(tooling_repo))
+    ns = parser.parse_args(normalize_dk_env_argv(["staging", "--yes", "db", "restore"]))
+    assert ns.yes is True
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["dev", "docker", "run", "alpine", "apk", "add", "-y", "curl"],
+        ["dev", "compose", "run", "web", "pip", "uninstall", "-y", "foo"],
+        ["dev", "manage", "somecommand", "--yes", "--verbosity", "2"],
+        ["dev", "db", "pgdump", "--yes", "-t", "x"],
+    ],
+)
+def test_normalize_dk_env_argv_leaves_another_programs_yes(argv: list[str]) -> None:
+    """A ``-y`` in the middle of arguments for compose, docker, manage or pg_dump is theirs."""
+    assert normalize_dk_env_argv(argv) == argv
+
+
+def test_dk_parser_still_takes_trailing_yes_from_compose_down(
+    tooling_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scripts end a wipe with ``compose down -v --yes``; the wipe guard needs that ``--yes``."""
+    from catalpa_tooling import dk_cli
+
+    monkeypatch.chdir(tooling_repo)
+    config = load_project_config(tooling_repo)
+    ns = dk_cli._parse_dk(config, ["staging", "compose", "down", "-v", "--yes"], build_dk_parser(config))
+    assert ns.yes is True
+    assert ns.compose_argv == ["down", "-v"]
+
+
 @pytest.mark.skipif(
     not __import__("importlib").util.find_spec("argcomplete"),
     reason="argcomplete not installed",

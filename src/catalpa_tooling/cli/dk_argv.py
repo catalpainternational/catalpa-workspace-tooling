@@ -123,6 +123,40 @@ def normalize_dk_root_argv(argv: list[str]) -> list[str]:
     return out
 
 
+YES_FLAGS: frozenset[str] = frozenset({"-y", "--yes"})
+
+
+def _command_words(tokens: list[str]) -> list[str]:
+    """The env command and its subcommand from the tokens after the env name.
+
+    Skips the env-level flags (``--dry-run``, ``-y``/``--yes``, ``--tag``) that may come first.
+    """
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--dry-run", *YES_FLAGS) or tok.startswith("--tag="):
+            i += 1
+        elif tok == "--tag":
+            i += 2
+        else:
+            return tokens[i : i + 2]
+    return []
+
+
+def _passes_args_on(words: list[str]) -> bool:
+    """True when the command hands its arguments to another program.
+
+    A ``-y`` there may belong to that program (``dk dev manage somecommand -y …``), so only
+    a trailing one is taken as dk's. ``host create`` is not one: it parses its own options.
+    """
+    if not words:
+        return True
+    first, second = words[0], (words[1] if len(words) > 1 else "")
+    if first not in SPECIAL_ENV_COMMANDS or first in ("compose", "docker", "manage"):
+        return True
+    return first in ("db", "bkp_db") and second == "pgdump"
+
+
 def normalize_dk_env_argv(argv: list[str]) -> list[str]:
     """Rewrite argv for ``dk <env> …`` (no ``dk`` token).
 
@@ -130,16 +164,38 @@ def normalize_dk_env_argv(argv: list[str]) -> list[str]:
     (e.g. ``local --tag v1 info``). This helper only normalizes:
 
     - ``<env> --help`` / ``-h`` (two args only) → ``--help`` (env CLI help, not compose).
-    - Trailing ``--yes`` / ``-y`` → ``<env> --yes …`` so confirmation flags are not swallowed
-      by ``implicit_compose_argv`` (REMAINDER).
+    - ``--yes`` / ``-y`` → ``<env> --yes …``, because only the env parser defines it. For dk's
+      own commands that means any ``--yes`` before ``--``; everything after ``--`` is passed on
+      untouched (``db restore --yes -- --type=immediate``). For commands that pass their
+      arguments to another program (compose verbs, ``compose``, ``docker``, ``manage``,
+      ``pgdump``) only a trailing ``--yes`` is moved, so it is not swallowed by REMAINDER.
+      Compose verbs typed straight after the env (``dk dev exec …``) lose every ``-y`` anyway,
+      in ``_split_env_flags``; see GitHub #164.
+
+    The first two rules follow the POSIX Utility Syntax Guidelines, guideline 10 (``--`` ends
+    the options; what follows is operands even if it starts with ``-``,
+    https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap12.html) and clig.dev
+    ("make arguments, flags and subcommands order-independent", https://clig.dev/). argparse
+    cannot do the second itself: ``parse_intermixed_args`` does not support subparsers. The
+    trailing rule for passthrough commands goes against guideline 10 and is kept because
+    scripts rely on it, e.g. ``dk <env> compose down -v --yes`` for the wipe guard.
     """
     out = list(argv)
     if len(out) == 2 and not out[0].startswith("-") and out[1] in ("--help", "-h"):
         return ["--help"]
-    if len(out) >= 3 and not out[0].startswith("-") and out[-1] in ("--yes", "-y"):
-        yes_flag = out.pop()
-        out.insert(1, yes_flag)
-    return out
+    if len(out) < 3 or out[0].startswith("-"):
+        return out
+    if _passes_args_on(_command_words(out[1:])):
+        if out[-1] in YES_FLAGS:
+            yes_flag = out.pop()
+            out.insert(1, yes_flag)
+        return out
+    end = out.index("--") if "--" in out else len(out)
+    head = out[1:end]
+    yes_flags = [tok for tok in head if tok in YES_FLAGS]
+    if not yes_flags:
+        return out
+    return [out[0], yes_flags[0], *(tok for tok in head if tok not in YES_FLAGS), *out[end:]]
 
 
 def _split_env_flags(tokens: list[str]) -> tuple[dict[str, Any], list[str]]:
