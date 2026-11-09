@@ -101,6 +101,14 @@ What gets installed on the remote host:
 
 [`systemd_remote_install.py`](src/catalpa_tooling/systemd_remote_install.py) parses `docker_host` from `info.yaml` into an SSH target (`ssh://user@host` → `user@host`). Files are copied with `scp`; remote steps use `ssh`. The install machine needs SSH access to the deploy host and a working `docker` CLI there (timers exec into containers via the host Docker socket).
 
+### Rootless Podman hosts (Fedora CoreOS)
+
+When `docker_host` names a user's Podman socket (`ssh://core@host/run/user/1000/podman/podman.sock`), the login cannot write `/opt`, `/etc` or `/etc/systemd/system`, so the units are installed for that user instead:
+
+- units in `~/.config/systemd/user`, driven with `systemctl --user` (the login needs linger, which containerwharf hosts have);
+- `ops.install_prefix` `/opt/<name>` → `~/.local/lib/<name>`, `ops.config_dir` `/etc/<name>` → `~/.config/<name>`;
+- each service drops `User=root`, runs after `podman.socket`, and sets `DOCKER_HOST=unix://%t/podman/podman.sock` so the scripts' `docker` reaches that user's Podman.
+
 ## Safety and flags
 
 | Flag | Effect |

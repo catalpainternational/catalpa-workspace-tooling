@@ -1058,7 +1058,9 @@ def _docker_run_cp(
             image,
             "-c",
             (
-                f"cat > /work/{q} && chmod 644 /work/{q} "
+                # 600: the pgBackRest drop-in holds the repository's S3 secret. postgres
+                # owns the files; it and root (dk's own probes) are the only readers.
+                f"cat > /work/{q} && chmod 600 /work/{q} "
                 f"&& chown postgres:postgres /work/{q}"
             ),
         ],
@@ -1339,7 +1341,7 @@ def run_pgbackrest_stanza_create(
             "pgBackRest stanza-create: PostgreSQL PGDATA is missing or not initialized "
             f"(no global/pg_control in Docker volume {vol_data!r}). "
             "Run `dk <env> bkp_db init` or `dk <env> bkp_db configure stanza-create` "
-            "(starts `db` automatically), or `dk <env> up -d db` then retry."
+            "(starts `db` automatically)."
         )
         return 1
 
@@ -1351,6 +1353,9 @@ def run_pgbackrest_stanza_create(
             "--rm",
             *_compose_db_platform_args(image, docker_env),
             *_docker_run_s3_network_args(env),
+            # pgBackRest refuses stanza-create as root, and a db image may set no USER.
+            "--user",
+            "postgres",
             "--entrypoint",
             "/bin/sh",
             "-v",
@@ -1506,6 +1511,31 @@ def ensure_pgbackrest_conf_before_restore(
         dry_run=False,
         postgres_image=postgres_image_from_env(env, config=config),
         config=config,
+    )
+
+
+def first_up_needs_db_init(
+    env: dict[str, str], *, image: str, config: ProjectConfig | None = None
+) -> str | None:
+    """Why ``up`` must wait for ``db init``, or None.
+
+    With backup write credentials, ``up`` turns WAL archiving on. On a database that has
+    never been initialised there is no stanza yet, so every archive attempt fails, and
+    Postgres restarts each time, part-way through the first migrations (measured on
+    catalpa-site, 2026-10-27). ``db init`` starts the database and creates the stanza
+    first; an environment that is already running has a cluster and is never stopped here.
+    """
+    if resolve_mode(env) != "write":
+        return None
+    docker_env = _docker_env_for_remote(env)
+    volume = postgres_data_volume_name(env, config=config)
+    if _pgdata_has_control_file(docker_env, image, volume, pg1_path=postgres_pg1_path(env, config=config)):
+        return None
+    return (
+        f"This environment has backup write credentials and a new database ({volume}). "
+        "Run `dk <env> db init` first: it starts the database and creates the backup "
+        "stanza, so archiving works before the first migrations run. Rebuilding a host "
+        "whose backups already exist? Run `dk <env> db restore` instead."
     )
 
 

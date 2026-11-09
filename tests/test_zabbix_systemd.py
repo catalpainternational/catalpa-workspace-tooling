@@ -530,3 +530,72 @@ def test_run_zabbix_deploy_install_force_without_zbx(monkeypatch, minimal_config
     )
     assert rc == 0
     assert called.get("env_defaults") == {}
+
+
+ROOTLESS_SOCKET = "/run/user/1000/podman/podman.sock"
+
+
+def test_rootless_unit_is_a_user_unit_without_privilege(monkeypatch) -> None:
+    """On a rootless Podman host the agent is the login's own unit and not privileged."""
+    monkeypatch.setattr(zs, "ROOTLESS_PODMAN_SOCKET", ROOTLESS_SOCKET)
+    body = zs._unit_file_content(image="zabbix/zabbix-agent2:alpine-latest", docker_group_gid=988)
+    assert "--privileged" not in body
+    assert "--group-add" not in body
+    assert "docker.service" not in body
+    assert f"-v {ROOTLESS_SOCKET}:/var/run/docker.sock" in body
+    assert f"-e DOCKER_HOST=unix://{ROOTLESS_SOCKET}" in body
+    assert "WantedBy=default.target" in body
+    # The checks still chroot into the host root to run its docker CLI.
+    assert "-v /:/host/root:ro" in body
+    # SELinux refuses the container the socket otherwise.
+    assert "--security-opt label=disable" in body
+    # Otherwise the CLI's "cannot read /root/.docker" warning precedes each check's JSON.
+    assert "-e DOCKER_CONFIG=/nonexistent/docker-config" in body
+
+
+def test_docker_host_unit_is_unchanged(monkeypatch) -> None:
+    monkeypatch.setattr(zs, "ROOTLESS_PODMAN_SOCKET", None)
+    body = zs._unit_file_content(image="img", docker_group_gid=988)
+    assert "--privileged" in body
+    assert "--group-add 988" in body
+    assert "WantedBy=multi-user.target" in body
+
+
+def test_rootless_remote_commands_use_no_sudo(monkeypatch) -> None:
+    monkeypatch.setattr(zs, "ROOTLESS_PODMAN_SOCKET", ROOTLESS_SOCKET)
+    script = zs._remote_install_script(env_body="A=1\n", unit_body="[Unit]\n", userparams_body="")
+    assert "sudo" not in script
+    assert "systemctl --user daemon-reload" in script
+    assert zs._remote_systemctl("enable", "--now", "x.service") == [
+        "systemctl", "--user", "enable", "--now", "x.service",
+    ]
+
+
+def test_docker_host_remote_commands_use_sudo(monkeypatch) -> None:
+    monkeypatch.setattr(zs, "ROOTLESS_PODMAN_SOCKET", None)
+    script = zs._remote_install_script(env_body="A=1\n", unit_body="[Unit]\n", userparams_body="")
+    steps = [line for line in script.splitlines()[1:] if line]
+    assert steps and all("sudo " in line for line in steps)
+
+
+def test_rootless_zabbix_files_sit_beside_the_backup_env_files(minimal_project, monkeypatch) -> None:
+    """The restic check reads the env file the backup install wrote, so both must agree."""
+    from catalpa_tooling.systemd_remote_install import backup_install_target
+
+    host = "ssh://core@vm/run/user/1000/podman/podman.sock"
+    zs._apply_config_globals(minimal_project)
+    zs._apply_rootless_layout(minimal_project, home="/var/home/core", socket="/run/user/1000/podman/podman.sock")
+    try:
+        backups = backup_install_target(
+            host,
+            install_prefix=minimal_project.ops.install_prefix,
+            config_dir=minimal_project.ops.config_dir,
+        )
+        assert str(zs.ENV_DIR) == f"/var/home/core/{backups.config_dir}"
+        assert zs.DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE == (
+            f"/var/home/core/{backups.config_dir}/restic-files-backup.env"
+        )
+        assert str(zs.SYSTEMD_UNIT_PATH).startswith("/var/home/core/.config/systemd/user/")
+    finally:
+        zs._apply_config_globals(minimal_project)
+    assert zs.ROOTLESS_PODMAN_SOCKET is None

@@ -39,6 +39,10 @@ ZABBIX_ITEM_KEY_OFFSITE_TIMER = "dc-backup.offsite.timer"
 GARAGE_DOCKER_CONTAINER = "garage"
 DOCKER_GROUP_FALLBACK_GID = 988
 DOCKER_SOCK_PATH = Path("/var/run/docker.sock")
+# Set by ``_apply_rootless_layout`` when the deploy host is rootless Podman (``docker_host``
+# names ``/run/user/<uid>/…/podman.sock``): the login has no root, so the agent is that
+# login's own user unit and the remote commands drop ``sudo``.
+ROOTLESS_PODMAN_SOCKET: str | None = None
 DEFAULT_ZBX_SERVER_HOST = "zabbix.catalpa.build"
 # Always present in ZBX_METADATA (HostMetadata) for auto-registration.
 ZBX_METADATA_DOCKER_TOKEN = "docker"
@@ -118,7 +122,57 @@ def resolve_docker_group_gid_local(*, explicit: int | None) -> int:
     return DOCKER_GROUP_FALLBACK_GID
 
 
+def _rootless_unit_file_content(*, image: str, socket: str) -> str:
+    """The agent as the login's user unit on a rootless Podman host.
+
+    Container root is the login, not host root, so ``--privileged`` and the docker group
+    go. The UserParameter commands still ``chroot /host/root`` to run the host's own
+    ``docker`` CLI, which reaches the login's Podman through ``DOCKER_HOST``; the host
+    root is bind-mounted recursively, so the socket under ``/run/user`` is inside it.
+    SELinux would refuse the container the socket, hence ``label=disable``.
+    ``DOCKER_CONFIG`` points at a folder that does not exist: the chrooted CLI is the
+    login, which cannot read root's ``/root/.docker``, and its warning would otherwise
+    land in front of every check's JSON (measured on FCOS 45).
+    """
+    userparams_mount = USERPARAMS_FILE.name
+    return f"""[Unit]
+Description={UNIT_DESCRIPTION_LABEL}: Zabbix Agent 2 (rootless Podman)
+Documentation=https://hub.docker.com/r/zabbix/zabbix-agent2
+After=podman.socket
+Requires=podman.socket
+
+[Service]
+Type=simple
+Environment=DOCKER_HOST=unix://{socket}
+Restart=always
+RestartSec=10s
+TimeoutStartSec=0
+ExecStartPre=-/usr/bin/docker pull {image}
+ExecStart=/usr/bin/docker run --rm \\
+    --name {CONTAINER_NAME} \\
+    --user 0:0 \\
+    --security-opt label=disable \\
+    --network=host \\
+    --env-file {ENV_FILE} \\
+    -e DOCKER_HOST=unix://{socket} \\
+    -e DOCKER_CONFIG=/nonexistent/docker-config \\
+    -v {socket}:/var/run/docker.sock \\
+    -v /proc:/host/proc:ro \\
+    -v /sys:/host/sys:ro \\
+    -v /:/host/root:ro \\
+    -v {USERPARAMS_FILE}:/etc/zabbix/zabbix_agent2.d/{userparams_mount}:ro \\
+    {image}
+ExecStop=/usr/bin/docker stop -t 30 {CONTAINER_NAME}
+ExecStopPost=-/usr/bin/docker rm -f {CONTAINER_NAME}
+
+[Install]
+WantedBy=default.target
+"""
+
+
 def _unit_file_content(*, image: str, docker_group_gid: int) -> str:
+    if ROOTLESS_PODMAN_SOCKET is not None:
+        return _rootless_unit_file_content(image=image, socket=ROOTLESS_PODMAN_SOCKET)
     # UserParameter commands use `chroot /host/root docker …` so the host Docker CLI runs with host libc
     # (the agent image is Alpine/musl and cannot execute the host `docker` binary directly).
     # chroot(2) needs CAP_SYS_CHROOT; run the container as root (--user 0:0).
@@ -450,6 +504,17 @@ def cmd_logs(*, lines: int, follow: bool) -> int:
     return int(r.returncode or 0)
 
 
+def _as_root(cmd: str) -> str:
+    """``sudo <cmd>`` on a Docker host; the command alone on a rootless one."""
+    return cmd if ROOTLESS_PODMAN_SOCKET is not None else f"sudo {cmd}"
+
+
+def _remote_systemctl(*args: str) -> list[str]:
+    if ROOTLESS_PODMAN_SOCKET is not None:
+        return ["systemctl", "--user", *args]
+    return ["sudo", "/bin/systemctl", *args]
+
+
 def _ssh_cmd(ssh_target: str, remote_argv: list[str], *, tty: bool = False) -> list[str]:
     cmd = ["ssh", "-o", "BatchMode=yes"]
     if tty:
@@ -463,6 +528,8 @@ def resolve_docker_group_gid_remote(ssh_target: str, *, explicit: int | None) ->
     """Pick GID for docker --group-add on remote host."""
     if explicit is not None:
         return int(explicit)
+    if ROOTLESS_PODMAN_SOCKET is not None:
+        return DOCKER_GROUP_FALLBACK_GID  # unused: the rootless unit adds no group
     r = run_cmd(
         _ssh_cmd(ssh_target, ["getent", "group", "docker"]),
         capture_output=True,
@@ -493,7 +560,7 @@ def resolve_docker_group_gid_remote(ssh_target: str, *, explicit: int | None) ->
 
 def _read_env_file_remote(ssh_target: str) -> str | None:
     r = run_cmd(
-        _ssh_cmd(ssh_target, [f"sudo test -f {ENV_FILE} && sudo cat {ENV_FILE} || true"]),
+        _ssh_cmd(ssh_target, [f"{_as_root('test')} -f {ENV_FILE} && {_as_root('cat')} {ENV_FILE} || true"]),
         capture_output=True,
         text=True,
         check=False,
@@ -513,16 +580,19 @@ def _remote_install_script(
 ) -> str:
     unit_b64 = base64.b64encode(unit_body.encode("utf-8")).decode("ascii")
     up_b64 = base64.b64encode(userparams_body.encode("utf-8")).decode("ascii")
-    lines = ["set -euo pipefail", f"sudo mkdir -p {ENV_DIR}"]
+    lines = [
+        "set -euo pipefail",
+        _as_root(f"mkdir -p {ENV_DIR} {SYSTEMD_UNIT_PATH.parent}"),
+    ]
     if env_body is not None:
         env_b64 = base64.b64encode(env_body.encode("utf-8")).decode("ascii")
-        lines.append(f"echo '{env_b64}' | base64 -d | sudo tee {ENV_FILE} > /dev/null")
-        lines.append(f"sudo chmod 600 {ENV_FILE}")
-    lines.append(f"echo '{up_b64}' | base64 -d | sudo tee {USERPARAMS_FILE} > /dev/null")
-    lines.append(f"sudo chmod 644 {USERPARAMS_FILE}")
-    lines.append(f"echo '{unit_b64}' | base64 -d | sudo tee {SYSTEMD_UNIT_PATH} > /dev/null")
-    lines.append(f"sudo chmod 644 {SYSTEMD_UNIT_PATH}")
-    lines.append("sudo systemctl daemon-reload")
+        lines.append(f"echo '{env_b64}' | base64 -d | {_as_root('tee')} {ENV_FILE} > /dev/null")
+        lines.append(_as_root(f"chmod 600 {ENV_FILE}"))
+    lines.append(f"echo '{up_b64}' | base64 -d | {_as_root('tee')} {USERPARAMS_FILE} > /dev/null")
+    lines.append(_as_root(f"chmod 644 {USERPARAMS_FILE}"))
+    lines.append(f"echo '{unit_b64}' | base64 -d | {_as_root('tee')} {SYSTEMD_UNIT_PATH} > /dev/null")
+    lines.append(_as_root(f"chmod 644 {SYSTEMD_UNIT_PATH}"))
+    lines.append(" ".join(_remote_systemctl("daemon-reload")))
     return "\n".join(lines) + "\n"
 
 
@@ -541,9 +611,13 @@ def cmd_install_remote(
 ) -> int:
     dgid = resolve_docker_group_gid_remote(ssh_target, explicit=docker_group_gid)
     where = "backup host" if target == "backup" else "deploy host"
+    how = (
+        "rootless Podman, user unit"
+        if ROOTLESS_PODMAN_SOCKET is not None
+        else f"--group-add {dgid}"
+    )
     print(
-        f"zabbix: remote install via {ssh_target!r} "
-        f"(--target {target}, --group-add {dgid} on {where}).",
+        f"zabbix: remote install via {ssh_target!r} (--target {target}, {how} on {where}).",
         flush=True,
     )
     if dry_run:
@@ -828,10 +902,10 @@ def cmd_enable_remote(ssh_target: str, *, dry_run: bool) -> int:
         print(f"zabbix: missing {ENV_FILE} on remote; run `... zabbix install` first.", file=sys.stderr)
         return 1
     if dry_run:
-        print(f"[dry-run] sudo systemctl enable --now {UNIT_NAME}", flush=True)
+        print(f"[dry-run] {' '.join(_remote_systemctl('enable', '--now', UNIT_NAME))}", flush=True)
         return 0
     r = run_cmd(
-        _ssh_cmd(ssh_target, ["sudo", "/bin/systemctl", "enable", "--now", UNIT_NAME]),
+        _ssh_cmd(ssh_target, _remote_systemctl("enable", "--now", UNIT_NAME)),
         check=False,
     )
     return int(r.returncode or 0)
@@ -840,10 +914,10 @@ def cmd_enable_remote(ssh_target: str, *, dry_run: bool) -> int:
 def cmd_disable_remote(ssh_target: str, *, dry_run: bool) -> int:
     print(f"zabbix: remote disable via {ssh_target!r}", flush=True)
     if dry_run:
-        print(f"[dry-run] sudo systemctl disable --now {UNIT_NAME}", flush=True)
+        print(f"[dry-run] {' '.join(_remote_systemctl('disable', '--now', UNIT_NAME))}", flush=True)
         return 0
     r = run_cmd(
-        _ssh_cmd(ssh_target, ["sudo", "/bin/systemctl", "disable", "--now", UNIT_NAME]),
+        _ssh_cmd(ssh_target, _remote_systemctl("disable", "--now", UNIT_NAME)),
         check=False,
     )
     return int(r.returncode or 0)
@@ -855,10 +929,10 @@ def cmd_restart_remote(ssh_target: str, *, dry_run: bool) -> int:
         print(f"zabbix: missing {ENV_FILE} on remote; run `... zabbix install` first.", file=sys.stderr)
         return 1
     if dry_run:
-        print(f"[dry-run] sudo systemctl restart {UNIT_NAME}", flush=True)
+        print(f"[dry-run] {' '.join(_remote_systemctl('restart', UNIT_NAME))}", flush=True)
         return 0
     r = run_cmd(
-        _ssh_cmd(ssh_target, ["sudo", "/bin/systemctl", "restart", UNIT_NAME]),
+        _ssh_cmd(ssh_target, _remote_systemctl("restart", UNIT_NAME)),
         check=False,
     )
     return int(r.returncode or 0)
@@ -866,9 +940,9 @@ def cmd_restart_remote(ssh_target: str, *, dry_run: bool) -> int:
 
 def cmd_logs_remote(ssh_target: str, *, lines: int, follow: bool) -> int:
     print(f"zabbix: remote logs via {ssh_target!r}", flush=True)
+    scope = ["journalctl", "--user"] if ROOTLESS_PODMAN_SOCKET is not None else ["sudo", "/bin/journalctl"]
     j = [
-        "sudo",
-        "/bin/journalctl",
+        *scope,
         "-u",
         UNIT_NAME,
         "-n",
@@ -1037,6 +1111,8 @@ def _apply_config_globals(config: ProjectConfig) -> None:
     """Bind module paths and unit names from ``tooling.yaml`` (single-threaded CLI)."""
     global UNIT_NAME, UNIT_DESCRIPTION_LABEL, SYSTEMD_UNIT_PATH, ENV_DIR, ENV_FILE, USERPARAMS_FILE
     global DEFAULT_ZABBIX_COMPOSE_PROJECT, DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE
+    global ROOTLESS_PODMAN_SOCKET
+    ROOTLESS_PODMAN_SOCKET = None
     UNIT_NAME = config.ops.zabbix.unit_name
     UNIT_DESCRIPTION_LABEL = config.meta.name
     SYSTEMD_UNIT_PATH = Path("/etc/systemd/system") / UNIT_NAME
@@ -1045,6 +1121,31 @@ def _apply_config_globals(config: ProjectConfig) -> None:
     USERPARAMS_FILE = ENV_DIR / config.ops.zabbix.userparams_file
     DEFAULT_ZABBIX_COMPOSE_PROJECT = config.stack.compose_project_default
     DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE = str(ENV_DIR / "restic-files-backup.env")
+
+
+def _apply_rootless_layout(config: ProjectConfig, *, home: str, socket: str) -> None:
+    """Rebind the module paths for a rootless Podman host: the login's own user unit, with
+    its files under ``~/.config/<name>`` (where the backup timers keep theirs)."""
+    global ROOTLESS_PODMAN_SOCKET, SYSTEMD_UNIT_PATH, ENV_DIR, ENV_FILE, USERPARAMS_FILE
+    global DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE
+    ROOTLESS_PODMAN_SOCKET = socket
+    SYSTEMD_UNIT_PATH = Path(home) / ".config/systemd/user" / UNIT_NAME
+    ENV_DIR = Path(home) / ".config" / Path(config.ops.config_dir.rstrip("/")).name
+    ENV_FILE = ENV_DIR / "zabbix-agent2.docker.env"
+    USERPARAMS_FILE = ENV_DIR / config.ops.zabbix.userparams_file
+    DEFAULT_ZABBIX_RESTIC_DOCKER_ENV_FILE = str(ENV_DIR / "restic-files-backup.env")
+
+
+def _remote_home(ssh_target: str) -> str | None:
+    r = run_cmd(
+        _ssh_cmd(ssh_target, ['printf %s "$HOME"']),
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    home = (r.stdout or "").strip()
+    return home if r.returncode == 0 and home.startswith("/") else None
 
 
 def run_zabbix_deploy(
@@ -1057,6 +1158,7 @@ def run_zabbix_deploy(
     env_defaults: dict[str, str] | None = None,
     site_origin: str | None = None,
     target: str = "app",
+    podman_socket: str | None = None,
 ) -> int:
     """Parse argv and dispatch zabbix subcommands locally or via ssh target."""
     from catalpa_tooling.config import ProjectConfig
@@ -1064,6 +1166,12 @@ def run_zabbix_deploy(
     if config is None:
         config = ProjectConfig.from_cwd()
     _apply_config_globals(config)
+    if podman_socket and ssh_target:
+        home = _remote_home(ssh_target)
+        if home is None:
+            print(f"zabbix: could not read $HOME on {ssh_target}.", file=sys.stderr)
+            return 1
+        _apply_rootless_layout(config, home=home, socket=podman_socket)
 
     if target not in ("app", "backup"):
         print(f"zabbix: invalid target {target!r} (expected app or backup).", file=sys.stderr)

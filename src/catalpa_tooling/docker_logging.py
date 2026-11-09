@@ -235,6 +235,14 @@ def cmd_host_logging(
     if loaded is None:
         return 1
     _, info = loaded
+    from catalpa_tooling.systemd_remote_install import rootless_podman_socket
+
+    if target == "app" and rootless_podman_socket(str(info.get("docker_host") or "")):
+        print(
+            f"host logging: {env_name} runs rootless Podman, which has no {DAEMON_JSON_PATH} "
+            "to set; its log driver comes from containers.conf. Nothing to check or install."
+        )
+        return 0
     ssh = _ssh_target_for(info, env_name, target)
     if ssh is None:
         return 1
