@@ -9,7 +9,7 @@ set -euo pipefail
 
 DATA_VOLUME="${RESTIC_FILES_DATA_VOLUME:-django_media}"
 VOL="${COMPOSE_PROJECT_NAME}_${DATA_VOLUME}"
-IMAGE="${RESTIC_IMAGE:-restic/restic:0.17.3}"
+IMAGE="${RESTIC_IMAGE:-restic/restic:0.18.1}"
 MOUNT="${RESTIC_FILES_BACKUP_PATH:-/backup/${DATA_VOLUME}}"
 
 # Other compose volume keys (space-separated), each mounted at /backup/<key> in the same

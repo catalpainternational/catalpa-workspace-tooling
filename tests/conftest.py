@@ -33,6 +33,17 @@ def _test_file_name(request: pytest.FixtureRequest) -> str | None:
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_git_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that make throwaway repos must not reach the real one.
+
+    `git rebase -x` (and hooks) export GIT_DIR, and git obeys it over the cwd: a run under
+    it once set `core.bare` and a `Test` user in this repo's own config.
+    """
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _mock_sops_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Workspace tests do not require a host ``sops`` binary."""
     install_in_memory_sops_mocks(monkeypatch)

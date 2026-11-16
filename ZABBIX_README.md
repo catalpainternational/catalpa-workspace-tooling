@@ -115,6 +115,10 @@ Optional env overrides:
 - `ZABBIX_DOCKER_DB_CONTAINER` — explicit container name
 - `ZABBIX_CHROOT_DOCKER_CLI` — host docker binary path (default `/usr/bin/docker`)
 
+## Rootless Podman hosts (Fedora CoreOS)
+
+When `docker_host` names a user's Podman socket (`ssh://core@host/run/user/1000/podman/podman.sock`), `zabbix install` writes the agent as that login's own user unit (`~/.config/systemd/user/<unit>`, files in `~/.config/<config_dir name>/`), and `enable` / `restart` / `logs` use `systemctl --user` / `journalctl --user` with no `sudo`. The container runs as container root, which is the login and not host root, with no `--privileged` and no docker group; it gets the login's Podman socket as `/var/run/docker.sock` and `DOCKER_HOST`, so the UserParameter commands (`chroot /host/root /usr/bin/docker …`) reach Podman unchanged. `--security-opt label=disable` is needed for SELinux to let the container use the socket. Fedora CoreOS ships the `docker` CLI the chroot runs.
+
 ## Prerequisites
 
 1. Deploy host with Docker and SSH access from your workstation (same as `dk prod up`).

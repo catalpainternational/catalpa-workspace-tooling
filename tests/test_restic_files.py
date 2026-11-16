@@ -348,6 +348,9 @@ def test_run_restore_promotes_each_volume(
     assert run_restore(dict(_WRITE_ENV), "latest", env_name="prod", skip_confirm=True, config=cfg) == 0
 
     restic_run, *alpine_runs = [c for c in calls if c[:2] == ["docker", "run"]]
+    # On a rootless SELinux host restic could not set the source's labels on any file.
+    i = restic_run.index("--exclude-xattr")
+    assert restic_run[i + 1] == "security.selinux"
     # `--path` names the primary only, so snapshots from before the extras still match.
     assert restic_run[restic_run.index("--path") :] == ["--path", "/backup/django_media"]
     assert [r[r.index("-v") + 1] for r in alpine_runs] == [
