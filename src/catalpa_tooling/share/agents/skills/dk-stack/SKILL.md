@@ -118,8 +118,9 @@ uv run dk worktree remove <slug>         # stops the stack, keeps volumes; print
   `dk context` `origins` in the worktree with the main checkout's. A project
   that publishes a host port (a debugger, a database) may not work in a
   worktree either. Check its `run-app` skill.
-- `tests ci`, `tests guest` and `tests functional` refuse to run inside a
-  worktree (since 1.5.0) and say to run them from the main checkout.
+- `tests ci`, `tests guest` and `tests functional` run inside a worktree
+  against its own stack and origin (they refused there in 1.5.0–1.6.x). Only
+  the base env works: `--env full` in a worktree is refused (#105).
 
 ## Management commands
 

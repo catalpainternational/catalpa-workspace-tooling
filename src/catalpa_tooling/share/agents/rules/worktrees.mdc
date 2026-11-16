@@ -23,6 +23,7 @@ This project does **every development task** (a fix, a feature, a refactor, docs
   - `uv run dk worktree seed <slug> -y` copies the DB and media from the main checkout's `dev` stack, then runs the project's `ops.post_db_restore` hooks so the copied rows name the worktree's hosts.
   - `uv run dk worktree up <slug>`, then `uv run dk -W <slug> dev manage migrate`.
 - Keep using `dk dev` (with `-W <slug>` from the main checkout). The overlay remaps the compose project and localdev hostnames. Don't invent overlays for remote envs (`docker_host`).
+- Run the pre-PR gate from inside the worktree: `uv run tests ci` (and `tests guest` / `tests functional`) check the worktree's code against its own stack and origin. Only the base env (`dev`) works there; `--env full` is refused (#105), and `guest`/`functional` reach only the worktree's first origin (#133).
 - Check the project's `run-app` skill for what a worktree can't do yet (for example a second site hostname, or a published host port).
 
 ## Finishing

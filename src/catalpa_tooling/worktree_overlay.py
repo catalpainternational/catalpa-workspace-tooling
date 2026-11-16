@@ -168,8 +168,12 @@ def load_worktree_overlay(repo_root: Path) -> WorktreeOverlay | None:
     path = worktree_marker_path(repo_root)
     if not path.is_file():
         return None
-    with open(path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        # Callers handle WorktreeOverlayError; anything else surfaced as a traceback.
+        raise WorktreeOverlayError(f"{path}: cannot read worktree marker: {exc}") from exc
     if not isinstance(raw, dict):
         raise WorktreeOverlayError(f"{path}: expected a mapping")
     try:
