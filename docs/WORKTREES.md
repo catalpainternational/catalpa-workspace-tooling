@@ -68,6 +68,8 @@ worktrees created before this was added. `base_ref` is omitted when `HEAD` was d
 - Rewrites role / Caddy origins (`admin.*`, `stats.*`, etc.) from the new primary
 - **Does not** remap remote envs (`docker_host: ssh://…`)
 
+**Tests:** `uv run tests ci`, `tests guest` and `tests functional` run inside a worktree with the same overlay, so the pre-PR gate checks the worktree's code in its own compose project and `guest`/`functional` drive its origin. Run them with the base env (the default); `--env full` from a worktree is refused because the overlay can't remap it (#105). Like the rest of the overlay, only the first origin is served (#133).
+
 `dk full`, `staging`, `prod` are unchanged. Media is seeded between the two stacks' **media storages** — the named volume a Docker project serves from, or its host bind — so the copy reaches the stack rather than a host directory the stack never mounts.
 
 **Proxy:** `dk worktree up` ensures the shared reverse proxy and registers remapped routes on compose `up`. Main and worktree stacks get distinct hostnames and upstreams.

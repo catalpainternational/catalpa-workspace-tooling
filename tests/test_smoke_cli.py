@@ -175,6 +175,11 @@ def test_run_smoke_ci_lean_up_skips_proxy(minimal_project) -> None:
         patch("catalpa_tooling.smoke_cli._prepare_compose_up", return_value=0) as prepare,
         patch("catalpa_tooling.smoke_cli.sync_local_proxy_for_compose_action") as sync_proxy,
         patch("catalpa_tooling.smoke_cli._compose", return_value=type("R", (), {"returncode": 0})()) as compose,
+        patch(
+            "catalpa_tooling.smoke_cli.write_label_override",
+            return_value="/tmp/catalpa-stack-labels.yaml",
+        ),
+        patch("catalpa_tooling.smoke_cli.os.unlink"),
         patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
         patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0),
         patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
@@ -191,7 +196,38 @@ def test_run_smoke_ci_lean_up_skips_proxy(minimal_project) -> None:
         assert up_args[0] == "up"
         assert config.stack_service("db") in up_args
         assert config.stack_service("web") not in up_args
+        # db only: no proxy override (caddy is never touched), but the build is labelled.
+        assert compose.call_args.kwargs.get("extra_compose_files") == [
+            "/tmp/catalpa-stack-labels.yaml"
+        ]
         pytest_smoke.assert_not_called()
+
+
+def test_build_lean_ci_images_are_labelled(minimal_project) -> None:
+    """Unlabelled CI images look stale to the next `dk` command, which recreates the stack (#77)."""
+    from catalpa_tooling.smoke_cli import _build_lean_ci_images
+
+    config = minimal_project
+    with (
+        patch(
+            "catalpa_tooling.smoke_cli._compose_service_names",
+            return_value=frozenset({"db", config.stack_service("web"), "node"}),
+        ),
+        patch("catalpa_tooling.smoke_cli.compose_yml_build", return_value=0) as build,
+    ):
+        assert (
+            _build_lean_ci_images(
+                "compose.dev.yaml", config, {}, use_prepulled_registry=False
+            )
+            == 0
+        )
+    build.assert_called_once()
+    assert build.call_args.kwargs["compose_file"] == "compose.dev.yaml"
+    assert build.call_args.kwargs["services"] == (
+        config.stack_service("db"),
+        config.stack_service("web"),
+        "node",
+    )
 
 
 def test_run_smoke_guest_prepares_full_stack_with_proxy(minimal_project) -> None:
@@ -205,6 +241,11 @@ def test_run_smoke_guest_prepares_full_stack_with_proxy(minimal_project) -> None
             return_value=["/tmp/local-proxy-override.yaml"],
         ) as extra_files,
         patch("catalpa_tooling.smoke_cli._compose", return_value=type("R", (), {"returncode": 0})()) as compose,
+        patch(
+            "catalpa_tooling.smoke_cli.write_label_override",
+            return_value="/tmp/catalpa-stack-labels.yaml",
+        ),
+        patch("catalpa_tooling.smoke_cli.os.unlink") as unlink,
         patch("catalpa_tooling.smoke_cli._wait_for_web_service", return_value=True),
         patch("catalpa_tooling.smoke_cli._wait_for_frontend_url", return_value=True),
         patch("catalpa_tooling.smoke_cli._run_pytest_smoke", return_value=0),
@@ -216,9 +257,14 @@ def test_run_smoke_guest_prepares_full_stack_with_proxy(minimal_project) -> None
         sync_proxy.assert_called_once()
         extra_files.assert_called_once()
         compose.assert_called_once()
+        assert "--build" in compose.call_args.args
+        # The `up --build` is labelled like `dk dev up`'s, so the next dk command doesn't see a
+        # stale stack and recreate it (#77, #167).
         assert compose.call_args.kwargs.get("extra_compose_files") == [
-            "/tmp/local-proxy-override.yaml"
+            "/tmp/local-proxy-override.yaml",
+            "/tmp/catalpa-stack-labels.yaml",
         ]
+        unlink.assert_called_once_with("/tmp/catalpa-stack-labels.yaml")
 
 
 def test_lookup_db_user_skips_postgres_superuser(minimal_project) -> None:
@@ -484,10 +530,7 @@ def test_run_frontend_build_skips_a_frontend_with_no_build_scripts(tmp_path) -> 
         assert _run_frontend_build(config) == 0
         assert [c.args[1].name for c in run_script.call_args_list] == ["web", "web"]
 
-def test_run_smoke_refuses_inside_a_worktree(
-    tmp_path, isolated_tooling, capsys
-) -> None:
-    """`tests ci` in a worktree would recreate its caddy on host port 80 (#77)."""
+def _worktree_project(tmp_path):
     from catalpa_tooling.config import load_project_config
     from catalpa_tooling.worktree_overlay import WorktreeOverlay, write_worktree_overlay
     from tests.helpers import write_minimal_tooling_tree
@@ -505,16 +548,65 @@ def test_run_smoke_refuses_inside_a_worktree(
             branch="worktree/img337",
         ),
     )
-    config = load_project_config(tmp_path)
+    return load_project_config(tmp_path)
+
+
+def test_run_smoke_runs_inside_a_worktree(tmp_path, isolated_tooling) -> None:
+    """`tests ci` in a worktree runs against the worktree's stack instead of refusing (#167)."""
+    config = _worktree_project(tmp_path)
+    with (
+        patch(
+            "catalpa_tooling.smoke_cli._resolve_deploy_context",
+            return_value=_mock_resolve(config),
+        ) as resolve,
+        patch("catalpa_tooling.smoke_cli._wait_for_db", return_value=True),
+        patch("catalpa_tooling.smoke_cli._fresh_db_smoke", return_value=0),
+        patch("catalpa_tooling.smoke_cli._run_compose_manage", return_value=0),
+        patch("catalpa_tooling.smoke_cli._run_frontend_build", return_value=0),
+    ):
+        assert run_smoke(config, no_up=True, log_prefix="ci") == 0
+    resolve.assert_called_once_with(config, "dev")
+
+
+def test_run_smoke_worktree_uses_overlay_project_and_origin(
+    tmp_path, isolated_tooling
+) -> None:
+    """The deploy context `run_smoke` builds from a worktree carries the overlay (#167)."""
+    from catalpa_tooling.smoke_cli import _resolve_deploy_context
+
+    config = _worktree_project(tmp_path)
+    info_dir = config.deploy_envs_dir / "dev"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "info.yaml").write_text(
+        "docker_host: ''\ncompose_file: compose.yml\nsite_origin: https://minimal-dev.localdev.temp.build\n",
+        encoding="utf-8",
+    )
+    (config.repo_root / "compose.yml").write_text("services: {}\n", encoding="utf-8")
+    with patch.object(type(config), "credentials_optional_for_env", return_value=True):
+        resolved = _resolve_deploy_context(config, "dev")
+    assert resolved is not None
+    _compose_file, env_add, site_origin, _ctx, info = resolved
+    assert env_add["COMPOSE_PROJECT_NAME"] == "app_compose_dev_img337"
+    assert site_origin == "https://minimal-dev-img337.localdev.temp.build"
+    assert info["site_origin"] == site_origin
+
+
+def test_run_smoke_refuses_other_env_inside_a_worktree(
+    tmp_path, isolated_tooling, capsys
+) -> None:
+    """The overlay remaps only its base env; `--env full` would hit the main stack (#105)."""
+    config = _worktree_project(tmp_path)
 
     with patch("catalpa_tooling.smoke_cli._resolve_deploy_context") as resolve:
-        assert run_smoke(config, no_up=True, log_prefix="ci") == 2
+        assert run_smoke(config, env_name="full", guest=True, no_up=True, log_prefix="guest") == 2
         resolve.assert_not_called()
 
     err = capsys.readouterr().err
-    assert "not worktree-aware" in err
     assert "img337" in err
+    assert "'dev'" in err
+    assert "--env full" in err
     assert "/main/checkout" in err
+    assert "#105" in err
 
 
 def test_run_frontend_build_host_fallback_requires_node_modules(

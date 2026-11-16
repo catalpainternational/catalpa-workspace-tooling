@@ -4,6 +4,8 @@ Project-health and Playwright checks for Django + Docker Compose stacks. Tooling
 
 **Requires:** catalpa-workspace-tooling with `tests ci` / `tests guest` / `tests functional` (formerly `tests smoke`).
 
+**In a `dk worktree`:** all three run against the worktree's own stack and origin; only the base env (`dev`) is allowed there. See [WORKTREES.md](WORKTREES.md#overlay-behavior).
+
 ## Overview
 
 | Command | Role |
