@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.2
+
 ### Added
 
 - **Worktree-first development, including Claude Code's own worktrees.**
