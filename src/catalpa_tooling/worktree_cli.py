@@ -42,7 +42,15 @@ def attach_worktree_subcommands(parser: argparse.ArgumentParser) -> None:
         "--base-branch",
         default=None,
         metavar="REF",
-        help="Start point for a new branch (default: HEAD).",
+        help=(
+            "Start point for a new branch (default: the main checkout's branch). "
+            "A branch is fetched and cut from origin/<branch>."
+        ),
+    )
+    p_create.add_argument(
+        "--local-base",
+        action="store_true",
+        help="Cut from the local base branch as-is (no fetch); warn if it is behind origin.",
     )
     p_create.add_argument(
         "--base-env",
@@ -256,6 +264,7 @@ def cmd_worktree(ns: argparse.Namespace, config: ProjectConfig) -> int:
             slug=ns.slug,
             branch=ns.branch,
             base_branch=ns.base_branch,
+            local_base=bool(ns.local_base),
             base_env=ns.base_env,
             dry_run=bool(ns.dry_run),
             init_submodules=not bool(ns.no_submodules),

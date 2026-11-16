@@ -516,6 +516,87 @@ def _resolve_start_ref(main_root: Path, start_ref: str) -> tuple[str | None, str
     return base_ref, base_commit
 
 
+def _ref_exists(repo_root: Path, ref: str) -> bool:
+    return (
+        _git("rev-parse", "--verify", "--quiet", ref, cwd=repo_root, check=False, capture=True)
+        .returncode
+        == 0
+    )
+
+
+def _base_branch_name(main_root: Path, requested: str) -> str | None:
+    """The branch ``requested`` names, to fetch from ``origin``; ``None`` for a tag, SHA or detached HEAD."""
+    if requested == "HEAD":
+        cur = _git(
+            "rev-parse", "--abbrev-ref", "HEAD", cwd=main_root, check=False, capture=True
+        )
+        name = cur.stdout.strip() if cur.returncode == 0 else ""
+        return name if name and name != "HEAD" else None
+    if requested.startswith("origin/"):
+        return requested.removeprefix("origin/") or None
+    if _ref_exists(main_root, f"refs/heads/{requested}"):
+        return requested
+    if _ref_exists(main_root, f"refs/tags/{requested}"):
+        return None
+    if _ref_exists(main_root, f"{requested}^{{commit}}"):
+        return None  # a SHA or another remote's ref: use as-is
+    return requested  # unknown locally: maybe a branch only on origin
+
+
+def _resolve_base_start(
+    main_root: Path,
+    requested: str,
+    *,
+    local_base: bool = False,
+    dry_run: bool = False,
+) -> tuple[str, str | None]:
+    """Return ``(start_ref, upstream)`` for a new worktree branch.
+
+    A branch base is fetched and cut from ``origin/<branch>``, so a stale local branch (often
+    the one checked out in the main checkout) doesn't leak into the worktree. ``upstream`` is set
+    when the worktree is cut from a local branch, so the caller can warn if it is behind.
+    """
+    name = _base_branch_name(main_root, requested)
+    if name is None:
+        return requested, None
+    if _git("remote", "get-url", "origin", cwd=main_root, check=False, capture=True).returncode:
+        return requested, None
+    remote = f"origin/{name}"
+    local = requested if requested.startswith("origin/") else name
+    if local_base:
+        return local, (remote if local != remote else None)
+    if _git("fetch", "origin", name, cwd=main_root, check=False, dry_run=dry_run).returncode == 0:
+        return remote, None
+    if _ref_exists(main_root, f"refs/heads/{name}"):
+        print(
+            f"dk worktree create: fetch of {name} failed; cutting from local {name}",
+            file=sys.stderr,
+        )
+        return name, remote
+    if _ref_exists(main_root, f"refs/remotes/{remote}"):
+        print(
+            f"dk worktree create: fetch of {name} failed; cutting from the last-fetched {remote}",
+            file=sys.stderr,
+        )
+        return remote, None
+    return requested, None
+
+
+def _warn_if_behind(main_root: Path, start_ref: str, upstream: str | None) -> None:
+    if not upstream or not _ref_exists(main_root, f"refs/remotes/{upstream}"):
+        return
+    count = _git(
+        "rev-list", "--count", f"{start_ref}..{upstream}", cwd=main_root, check=False, capture=True
+    )
+    behind = count.stdout.strip() if count.returncode == 0 else ""
+    if behind.isdigit() and int(behind) > 0:
+        print(
+            f"dk worktree create: worktree is {behind} commits behind {upstream} "
+            f"(cut from local {start_ref}).",
+            file=sys.stderr,
+        )
+
+
 def _resolve_worktree(
     config: ProjectConfig,
     slug: str | None = None,
@@ -860,8 +941,13 @@ def worktree_create(
     shallow_submodules: bool = True,
     seed: bool = True,
     bring_up: bool = False,
+    local_base: bool = False,
 ) -> int:
     """Create a git worktree under ``.worktrees/<slug>`` with a worktree overlay.
+
+    A new branch is cut from ``origin/<base branch>`` after fetching it (``base_branch``
+    defaults to the main checkout's current branch); ``local_base=True`` cuts from the local
+    branch instead and warns when it is behind origin.
 
     By default seeds DB + media from the main checkout's ``base_env``
     (pass ``seed=False`` / ``--no-seed`` to skip).
@@ -936,9 +1022,13 @@ def worktree_create(
     # Record what a new branch was cut from; an existing branch ignores start_ref.
     base_ref: str | None = None
     base_commit: str | None = None
+    upstream: str | None = None
     if _branch_exists(main_root, branch_name):
         git_args = ["worktree", "add", str(dest), branch_name]
     else:
+        start_ref, upstream = _resolve_base_start(
+            main_root, start_ref, local_base=local_base, dry_run=dry_run
+        )
         git_args = ["worktree", "add", "-b", branch_name, str(dest), start_ref]
         base_ref, base_commit = _resolve_start_ref(main_root, start_ref)
 
@@ -946,6 +1036,7 @@ def worktree_create(
     if result.returncode != 0:
         print("dk worktree create: git worktree add failed.", file=sys.stderr)
         return result.returncode or 1
+    _warn_if_behind(main_root, start_ref, upstream)
 
     if init_submodules:
         # dry-run: worktree path may not exist; use main's .gitmodules as the signal
@@ -1054,6 +1145,8 @@ def worktree_create(
     rel = dest.relative_to(main_root) if dest.is_relative_to(main_root) else dest
     print(f"Worktree ready: {rel}", file=sys.stderr)
     print(f"  branch: {branch_name}", file=sys.stderr)
+    if base_ref or base_commit:
+        print(f"  base: {base_ref or '-'} @ {(base_commit or '-')[:12]}", file=sys.stderr)
     print(f"  compose: {overlay.compose_project_name}", file=sys.stderr)
     print(f"  site: {overlay.site_origin}", file=sys.stderr)
     print("Next (from the main checkout — no cd / direnv needed):", file=sys.stderr)

@@ -115,13 +115,7 @@ def claude_hook_create(config: ProjectConfig, payload: dict[str, Any]) -> int:
             )
             base = "HEAD"
         else:
-            if _git("fetch", "origin", branch, cwd=main_root, check=False).returncode != 0:
-                print(
-                    f"dk worktree claude-hook create: fetch of {branch} failed; "
-                    f"cutting from the local origin/{branch}",
-                    file=sys.stderr,
-                )
-            base = f"origin/{branch}"
+            base = f"origin/{branch}"  # worktree_create fetches it
         rc = worktree_create(config, slug=slug, base_branch=base, seed=False, bring_up=False)
         if rc != 0:
             return rc

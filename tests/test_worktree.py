@@ -1466,3 +1466,109 @@ def test_worktree_seed_dry_run_plans_the_hooks(
     assert worktree_seed(config, slug="feat_a", do_media=False, dry_run=True, yes=True) == 0
     assert [c["step"] for c in calls] == ["hooks"]
     assert calls[0]["dry_run"] is True
+
+
+# --- #107: create fetches and cuts from origin/<branch> ----------------------------------
+
+
+@pytest.fixture
+def behind_repo(tmp_path: Path, isolated_tooling: None) -> Path:
+    """A main checkout on ``trunk`` whose ``origin`` is two commits ahead (not yet fetched)."""
+    main = tmp_path / "main"
+    main.mkdir()
+    write_minimal_tooling_tree(main)
+    write_dev_env(main)
+    git_init_commit(main)
+    _g = lambda *a: subprocess.run(
+        ["git", *a], cwd=main, check=True, capture_output=True, text=True
+    )
+    _g("branch", "-M", "trunk")
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    _g("remote", "add", "origin", str(origin))
+    for n in (1, 2):
+        (main / f"later{n}.txt").write_text("on origin only\n", encoding="utf-8")
+        _g("add", f"later{n}.txt")
+        _g("commit", "-q", "-m", f"later {n}")
+    _g("push", "-q", "origin", "trunk", "trunk:refs/heads/feat")
+    _g("reset", "-q", "--hard", "HEAD~2")  # the human's checkout is behind
+    _g("update-ref", "-d", "refs/remotes/origin/trunk")
+    _g("update-ref", "-d", "refs/remotes/origin/feat")
+    return main
+
+
+def _origin_tip(repo: Path, branch: str) -> str:
+    out = subprocess.run(
+        ["git", "ls-remote", "origin", f"refs/heads/{branch}"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout
+    return out.split()[0]
+
+
+@pytest.mark.parametrize("base_branch", [None, "trunk", "origin/trunk"])
+def test_worktree_create_cuts_from_fetched_origin(
+    behind_repo: Path, base_branch: str | None
+) -> None:
+    local_before = _rev_parse(behind_repo, "trunk")
+    assert worktree_create(
+        load_project_config(behind_repo), slug="fresh", base_branch=base_branch, seed=False
+    ) == 0
+    wt = behind_repo / ".worktrees" / "fresh"
+    assert _rev_parse(wt, "HEAD") == _origin_tip(behind_repo, "trunk")
+    assert _rev_parse(behind_repo, "trunk") == local_before, "local branch must not move"
+    overlay = load_worktree_overlay(wt)
+    assert overlay is not None
+    assert overlay.base_ref == "origin/trunk"
+    assert overlay.branch == "worktree/fresh"
+
+
+def test_worktree_create_local_base_warns_when_behind(
+    behind_repo: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=behind_repo, check=True)
+    assert worktree_create(
+        load_project_config(behind_repo), slug="stale", local_base=True, seed=False
+    ) == 0
+    wt = behind_repo / ".worktrees" / "stale"
+    assert _rev_parse(wt, "HEAD") == _rev_parse(behind_repo, "trunk")
+    err = capfd.readouterr().err
+    assert "git fetch" not in err
+    assert "worktree is 2 commits behind origin/trunk" in err
+
+
+def test_worktree_create_fetch_failure_falls_back_to_local(
+    behind_repo: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=behind_repo, check=True)
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", str(behind_repo.parent / "gone.git")],
+        cwd=behind_repo, check=True,
+    )
+    assert worktree_create(load_project_config(behind_repo), slug="offline", seed=False) == 0
+    wt = behind_repo / ".worktrees" / "offline"
+    assert _rev_parse(wt, "HEAD") == _rev_parse(behind_repo, "trunk")
+    err = capfd.readouterr().err
+    assert "fetch of trunk failed; cutting from local trunk" in err
+    assert "worktree is 2 commits behind origin/trunk" in err
+
+
+def test_worktree_create_remote_only_base_gets_a_new_branch(behind_repo: Path) -> None:
+    assert worktree_create(
+        load_project_config(behind_repo), slug="f", base_branch="feat", seed=False
+    ) == 0
+    wt = behind_repo / ".worktrees" / "f"
+    assert _rev_parse(wt, "--abbrev-ref", "HEAD") == "worktree/f"
+    assert _rev_parse(wt, "HEAD") == _origin_tip(behind_repo, "feat")
+
+
+def test_worktree_create_tag_or_sha_base_is_not_fetched(
+    behind_repo: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    sha = _rev_parse(behind_repo, "HEAD")
+    subprocess.run(["git", "tag", "v1"], cwd=behind_repo, check=True)
+    config = load_project_config(behind_repo)
+    assert worktree_create(config, slug="t", base_branch="v1", seed=False) == 0
+    assert worktree_create(config, slug="s", base_branch=sha, seed=False) == 0
+    assert "git fetch" not in capfd.readouterr().err
+    assert _rev_parse(behind_repo / ".worktrees" / "t", "HEAD") == sha
+    assert _rev_parse(behind_repo / ".worktrees" / "s", "HEAD") == sha

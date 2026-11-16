@@ -21,6 +21,11 @@
 
 ### Fixed
 
+- **`dk worktree create` no longer cuts from a stale local branch** (#107). It fetches the base
+  branch (`--base-branch`, defaulting to the main checkout's current branch) and cuts from
+  `origin/<branch>`, leaving the local branch alone. A branch that only exists on `origin` now
+  works too. `--local-base` keeps the old behaviour. When the fetch fails, `create` falls back
+  to the local branch. Either way, it warns when the new worktree is behind `origin/<branch>`.
 - **`dk <env> host create` reads `digitalocean.image` from the env's `info.yaml`.** It was
   ignored there while `size` and `region` worked. An env whose `info.yaml` already has an
   `image:` line now provisions new droplets from it instead of the `tooling.yaml` image, so
