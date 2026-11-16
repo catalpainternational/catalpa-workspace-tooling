@@ -8,12 +8,14 @@ import re
 import sys
 import time
 import urllib.error
+from contextlib import contextmanager, suppress
 import urllib.request
 from pathlib import Path
 
 import yaml
 
 from catalpa_tooling.compose import _compose, _wait_for_web_service
+from catalpa_tooling.dk_stack import compose_yml_build
 from catalpa_tooling.config import (
     ProjectConfig,
     resolve_frontend_package_manager,
@@ -36,6 +38,7 @@ from catalpa_tooling.remote_deploy import _ensure_local_stack_images_built, _ins
 from catalpa_tooling.restic_files import resolve_env_with_compose_project
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import primary_site_origin_from_info
+from catalpa_tooling.stale_stack import write_label_override
 
 # Compose service that holds frontend deps (bero ``compose.dev.yaml`` ``node``).
 _DEFAULT_NODE_SERVICE = "node"
@@ -147,13 +150,37 @@ def _build_lean_ci_images(
     if _DEFAULT_NODE_SERVICE in names:
         services.append(_DEFAULT_NODE_SERVICE)
     print(f"smoke: building CI images ({', '.join(services)})", file=sys.stderr)
-    return _compose(
-        compose_file,
-        "build",
-        *services,
+    # Labelled like `dk dev up`'s build: unlabelled images look stale to the next `dk` command,
+    # which then rebuilds and recreates the stack (the trigger behind #77).
+    return compose_yml_build(
+        config,
         env_add=build_env,
-        check=False,
-    ).returncode
+        services=tuple(services),
+        compose_file=compose_file,
+    )
+
+
+@contextmanager
+def _label_override_for(
+    config: ProjectConfig,
+    compose_file: str,
+    env_add: dict[str, str],
+    compose_argv: list[str],
+):
+    """Yield ``[label override]`` when ``compose_argv`` builds (``up --build``), else ``[]``.
+
+    Matches ``dk <env> up``: an ``up --build`` without the label override retags the images
+    unlabelled, and the next ``dk`` command then sees a stale stack and rebuilds it.
+    """
+    if "--build" not in compose_argv:
+        yield []
+        return
+    path = write_label_override(config, compose_file, env_add)
+    try:
+        yield [path]
+    finally:
+        with suppress(OSError):
+            os.unlink(path)
 
 
 def _start_full_stack_with_proxy(
@@ -206,16 +233,15 @@ def _start_full_stack_with_proxy(
     except (LocalProxyConfigError, ValueError) as e:
         print(str(e), file=sys.stderr)
         return 1
-    if (
-        _compose(
+    with _label_override_for(config, compose_file, env_add, compose_argv) as label_files:
+        rc = _compose(
             compose_file,
             *compose_argv,
             env_add=env_add,
-            extra_compose_files=extra_compose_files,
+            extra_compose_files=merge_extra_compose_files(extra_compose_files, label_files),
             check=False,
         ).returncode
-        != 0
-    ):
+    if rc != 0:
         print(f"{p}: docker compose up failed", file=sys.stderr)
         return 1
     return 0
@@ -253,7 +279,15 @@ def _start_lean_ci_stack(
         ["up", "-d", db],
         use_prepulled_registry=deploy_ctx.use_prepulled_registry,
     )
-    if _compose(compose_file, *compose_argv, env_add=env_add, check=False).returncode != 0:
+    with _label_override_for(config, compose_file, env_add, compose_argv) as label_files:
+        rc = _compose(
+            compose_file,
+            *compose_argv,
+            env_add=env_add,
+            extra_compose_files=label_files or None,
+            check=False,
+        ).returncode
+    if rc != 0:
         print(f"{p}: docker compose up failed", file=sys.stderr)
         return 1
     return 0
@@ -935,22 +969,29 @@ def _run_frontend_build(
     return 0
 
 
-def _refuse_inside_worktree(config: ProjectConfig, *, log_prefix: str) -> int:
-    """Return 2 (with a message) when ``config`` points at a worktree checkout."""
-    from catalpa_tooling.worktree_overlay import load_worktree_overlay
+def _refuse_worktree_env_mismatch(
+    config: ProjectConfig, env_name: str, *, log_prefix: str
+) -> int:
+    """Return 2 (with a message) when a worktree's overlay cannot apply to ``env_name``.
+
+    The overlay remaps only its ``base_env`` (normally ``dev``). Any other env run from a
+    worktree would build the worktree's code into the **main** checkout's stack for that env,
+    so refuse rather than touch it (``full`` in a worktree is #105).
+    """
+    from catalpa_tooling.worktree_overlay import WorktreeOverlayError, load_worktree_overlay
 
     try:
         overlay = load_worktree_overlay(config.repo_root)
-    except Exception:
-        # A marker we cannot read is not a reason to refuse; the main checkout has none.
+    except WorktreeOverlayError:
+        # Reported (and failed on) by the deploy-context load that follows.
         return 0
-    if overlay is None:
+    if overlay is None or env_name.strip() == overlay.base_env:
         return 0
     print(
-        f"tests {log_prefix}: is not worktree-aware yet; run it from the main checkout "
-        f"(would recreate worktree {overlay.slug!r}'s caddy on host port 80, which the "
-        "shared local proxy holds, leaving every later `dk --worktree` command failing). "
-        f"Main checkout: {overlay.parent_repo_root or '..'}",
+        f"tests {log_prefix}: worktree {overlay.slug!r} isolates only its {overlay.base_env!r} "
+        f"stack; --env {env_name} would run this worktree's code against the main checkout's "
+        f"{env_name!r} stack. Use --env {overlay.base_env} here, or run --env {env_name} from "
+        f"the main checkout ({overlay.parent_repo_root or '..'}). See issue #105.",
         file=sys.stderr,
     )
     return 2
@@ -978,12 +1019,11 @@ def run_smoke(
     Functional (``functional=True``): skip the gate; wait for HTTP and run pytest
     (typically ``-m elearning``).
 
-    Refuses to run inside a worktree (exit 2): none of these modes applies the worktree
-    overlay, so an ``up`` here would recreate the worktree's containers from the base env's
-    compose config and publish host port 80 — which the shared local proxy already holds.
-    See issue #77.
+    Inside a worktree, the deploy context applies the worktree overlay, so every mode uses
+    the worktree's compose project, its code, and its origin (#167). Only ``env_name`` other
+    than the overlay's base env is refused (exit 2), since the overlay can't remap it.
     """
-    rc = _refuse_inside_worktree(config, log_prefix=log_prefix)
+    rc = _refuse_worktree_env_mismatch(config, env_name, log_prefix=log_prefix)
     if rc != 0:
         return rc
     pytest_args = list(pytest_args or [])

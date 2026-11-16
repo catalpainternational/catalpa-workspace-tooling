@@ -166,6 +166,22 @@ def test_force_worktree_origin_env() -> None:
     assert env_add["CADDY_SITE_ADDRESS"] == "http://minimal-dev-foo.localdev.temp.build"
 
 
+@pytest.mark.parametrize(
+    "content",
+    [b"slug: [unclosed\n", b"\xff\xfe not utf-8\n"],
+    ids=["malformed-yaml", "not-utf8"],
+)
+def test_load_worktree_overlay_unreadable_marker_raises_overlay_error(
+    tmp_path: Path, content: bytes
+) -> None:
+    """Callers catch WorktreeOverlayError; a parse error used to escape as a traceback."""
+    from catalpa_tooling.worktree_overlay import WorktreeOverlayError, load_worktree_overlay
+
+    (tmp_path / ".catalpa-worktree.yaml").write_bytes(content)
+    with pytest.raises(WorktreeOverlayError, match="cannot read worktree marker"):
+        load_worktree_overlay(tmp_path)
+
+
 def test_load_managed_deploy_applies_overlay(
     tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

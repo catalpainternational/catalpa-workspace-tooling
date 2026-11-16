@@ -29,7 +29,7 @@ uv run tests functional --no-up
 uv run tests functional headed --no-up
 ```
 
-`tests ci` always empty-migrates an ephemeral DB (never the primary). `tests smoke` is a deprecated alias for `tests ci`. Do not run against staging/prod without explicit confirmation.
+Inside a `dk worktree` they run against the worktree's own stack and origin (base env only). `tests ci` always empty-migrates an ephemeral DB (never the primary). `tests smoke` is a deprecated alias for `tests ci`. Do not run against staging/prod without explicit confirmation.
 
 ## Related
 

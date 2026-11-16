@@ -29,6 +29,12 @@
   fails, `create` uses the last-fetched `origin/<branch>`, or the local branch if there is
   none. It warns when the new worktree is behind `origin/<branch>`. The new worktree branch
   doesn't track its base, so a plain `git push` can't land on `main`.
+- **`tests ci`, `tests guest` and `tests functional` run inside a worktree** (#167). Since
+  1.5.0 they refused there, so a worktree couldn't run its own pre-PR gate. They now run
+  against the worktree's compose project, code and origin, as `dk dev` does. The images they
+  build carry the `catalpa.*` build labels, so the next `dk` command no longer sees a stale
+  stack and recreates it (what broke the worktree's caddy in #77). Inside a worktree, an
+  `--env` other than its base env is still refused, naming the env (#105).
 - **`dk <env> host create` reads `digitalocean.image` from the env's `info.yaml`.** It was
   ignored there while `size` and `region` worked. An env whose `info.yaml` already has an
   `image:` line now provisions new droplets from it instead of the `tooling.yaml` image, so
