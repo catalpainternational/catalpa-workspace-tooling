@@ -608,9 +608,9 @@ def _resolve_base_start(
         ).returncode
         == 0
     )
-    if dry_run:
-        return tracking, None
     if not _ref_exists(main_root, tracking_ref):
+        if dry_run:  # nothing fetched yet; a real run would create the ref
+            return tracking, None
         if base.local is not None:
             print(
                 f"dk worktree create: fetch of {tracking} failed; cutting from local {base.local}",

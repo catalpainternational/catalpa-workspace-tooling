@@ -89,7 +89,6 @@ def _patch_media_transfer(
     return src_media, dst_media
 
 
-
 def _worktree_add_dest(args: tuple[str, ...]) -> Path:
     """DEST from ``worktree add [--no-track] [-b BRANCH] DEST [START]``."""
     rest = [a for a in args[2:] if a != "--no-track"]
@@ -1679,3 +1678,35 @@ def test_worktree_create_tag_or_sha_base_is_not_fetched(
     assert "git fetch" not in capfd.readouterr().err
     assert _rev_parse(behind_repo / ".worktrees" / "t", "HEAD") == sha
     assert _rev_parse(behind_repo / ".worktrees" / "s", "HEAD") == sha
+
+
+def _dry_run_start(err: str) -> str:
+    line = next(ln for ln in err.splitlines() if "dry-run: git worktree add" in ln)
+    return line.split(" (cwd=")[0].rsplit(" ", 1)[1]
+
+
+def test_worktree_create_dry_run_previews_origin(
+    behind_repo: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    assert worktree_create(
+        load_project_config(behind_repo), slug="dr", dry_run=True, seed=False
+    ) == 0
+    err = capfd.readouterr().err
+    assert "dry-run: git fetch origin" in err
+    assert _dry_run_start(err) == "origin/trunk"
+
+
+def test_worktree_create_dry_run_previews_local_when_ahead(
+    behind_repo: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=behind_repo, check=True)
+    (behind_repo / "mine.txt").write_text("unpushed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "mine.txt"], cwd=behind_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "mine"], cwd=behind_repo, check=True)
+    assert worktree_create(
+        load_project_config(behind_repo), slug="dr", dry_run=True, seed=False
+    ) == 0
+    err = capfd.readouterr().err
+    assert _dry_run_start(err) == "trunk", "dry run must match the real run's local cut"
+    assert "local trunk has 1 commit(s) not on origin/trunk" in err
+    assert not (behind_repo / ".worktrees" / "dr").exists()
