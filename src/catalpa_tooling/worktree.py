@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig, load_project_config
@@ -115,16 +115,7 @@ def ensure_worktree_gitignore(repo_root: Path, *, dry_run: bool = False) -> list
 
 
 def _branch_exists(repo_root: Path, name: str) -> bool:
-    result = _git(
-        "rev-parse",
-        "--verify",
-        "--quiet",
-        f"refs/heads/{name}",
-        cwd=repo_root,
-        check=False,
-        capture=True,
-    )
-    return result.returncode == 0
+    return _ref_exists(repo_root, f"refs/heads/{name}")
 
 
 def _default_branch_name(slug: str) -> str:
@@ -516,6 +507,147 @@ def _resolve_start_ref(main_root: Path, start_ref: str) -> tuple[str | None, str
     return base_ref, base_commit
 
 
+def _ref_exists(repo_root: Path, ref: str) -> bool:
+    return (
+        _git("rev-parse", "--verify", "--quiet", ref, cwd=repo_root, check=False, capture=True)
+        .returncode
+        == 0
+    )
+
+
+def _git_out(repo_root: Path, *args: str) -> str | None:
+    """stdout of a quiet git command, or ``None`` when it fails."""
+    result = _git(*args, cwd=repo_root, check=False, capture=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _commit_count(repo_root: Path, rev_range: str) -> int:
+    out = _git_out(repo_root, "rev-list", "--count", rev_range)
+    return int(out) if out and out.isdigit() else 0
+
+
+class _BaseBranch(NamedTuple):
+    local: str | None  # local branch name, when the base is (or names) a local branch
+    remote: str  # remote to fetch from
+    branch: str  # branch name on that remote
+    tracked: bool  # the local branch has a configured upstream (or the base names a remote ref)
+
+    @property
+    def tracking(self) -> str:
+        return f"{self.remote}/{self.branch}"
+
+
+def _base_branch(main_root: Path, requested: str) -> _BaseBranch | None:
+    """Classify ``requested`` as a branch to fetch; ``None`` for a tag, SHA or detached HEAD.
+
+    A local branch uses its configured upstream (``branch.<name>.remote`` / ``.merge``) and
+    falls back to ``origin/<name>``. A ref unknown locally may be a branch only on a remote.
+    """
+    full = _git_out(main_root, "rev-parse", "--symbolic-full-name", requested)
+    if full is not None and full.startswith("refs/heads/"):
+        local = full.removeprefix("refs/heads/")
+        remote = _git_out(main_root, "config", "--get", f"branch.{local}.remote")
+        merge = _git_out(main_root, "config", "--get", f"branch.{local}.merge") or ""
+        if remote and remote != "." and merge.startswith("refs/heads/"):
+            return _BaseBranch(local, remote, merge.removeprefix("refs/heads/"), True)
+        return _BaseBranch(local, "origin", local, False)
+    if full is not None and full.startswith("refs/remotes/"):
+        remote, _, branch = full.removeprefix("refs/remotes/").partition("/")
+        return _BaseBranch(None, remote, branch, True) if branch and branch != "HEAD" else None
+    if full is None:  # unknown locally
+        head, _, rest = requested.partition("/")
+        remotes = (_git_out(main_root, "remote") or "").split()
+        if rest and head in remotes:
+            return _BaseBranch(None, head, rest, True)
+        return _BaseBranch(None, "origin", requested, True)
+    return None  # a tag, SHA or detached HEAD: use as-is
+
+
+def _resolve_base_start(
+    main_root: Path,
+    requested: str,
+    *,
+    local_base: bool = False,
+    dry_run: bool = False,
+) -> tuple[str, str | None]:
+    """Return ``(start_ref, upstream)`` for a new worktree branch.
+
+    A branch base is fetched and cut from its remote-tracking ref (usually ``origin/<branch>``),
+    so a stale local branch (often the one checked out in the main checkout) doesn't leak into
+    the worktree. A local branch with commits not on the remote is cut from as-is, so unpushed
+    work isn't dropped. ``upstream`` is set when the worktree is cut from a local branch, so the
+    caller can warn if it is behind.
+    """
+    base = _base_branch(main_root, requested)
+    if base is None:
+        return requested, None
+    if _git("remote", "get-url", base.remote, cwd=main_root, check=False, capture=True).returncode:
+        return requested, None
+    tracking = base.tracking
+    tracking_ref = f"refs/remotes/{tracking}"
+    if local_base:
+        if base.local is None:
+            print(
+                f"dk worktree create: --local-base: cutting from {tracking} as last fetched "
+                "(not fetched now; may be behind).",
+                file=sys.stderr,
+            )
+            return tracking, None
+        return base.local, tracking
+    if base.local is not None and not base.tracked and not _ref_exists(main_root, tracking_ref):
+        return base.local, None  # a local-only branch: nothing to fetch
+
+    fetched = (
+        _git(
+            "fetch",
+            base.remote,
+            f"+refs/heads/{base.branch}:{tracking_ref}",
+            cwd=main_root,
+            check=False,
+            dry_run=dry_run,
+        ).returncode
+        == 0
+    )
+    if not _ref_exists(main_root, tracking_ref):
+        if dry_run:  # nothing fetched yet; a real run would create the ref
+            return tracking, None
+        if base.local is not None:
+            print(
+                f"dk worktree create: fetch of {tracking} failed; cutting from local {base.local}",
+                file=sys.stderr,
+            )
+            return base.local, None
+        return requested, None
+    if base.local is not None:
+        ahead = _commit_count(main_root, f"{tracking_ref}..refs/heads/{base.local}")
+        if ahead:
+            print(
+                f"dk worktree create: local {base.local} has {ahead} commit(s) not on {tracking}; "
+                f"cutting from local {base.local}.",
+                file=sys.stderr,
+            )
+            return base.local, tracking
+    if not fetched:
+        print(
+            f"dk worktree create: fetch of {tracking} failed; cutting from the last-fetched "
+            f"{tracking}",
+            file=sys.stderr,
+        )
+    return tracking, None
+
+
+def _warn_if_behind(main_root: Path, start_ref: str, upstream: str | None) -> None:
+    if not upstream or not _ref_exists(main_root, f"refs/remotes/{upstream}"):
+        return
+    behind = _commit_count(main_root, f"{start_ref}..refs/remotes/{upstream}")
+    if behind:
+        print(
+            f"dk worktree create: worktree is {behind} commits behind {upstream} "
+            f"(cut from local {start_ref}).",
+            file=sys.stderr,
+        )
+
+
 def _resolve_worktree(
     config: ProjectConfig,
     slug: str | None = None,
@@ -860,8 +992,13 @@ def worktree_create(
     shallow_submodules: bool = True,
     seed: bool = True,
     bring_up: bool = False,
+    local_base: bool = False,
 ) -> int:
     """Create a git worktree under ``.worktrees/<slug>`` with a worktree overlay.
+
+    A new branch is cut from ``origin/<base branch>`` after fetching it (``base_branch``
+    defaults to the main checkout's current branch); ``local_base=True`` cuts from the local
+    branch instead and warns when it is behind origin.
 
     By default seeds DB + media from the main checkout's ``base_env``
     (pass ``seed=False`` / ``--no-seed`` to skip).
@@ -936,16 +1073,23 @@ def worktree_create(
     # Record what a new branch was cut from; an existing branch ignores start_ref.
     base_ref: str | None = None
     base_commit: str | None = None
+    upstream: str | None = None
     if _branch_exists(main_root, branch_name):
         git_args = ["worktree", "add", str(dest), branch_name]
     else:
-        git_args = ["worktree", "add", "-b", branch_name, str(dest), start_ref]
+        start_ref, upstream = _resolve_base_start(
+            main_root, start_ref, local_base=local_base, dry_run=dry_run
+        )
+        # --no-track: don't make the new branch track its base (e.g. origin/main), or a plain
+        # `git push` could target the base branch.
+        git_args = ["worktree", "add", "--no-track", "-b", branch_name, str(dest), start_ref]
         base_ref, base_commit = _resolve_start_ref(main_root, start_ref)
 
     result = _git(*git_args, cwd=main_root, check=False, dry_run=dry_run)
     if result.returncode != 0:
         print("dk worktree create: git worktree add failed.", file=sys.stderr)
         return result.returncode or 1
+    _warn_if_behind(main_root, start_ref, upstream)
 
     if init_submodules:
         # dry-run: worktree path may not exist; use main's .gitmodules as the signal
@@ -1054,6 +1198,8 @@ def worktree_create(
     rel = dest.relative_to(main_root) if dest.is_relative_to(main_root) else dest
     print(f"Worktree ready: {rel}", file=sys.stderr)
     print(f"  branch: {branch_name}", file=sys.stderr)
+    if base_ref or base_commit:
+        print(f"  base: {base_ref or '-'} @ {(base_commit or '-')[:12]}", file=sys.stderr)
     print(f"  compose: {overlay.compose_project_name}", file=sys.stderr)
     print(f"  site: {overlay.site_origin}", file=sys.stderr)
     print("Next (from the main checkout — no cd / direnv needed):", file=sys.stderr)

@@ -21,6 +21,14 @@
 
 ### Fixed
 
+- **`dk worktree create` no longer cuts from a stale local branch** (#107). It fetches the base
+  branch (`--base-branch`, defaulting to the main checkout's current branch) and cuts from its
+  upstream (usually `origin/<branch>`), leaving the local branch alone. A branch that only
+  exists on `origin` now works too. A local branch with unpushed commits, or one that was never
+  pushed, is still cut from as-is. `--local-base` keeps the old behaviour. When the fetch
+  fails, `create` uses the last-fetched `origin/<branch>`, or the local branch if there is
+  none. It warns when the new worktree is behind `origin/<branch>`. The new worktree branch
+  doesn't track its base, so a plain `git push` can't land on `main`.
 - **`tests ci`, `tests guest` and `tests functional` run inside a worktree** (#167). Since
   1.5.0 they refused there, so a worktree couldn't run its own pre-PR gate. They now run
   against the worktree's compose project, code and origin, as `dk dev` does. The images they

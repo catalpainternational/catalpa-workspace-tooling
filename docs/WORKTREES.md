@@ -60,11 +60,26 @@ When `.catalpa-worktree.yaml` is present and you run `dk <base_env>` (default `b
 - Remaps `COMPOSE_PROJECT_NAME` → `{compose_project_default}_dev_{slug}`
 - Remaps `site_origin` → `https://{project}-dev-{slug}.{site_origin_base}`
 
-`create` also records what a new branch was cut from: `base_ref` (the branch or tag name;
-`--base-branch` defaults to `HEAD`, which resolves to the main checkout's current branch) and
-`base_commit`. Neither is recorded when `--branch` names a branch that already exists, or for
-worktrees created before this was added. `base_ref` is omitted when `HEAD` was detached.
-`dk context` and `dk worktree context` report both.
+`create` cuts a new branch from **`origin/<base branch>`, fetched first**. `--base-branch`
+defaults to the main checkout's current branch. A local branch's configured upstream is used
+when it has one (`dev` tracking `origin/develop` fetches `develop`). The local branch is left
+alone: it is usually the one checked out in the main checkout, and often behind. A tag or SHA
+is used as-is, and there is no fetch without the remote.
+
+- A local branch with commits not on the remote is cut from as-is, so unpushed work isn't lost.
+- A local branch that was never pushed (no upstream, no `origin/<branch>`) is not fetched.
+- `--local-base` cuts from the local branch without fetching.
+- When the fetch fails, `create` uses the last-fetched `origin/<branch>`, or the local branch
+  if there is none.
+
+When the worktree is cut from a local branch, `create` warns
+`worktree is N commits behind origin/<branch>`. The new worktree branch has no upstream, so a
+plain `git push` never targets the base branch.
+
+`create` also records what a new branch was cut from: `base_ref` (for example `origin/main`,
+or the tag name) and `base_commit`. Neither is recorded when `--branch` names a branch that
+already exists, or for worktrees created before this was added. `base_ref` is omitted when
+`HEAD` was detached. `dk context` and `dk worktree context` report both.
 - Rewrites role / Caddy origins (`admin.*`, `stats.*`, etc.) from the new primary
 - **Does not** remap remote envs (`docker_host: ssh://…`)
 
@@ -78,7 +93,7 @@ worktrees created before this was added. `base_ref` is omitted when `HEAD` was d
 
 ```
 dk --worktree <slug> | -W <slug>   # global: target a worktree for the rest of the argv
-dk worktree create <slug> [--branch NAME] [--base-branch REF] [--base-env dev] [--up] [--no-submodules] [--full-submodules] [--no-seed] [--dry-run]
+dk worktree create <slug> [--branch NAME] [--base-branch REF] [--local-base] [--base-env dev] [--up] [--no-submodules] [--full-submodules] [--no-seed] [--dry-run]
 dk worktree up [slug] [--dry-run]
 dk worktree down [slug] [--dry-run]
 dk worktree restart [slug] [--service NAME …] [--dry-run]
