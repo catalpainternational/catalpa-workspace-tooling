@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext
 from catalpa_tooling.smoke_cli import (
     _lookup_db_user,
@@ -201,6 +203,46 @@ def test_run_smoke_ci_lean_up_skips_proxy(minimal_project) -> None:
             "/tmp/catalpa-stack-labels.yaml"
         ]
         pytest_smoke.assert_not_called()
+
+
+def test_label_override_is_deleted_when_compose_raises(minimal_project) -> None:
+    from catalpa_tooling.smoke_cli import _label_override_for
+
+    with (
+        patch(
+            "catalpa_tooling.smoke_cli.write_label_override",
+            return_value="/tmp/catalpa-stack-labels.yaml",
+        ),
+        patch("catalpa_tooling.smoke_cli.os.unlink") as unlink,
+    ):
+        with pytest.raises(RuntimeError):
+            with _label_override_for(
+                minimal_project, "compose.yml", {}, ["up", "-d", "--build"]
+            ) as files:
+                assert files == ["/tmp/catalpa-stack-labels.yaml"]
+                raise RuntimeError("compose blew up")
+    unlink.assert_called_once_with("/tmp/catalpa-stack-labels.yaml")
+
+
+def test_run_smoke_unreadable_worktree_marker_fails_cleanly(
+    tmp_path, isolated_tooling, capsys
+) -> None:
+    """A malformed marker is a clean failure, not a traceback (review on #169)."""
+    from catalpa_tooling.config import load_project_config
+    from tests.helpers import write_minimal_tooling_tree
+
+    write_minimal_tooling_tree(tmp_path)
+    (tmp_path / ".catalpa-worktree.yaml").write_text("slug: [unclosed\n", encoding="utf-8")
+    config = load_project_config(tmp_path)
+    info_dir = config.deploy_envs_dir / "dev"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "info.yaml").write_text(
+        "docker_host: ''\ncompose_file: compose.yml\n", encoding="utf-8"
+    )
+    (tmp_path / "compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+    assert run_smoke(config, no_up=True, log_prefix="ci") == 1
+    assert "cannot read worktree marker" in capsys.readouterr().err
 
 
 def test_build_lean_ci_images_are_labelled(minimal_project) -> None:
