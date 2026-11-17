@@ -7,6 +7,23 @@
 - **`dk <env> stop` no longer rebuilds the stack first.** After a new commit, `stop`, `kill`,
   `rm` and `pause` rebuilt every stack image and recreated the containers before stopping them,
   which could take many minutes. They now skip the stale-stack check, as `down` already did.
+- **`dk worktree seed` (and so `dk worktree create`) no longer fails on a new worktree when
+  `worktree.seed_volumes` or `ops.restic.data_volumes` lists a volume besides media (#177).**
+  Only a compose `up` created those volumes, so the copy into a worktree that had never been
+  up'd hit `no such volume` and the database step never ran. The seed now creates each missing
+  one with Compose's project and volume labels, plus the driver, options and labels its compose
+  entry declares, so the next `up` adopts it.
+- **`dk worktree remove --wipe` now removes the images the worktree's stack made (#165, #177).**
+  - `compose down` gets `--rmi local`, which removes the untagged `<project>-<service>` builds. In
+    swlt_ws2, 260 of these had piled up.
+  - Named images tagged with the worktree's branch (e.g. `swlt-postgres:worktree-<slug>`) are
+    removed by name.
+  - Images whose tag comes from `image_tag` or a git tag at HEAD are kept, because the main
+    checkout may use them too.
+  - A failed image removal only warns, and `--dry-run` lists what would be removed. A plain
+    `remove` keeps images, as before.
+- **`dk worktree seed --from <path>` warns when the path is a worktree.** The seed always reads
+  the main checkout's stack, so a sibling worktree's data was never what got copied.
 
 ### Added
 

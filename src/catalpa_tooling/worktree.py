@@ -1335,7 +1335,13 @@ def _teardown_worktree_stack(
     )
     env_r["COMPOSE_PROJECT_NAME"] = overlay.compose_project_name
     compose_abs = str((wt_config.repo_root / ctx.compose_file).resolve())
-    down_args = ["down", "-v", "--remove-orphans"] if remove_volumes else ["down", "--remove-orphans"]
+    # `--rmi local` drops the images compose built without a tag of their own
+    # (`<project>-<service>`), which only this project uses. Named `image:` refs stay (#165).
+    down_args = (
+        ["down", "-v", "--rmi", "local", "--remove-orphans"]
+        if remove_volumes
+        else ["down", "--remove-orphans"]
+    )
     if dry_run:
         print(
             f"dry-run: docker compose -f {compose_abs} {' '.join(down_args)} "
@@ -1344,6 +1350,7 @@ def _teardown_worktree_stack(
         )
         if not remove_volumes:
             return 0
+        _remove_worktree_tagged_images(compose_abs, env_r, worktree_root, dry_run=True)
         return remove_all_external_stack_volumes(env_r, config=wt_config, dry_run=True)
     result = _compose(
         compose_abs,
@@ -1355,7 +1362,69 @@ def _teardown_worktree_stack(
         return result.returncode
     if not remove_volumes:
         return 0
+    _remove_worktree_tagged_images(compose_abs, env_r, worktree_root)
     return remove_all_external_stack_volumes(env_r, config=wt_config)
+
+
+def _remove_worktree_tagged_images(
+    compose_abs: str,
+    env_r: dict[str, str],
+    worktree_root: Path,
+    *,
+    dry_run: bool = False,
+) -> None:
+    """Delete the stack's named images tagged for this worktree's branch (#177, #165).
+
+    ``--rmi local`` keeps an image that has an ``image:`` ref, such as
+    ``<registry>/postgres:${STACK_IMAGE_TAG}``. Deleting those is only safe when the tag is
+    this worktree's alone. The default tag is the branch name, and git checks a branch out in
+    one worktree only, so that one qualifies. An ``image_tag`` set in config, or a git tag at
+    HEAD, may be shared with the main checkout, so neither is touched. Never fails the wipe.
+    """
+    tag = (env_r.get("STACK_IMAGE_TAG") or "").strip()
+    branch = _git(
+        "rev-parse", "--abbrev-ref", "HEAD", cwd=worktree_root, check=False, capture=True
+    )
+    branch_tag = (branch.stdout or "").strip().replace("/", "-") if branch.returncode == 0 else ""
+    if not tag or branch_tag in ("", "HEAD") or tag != branch_tag:
+        return
+    listed = _compose(
+        compose_abs,
+        "config",
+        "--images",
+        check=False,
+        env_add=env_r,
+        print_cmd=False,
+        capture_output=True,
+    )
+    if listed.returncode != 0:
+        print(
+            "dk worktree remove --wipe: could not list the stack's images; "
+            f"any tagged :{tag} are left in place.",
+            file=sys.stderr,
+        )
+        return
+    lines = (line.strip() for line in (listed.stdout or "").splitlines())
+    refs = list(dict.fromkeys(ref for ref in lines if ref.endswith(f":{tag}")))
+    if not refs:
+        return
+    if dry_run:
+        print(f"dry-run: would remove image(s) {', '.join(refs)}", file=sys.stderr)
+        return
+    for ref in refs:
+        r = run_cmd(
+            ["docker", "image", "rm", ref],
+            env={**os.environ, **env_r},
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0 and "No such image" not in (r.stderr or ""):
+            print(
+                f"dk worktree remove --wipe: could not remove image {ref}: "
+                f"{(r.stderr or '').strip()}",
+                file=sys.stderr,
+            )
 
 
 def worktree_remove(
@@ -1465,18 +1534,26 @@ def _ensure_destination_media_volume(
     dest_config: ProjectConfig,
     dst_ctx: Any,
     base_env: str,
+    compose_key: str | None = None,
+    compose_spec: dict[str, Any] | None = None,
 ) -> None:
     """Pre-create the destination volume with Compose labels.
 
     ``docker run -v name:/data`` would create it unlabelled, and the next ``compose up``
-    then warns that the volume was not created by Compose. This is the same ensure the
-    deploy path runs, so it also covers ``external:`` volumes and host-storage binds.
+    then warns that the volume was not created by Compose. For the media volume this is the
+    same ensure the deploy path runs, so it also covers ``external:`` volumes and host-storage
+    binds. A seed volume (``compose_key`` given) is none of the stack's fixed volumes, so that
+    ensure never creates it: it is created here on its own, as its compose entry declares it,
+    or a worktree that has never been up'd has nowhere to copy into (#177).
     """
     if dst_media.kind is not MediaStorageKind.VOLUME:
         return
     from catalpa_tooling.dk_transfer import _docker_volume_exists
 
     if _docker_volume_exists(dst_media.location, dst_r):
+        return
+    if compose_key is not None:
+        _create_seed_volume(dst_media.location, dst_r, compose_key, compose_spec or {})
         return
     from catalpa_tooling.env_handlers import _ensure_stack_volumes
 
@@ -1497,6 +1574,54 @@ def _ensure_destination_media_volume(
         )
 
 
+def _seed_volume_create_args(spec: dict[str, Any]) -> list[str]:
+    """``docker volume create`` args for what a compose volume entry declares beyond its name."""
+    args: list[str] = []
+    driver = str(spec.get("driver") or "").strip()
+    if driver:
+        args += ["--driver", driver]
+    opts = spec.get("driver_opts")
+    if isinstance(opts, dict):
+        for k, v in opts.items():
+            args += ["--opt", f"{k}={v}"]
+    labels = spec.get("labels")
+    if isinstance(labels, dict):
+        label_items = [f"{k}={v}" for k, v in labels.items()]
+    elif isinstance(labels, list):
+        label_items = [str(item) for item in labels]
+    else:
+        label_items = []
+    for item in label_items:
+        args += ["--label", item]
+    return args
+
+
+def _create_seed_volume(
+    name: str,
+    dst_r: dict[str, str],
+    compose_key: str,
+    spec: dict[str, Any],
+) -> None:
+    """Create one seed volume with the labels Compose looks for, so the next ``up`` adopts it."""
+    from catalpa_tooling.pgbackrest_volume_config import _docker_env_for_remote, _ensure_volume
+
+    try:
+        _ensure_volume(
+            name,
+            _docker_env_for_remote(dst_r),
+            label="worktree seed",
+            compose_project=dst_r.get("COMPOSE_PROJECT_NAME", ""),
+            compose_volume_key=compose_key,
+            extra_create_args=_seed_volume_create_args(spec),
+        )
+    except subprocess.CalledProcessError:
+        # The copy below then fails on the missing volume and says so; this line names why.
+        print(
+            f"worktree seed: could not create {name!r} for compose volume {compose_key}.",
+            file=sys.stderr,
+        )
+
+
 def _seed_media(
     src_r: dict[str, str],
     dst_r: dict[str, str],
@@ -1508,6 +1633,8 @@ def _seed_media(
     dst_ctx: Any,
     base_env: str,
     media_dir: Path,
+    compose_key: str | None = None,
+    compose_spec: dict[str, Any] | None = None,
 ) -> tuple[int, str]:
     """Copy the source stack's media storage onto the worktree's. Returns ``(rc, outcome)``."""
     del dest_overlay  # identity is already in the header line
@@ -1527,6 +1654,8 @@ def _seed_media(
         dest_config=dest_config,
         dst_ctx=dst_ctx,
         base_env=base_env,
+        compose_key=compose_key,
+        compose_spec=compose_spec,
     )
 
     media_dir.mkdir(parents=True, exist_ok=True)
@@ -1724,6 +1853,15 @@ def worktree_seed(
         return 1
 
     base_env = dest_overlay.base_env
+    src_overlay = load_worktree_overlay(src_root) if from_path is not None else None
+    if src_overlay is not None:
+        # The source context is loaded without the worktree remap, so this reads the main
+        # checkout's stack. Say so, rather than let the user believe they copied a sibling.
+        print(
+            f"worktree seed: --from {src_root} is worktree {src_overlay.slug!r}; seed always "
+            f"reads the main checkout's `{base_env}` stack, not that worktree's.",
+            file=sys.stderr,
+        )
     print(
         f"worktree seed: {src_root} ({base_env}) → {dest_config.repo_root} "
         f"(compose={dest_overlay.compose_project_name})",
@@ -1767,6 +1905,7 @@ def worktree_seed(
     src_media: MediaStorage | None = None
     dst_media: MediaStorage | None = None
     extra_volumes: list[tuple[str, MediaStorage | None, MediaStorage | None]] = []
+    dst_vols: StackVolumes | None = None
     if do_media:
         try:
             src_media = resolve_media_storage(
@@ -1782,14 +1921,13 @@ def worktree_seed(
         except MediaStorageError as exc:
             print(f"worktree seed: {exc}", file=sys.stderr)
             return 1
+        dst_vols = resolve_stack_volumes(compose_file=dst_compose, env=dst_r, config=dest_config)
         extra_volumes, unlisted = _plan_seed_volumes(
             _seed_volume_keys(dest_config),
             src_media=src_media,
             dst_media=dst_media,
             src_vols=resolve_stack_volumes(compose_file=src_compose, env=src_r, config=src_config),
-            dst_vols=resolve_stack_volumes(
-                compose_file=dst_compose, env=dst_r, config=dest_config
-            ),
+            dst_vols=dst_vols,
         )
         for key in unlisted:
             print(
@@ -1895,6 +2033,8 @@ def worktree_seed(
                         dst_ctx=dst_ctx,
                         base_env=base_env,
                         media_dir=session / f"volume_{key}",
+                        compose_key=key,
+                        compose_spec=dst_vols.specs.get(key) if dst_vols else None,
                     )
                     if rc != 0:
                         return rc

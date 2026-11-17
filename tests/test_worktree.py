@@ -19,6 +19,7 @@ from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
 from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind, StackVolumes
 from catalpa_tooling.worktree import (
     AGENTS_LOCAL_NAME,
+    _ensure_destination_media_volume,
     ensure_worktree_gitignore,
     media_dir_for_config,
     resolve_worktree_root,
@@ -50,6 +51,7 @@ def _patch_media_transfer(
     transfer_rc: int = 0,
     stack_volumes: dict[str, str] | None = None,
     web_mounts: tuple[str, ...] = (),
+    specs: dict[str, dict] | None = None,
 ) -> tuple[MediaStorage, MediaStorage]:
     """Stand in for the volume machinery: resolve, probe and transfer.
 
@@ -69,7 +71,7 @@ def _patch_media_transfer(
     def fake_stack_volumes(*, compose_file, env, config, repo_root=None):
         project = (env.get("COMPOSE_PROJECT_NAME") or "").strip()
         names = {key: f"{project}_{suffix}" for key, suffix in (stack_volumes or {}).items()}
-        return StackVolumes(names=names, web_mounts=web_mounts)
+        return StackVolumes(names=names, web_mounts=web_mounts, specs=dict(specs or {}))
 
     monkeypatch.setattr("catalpa_tooling.worktree.resolve_stack_volumes", fake_stack_volumes)
     monkeypatch.setattr(
@@ -751,6 +753,145 @@ def test_worktree_remove_wipe_dry_run_removes_nothing(
     assert removed == []
 
 
+def _worktree_branch_tag(worktree: Path) -> str:
+    out = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip().replace("/", "-")
+
+
+def _wipe_image_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    images: tuple[str, ...],
+    image_rm_stderr: str = "",
+):
+    """A worktree whose `compose config --images` lists ``images``; records `docker image rm`.
+
+    ``{tag}`` in an image ref becomes the worktree's branch tag, known only once it exists.
+    Returns ``(config, compose_calls, image_rms, tag)``.
+    """
+    from catalpa_tooling import worktree as worktree_mod
+
+    config, compose_calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    tag = _worktree_branch_tag(tmp_path / ".worktrees" / "ds_180")
+    listed = "".join(f"{ref.format(tag=tag)}\n" for ref in images)
+
+    def fake_compose(*args, **kwargs):
+        compose_calls.append(args)
+        if "config" in args and "--images" in args:
+            return subprocess.CompletedProcess(list(args), 0, stdout=listed)
+        return subprocess.CompletedProcess(list(args), 0)
+
+    monkeypatch.setattr("catalpa_tooling.worktree._compose", fake_compose)
+    image_rms: list[str] = []
+    real_run = worktree_mod.run_cmd
+
+    def fake_run(cmd, **kwargs):
+        if list(cmd[:3]) == ["docker", "image", "rm"]:
+            image_rms.append(cmd[3])
+            rc = 1 if image_rm_stderr else 0
+            return subprocess.CompletedProcess(list(cmd), rc, stdout="", stderr=image_rm_stderr)
+        return real_run(cmd, **kwargs)  # git, which the tag check reads
+
+    monkeypatch.setattr("catalpa_tooling.worktree.run_cmd", fake_run)
+    return config, compose_calls, image_rms, tag
+
+
+def test_worktree_remove_wipe_drops_the_images_only_this_worktree_has(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unnamed builds go via `--rmi local` (#165); branch-tagged named images by name (#177)."""
+    config, compose_calls, image_rms, tag = _wipe_image_repo(
+        tmp_path,
+        monkeypatch,
+        images=(
+            "ghcr.io/org/app-postgres:{tag}",
+            "ghcr.io/org/app-django:{tag}",
+            "ghcr.io/org/app-django:{tag}",
+            "caddy:2",
+        ),
+    )
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+
+    down = next(c for c in compose_calls if "down" in c)
+    assert "--rmi" in down and down[down.index("--rmi") + 1] == "local"
+    assert image_rms == [f"ghcr.io/org/app-postgres:{tag}", f"ghcr.io/org/app-django:{tag}"]
+
+
+def test_worktree_remove_without_wipe_keeps_images(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, compose_calls, image_rms, _tag = _wipe_image_repo(
+        tmp_path, monkeypatch, images=("ghcr.io/org/app-postgres:{tag}",)
+    )
+    assert worktree_remove(config, slug="ds_180", wipe=False, yes=True) == 0
+    assert all("--rmi" not in c for c in compose_calls)
+    assert image_rms == []
+
+
+def test_worktree_remove_wipe_keeps_images_with_a_tag_it_cannot_own(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An `image_tag` from config may be the main checkout's too, so it is never removed."""
+    config, _calls, image_rms, _tag = _wipe_image_repo(
+        tmp_path, monkeypatch, images=("ghcr.io/org/app-postgres:v1.2.3",)
+    )
+    real_load = load_managed_deploy_context
+
+    def pinned_ctx(*a, **k):
+        ctx = real_load(*a, **k)
+        if ctx is not None:
+            ctx.env_add["STACK_IMAGE_TAG"] = "v1.2.3"
+        return ctx
+
+    monkeypatch.setattr("catalpa_tooling.worktree.load_managed_deploy_context", pinned_ctx)
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+    assert image_rms == []
+
+
+def test_worktree_remove_wipe_image_failure_does_not_fail_the_wipe(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _calls, image_rms, tag = _wipe_image_repo(
+        tmp_path,
+        monkeypatch,
+        images=("ghcr.io/org/app-postgres:{tag}",),
+        image_rm_stderr="conflict: image is in use",
+    )
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+    assert image_rms == [f"ghcr.io/org/app-postgres:{tag}"]
+    assert "could not remove image" in capsys.readouterr().err
+
+
+def test_worktree_remove_wipe_dry_run_lists_images_and_removes_none(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _calls, image_rms, tag = _wipe_image_repo(
+        tmp_path, monkeypatch, images=("ghcr.io/org/app-postgres:{tag}",)
+    )
+
+    capsys.readouterr()
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
+    err = capsys.readouterr().err
+    assert "--rmi local" in err
+    assert f"dry-run: would remove image(s) ghcr.io/org/app-postgres:{tag}" in err
+    assert image_rms == []
+
+
 def test_worktree_remove_dry_run_does_not_claim_it_removed_anything(
     tmp_path: Path,
     isolated_tooling: None,
@@ -1245,6 +1386,190 @@ def test_worktree_seed_dry_run_lists_extra_volumes(
     ) in err
     assert "not seeded" not in err
     assert calls == []
+
+
+def _record_volume_docker(
+    monkeypatch: pytest.MonkeyPatch, *, existing: frozenset[str] | set[str] = frozenset()
+) -> tuple[list[list[str]], list[str]]:
+    """Run the real destination ensure against a fake Docker.
+
+    Returns ``(docker_cmds, stack_ensures)``: the argv of every ``docker volume`` call
+    ``_ensure_volume`` made, and the volume each stack-wide ensure was asked to cover.
+    """
+    # Undo `_patch_media_transfer`'s stub: this is the code under test.
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._ensure_destination_media_volume",
+        _ensure_destination_media_volume,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer._docker_volume_exists",
+        lambda name, env: name in existing,
+    )
+    stack_ensures: list[str] = []
+    monkeypatch.setattr(
+        "catalpa_tooling.env_handlers._ensure_stack_volumes",
+        lambda *a, **k: stack_ensures.append("stack") or 0,
+    )
+    docker_cmds: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        docker_cmds.append(list(cmd))
+        rc = 0 if cmd[:3] == ["docker", "volume", "create"] else 1
+        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+    return docker_cmds, stack_ensures
+
+
+def test_worktree_seed_creates_a_seed_volume_a_never_upd_stack_lacks(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new worktree has no volume a compose `up` would make; the seed makes it, labelled (#177)."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["private_uploads"])
+    calls: list[dict] = []
+    _patch_media_transfer(
+        monkeypatch, calls, stack_volumes={"private_uploads": "private_uploads"}
+    )
+    docker_cmds, stack_ensures = _record_volume_docker(monkeypatch)
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+
+    creates = [c for c in docker_cmds if c[:3] == ["docker", "volume", "create"]]
+    assert creates == [
+        [
+            "docker",
+            "volume",
+            "create",
+            "--label",
+            "com.docker.compose.project=app_compose_dev_feat_a",
+            "--label",
+            "com.docker.compose.volume=private_uploads",
+            "app_compose_dev_feat_a_private_uploads",
+        ]
+    ]
+    # The media volume still goes through the stack-wide ensure, and only it does.
+    assert stack_ensures == ["stack"]
+    assert [c["dst_media"].location for c in calls] == [
+        "app_compose_dev_feat_a_django_media",
+        "app_compose_dev_feat_a_private_uploads",
+    ]
+
+
+def test_worktree_seed_leaves_an_existing_seed_volume_alone(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["private_uploads"])
+    _patch_media_transfer(monkeypatch, [], stack_volumes={"private_uploads": "private_uploads"})
+    docker_cmds, stack_ensures = _record_volume_docker(
+        monkeypatch,
+        existing={"app_compose_dev_feat_a_django_media", "app_compose_dev_feat_a_private_uploads"},
+    )
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    assert docker_cmds == []
+    assert stack_ensures == []
+
+
+def test_worktree_seed_creates_a_seed_volume_as_compose_declares_it(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Driver, options and labels carry over, so compose sees the volume it declared."""
+    config, wt = _seedable_worktree(tmp_path, monkeypatch)
+    _with_seed_volumes(config, wt, ["scratch"])
+    _patch_media_transfer(
+        monkeypatch,
+        [],
+        stack_volumes={"scratch": "scratch"},
+        specs={
+            "scratch": {
+                "driver": "local",
+                "driver_opts": {"type": "tmpfs", "device": "tmpfs"},
+                "labels": {"tier": "files"},
+            }
+        },
+    )
+    docker_cmds, _ = _record_volume_docker(
+        monkeypatch, existing={"app_compose_dev_feat_a_django_media"}
+    )
+
+    assert worktree_seed(config, slug="feat_a", do_db=False, yes=True) == 0
+    (create,) = [c for c in docker_cmds if c[:3] == ["docker", "volume", "create"]]
+    assert create[3:-1] == [
+        "--driver",
+        "local",
+        "--opt",
+        "type=tmpfs",
+        "--opt",
+        "device=tmpfs",
+        "--label",
+        "tier=files",
+        "--label",
+        "com.docker.compose.project=app_compose_dev_feat_a",
+        "--label",
+        "com.docker.compose.volume=scratch",
+    ]
+
+
+def test_resolve_stack_volumes_keeps_each_volume_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from catalpa_tooling.media_storage import resolve_stack_volumes
+
+    write_minimal_tooling_tree(tmp_path)
+    config = load_project_config(tmp_path)
+    compose = tmp_path / "compose.probe.yaml"
+    compose.write_text(
+        yaml.safe_dump(
+            {
+                "services": {"web": {"volumes": ["scratch:/scratch"]}},
+                "volumes": {"scratch": {"driver_opts": {"type": "tmpfs"}}, "plain": None},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.media_storage.load_compose_config", lambda *a, **k: None
+    )
+
+    vols = resolve_stack_volumes(
+        compose_file=str(compose), env={"COMPOSE_PROJECT_NAME": "probe"}, config=config
+    )
+    assert vols.specs == {"scratch": {"driver_opts": {"type": "tmpfs"}}, "plain": {}}
+    assert vols.names["scratch"] == "probe_scratch"
+
+
+def test_worktree_seed_from_a_worktree_says_it_reads_the_main_stack(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _wt = _seedable_worktree(tmp_path, monkeypatch)
+    assert worktree_create(config, slug="other", dry_run=False, seed=False) == 0
+    other = tmp_path / ".worktrees" / "other"
+    _patch_media_transfer(monkeypatch, [])
+
+    capsys.readouterr()
+    assert (
+        worktree_seed(
+            config, slug="feat_a", do_db=False, from_path=other, dry_run=True, yes=True
+        )
+        == 0
+    )
+    err = capsys.readouterr().err
+    assert f"--from {other.resolve()} is worktree 'other'" in err
+    assert "reads the main checkout's `dev` stack" in err
+
+    capsys.readouterr()
+    assert (
+        worktree_seed(
+            config, slug="feat_a", do_db=False, from_path=tmp_path, dry_run=True, yes=True
+        )
+        == 0
+    )
+    assert "is worktree" not in capsys.readouterr().err
 
 
 def test_media_seeded_reads_the_stack_volume(

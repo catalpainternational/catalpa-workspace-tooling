@@ -722,7 +722,10 @@ def _ensure_volume(
     label: str = "ensure_volumes",
     compose_project: str | None = None,
     compose_volume_key: str | None = None,
+    extra_create_args: Sequence[str] = (),
 ) -> None:
+    """Create ``name`` if missing. ``extra_create_args`` (``--driver``, ``--opt``, ``--label``)
+    go on a plain create only; a host-bind create sets its own driver options."""
     norm_host = (host_path or "").strip().rstrip("/") if host_path else None
     compose_labels = _compose_volume_create_label_args(
         compose_project or "",
@@ -792,7 +795,7 @@ def _ensure_volume(
         )
     else:
         run_cmd(
-            ["docker", "volume", "create", *compose_labels, name],
+            ["docker", "volume", "create", *extra_create_args, *compose_labels, name],
             env=docker_env,
             check=True,
         )
