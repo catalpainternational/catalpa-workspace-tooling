@@ -7,9 +7,11 @@ import http.client
 import json
 import os
 import platform
+import random
 import re
 import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -431,7 +433,7 @@ def _admin_request(
     method: str,
     path: str,
     *,
-    body: dict[str, Any] | None = None,
+    body: dict[str, Any] | list[Any] | None = None,
     timeout: float = 10.0,
 ) -> tuple[int, str]:
     url = f"{LOCAL_PROXY_ADMIN_URL.rstrip('/')}{path}"
@@ -962,28 +964,8 @@ def upsert_route(
         )
         return 0
 
-    server_name = _https_server_name()
-    server_path = f"/config/apps/http/servers/{server_name}"
-    status, payload = _admin_request("GET", server_path)
-    if status >= 400:
-        print(
-            f"Failed to read local proxy server {server_name!r} (HTTP {status}): {payload}",
-            file=sys.stderr,
-        )
-        return 1
-    server = json.loads(payload) if payload.strip() else {}
-    if not isinstance(server, dict):
-        server = {}
-    routes = server.get("routes")
-    if not isinstance(routes, list):
-        routes = []
-    routes = [
-        r for r in routes if not (isinstance(r, dict) and r.get("@id") == route_id_value)
-    ]
-    routes.append(body)
-    server["routes"] = routes
-
-    status, detail = _admin_request("PATCH", server_path, body=server)
+    routes_path = f"/config/apps/http/servers/{_https_server_name()}/routes"
+    status, detail = _write_route(route_id_value, body, routes_path)
     if status >= 400:
         print(
             f"Failed to register local proxy route {route_id_value!r} "
@@ -991,7 +973,85 @@ def upsert_route(
             file=sys.stderr,
         )
         return 1
-    return 0
+    return _verify_route_present(route_id_value, host, routes_path)
+
+
+# Each write below is one Caddy admin call, and Caddy applies admin changes one at a time. A
+# lost race therefore shows up as a failed call, never as a silently overwritten route, and is
+# retried. These are enough for every `dk … up` on one machine to settle.
+_ROUTE_WRITE_ATTEMPTS = 5
+
+
+def _write_route(route_id_value: str, body: dict[str, Any], routes_path: str) -> tuple[int, str]:
+    """Replace route ``route_id_value`` in place, or append it. Touches no other route.
+
+    ``upsert_route`` used to GET the whole server block, edit its route list and PATCH the
+    block back. Two ``dk worktree up`` runs in the same second each wrote a list without the
+    other's route, and one host dropped out of the proxy (issue #110). Here:
+
+    - ``PATCH /id/<route id>`` replaces the route if it exists;
+    - otherwise ``POST …/routes`` appends it, or ``PUT …/routes`` creates the list when the
+      server has none yet (the bootstrap ``:443 {}`` has none).
+
+    If another run wins the race in between (it added the same ``@id`` first, or created the
+    list first), Caddy rejects this run's write, and the loop tries again from the PATCH.
+
+    While it loads a new config, Caddy can also close an admin connection without replying.
+    That is retried the same way. Starting again from the PATCH is safe even if the dropped
+    write did land: the route then exists, and the PATCH replaces it in place.
+    """
+    status, detail = 0, ""
+    for attempt in range(_ROUTE_WRITE_ATTEMPTS):
+        if attempt:
+            _route_retry_pause(attempt)
+        try:
+            status, detail = _admin_request("PATCH", f"/id/{route_id_value}", body=body)
+            if status != 404:  # replaced, or an error that retrying won't fix
+                return status, detail
+            list_status, payload = _admin_request("GET", routes_path)
+            if list_status < 400 and payload.strip() not in ("", "null"):
+                status, detail = _admin_request("POST", routes_path, body=body)
+            else:
+                status, detail = _admin_request("PUT", routes_path, body=[body])
+        except LocalProxyConfigError as e:
+            if attempt == _ROUTE_WRITE_ATTEMPTS - 1:
+                raise
+            status, detail = 503, str(e)
+            continue
+        if status < 400:
+            return status, detail
+    return status, detail
+
+
+def _route_retry_pause(attempt: int) -> None:
+    """Short, jittered back-off so racing runs stop colliding on the same reload."""
+    time.sleep(random.uniform(0.05, 0.2) * attempt)
+
+
+def _verify_route_present(route_id_value: str, host: str, routes_path: str) -> int:
+    """Read the routes back so a lost write fails here, not later as a TLS error (issue #110)."""
+    for attempt in range(_ROUTE_WRITE_ATTEMPTS):
+        try:
+            status, payload = _admin_request("GET", routes_path)
+            break
+        except LocalProxyConfigError:
+            if attempt == _ROUTE_WRITE_ATTEMPTS - 1:
+                raise
+            _route_retry_pause(attempt + 1)
+    routes: Any = []
+    if status < 400 and payload.strip():
+        with contextlib.suppress(json.JSONDecodeError):
+            routes = json.loads(payload)
+    for route in routes if isinstance(routes, list) else []:
+        if isinstance(route, dict) and route.get("@id") == route_id_value:
+            if _route_host_from_config(route) == host:
+                return 0
+    print(
+        f"Local proxy route {route_id_value!r} for {host!r} is missing after it was written "
+        f"(HTTP {status} reading {routes_path}). Re-run `dk … up` to register it again.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def remove_route(route_id_value: str, *, dry_run: bool = False) -> int:

@@ -11,6 +11,8 @@ import yaml
 from catalpa_tooling.cli.dk_argv import peel_worktree_flag
 from catalpa_tooling.config import (
     ProjectConfig as ProjectConfigT,
+)
+from catalpa_tooling.config import (
     ProjectConfigError,
     load_project_config,
 )
@@ -177,7 +179,10 @@ def test_load_worktree_overlay_unreadable_marker_raises_overlay_error(
     tmp_path: Path, content: bytes
 ) -> None:
     """Callers catch WorktreeOverlayError; a parse error used to escape as a traceback."""
-    from catalpa_tooling.worktree_overlay import WorktreeOverlayError, load_worktree_overlay
+    from catalpa_tooling.worktree_overlay import (
+        WorktreeOverlayError,
+        load_worktree_overlay,
+    )
 
     (tmp_path / ".catalpa-worktree.yaml").write_bytes(content)
     with pytest.raises(WorktreeOverlayError, match="cannot read worktree marker"):

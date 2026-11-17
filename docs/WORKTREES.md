@@ -87,7 +87,7 @@ already exists, or for worktrees created before this was added. `base_ref` is om
 
 `dk full`, `staging`, `prod` are unchanged. Media is seeded between the two stacks' **media storages** — the named volume a Docker project serves from, or its host bind — so the copy reaches the stack rather than a host directory the stack never mounts.
 
-**Proxy:** `dk worktree up` ensures the shared reverse proxy and registers remapped routes on compose `up`. Main and worktree stacks get distinct hostnames and upstreams.
+**Proxy:** `dk worktree up` ensures the shared reverse proxy and registers remapped routes on compose `up`. Main and worktree stacks get distinct hostnames and upstreams. Each `up` adds or replaces only its own routes, by route id, so several worktrees can be brought up at the same time. Afterwards it reads the routes back, and fails if its own route is missing (since #110).
 
 ## Commands
 

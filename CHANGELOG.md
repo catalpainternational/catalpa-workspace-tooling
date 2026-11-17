@@ -46,6 +46,13 @@
   table, view, materialized view, sequence, function and type is now handed to the app role.
   PostGIS's own objects stay with `postgres`. An explicit `--role` in `pg_restore_args` is left
   alone.
+- **Concurrent `dk … up` runs no longer drop each other's proxy route** (#110). Registering a
+  route read the shared proxy's whole server block, changed it and wrote it back. Two worktrees
+  started in the same second could each write a block without the other's route, leaving one
+  host with a TLS error (curl exit 35) on a healthy stack. Each route is now replaced by its id
+  (`PATCH /id/<route-id>`) or appended on its own (`POST …/routes`), so no run rewrites
+  another's. Writes that lose a race, and admin connections Caddy drops mid-reload, are retried.
+  Afterwards the route is read back, and `up` fails if it is missing.
 
 ### Added
 
