@@ -115,7 +115,22 @@ def _missing_section(section: str, *, needed_for: str) -> ProjectConfigError:
     return ProjectConfigError(
         f"tooling.yaml has no `{section}:` section (or it is empty), which is required for "
         f"{needed_for}. Add a `{section}:` block — catalpa-workspace-tooling's "
-        f"tests/fixtures/minimal_project/tooling.yaml is a complete reference manifest."
+        f"tests/fixtures/minimal_project/tooling.yaml is a complete reference manifest, and "
+        f"QUICKSTART.md §3 lists which keys have defaults."
+    )
+
+
+def _missing_field(field: str, *, needed_for: str) -> ProjectConfigError:
+    """Error for an optional manifest key that a specific command needs.
+
+    Deploy-host keys under ``ops:`` (zabbix unit names, the db container fallback, systemd
+    unit lists) are optional so a project that only uses dk for local database work does not
+    have to invent them; the command that reads one names it here instead.
+    """
+    return ProjectConfigError(
+        f"tooling.yaml does not set `{field}`, which is required for {needed_for}. "
+        f"Add it under `{field.rsplit('.', 1)[0]}:` — see the settings table in "
+        f"catalpa-workspace-tooling's QUICKSTART.md."
     )
 
 
@@ -200,6 +215,20 @@ class StackConfig:
 DEFAULT_PGBR_PG1_PATH = "/var/lib/postgresql/18/docker"
 
 
+def default_pgbackrest_postgres_conf(project_name: str) -> str:
+    """Default ``ops.pgbackrest.postgres_conf``: Postgres archive drop-in in ``conf.d``.
+
+    The db image must load ``/etc/postgresql/conf.d`` with ``include_dir``. If the project's
+    entrypoint also writes this drop-in itself, set the key to the name the entrypoint uses.
+    """
+    return f"30-{project_name}-pgbackrest-archive.conf"
+
+
+def default_pgbackrest_conf_name(project_name: str) -> str:
+    """Default ``ops.pgbackrest.pgbackrest_conf``: managed drop-in in ``/etc/pgbackrest/conf.d``."""
+    return f"50-{project_name}-managed.conf"
+
+
 def default_pgbackrest_restore_temp_prefix(project_name: str) -> str:
     """Default ``/tmp`` archive prefix for compose ``pg_restore`` (``ops.pgbackrest.restore_temp_prefix``)."""
     return f"{project_name}_pgrestore_"
@@ -209,7 +238,8 @@ def default_pgbackrest_restore_temp_prefix(project_name: str) -> str:
 class PgbackrestOpsConfig:
     postgres_conf: str
     pgbackrest_conf: str
-    default_registry: str
+    # None: use the stack registry (``STACK_IMAGE_REGISTRY`` / ``images.yaml``).
+    default_registry: str | None
     restore_temp_prefix: str
     data_volume: str
     pg1_path: str
@@ -297,11 +327,19 @@ class OpsConfig:
     transfer_workdir: str
     pgbackrest: PgbackrestOpsConfig
     restic: ResticOpsConfig
-    zabbix: ZabbixOpsConfig
+    zabbix: ZabbixOpsConfig | None
     systemd_units: SystemdUnitsOpsConfig
     post_db_restore: PostDbRestoreOpsConfig
     post_metabase_db_restore: PostMetabaseDbRestoreOpsConfig
-    default_db_container: str
+    default_db_container: str | None
+
+    def require_zabbix(self) -> ZabbixOpsConfig:
+        if self.zabbix is None:
+            raise ProjectConfigError(
+                "tooling.yaml has no `ops.zabbix:` section (unit_name, userparams_file); "
+                "add it to run the Zabbix agent commands."
+            )
+        return self.zabbix
 
 
 VALID_FETCH_VIA = frozenset({"ssh_native", "ssh_docker", "dk", "script"})
@@ -1283,14 +1321,26 @@ def _parse_dev(raw: Any, *, digitalocean: DigitalOceanConfig | None) -> DevConfi
     )
 
 
+DEFAULT_STACK_WEB_SERVICE = "django"
+DEFAULT_STACK_PROXY_SERVICE = "caddy"
+DEFAULT_STACK_DB_SERVICE = "db"
+DEFAULT_STACK_REGISTRY_KEY = "image_registry"
+
+
 def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
-    services_raw = _require_mapping(stack_raw.get("services"), "stack.services")
+    services_raw = stack_raw.get("services")
+    services_raw = {} if services_raw is None else _require_mapping(services_raw, "stack.services")
     images_raw = _require_mapping(stack_raw.get("images"), "stack.images")
     components_raw = _require_mapping(images_raw.get("components"), "stack.images.components")
     health_raw = _require_mapping(stack_raw.get("healthcheck"), "stack.healthcheck")
     components: dict[str, str] = {}
     for key, val in components_raw.items():
         components[str(key)] = _require_str({str(key): val}, str(key), section="stack.images.components")
+    services = StackServicesConfig(
+        web=_optional_str(services_raw, "web") or DEFAULT_STACK_WEB_SERVICE,
+        proxy=_optional_str(services_raw, "proxy") or DEFAULT_STACK_PROXY_SERVICE,
+        db=_optional_str(services_raw, "db") or DEFAULT_STACK_DB_SERVICE,
+    )
     origin_keys = _parse_env_key_list(
         stack_raw.get("origin_env_keys"),
         field="stack.origin_env_keys",
@@ -1298,17 +1348,13 @@ def _parse_stack(stack_raw: dict[str, Any]) -> StackConfig:
     )
     return StackConfig(
         compose_project_default=_require_str(stack_raw, "compose_project_default", section="stack"),
-        services=StackServicesConfig(
-            web=_require_str(services_raw, "web", section="stack.services"),
-            proxy=_require_str(services_raw, "proxy", section="stack.services"),
-            db=_require_str(services_raw, "db", section="stack.services"),
-        ),
+        services=services,
         images=StackImagesConfig(
-            registry_key=_require_str(images_raw, "registry_key", section="stack.images"),
+            registry_key=_optional_str(images_raw, "registry_key") or DEFAULT_STACK_REGISTRY_KEY,
             components=components,
         ),
         healthcheck=StackHealthcheckConfig(
-            service=_require_str(health_raw, "service", section="stack.healthcheck"),
+            service=_optional_str(health_raw, "service") or services.web,
             url=_require_str(health_raw, "url", section="stack.healthcheck"),
         ),
         origin_env_keys=origin_keys,
@@ -1656,9 +1702,15 @@ def _parse_restic_verbose_field(raw: dict[str, Any], key: str, *, section: str) 
 
 
 def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
-    pg_raw = _require_mapping(ops_raw.get("pgbackrest"), "ops.pgbackrest")
-    zabbix_raw = _require_mapping(ops_raw.get("zabbix"), "ops.zabbix")
-    units_raw = _require_mapping(ops_raw.get("systemd_units"), "ops.systemd_units")
+    pg_raw = ops_raw.get("pgbackrest")
+    pg_raw = {} if pg_raw is None else _require_mapping(pg_raw, "ops.pgbackrest")
+    zabbix_raw = ops_raw.get("zabbix")
+    if zabbix_raw is not None:
+        zabbix_raw = _require_mapping(zabbix_raw, "ops.zabbix")
+    # Absent ``systemd_units`` means "no units declared" (empty lists); install-systemd
+    # names the missing list when it is asked to install one. Never invent unit names.
+    units_raw = ops_raw.get("systemd_units")
+    units_raw = {} if units_raw is None else _require_mapping(units_raw, "ops.systemd_units")
     pg_units = _parse_string_list(units_raw.get("pgbackrest"), field="ops.systemd_units.pgbackrest")
     restic_units = _parse_string_list(units_raw.get("restic"), field="ops.systemd_units.restic")
     timers_pg = _parse_string_list(
@@ -1673,7 +1725,7 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         timers_pg = tuple(u for u in pg_units if u.endswith(".timer"))
     if not timers_restic and restic_units:
         timers_restic = tuple(u for u in restic_units if u.endswith(".timer"))
-    unit_prefix = _require_str(ops_raw, "systemd_unit_prefix", section="ops")
+    unit_prefix = _optional_str(ops_raw, "systemd_unit_prefix") or f"{project_name}-"
     systemd_units = SystemdUnitsOpsConfig(
         pgbackrest=pg_units,
         restic=restic_units,
@@ -1695,16 +1747,23 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     if restic_backup_path is not None and not restic_backup_path.startswith("/"):
         raise ProjectConfigError("ops.restic.backup_path must be an absolute path")
     return OpsConfig(
-        install_prefix=_require_str(ops_raw, "install_prefix", section="ops"),
-        config_dir=_require_str(ops_raw, "config_dir", section="ops"),
+        install_prefix=_optional_str(ops_raw, "install_prefix") or f"/opt/{project_name}",
+        config_dir=_optional_str(ops_raw, "config_dir") or f"/etc/{project_name}",
         systemd_unit_prefix=unit_prefix,
         transfer_workdir=_validate_rel_path(
-            _require_str(ops_raw, "transfer_workdir", section="ops"), field="ops.transfer_workdir"
+            _optional_str(ops_raw, "transfer_workdir") or f".{project_name}-transfer",
+            field="ops.transfer_workdir",
         ),
         pgbackrest=PgbackrestOpsConfig(
-            postgres_conf=_require_str(pg_raw, "postgres_conf", section="ops.pgbackrest"),
-            pgbackrest_conf=_require_str(pg_raw, "pgbackrest_conf", section="ops.pgbackrest"),
-            default_registry=_require_str(pg_raw, "default_registry", section="ops.pgbackrest"),
+            postgres_conf=(
+                _optional_str(pg_raw, "postgres_conf")
+                or default_pgbackrest_postgres_conf(project_name)
+            ),
+            pgbackrest_conf=(
+                _optional_str(pg_raw, "pgbackrest_conf")
+                or default_pgbackrest_conf_name(project_name)
+            ),
+            default_registry=_optional_str(pg_raw, "default_registry"),
             restore_temp_prefix=(
                 _optional_str(pg_raw, "restore_temp_prefix")
                 or default_pgbackrest_restore_temp_prefix(project_name)
@@ -1733,16 +1792,20 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
                 restic_raw, "restore_verbose", section="ops.restic"
             ),
         ),
-        zabbix=ZabbixOpsConfig(
-            unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
-            userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),
+        zabbix=(
+            ZabbixOpsConfig(
+                unit_name=_require_str(zabbix_raw, "unit_name", section="ops.zabbix"),
+                userparams_file=_require_str(zabbix_raw, "userparams_file", section="ops.zabbix"),
+            )
+            if zabbix_raw is not None
+            else None
         ),
         systemd_units=systemd_units,
         post_db_restore=_parse_post_db_restore(ops_raw.get("post_db_restore")),
         post_metabase_db_restore=_parse_post_metabase_db_restore(
             ops_raw.get("post_metabase_db_restore")
         ),
-        default_db_container=_require_str(ops_raw, "default_db_container", section="ops"),
+        default_db_container=_optional_str(ops_raw, "default_db_container"),
     )
 
 

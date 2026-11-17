@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Changed
+
+- **Every key under `ops:` is now optional (#153).** A project that uses `ops:` only for local
+  database work, such as `dk dev db restore`, no longer has to make up deploy-host values.
+  - Derived from `project.name` when left out, matching every current consumer:
+    `install_prefix` (`/opt/{name}`), `config_dir` (`/etc/{name}`), `systemd_unit_prefix`
+    (`{name}-`) and `transfer_workdir` (`.{name}-transfer`).
+  - Left unset, and named by the command that needs them:
+    - `ops.zabbix`: the `dk <env> zabbix` commands. The approach is taken from #159.
+    - `ops.systemd_units`: `install-systemd` stops when the list it would install is empty.
+    - `ops.default_db_container`: only used as the `install-systemd --dry-run` fallback.
+  - `ops.pgbackrest.postgres_conf` / `pgbackrest_conf` default to
+    `30-{name}-pgbackrest-archive.conf` / `50-{name}-managed.conf`.
+  - `ops.pgbackrest.default_registry` defaults to the registry in `docker/images.yaml`.
+  - Explicit values always win, so existing manifests behave exactly as before.
+  - A missing `ops:` section, or a bare `ops:` with nothing under it, still means "not
+    adopted". `ops: {}` means adopted with every default.
+  - partisipa-import can now drop the placeholder values from its `ops:` block.
+- **`stack.services`, `stack.images.registry_key` and `stack.healthcheck.service` are optional.**
+  - They default to `django` / `caddy` / `db`, `image_registry`, and the web service.
+  - `compose_project_default` and `images.components` are still required: they differ
+    between projects.
+- QUICKSTART §3 now has a settings table showing which `ops:` keys are required, their
+  defaults and which commands use them (a start on #56).
+
 ## 1.6.2
 
 ### Added

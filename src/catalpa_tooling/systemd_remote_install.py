@@ -292,6 +292,17 @@ def cmd_install_systemd_backups(
 
     do_pgbr = only is None or only == "pgbackrest"
     do_restic = only is None or only == "restic"
+    for kind, wanted, units in (
+        ("pgbackrest", do_pgbr, config.ops.systemd_units.pgbackrest),
+        ("restic", do_restic, config.ops.systemd_units.restic),
+    ):
+        if wanted and not units:
+            print(
+                f"tooling.yaml declares no `ops.systemd_units.{kind}` units, so there is "
+                f"nothing to install for {kind}. Add the unit list under `ops.systemd_units:`.",
+                file=sys.stderr,
+            )
+            return 1
 
     stanza = (env_r.get("PGBR_S3_WRITE_STANZA") or env_r.get("PGBR_STANZA") or "").strip()
     if do_pgbr:
@@ -332,7 +343,11 @@ def cmd_install_systemd_backups(
             "(dry-run) Would discover PGBR_DB_CONTAINER via ssh docker ps or use pgbr_db_container from credentials.",
             file=sys.stderr,
         )
-        env_r["PGBR_DB_CONTAINER"] = env_r.get("PGBR_DB_CONTAINER") or config.ops.default_db_container
+        env_r["PGBR_DB_CONTAINER"] = (
+            env_r.get("PGBR_DB_CONTAINER")
+            or config.ops.default_db_container
+            or "(not set: ops.default_db_container)"
+        )
 
     project_name = config.meta.name
     pgbr_body = render_pgbackrest_env(env_r, project_name=project_name) if do_pgbr else ""
