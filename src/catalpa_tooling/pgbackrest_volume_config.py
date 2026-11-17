@@ -1066,9 +1066,81 @@ def remove_all_external_stack_volumes(
 
     Missing volumes (e.g. already removed) are treated as success.
     """
-    return _remove_volumes(
+    return remove_volumes(
         external_stack_volume_names(env, config=config), env, dry_run=dry_run
     )
+
+
+def remove_volumes(names: Sequence[str], env: dict[str, str], *, dry_run: bool = False) -> int:
+    """``docker volume rm`` each of ``names``; absent ones are skipped. See :func:`_remove_volumes`."""
+    return _remove_volumes(names, env, dry_run=dry_run)
+
+
+def project_labelled_volume_names(env: dict[str, str], project: str) -> tuple[str, ...]:
+    """Volumes Docker labels as belonging to compose project ``project``.
+
+    Catches what the current compose file no longer declares (a volume key renamed or dropped
+    since the stack was created), which ``down -v`` leaves behind. Empty when Docker cannot be
+    asked — the caller still has the declared volumes.
+    """
+    r = run_cmd(
+        [
+            "docker",
+            "volume",
+            "ls",
+            "-q",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ],
+        env=_docker_env_for_remote(env),
+        capture_output=True,
+        text=True,
+        check=False,
+        print_cmd=False,
+    )
+    if r.returncode != 0:
+        return ()
+    return tuple(line.strip() for line in (r.stdout or "").splitlines() if line.strip())
+
+
+def remove_images(names: Sequence[str], env: dict[str, str], *, dry_run: bool = False) -> int:
+    """``docker image rm`` each of ``names``; absent ones are skipped, every one is attempted.
+
+    Returns non-zero when any could not be removed (typically still used by a container).
+    """
+    docker_env = _docker_env_for_remote(env)
+    failed: list[str] = []
+    for name in names:
+        if dry_run:
+            print(f"dry-run: docker image rm {name}", file=sys.stderr)
+            continue
+        r = run_cmd(
+            ["docker", "image", "rm", name],
+            env=docker_env,
+            capture_output=True,
+            text=True,
+            check=False,
+            print_cmd=True,
+        )
+        if r.returncode == 0:
+            print(f"wipe: removed image {name}", file=sys.stderr)
+            continue
+        combined = ((r.stderr or "") + (r.stdout or "")).lower()
+        if "no such image" in combined:
+            print(f"wipe: image {name} already absent (skipped)", file=sys.stderr)
+            continue
+        print(
+            f"wipe: docker image rm failed for {name!r}: {(r.stderr or r.stdout or '').strip()}",
+            file=sys.stderr,
+        )
+        failed.append(name)
+    if failed:
+        print(
+            f"wipe: {len(failed)} image(s) could not be removed: {', '.join(failed)}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def _docker_run_volume_work_args(image: str, docker_env: dict[str, str]) -> list[str]:
