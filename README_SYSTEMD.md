@@ -12,6 +12,8 @@ Install rendered pgBackRest and restic timer units on the machine referenced by 
 
 Unit **filenames** are project-specific: `ops.systemd_unit_prefix` + a fixed template suffix. Paths in rendered units come from `ops.install_prefix` and `ops.config_dir`.
 
+`install_prefix`, `config_dir` and `systemd_unit_prefix` default to `/opt/{project.name}`, `/etc/{project.name}` and `{project.name}-`. The unit lists have no default: `install-systemd` stops and names `ops.systemd_units.pgbackrest` / `.restic` when the list it would install is empty.
+
 ```yaml
 ops:
   install_prefix: /opt/myapp      # backup shell scripts (pgbackrest-backup.sh, restic-files-backup.sh)

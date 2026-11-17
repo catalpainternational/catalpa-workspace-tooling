@@ -45,7 +45,7 @@ ops:
     userparams_file: 99-myapp-userparams.conf   # filename inside agent conf.d
 ```
 
-`config_dir` is shared with backup env files ([README_SYSTEMD.md](README_SYSTEMD.md)).
+`config_dir` is shared with backup env files ([README_SYSTEMD.md](README_SYSTEMD.md)) and defaults to `/etc/{project.name}`. `ops.zabbix` itself is optional: without it the manifest loads, and only the `dk <env> zabbix …` commands stop and ask for it.
 
 ## Configuration sources
 

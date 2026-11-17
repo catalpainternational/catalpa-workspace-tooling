@@ -1,0 +1,7 @@
+name: dev
+docker_host: ""
+compose_file: compose.yml
+credentials_decrypt_optional: true
+site_origin: http://localdb.localdev.temp.build
+env:
+  compose_project_name: localdb_dev

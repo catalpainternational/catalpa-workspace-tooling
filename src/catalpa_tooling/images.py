@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -97,6 +99,29 @@ def deploy_platform_from_config(images_config: dict) -> str:
 def _image_registry_from_config(images_config: dict, config: ProjectConfig) -> str:
     key = config.stack.images.registry_key
     return (images_config.get(key) or images_config.get("image_registry") or "").rstrip("/")
+
+
+@functools.lru_cache(maxsize=16)
+def _registry_from_images_file(path: str, mtime_ns: int, registry_key: str) -> str:
+    _ = mtime_ns  # cache key only: a rewritten images.yaml is read again
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    return (cfg.get(registry_key) or cfg.get("image_registry") or "").strip().rstrip("/")
+
+
+def stack_image_registry(config: ProjectConfig) -> str:
+    """Registry from ``images.yaml`` (``""`` when the file or key is absent).
+
+    Cached per file modification time, for callers that resolve image refs repeatedly
+    from an env that ``managed_deploy_env`` did not build (and so lacks
+    ``STACK_IMAGE_REGISTRY``).
+    """
+    path = config.images_config_path
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return ""
+    return _registry_from_images_file(str(path), mtime_ns, config.stack.images.registry_key)
 
 
 def _github_repository(repo_root: Path) -> str | None:

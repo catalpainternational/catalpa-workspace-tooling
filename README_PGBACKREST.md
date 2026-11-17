@@ -110,7 +110,7 @@ ops:
     # restore_log_level_console: info
 ```
 
-Filenames must match what your Postgres image and compose volumes expect. When the `db` service mounts `pgdata:/var/lib/postgresql`, set `pg1_path` to the real cluster directory (official Postgres 18+ images use `/var/lib/postgresql/<major>/docker`, not `…/data`). Override per deploy with env `PGBR_PG1_PATH` if needed. After changing `pg1_path`, run `bkp_db configure` again so the `pgbackrest_conf` volume picks up the new `pg1-path`.
+All three keys are optional. The filenames default to `30-{project.name}-pgbackrest-archive.conf` and `50-{project.name}-managed.conf`, and `default_registry` defaults to the registry in `docker/images.yaml`. Filenames must match what your Postgres image and compose volumes expect. When the `db` service mounts `pgdata:/var/lib/postgresql`, set `pg1_path` to the real cluster directory (official Postgres 18+ images use `/var/lib/postgresql/<major>/docker`, not `…/data`). Override per deploy with env `PGBR_PG1_PATH` if needed. After changing `pg1_path`, run `bkp_db configure` again so the `pgbackrest_conf` volume picks up the new `pg1-path`.
 
 ## New backup host checklist
 

@@ -293,11 +293,36 @@ def postgres_image_from_env(env: dict[str, str], *, config: ProjectConfig | None
     explicit = (env.get("Postgres_IMAGE") or "").strip()
     if explicit:
         return explicit
-    default_reg = config.ops.pgbackrest.default_registry
-    reg = (env.get("STACK_IMAGE_REGISTRY") or default_reg).strip().rstrip("/") or default_reg
-    tag = (env.get("STACK_IMAGE_TAG") or "latest").strip() or "latest"
+    # Resolve the component first: without ``stack:`` that is the error to report.
     db_image = config.image_component("db")
+    reg = (env.get("STACK_IMAGE_REGISTRY") or "").strip().rstrip("/") or _fallback_db_registry(config)
+    tag = (env.get("STACK_IMAGE_TAG") or "latest").strip() or "latest"
     return f"{reg}/{db_image}:{tag}"
+
+
+def _fallback_db_registry(config: ProjectConfig) -> str:
+    """Registry for the db image when ``STACK_IMAGE_REGISTRY`` is not in the environment.
+
+    ``ops.pgbackrest.default_registry`` if set, else the stack registry from ``images.yaml``.
+    """
+    from catalpa_tooling.config import _missing_field
+
+    explicit = (config.ops.pgbackrest.default_registry or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    if config.has_deploy_paths:
+        from catalpa_tooling.images import stack_image_registry
+
+        reg = stack_image_registry(config)
+        if reg:
+            return reg
+    raise _missing_field(
+        "ops.pgbackrest.default_registry",
+        needed_for=(
+            "naming the db image when docker/images.yaml has no registry and "
+            "STACK_IMAGE_REGISTRY / Postgres_IMAGE are unset"
+        ),
+    )
 
 
 def volume_names(env: dict[str, str], *, config: ProjectConfig | None = None) -> tuple[str, str]:

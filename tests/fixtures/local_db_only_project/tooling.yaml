@@ -1,0 +1,41 @@
+# Reference consumer that uses dk only for its local stack and database work (#153).
+#
+# `ops:` names nothing about deploy hosts: install_prefix, config_dir, systemd_unit_prefix and
+# transfer_workdir are derived from project.name; zabbix, systemd_units and default_db_container
+# are left out because nothing here installs on a server. The pgBackRest drop-in names default
+# to 30-<name>-pgbackrest-archive.conf / 50-<name>-managed.conf and the db image registry comes
+# from docker/images.yaml. Commands that need a missing key say which one to add.
+
+project:
+  name: localdb
+  root_marker: pyproject.toml
+
+paths:
+  backend: backend
+  frontend: frontend
+  scripts: scripts
+  env_local: .env.local
+  email_backend_dir: email_out
+  fetch_db_dump: docker/dumps/localdb.custom
+  deploy:
+    envs_dir: docker/envs
+    images_config: docker/images.yaml
+    default_compose: compose.yml
+    dev_compose: compose.yml
+    credentials_optional_envs:
+      - dev
+
+stack:
+  compose_project_default: localdb
+  images:
+    components:
+      web: localdb-django
+      proxy: localdb-caddy
+      db: localdb-postgres
+  healthcheck:
+    url: http://127.0.0.1:8000/health/
+
+ops:
+  post_db_restore:
+    manage_commands:
+      - [migrate, --noinput]
