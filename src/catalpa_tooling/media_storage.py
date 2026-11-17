@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -372,6 +372,10 @@ class StackVolumes:
     names: dict[str, str]
     # Keys the web service mounts as named volumes, in compose order.
     web_mounts: tuple[str, ...]
+    # Compose volume key → its top-level ``volumes:`` entry (``driver``, ``driver_opts``, …).
+    # A seed that has to create a volume before any ``up`` copies these, so Compose adopts
+    # it as declared (#177).
+    specs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def resolve_stack_volumes(
@@ -414,6 +418,11 @@ def resolve_stack_volumes(
         for key in compose_volumes
     }
 
+    specs = {
+        str(key): dict(spec) if isinstance(spec, dict) else {}
+        for key, spec in compose_volumes.items()
+    }
+
     web_mounts: list[str] = []
     services = data.get("services")
     if isinstance(services, dict):
@@ -427,7 +436,7 @@ def resolve_stack_volumes(
             key = parsed[1].strip()
             if key in names and key not in web_mounts:
                 web_mounts.append(key)
-    return StackVolumes(names=names, web_mounts=tuple(web_mounts))
+    return StackVolumes(names=names, web_mounts=tuple(web_mounts), specs=specs)
 
 
 def media_storage_label(storage: MediaStorage) -> str:
