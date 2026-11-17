@@ -9,6 +9,9 @@
   - Derived from `project.name` when left out, matching every current consumer:
     `install_prefix` (`/opt/{name}`), `config_dir` (`/etc/{name}`), `systemd_unit_prefix`
     (`{name}-`) and `transfer_workdir` (`.{name}-transfer`).
+    Deriving needs `project.name` to be a plain slug (letters, digits, `_ . -`); otherwise
+    loading names the key to set. Units are checked against a derived `systemd_unit_prefix`
+    only by `install-systemd`, so other commands keep working when units use another prefix.
   - Left unset, and named by the command that needs them:
     - `ops.zabbix`: the `dk <env> zabbix` commands. The approach is taken from #159.
     - `ops.systemd_units`: `install-systemd` stops when the list it would install is empty.

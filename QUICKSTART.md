@@ -140,7 +140,7 @@ Every key under `ops:` is optional. A project that uses `ops:` only for local da
 | ------------------------------------- | ------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `ops.install_prefix`                  | no                              | `/opt/{name}`                                | `db`/`files install-systemd`, dc-backup offsite and S3 CLI installers                           |
 | `ops.config_dir`                      | no                              | `/etc/{name}`                                | install-systemd, Zabbix, dc-backup TLS (default `DC_BACKUP_CA_FILE` is `{config_dir}/tls/dc-backup-ca.crt`) |
-| `ops.systemd_unit_prefix`             | no                              | `{name}-`                                    | unit-name validation, dc-backup offsite units                                                   |
+| `ops.systemd_unit_prefix`             | no                              | `{name}-`                                    | unit-name validation (at load when set; by install-systemd when derived), dc-backup offsite units |
 | `ops.transfer_workdir`                | no                              | `.{name}-transfer`                           | `dk transfer`, `dk worktree seed`                                                               |
 | `ops.systemd_units.*`                 | only for install-systemd        | empty lists (nothing invented)               | `db`/`files install-systemd`; with no units listed it stops and names `ops.systemd_units.<kind>` |
 | `ops.default_db_container`            | no                              | unset                                        | `install-systemd --dry-run` fallback when the db container can't be discovered                  |
@@ -151,7 +151,7 @@ Every key under `ops:` is optional. A project that uses `ops:` only for local da
 | `ops.pgbackrest.data_volume`          | no                              | `postgres_data`                              | Compose **volume key** for PGDATA (ambulancia uses `pgdata`)                                    |
 | `ops.restic.data_volume`              | no                              | `django_media`                               | Compose volume key restic backs up                                                              |
 
-`{name}` is `project.name` exactly as written.
+`{name}` is `project.name` exactly as written. A key can only be derived when `project.name` is a plain slug (letters, digits, `_`, `.`, `-`); otherwise loading stops and names the key to set explicitly.
 
 The db image must load both conf directories with `include_dir` (every current consumer does). If your Postgres entrypoint also writes the archive or managed drop-in itself, set `postgres_conf` / `pgbackrest_conf` to the filenames the entrypoint uses, or dk and the entrypoint will each keep replacing the other's file. `dk` removes any other `*.conf` it finds in those volumes when it writes its own.
 

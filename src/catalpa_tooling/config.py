@@ -215,20 +215,6 @@ class StackConfig:
 DEFAULT_PGBR_PG1_PATH = "/var/lib/postgresql/18/docker"
 
 
-def default_pgbackrest_postgres_conf(project_name: str) -> str:
-    """Default ``ops.pgbackrest.postgres_conf``: Postgres archive drop-in in ``conf.d``.
-
-    The db image must load ``/etc/postgresql/conf.d`` with ``include_dir``. If the project's
-    entrypoint also writes this drop-in itself, set the key to the name the entrypoint uses.
-    """
-    return f"30-{project_name}-pgbackrest-archive.conf"
-
-
-def default_pgbackrest_conf_name(project_name: str) -> str:
-    """Default ``ops.pgbackrest.pgbackrest_conf``: managed drop-in in ``/etc/pgbackrest/conf.d``."""
-    return f"50-{project_name}-managed.conf"
-
-
 def default_pgbackrest_restore_temp_prefix(project_name: str) -> str:
     """Default ``/tmp`` archive prefix for compose ``pg_restore`` (``ops.pgbackrest.restore_temp_prefix``)."""
     return f"{project_name}_pgrestore_"
@@ -332,12 +318,15 @@ class OpsConfig:
     post_db_restore: PostDbRestoreOpsConfig
     post_metabase_db_restore: PostMetabaseDbRestoreOpsConfig
     default_db_container: str | None
+    # True when ``systemd_unit_prefix`` was derived from ``project.name`` rather than set.
+    # Unit names are then checked against it by install-systemd, not at manifest load, so a
+    # project whose units follow another convention can still run unrelated commands.
+    systemd_unit_prefix_derived: bool = False
 
     def require_zabbix(self) -> ZabbixOpsConfig:
         if self.zabbix is None:
-            raise ProjectConfigError(
-                "tooling.yaml has no `ops.zabbix:` section (unit_name, userparams_file); "
-                "add it to run the Zabbix agent commands."
+            raise _missing_section(
+                "ops.zabbix", needed_for="the Zabbix agent commands (unit_name, userparams_file)"
             )
         return self.zabbix
 
@@ -1701,6 +1690,24 @@ def _parse_restic_verbose_field(raw: dict[str, Any], key: str, *, section: str) 
         raise ProjectConfigError(str(e)) from e
 
 
+_DERIVABLE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
+def _derive_from_name(project_name: str, field: str, template: str) -> str:
+    """Default for ``field`` built from ``project.name``, which must then be a plain slug.
+
+    ``project.name`` is otherwise free text; a space or slash in it would leak into host
+    paths (``/opt/My App``) or nested directories (``.org/app-transfer``).
+    """
+    if not _DERIVABLE_NAME_RE.fullmatch(project_name):
+        raise ProjectConfigError(
+            f"`{field}` is not set, and project.name {project_name!r} cannot be used to "
+            f"derive it (letters, digits, underscore, dot, hyphen only). Set `{field}` "
+            f"explicitly — see the settings table in catalpa-workspace-tooling's QUICKSTART.md."
+        )
+    return template.format(name=project_name)
+
+
 def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     pg_raw = ops_raw.get("pgbackrest")
     pg_raw = {} if pg_raw is None else _require_mapping(pg_raw, "ops.pgbackrest")
@@ -1725,7 +1732,10 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
         timers_pg = tuple(u for u in pg_units if u.endswith(".timer"))
     if not timers_restic and restic_units:
         timers_restic = tuple(u for u in restic_units if u.endswith(".timer"))
-    unit_prefix = _optional_str(ops_raw, "systemd_unit_prefix") or f"{project_name}-"
+    explicit_prefix = _optional_str(ops_raw, "systemd_unit_prefix")
+    unit_prefix = explicit_prefix or _derive_from_name(
+        project_name, "ops.systemd_unit_prefix", "{name}-"
+    )
     systemd_units = SystemdUnitsOpsConfig(
         pgbackrest=pg_units,
         restic=restic_units,
@@ -1734,7 +1744,8 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     )
     from catalpa_tooling.systemd_render import validate_systemd_units
 
-    unit_errors = validate_systemd_units(systemd_units, unit_prefix)
+    # A derived prefix is only checked by install-systemd (see OpsConfig).
+    unit_errors = validate_systemd_units(systemd_units, explicit_prefix or "")
     if unit_errors:
         raise ProjectConfigError("; ".join(unit_errors))
     restic_raw = ops_raw.get("restic")
@@ -1747,21 +1758,31 @@ def _parse_ops(ops_raw: dict[str, Any], *, project_name: str) -> OpsConfig:
     if restic_backup_path is not None and not restic_backup_path.startswith("/"):
         raise ProjectConfigError("ops.restic.backup_path must be an absolute path")
     return OpsConfig(
-        install_prefix=_optional_str(ops_raw, "install_prefix") or f"/opt/{project_name}",
-        config_dir=_optional_str(ops_raw, "config_dir") or f"/etc/{project_name}",
+        install_prefix=_optional_str(ops_raw, "install_prefix")
+        or _derive_from_name(project_name, "ops.install_prefix", "/opt/{name}"),
+        config_dir=_optional_str(ops_raw, "config_dir")
+        or _derive_from_name(project_name, "ops.config_dir", "/etc/{name}"),
         systemd_unit_prefix=unit_prefix,
+        systemd_unit_prefix_derived=explicit_prefix is None,
         transfer_workdir=_validate_rel_path(
-            _optional_str(ops_raw, "transfer_workdir") or f".{project_name}-transfer",
+            _optional_str(ops_raw, "transfer_workdir")
+            or _derive_from_name(project_name, "ops.transfer_workdir", ".{name}-transfer"),
             field="ops.transfer_workdir",
         ),
         pgbackrest=PgbackrestOpsConfig(
+            # Default drop-in names assume the db image loads conf.d with ``include_dir``. A
+            # project whose entrypoint writes the archive drop-in itself sets the name it uses.
             postgres_conf=(
                 _optional_str(pg_raw, "postgres_conf")
-                or default_pgbackrest_postgres_conf(project_name)
+                or _derive_from_name(
+                    project_name, "ops.pgbackrest.postgres_conf", "30-{name}-pgbackrest-archive.conf"
+                )
             ),
             pgbackrest_conf=(
                 _optional_str(pg_raw, "pgbackrest_conf")
-                or default_pgbackrest_conf_name(project_name)
+                or _derive_from_name(
+                    project_name, "ops.pgbackrest.pgbackrest_conf", "50-{name}-managed.conf"
+                )
             ),
             default_registry=_optional_str(pg_raw, "default_registry"),
             restore_temp_prefix=(

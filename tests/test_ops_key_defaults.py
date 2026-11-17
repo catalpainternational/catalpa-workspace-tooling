@@ -235,3 +235,137 @@ def test_install_systemd_names_the_empty_unit_list(
 
     assert rc == 1
     assert f"ops.systemd_units.{kind}" in capsys.readouterr().err
+
+
+_UNITS_OTHER_CONVENTION = """
+  systemd_units:
+    pgbackrest:
+      - bero-pgbackrest-backup-full.service
+      - bero-pgbackrest-backup-full.timer
+"""
+
+
+def _run_install_systemd_dry_run(config, env: dict[str, str]) -> int:
+    from unittest.mock import patch
+
+    from catalpa_tooling import systemd_remote_install
+
+    with patch.object(
+        systemd_remote_install, "resolve_env_with_compose_project", return_value=env
+    ):
+        return systemd_remote_install.cmd_install_systemd_backups(
+            config,
+            {},
+            "ssh://root@203.0.113.5",
+            "prod",
+            ["--dry-run"],
+            global_dry_run=True,
+            yes=True,
+            fixed_only="pgbackrest",
+        )
+
+
+def test_derived_unit_prefix_does_not_fail_manifest_load(project: Path) -> None:
+    _append(project, _OPS_LOCAL_DB_ONLY + _UNITS_OTHER_CONVENTION)
+    ops = load_project_config(project).ops
+
+    assert ops.systemd_unit_prefix == "minimal-native-"
+    assert ops.systemd_unit_prefix_derived is True
+
+
+def test_explicit_unit_prefix_is_still_checked_at_load(project: Path) -> None:
+    _append(project, _OPS_LOCAL_DB_ONLY + "  systemd_unit_prefix: app-\n" + _UNITS_OTHER_CONVENTION)
+
+    with pytest.raises(ProjectConfigError, match="does not start with"):
+        load_project_config(project)
+
+
+def test_install_systemd_checks_units_against_the_derived_prefix(
+    project: Path, capsys: pytest.CaptureFixture
+) -> None:
+    _with_deploy(project, None)
+    _append(project, _OPS_LOCAL_DB_ONLY + _UNITS_OTHER_CONVENTION + _STACK_MINIMAL)
+    config = load_project_config(project)
+
+    assert _run_install_systemd_dry_run(config, {}) == 1
+    err = capsys.readouterr().err
+    assert "does not start with" in err
+    assert "`ops.systemd_unit_prefix` is not set" in err
+
+
+def test_dry_run_preview_leaves_unset_db_container_empty(
+    project: Path, capsys: pytest.CaptureFixture
+) -> None:
+    from catalpa_tooling.systemd_remote_install import render_pgbackrest_env
+
+    units = """
+  systemd_unit_prefix: bero-
+  systemd_units:
+    pgbackrest:
+      - bero-pgbackrest-backup-full.service
+"""
+    _with_deploy(project, None)
+    _append(project, _OPS_LOCAL_DB_ONLY + units + _STACK_MINIMAL)
+    config = load_project_config(project)
+    assert config.ops.default_db_container is None
+
+    env = {"PGBR_S3_WRITE_STANZA": "main", "COMPOSE_PROJECT_NAME": "app_compose"}
+    _run_install_systemd_dry_run(config, env)
+
+    out = capsys.readouterr()
+    assert "not set: ops.default_db_container" not in out.out
+    assert "ops.default_db_container is not set" in out.err
+    assert "PGBR_DB_CONTAINER=\n" in render_pgbackrest_env({"PGBR_STANZA": "main"})
+
+
+@pytest.mark.parametrize("name", ["My App", "org/app"])
+def test_unsafe_project_name_is_not_used_for_derived_paths(project: Path, name: str) -> None:
+    manifest = project / "tooling.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("name: minimal-native", f"name: {name!r}"),
+        encoding="utf-8",
+    )
+    _append(project, "\nops: {}\n")
+
+    with pytest.raises(ProjectConfigError, match="cannot be used to derive"):
+        load_project_config(project)
+
+
+def test_unsafe_project_name_is_fine_when_every_derived_key_is_set(project: Path) -> None:
+    manifest = project / "tooling.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("name: minimal-native", "name: 'My App'"),
+        encoding="utf-8",
+    )
+    _append(
+        project,
+        """
+ops:
+  install_prefix: /opt/app
+  config_dir: /etc/app
+  systemd_unit_prefix: app-
+  transfer_workdir: .app-transfer
+  pgbackrest:
+    postgres_conf: 30-archive.conf
+    pgbackrest_conf: 50-managed.conf
+    restore_temp_prefix: app_pgrestore_
+""",
+    )
+
+    assert load_project_config(project).ops.install_prefix == "/opt/app"
+
+
+def test_db_image_without_stack_reports_the_missing_stack_section(project: Path) -> None:
+    from catalpa_tooling.pgbackrest_volume_config import postgres_image_from_env
+
+    _append(project, "\nops: {}\n")
+    config = load_project_config(project)
+
+    with pytest.raises(ProjectConfigError, match="`stack:` section"):
+        postgres_image_from_env({}, config=config)
+
+
+def test_zabbix_error_points_at_the_settings_table(project: Path) -> None:
+    _append(project, _OPS_LOCAL_DB_ONLY)
+    with pytest.raises(ProjectConfigError, match="QUICKSTART.md"):
+        load_project_config(project).ops.require_zabbix()

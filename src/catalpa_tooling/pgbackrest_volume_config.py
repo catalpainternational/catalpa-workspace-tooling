@@ -293,9 +293,10 @@ def postgres_image_from_env(env: dict[str, str], *, config: ProjectConfig | None
     explicit = (env.get("Postgres_IMAGE") or "").strip()
     if explicit:
         return explicit
+    # Resolve the component first: without ``stack:`` that is the error to report.
+    db_image = config.image_component("db")
     reg = (env.get("STACK_IMAGE_REGISTRY") or "").strip().rstrip("/") or _fallback_db_registry(config)
     tag = (env.get("STACK_IMAGE_TAG") or "latest").strip() or "latest"
-    db_image = config.image_component("db")
     return f"{reg}/{db_image}:{tag}"
 
 
@@ -309,10 +310,10 @@ def _fallback_db_registry(config: ProjectConfig) -> str:
     explicit = (config.ops.pgbackrest.default_registry or "").strip().rstrip("/")
     if explicit:
         return explicit
-    if config.has_deploy_paths and config.has_stack:
-        from catalpa_tooling.images import _image_registry_from_config, _load_images_config
+    if config.has_deploy_paths:
+        from catalpa_tooling.images import stack_image_registry
 
-        reg = _image_registry_from_config(_load_images_config(config), config)
+        reg = stack_image_registry(config)
         if reg:
             return reg
     raise _missing_field(

@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.config import ProjectConfig, _missing_field
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.restic_files import (
@@ -22,7 +22,7 @@ from catalpa_tooling.restic_files import (
     restic_data_volume_key,
 )
 from catalpa_tooling.systemd_assets import systemd_source_dir
-from catalpa_tooling.systemd_render import render_systemd_unit
+from catalpa_tooling.systemd_render import render_systemd_unit, validate_systemd_units
 
 REMOTE_SYSTEMD = "/etc/systemd/system"
 
@@ -297,9 +297,20 @@ def cmd_install_systemd_backups(
         ("restic", do_restic, config.ops.systemd_units.restic),
     ):
         if wanted and not units:
+            err = _missing_field(f"ops.systemd_units.{kind}", needed_for=f"{kind} install-systemd")
+            print(str(err), file=sys.stderr)
+            return 1
+    if config.ops.systemd_unit_prefix_derived:
+        # Checked here rather than at manifest load: the prefix was derived from project.name.
+        prefix_errors = validate_systemd_units(
+            config.ops.systemd_units, config.ops.systemd_unit_prefix
+        )
+        if prefix_errors:
             print(
-                f"tooling.yaml declares no `ops.systemd_units.{kind}` units, so there is "
-                f"nothing to install for {kind}. Add the unit list under `ops.systemd_units:`.",
+                "; ".join(prefix_errors)
+                + ". `ops.systemd_unit_prefix` is not set, so it defaults to "
+                f"{config.ops.systemd_unit_prefix!r} (project.name + '-'); set it to the "
+                "prefix your units use.",
                 file=sys.stderr,
             )
             return 1
@@ -343,11 +354,14 @@ def cmd_install_systemd_backups(
             "(dry-run) Would discover PGBR_DB_CONTAINER via ssh docker ps or use pgbr_db_container from credentials.",
             file=sys.stderr,
         )
-        env_r["PGBR_DB_CONTAINER"] = (
-            env_r.get("PGBR_DB_CONTAINER")
-            or config.ops.default_db_container
-            or "(not set: ops.default_db_container)"
-        )
+        if config.ops.default_db_container:
+            env_r["PGBR_DB_CONTAINER"] = config.ops.default_db_container
+        else:
+            print(
+                "(dry-run) ops.default_db_container is not set; PGBR_DB_CONTAINER is left "
+                "empty in the preview.",
+                file=sys.stderr,
+            )
 
     project_name = config.meta.name
     pgbr_body = render_pgbackrest_env(env_r, project_name=project_name) if do_pgbr else ""
