@@ -51,7 +51,7 @@ SKIP_ENV_VAR = "DK_SKIP_STALE_STACK"
 _SKIP_ENV_COMMANDS = frozenset(
     {"docker", "zabbix", "storage", "ensure_volumes", "trust-caddy-cert"}
 )
-_SKIP_COMPOSE_VERBS = frozenset({"down", "ps", "logs", "config"})
+_SKIP_COMPOSE_VERBS = frozenset({"down", "stop", "kill", "rm", "pause", "ps", "logs", "config"})
 
 
 @dataclass(frozen=True)

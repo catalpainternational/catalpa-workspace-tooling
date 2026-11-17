@@ -99,6 +99,14 @@ def _matching_labels() -> dict[str, str]:
         (None, ["logs", "-f"], False),
         (None, ["down"], False),
         (None, ["config"], False),
+        # Stopping or removing containers must not rebuild and recreate them first.
+        (None, ["stop"], False),
+        (None, ["kill"], False),
+        (None, ["rm", "-f"], False),
+        (None, ["pause"], False),
+        ("compose", ["stop", "web"], False),
+        (None, ["restart"], True),  # restarting runs code, so it still checks
+        (None, ["exec", "web", "sh"], True),
         ("compose", ["down", "-v"], False),
         ("wipe", [], False),
         ("info", None, True),  # returns before the hook; never actually reached

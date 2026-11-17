@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk <env> stop` no longer rebuilds the stack first.** After a new commit, `stop`, `kill`,
+  `rm` and `pause` rebuilt every stack image and recreated the containers before stopping them,
+  which could take many minutes. They now skip the stale-stack check, as `down` already did.
+
 ### Added
 
 - **dk sets `STACK_PLATFORM`, so local stacks can stop running under amd64 emulation (#138).**
