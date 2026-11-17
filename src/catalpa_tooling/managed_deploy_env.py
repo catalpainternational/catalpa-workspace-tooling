@@ -15,7 +15,12 @@ from catalpa_tooling.backup_logging_env import apply_backup_logging_env
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.dk_stack import vite_build_metadata_env
 from catalpa_tooling.env_yaml import _credentials_to_env, _yaml_mapping_to_env
-from catalpa_tooling.images import _default_image_tag, _image_registry_from_config, _load_images_config
+from catalpa_tooling.images import (
+    _default_image_tag,
+    _image_registry_from_config,
+    _load_images_config,
+    deploy_platform_from_config,
+)
 from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.site_origin import (
     domain_env_from_origins,
@@ -202,6 +207,23 @@ def print_managed_deploy_header(
     )
 
 
+def stack_platform_for_env(
+    images_config: dict, *, docker_host: str, use_prepulled_registry: bool
+) -> str:
+    """``STACK_PLATFORM`` for ``dk <env>`` when ``info.yaml`` ``env:`` does not set it.
+
+    Local envs that build from source get ``""``, so a compose
+    ``platform: ${STACK_PLATFORM-linux/amd64}`` builds and runs natively. Remote envs, and
+    local envs that pull pinned registry images (published for the deploy platform only),
+    get ``images.yaml`` ``deploy_platform``.
+    """
+    from catalpa_tooling.local_proxy import docker_endpoint_is_local
+
+    if docker_endpoint_is_local(docker_host) and not use_prepulled_registry:
+        return ""
+    return deploy_platform_from_config(images_config)
+
+
 def load_managed_deploy_context(
     config: ProjectConfig,
     env_name: str,
@@ -381,6 +403,15 @@ def load_managed_deploy_context(
         env_add["STACK_IMAGE_REGISTRY"] = image_registry
     elif reg_from_images_yaml:
         env_add["STACK_IMAGE_REGISTRY"] = reg_from_images_yaml
+
+    env_add.setdefault(
+        "STACK_PLATFORM",
+        stack_platform_for_env(
+            images_config,
+            docker_host=str(docker_host or ""),
+            use_prepulled_registry=use_prepulled_registry,
+        ),
+    )
 
     if image_registry and effective_tag:
         env_add["Django_IMAGE"] = f"{image_registry}/{config.image_component('web')}:{effective_tag}"

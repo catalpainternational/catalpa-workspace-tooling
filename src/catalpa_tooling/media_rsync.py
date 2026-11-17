@@ -295,8 +295,6 @@ def rsync_push_via_container(
         "docker",
         "run",
         "--rm",
-        "--platform",
-        "linux/amd64",
         "-v",
         f"{volume_name}:/data",
         "-v",

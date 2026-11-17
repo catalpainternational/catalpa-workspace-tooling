@@ -84,6 +84,16 @@ def _load_images_config(config: ProjectConfig) -> dict:
         return yaml.safe_load(f) or {}
 
 
+DEFAULT_DEPLOY_PLATFORM = "linux/amd64"
+
+
+def deploy_platform_from_config(images_config: dict) -> str:
+    """Platform deployed images are built for: ``images.yaml`` ``deploy_platform``, default amd64."""
+    raw = images_config.get("deploy_platform")
+    value = str(raw).strip() if raw not in (None, False) else ""
+    return value or DEFAULT_DEPLOY_PLATFORM
+
+
 def _image_registry_from_config(images_config: dict, config: ProjectConfig) -> str:
     key = config.stack.images.registry_key
     return (images_config.get(key) or images_config.get("image_registry") or "").rstrip("/")

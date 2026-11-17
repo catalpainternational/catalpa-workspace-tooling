@@ -11,7 +11,12 @@ from catalpa_tooling.dk_stack import (
     push_registry_images,
     tag_local_to_registry,
 )
-from catalpa_tooling.images import _default_image_tag, _image_registry_from_config, _load_images_config
+from catalpa_tooling.images import (
+    _default_image_tag,
+    _image_registry_from_config,
+    _load_images_config,
+    deploy_platform_from_config,
+)
 from catalpa_tooling.run_cmd import run as run_cmd
 
 
@@ -38,9 +43,17 @@ def _inspect_platform(image: str, env_add: dict[str, str] | None) -> str | None:
 
 
 def verify_built_image_platforms(
-    config: ProjectConfig, env_add: dict[str, str] | None = None
+    config: ProjectConfig,
+    env_add: dict[str, str] | None = None,
+    *,
+    deploy_platform: str | None = None,
 ) -> int:
-    """0 when every built stack image matches its service's declared platform (#114).
+    """0 when every built stack image matches the platform it is meant for (#114, #138).
+
+    With ``deploy_platform`` (what ``dk push`` passes, from ``images.yaml``), every built image
+    must be that platform, whether or not its service declares ``platform:``; a service that
+    declares a different platform is also an error. Without it, each image is checked against
+    its service's own ``platform:`` key only.
 
     ``dk push`` builds with a plain ``docker compose build`` and takes the platform entirely
     from the consumer's ``platform:`` keys. That assumption does not hold on every engine —
@@ -72,9 +85,12 @@ def verify_built_image_platforms(
             # block a push over, and compose_yml_build already failed loudly if it broke.
             continue
         declared = str(svc.get("platform") or "").strip()
-        if declared and declared != actual:
-            mismatches.append((name, image, declared, actual))
-        elif not declared:
+        expected = deploy_platform or declared
+        if expected and expected != actual:
+            mismatches.append((name, image, expected, actual))
+        elif declared and deploy_platform and declared != deploy_platform:
+            mismatches.append((name, image, deploy_platform, f"{actual} (declares {declared})"))
+        elif not expected:
             undeclared.append((name, image, actual))
 
     for name, image, actual in undeclared:
@@ -86,9 +102,10 @@ def verify_built_image_platforms(
         )
     if not mismatches:
         return 0
-    print("dk push: refusing to push — built images do not match their declared platform.", file=sys.stderr)
-    for name, image, declared, actual in mismatches:
-        print(f"  {name}: {image}\n    declared {declared}, built {actual}", file=sys.stderr)
+    what = "the deploy platform" if deploy_platform else "their declared platform"
+    print(f"dk push: refusing to push — built images do not match {what}.", file=sys.stderr)
+    for name, image, expected, actual in mismatches:
+        print(f"  {name}: {image}\n    expected {expected}, built {actual}", file=sys.stderr)
     print(
         "  The engine built a platform the compose file did not ask for. `docker compose build`\n"
         "  does not forward `platform:` on every engine (Podman's compat API drops it), so the\n"
@@ -120,15 +137,22 @@ def push_images(
         return 1
     resolved_tag = tag or images_config.get("image_tag") or _default_image_tag(config.repo_root)
     resolved_tag = str(resolved_tag).strip() if resolved_tag else _default_image_tag(config.repo_root)
+    deploy_platform = deploy_platform_from_config(images_config)
     env_add = env_for_stack_build(
         config,
         image_registry=resolved_registry,
         image_tag=resolved_tag,
+        stack_platform=deploy_platform,
     )
     if compose_yml_build(config, env_add=env_add if env_add else None) != 0:
         return 1
     # Between build and tag: the last point where a wrong-architecture image is still local.
-    if verify_built_image_platforms(config, env_add if env_add else None) != 0:
+    if (
+        verify_built_image_platforms(
+            config, env_add if env_add else None, deploy_platform=deploy_platform
+        )
+        != 0
+    ):
         return 1
     if tag_local_to_registry(
         config,
@@ -141,7 +165,11 @@ def push_images(
 
 
 def _cmd_push(_compose_file: str, ns: argparse.Namespace, config: ProjectConfig) -> int:
-    """Build compose.yml stack for linux/amd64 and push to a registry (e.g. GHCR). Not host-specific."""
+    """Build compose.yml for the deploy platform and push to a registry (e.g. GHCR).
+
+    The platform is ``images.yaml`` ``deploy_platform`` (default linux/amd64), injected as
+    ``STACK_PLATFORM`` and checked on every built image before anything is pushed.
+    """
     del _compose_file
     return push_images(
         config,

@@ -281,8 +281,14 @@ def env_for_stack_build(
     github_repository: str | None = None,
     image_registry: str | None = None,
     image_tag: str | None = None,
+    stack_platform: str | None = None,
 ) -> dict[str, str]:
-    """Env vars for compose build: project env, placeholders, ``STACK_IMAGE_*``, VITE metadata."""
+    """Env vars for compose build: project env, placeholders, ``STACK_IMAGE_*``, VITE metadata.
+
+    ``STACK_PLATFORM`` is ``stack_platform`` when given (``dk push`` passes the deploy platform,
+    overriding the project ``.env``). Otherwise it defaults to ``""`` so a compose
+    ``platform: ${STACK_PLATFORM-linux/amd64}`` builds natively, unless ``.env`` sets it.
+    """
     out: dict[str, str] = dict(_load_dotenv_file(_project_env_file(config)))
     _apply_build_placeholders(out, config.stack.build_placeholders)
     gh = (github_repository or "").strip() or _github_repository(config.repo_root)
@@ -296,6 +302,10 @@ def env_for_stack_build(
     if tag is None or tag == "":
         tag = _default_image_tag(config.repo_root)
     out["STACK_IMAGE_TAG"] = str(tag)
+    if stack_platform is not None:
+        out["STACK_PLATFORM"] = stack_platform
+    else:
+        out.setdefault("STACK_PLATFORM", "")
     out.update(vite_build_metadata_env(config, str(tag)))
     return out
 
