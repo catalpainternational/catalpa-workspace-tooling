@@ -272,6 +272,7 @@ A shared `include:` of a base stack plus a thin override file (as ambulancia doe
 On deploy, tooling sets some or all of:
 
 - `STACK_IMAGE_REGISTRY`, `STACK_IMAGE_TAG`
+- `STACK_PLATFORM` (see *Platform* below)
 - `Django_IMAGE`, `Caddy_IMAGE`, `Postgres_IMAGE` when registry **and** tag are known
 - `VITE_RELEASE`, `VITE_BUILD_TIME`, `VITE_GIT_SHA` (for SPA build args)
 - `SITE_ORIGIN`, `DOMAIN`, `CADDY_SITE_ADDRESS` (and optional admin/stats variants)
@@ -289,7 +290,28 @@ db:
 
 `dk build` / `dk push` use `paths.deploy.default_compose` and `stack.build_placeholders` so required `${SECRET}` interpolations have dummy values. Add any extra required build-time keys to `stack.build_placeholders`.
 
-Push builds **linux/amd64** for DigitalOcean droplets. Set `platform: linux/amd64` on those services if developers use Apple Silicon.
+### Platform: native locally, the deploy platform when pushed
+
+Servers run the platform in `docker/images.yaml` `deploy_platform` (default `linux/amd64`). Pin each built service like this, rather than to a literal platform:
+
+```yaml
+django:
+  platform: ${STACK_PLATFORM-linux/amd64}
+```
+
+`dk` sets `STACK_PLATFORM`:
+
+| Where | `STACK_PLATFORM` |
+| --- | --- |
+| `dk push`, and `dk <env>` for remote envs (`docker_host` set) | `deploy_platform` |
+| `dk <env>` for a local env that pulls a pinned `image_tag` | `deploy_platform` (registry images exist only for that platform) |
+| `dk <env>` for a local env that builds from source, and `dk build` | `""`, so images build and run natively (no amd64 emulation on Apple Silicon) |
+
+The `-` without a colon is deliberate. When the variable is unset, as in a plain `docker compose` run without dk, the pin stays amd64. When it is empty, compose drops the key.
+
+- To rehearse the deployed image locally, set `STACK_PLATFORM: linux/amd64` under `env:` in that env's `info.yaml`. A value there always wins.
+- `dk push` checks that every built image matches `deploy_platform` before pushing, whether or not the service pins one.
+- Local and pushed images share a local tag. After a `dk push` from an Apple Silicon machine, the next local `up` rebuilds natively once.
 
 ### Volumes: stable keys, explicit project prefix
 
@@ -437,7 +459,7 @@ gh auth refresh -s read:packages,delete:packages,write:packages
 
 `write:packages` is enough for the first push. Full GHCR scopes and cleanup 403s: [README.md](README.md#github-pat-scopes-ghcr).
 
-11. `uv run dk push` — build **linux/amd64**, push to GHCR, attach SBOMs (unless `--no-sbom`).
+11. `uv run dk push` — build for `deploy_platform` (default **linux/amd64**), push to GHCR, attach SBOMs (unless `--no-sbom`).
 12. Pin `image_tag` in `info.yaml` (or pass `--tag`) **and** keep `image_registry` set so the remote host pulls `Django_IMAGE` / `Caddy_IMAGE` / `Postgres_IMAGE`. Then:
 
 ```bash

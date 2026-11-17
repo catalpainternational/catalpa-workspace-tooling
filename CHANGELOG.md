@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **dk sets `STACK_PLATFORM`, so local stacks can stop running under amd64 emulation (#138).**
+  - A new optional `deploy_platform` in `docker/images.yaml` sets what servers run. It
+    defaults to `linux/amd64`.
+  - Projects change each pin to `platform: ${STACK_PLATFORM-linux/amd64}`. dk then sets:
+    - `dk push` and remote envs: `deploy_platform`.
+    - Local envs that build from source, and `dk build`: `""`, so images build natively.
+    - Local envs that pull a pinned `image_tag`: `deploy_platform`.
+  - A `STACK_PLATFORM` value in an env's `info.yaml` `env:` always wins. swlt_ws2's existing
+    `STACK_PLATFORM: ""` lines keep working, and are now redundant.
+  - Projects that keep literal `platform:` pins are unaffected.
+  - `dk push` now checks every built image against `deploy_platform`, including services with
+    no `platform:` key. Before, those only warned.
+  - The throwaway alpine containers used by media pull/push no longer force
+    `--platform linux/amd64`.
+  - Known limitation: local and pushed images share a local tag, so after a `dk push` from
+    Apple Silicon the next local `up` rebuilds once.
 ### Changed
 
 - **Every key under `ops:` is now optional (#153).** A project that uses `ops:` only for local

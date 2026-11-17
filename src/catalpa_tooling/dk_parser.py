@@ -77,7 +77,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
 
     p_push = sub.add_parser(
         "push",
-        help="Build for linux/amd64, push images, and attach CycloneDX SBOMs.",
+        help="Build for the deploy platform (images.yaml deploy_platform, default linux/amd64), push images, and attach CycloneDX SBOMs.",
     )
     p_push.add_argument("--registry", default=None, help="Override registry base.")
     p_push.add_argument("--tag", default=None, help="Override image tag.")

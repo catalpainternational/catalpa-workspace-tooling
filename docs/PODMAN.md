@@ -215,4 +215,5 @@ cross the VM boundary (#94). So switch it on per machine, not for everyone.
   for them (section 2).
 - The local proxy's host ports cannot be configured (section 3).
 - Against Podman's compat API, compose drops `platform:` and builds native. `dk push` checks
-  the built architecture since v1.6.0 (#114).
+  the built architecture since v1.6.0 (#114), and against `deploy_platform` even for
+  services with no `platform:` key (#138).
