@@ -95,7 +95,9 @@ Local-only envs (`dev`, `full`, or names starting with `local_`) can omit creden
 
 ## 3. Write `tooling.yaml`
 
-Start from [tests/fixtures/minimal_project/tooling.yaml](tests/fixtures/minimal_project/tooling.yaml) or a production consumer (ambulancia, JID, catalpa-site). Required top-level keys: `project`, `paths`, `stack`, `ops`.
+Start from [tests/fixtures/minimal_project/tooling.yaml](tests/fixtures/minimal_project/tooling.yaml) or a production consumer (ambulancia, JID, catalpa-site). Required top-level keys: `project` and `paths`. `stack:`, `ops:` and `paths.deploy` are needed only by the commands that use them; a project that leaves one out can still run `dk cut-release`, `tests compliance`, `scripts` and the shell setup commands.
+
+**Absent vs empty.** A section that is missing, or written as a bare `ops:` with nothing under it, means *not adopted*: commands that need it fail and name the section. `ops: {}`, or any mapping, means *adopted*: every key below that has a default takes it.
 
 ### `project` and `paths`
 
@@ -122,26 +124,36 @@ Override the manifest path with `TOOLING_CONFIG=/path/to/tooling.yaml` if needed
 | Key                                   | Purpose                                                                                   | Notes                                                                                        |
 | ------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | `stack.compose_project_default`       | Fallback Compose project name.                                                            | Local: `{default}_{env}` if unset; remote: `{default}` unless `env.compose_project_name`.    |
-| `stack.services.web` / `proxy` / `db` | **Compose service names**, not container names.                                           | Used by `dk <env> manage`, backups, health, local proxy. Typical: `django` / `caddy` / `db`. |
-| `stack.images.registry_key`           | Key in `docker/images.yaml` (usually `image_registry`).                                   |                                                                                              |
+| `stack.services.web` / `proxy` / `db` | **Compose service names**, not container names.                                           | Optional; default `django` / `caddy` / `db`. Used by `dk <env> manage`, backups, health, local proxy. |
+| `stack.images.registry_key`           | Key in `docker/images.yaml` holding the registry.                                         | Optional; default `image_registry`.                                                          |
 | `stack.images.components`             | Image **repository names** under the registry (`web` / `proxy` / `db`).                   | e.g. `myapp`, `myapp-caddy`, `myapp-postgres`. Used by `dk push` and injected `*_IMAGE`.     |
-| `stack.healthcheck`                   | Service + URL for smoke / wait-for-healthy.                                               |                                                                                              |
+| `stack.healthcheck`                   | Service + URL for smoke / wait-for-healthy.                                               | `url` is required; `service` defaults to `stack.services.web`.                               |
 | `stack.origin_env_keys`               | Optional; defaults include `SITE_ORIGIN`, `DJANGO_ORIGIN`, `BERO_ORIGIN`.                 |                                                                                              |
 | `stack.build_placeholders`            | Dummy secrets so `dk build` / `dk push` can interpolate Compose without real credentials. |                                                                                              |
 | `stack.manage_user`                   | Optional; user (`django` or `uid:gid`) for `exec … ./manage.py`.                          | Set it when the image has no `USER` and drops privileges in its entrypoint. See below.        |
 
 ### `ops` (backups, systemd, transfer)
 
-Even if you are not enabling backups on day one, the parser **requires** `ops.pgbackrest`, `ops.zabbix`, and `ops.systemd_units`. Copy the minimal fixture and rename prefixes to your slug. Important fields:
+Every key under `ops:` is optional. A project that uses `ops:` only for local database work (for example `dk dev db restore` with `ops.post_db_restore` hooks) can write just those keys, or `ops: {}`. Deploy-host keys follow conventions every current consumer already uses and are derived from `project.name`; keys that differ per project are left unset, and the command that needs one names it.
 
-| Key                                                         | Purpose                                                   | Notes                                                          |
-| ----------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------- |
-| `ops.install_prefix` / `config_dir` / `systemd_unit_prefix` | Paths and unit names on the deploy host.                  |                                                                |
-| `ops.transfer_workdir`                                      | Scratch dir for `dk transfer`.                            |                                                                |
-| `ops.default_db_container`                                  | Fallback container name for systemd / backup helpers.     | e.g. `myapp-db-1`. Must match real Compose naming on the host. |
-| `ops.pgbackrest.data_volume`                                | Compose **volume key** for PGDATA.                        | Default `postgres_data`; ambulancia uses `pgdata`.             |
-| `ops.restic.data_volume`                                    | Compose volume key for media (default `django_media`).    |                                                                |
-| `ops.pgbackrest.default_registry`                           | GHCR (or other) prefix for the Postgres image in backups. |                                                                |
+| Key                                   | Required?                       | Default                                      | Used by                                                                                         |
+| ------------------------------------- | ------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `ops.install_prefix`                  | no                              | `/opt/{name}`                                | `db`/`files install-systemd`, dc-backup offsite and S3 CLI installers                           |
+| `ops.config_dir`                      | no                              | `/etc/{name}`                                | install-systemd, Zabbix, dc-backup TLS (default `DC_BACKUP_CA_FILE` is `{config_dir}/tls/dc-backup-ca.crt`) |
+| `ops.systemd_unit_prefix`             | no                              | `{name}-`                                    | unit-name validation (at load when set; by install-systemd when derived), dc-backup offsite units |
+| `ops.transfer_workdir`                | no                              | `.{name}-transfer`                           | `dk transfer`, `dk worktree seed`                                                               |
+| `ops.systemd_units.*`                 | only for install-systemd        | empty lists (nothing invented)               | `db`/`files install-systemd`; with no units listed it stops and names `ops.systemd_units.<kind>` |
+| `ops.default_db_container`            | no                              | unset                                        | `install-systemd --dry-run` fallback when the db container can't be discovered                  |
+| `ops.zabbix.unit_name` / `userparams_file` | only for `dk <env> zabbix` | section unset                                | Zabbix agent commands, which stop and name `ops.zabbix` when it is missing                      |
+| `ops.pgbackrest.postgres_conf`        | no                              | `30-{name}-pgbackrest-archive.conf`          | `dk <env> up`, `db init`/`configure`/`restore`: Postgres archive drop-in in `/etc/postgresql/conf.d` |
+| `ops.pgbackrest.pgbackrest_conf`      | no                              | `50-{name}-managed.conf`                     | same: managed drop-in in `/etc/pgbackrest/conf.d`                                               |
+| `ops.pgbackrest.default_registry`     | no                              | the `docker/images.yaml` registry            | naming the db image when `Postgres_IMAGE` and `STACK_IMAGE_REGISTRY` are unset                  |
+| `ops.pgbackrest.data_volume`          | no                              | `postgres_data`                              | Compose **volume key** for PGDATA (ambulancia uses `pgdata`)                                    |
+| `ops.restic.data_volume`              | no                              | `django_media`                               | Compose volume key restic backs up                                                              |
+
+`{name}` is `project.name` exactly as written. A key can only be derived when `project.name` is a plain slug (letters, digits, `_`, `.`, `-`); otherwise loading stops and names the key to set explicitly.
+
+The db image must load both conf directories with `include_dir` (every current consumer does). If your Postgres entrypoint also writes the archive or managed drop-in itself, set `postgres_conf` / `pgbackrest_conf` to the filenames the entrypoint uses, or dk and the entrypoint will each keep replacing the other's file. `dk` removes any other `*.conf` it finds in those volumes when it writes its own.
 
 Volume keys you later bind with `storage.volumes` in `info.yaml` must be one of: restic data volume, pgBackRest data volume, or `caddy_data`.
 
