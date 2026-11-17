@@ -4,19 +4,27 @@ Deploy and development CLIs for Docker-based application stacks. Behavior is dri
 
 ## Project usage status
 
-| Project      | Version | Status                                      |
-| ------------ | ------- | ------------------------------------------- |
-| Catalpa Bero | v1.0.0  | Production                                  |
-| Catalpa Site | v1.0.0  | Production                                  |
-| tvi          | v0.9.5  | Production                                  |
-| jid          | v0.9.5  | Staging                                     |
-| NCD          | v0.9.5  | Staging                                     |
-| pas_indmo    | v0.9.5  | Production                                  |
-| partisipa    | —       | Not adopted (evaluating; Podman/just stack) |
-| bilum        | v0.9.1  | Have a staging deployed with ~main          |
-| ambulancia   | v0.9.1  | Staging                                     |
-| tempu        |         | Staging                                     |
-| liga inan    |         | Dev                                         |
+Taken from local clones on 2026-11-17: the tooling version is from each project's most recently committed branch that pins it in `uv.lock`, and the environments are the `docker/envs/*/info.yaml` on that branch with a remote `docker_host`.
+
+| Project            | Version                        | Status     | Remote envs managed by `dk`       | Branch read             |
+| ------------------ | ------------------------------ | ---------- | --------------------------------- | ----------------------- |
+| pas_indmo          | v1.6.1                         | Production | prod, staging, demo               | `fix/303-305-306-327-…` |
+| Catalpa Site       | v1.6.1                         | Production | prod, staging                     | `dev-6.2.2`             |
+| swlt_ws2           | v1.6.1                         | Staging    | staging, qad, content             | `dev-0.17`              |
+| birth_registration | v1.6.1                         | POC        | poc (prod/staging not set up yet) | `demo-journey`          |
+| Catalpa Bero       | v1.3.3                         | Production | prod, staging                     | `chore/bump-uv-pip-…`   |
+| tvi                | v1.3.3                         | Production | prod, staging                     | `tvi-logos-login-…`     |
+| jid                | v1.3.3                         | Production | prod, staging                     | `bero-7x-push-fixes-…`  |
+| NCD                | v1.3.3                         | Production | prod, staging                     | `release-v1.9.2`        |
+| tempu (marktwain)  | v0.9.10                        | Production | prod                              | `pnpm`                  |
+| ambulancia         | `oss_compliance` branch (0.9.4.dev6) | Staging | staging                          | `integrate-modern-ui`   |
+| pep                | v0.8                           | Staging    | staging                           | `align_tooling`         |
+| liga inan          | v0.4.0                         | Staging    | staging                           | `align_tooling`         |
+| bilum              | `dev-0.7` branch (0.7.0)       | Local demo | none                              | `bilum_local_demo`      |
+| partisipa          | unpinned                       | Partial    | none (Podman/just stack; Ansible deploy) | `develop`        |
+
+- **Partial** means the project uses only the engine-agnostic commands (`dk cut-release`, `dk next-branch`, `tests compliance`, shell setup). It has no `stack:`, `ops:` or `paths.deploy` section.
+- **Production** means a `prod` env with a remote `docker_host`, not a confirmed live deploy.
 
 ## Install
 
