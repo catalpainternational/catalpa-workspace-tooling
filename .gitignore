@@ -6,4 +6,6 @@ __pycache__/
 .ruff_cache/
 *.pyc
 .DS_Store
+# Agent / per-issue git worktrees (see AGENTS.md)
+.worktrees/
 src/catalpa_tooling/_version.py
