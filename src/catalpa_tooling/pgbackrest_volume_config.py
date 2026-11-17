@@ -284,6 +284,27 @@ def _compose_project_name(env: dict[str, str], config: ProjectConfig | None) -> 
     return config.stack.compose_project_default
 
 
+def set_db_image_from_compose(
+    config: ProjectConfig, compose_file: str, env_add: dict[str, str]
+) -> None:
+    """Set ``Postgres_IMAGE`` to the db image the env's compose file resolves to.
+
+    Later steps (pgBackRest config volumes, restore) then run the image compose built, under the
+    same name, instead of rebuilding the name from a registry. That guess fails for a local
+    project with no registry, and on Podman an unqualified name is stored as ``localhost/…``.
+    An explicit ``Postgres_IMAGE`` wins; if compose will not resolve, the old guess still applies.
+    """
+    if (env_add.get("Postgres_IMAGE") or "").strip() or not compose_file:
+        return
+    from catalpa_tooling.stale_stack import _compose_config
+
+    services = _compose_config(config, compose_file, env_add).get("services") or {}
+    db = services.get(config.stack_service("db"))
+    image = str(db.get("image") or "").strip() if isinstance(db, dict) else ""
+    if image:
+        env_add["Postgres_IMAGE"] = image
+
+
 def postgres_image_from_env(env: dict[str, str], *, config: ProjectConfig | None = None) -> str:
     """Resolved db stack image ref (same defaults as ``compose.yml`` ``db`` service)."""
     if config is None:

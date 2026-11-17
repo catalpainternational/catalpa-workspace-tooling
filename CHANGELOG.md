@@ -25,6 +25,13 @@
     `remove` keeps images, as before.
 - **`dk worktree seed --from <path>` warns when the path is a worktree.** The seed always reads
   the main checkout's stack, so a sibling worktree's data was never what got copied.
+- **The db image is the one compose names.** `dk <env>` commands now take the db image name
+  from the env's resolved compose file and use it for the pgBackRest config volumes and
+  restores, instead of building it from `ops.pgbackrest.default_registry` or the registry in
+  `docker/images.yaml`. A local project that leaves `image_registry: ""` (as QUICKSTART
+  recommends) now works with `ops: {}`, and on Podman the name matches the `localhost/…` image
+  compose built. An explicit `Postgres_IMAGE` still wins, and the old naming still applies if
+  compose cannot be resolved.
 
 ### Added
 
