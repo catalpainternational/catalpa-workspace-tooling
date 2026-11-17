@@ -37,6 +37,15 @@
   recommends) now works with `ops: {}`, and on Podman the name matches the `localhost/…` image
   compose built. An explicit `Postgres_IMAGE` still wins, and the old naming still applies if
   compose cannot be resolved.
+- **A restored PostGIS database is owned by the app role again** (#163). With
+  `native.reset_db.postgis: true` (and no `restore_as_super`), Compose `pg_restore` runs as
+  `--role postgres` so the extension restores, which left every table owned by `postgres`. The
+  next migration that altered a table then failed with "must be owner of table". This hit
+  `dk worktree seed`/`create` (pas_indmo#329), and also `dk <env> db restore` and
+  `dk transfer --db`, which share the restore. After the restore, every restored schema,
+  table, view, materialized view, sequence, function and type is now handed to the app role.
+  PostGIS's own objects stay with `postgres`. An explicit `--role` in `pg_restore_args` is left
+  alone.
 
 ### Added
 

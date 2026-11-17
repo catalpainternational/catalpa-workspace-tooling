@@ -2225,3 +2225,67 @@ def test_worktree_create_dry_run_previews_local_when_ahead(
     assert _dry_run_start(err) == "trunk", "dry run must match the real run's local cut"
     assert "local trunk has 1 commit(s) not on origin/trunk" in err
     assert not (behind_repo / ".worktrees" / "dr").exists()
+
+
+# --- issue #163: a seeded PostGIS database must be owned by the app role ----------------------
+
+
+def test_worktree_seed_restore_gives_postgis_objects_to_the_app_role(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#163: with `postgis: true` the seed restored as postgres and left every table postgres's.
+
+    pas_indmo's next `ALTER TABLE` migration then failed with "must be owner of table". The
+    seed's restore must still run `--role postgres` (PostGIS needs it) and then hand the
+    restored objects to `$APP_USER`.
+    """
+    from catalpa_tooling.worktree import _seed_database
+    from tests.test_fetch_config import _write_minimal_tooling
+
+    _write_minimal_tooling(tmp_path, extra="native:\n  reset_db:\n    postgis: true\n")
+    config = load_project_config(tmp_path)
+    assert config.native.reset_db.postgis
+
+    dump = tmp_path / "pg.dump"
+
+    def fake_dump(compose_file, env, path):
+        Path(path).write_bytes(b"PGDMP-test-archive")
+        return 0
+
+    drop_create: list[bool] = []
+    scripts: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        cmd = list(cmd)
+        if "sh" in cmd and "pg_restore -h" in cmd[-1]:
+            scripts.append(cmd[-1])
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_db_service_running", lambda *a, **k: 0)
+    monkeypatch.setattr("catalpa_tooling.worktree.run_pg_dump_to_file", fake_dump)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.run_drop_create_app_database",
+        lambda *a, postgis=False, **k: drop_create.append(postgis) or 0,
+    )
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_db.run_cmd", fake_run)
+
+    rc, outcome = _seed_database(
+        "src.yml",
+        {},
+        "dst.yml",
+        {},
+        src_config=config,
+        dest_config=config,
+        base_env="dev",
+        dump_path=dump,
+    )
+
+    assert (rc, outcome) == (0, "restored")
+    assert drop_create == [True], "PostGIS must be pre-created in the fresh database"
+    assert len(scripts) == 1
+    script = scripts[0]
+    assert "--role postgres" in script
+    assert script.index("pg_restore -h") < script.index('-v app_user="$APP_USER"')
+    assert "ALTER %s %s OWNER TO %I" in script
