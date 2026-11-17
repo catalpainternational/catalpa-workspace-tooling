@@ -773,14 +773,18 @@ def _wipe_image_repo(
 ):
     """A worktree whose `compose config --images` lists ``images``; records `docker image rm`.
 
-    ``{tag}`` in an image ref becomes the worktree's branch tag, known only once it exists.
-    Returns ``(config, compose_calls, image_rms, tag)``.
+    ``{tag}`` and ``{project}`` in an image ref become the worktree's branch tag and compose
+    project, known only once it exists. Returns ``(config, compose_calls, image_rms, tag)``.
     """
     from catalpa_tooling import worktree as worktree_mod
 
     config, compose_calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
-    tag = _worktree_branch_tag(tmp_path / ".worktrees" / "ds_180")
-    listed = "".join(f"{ref.format(tag=tag)}\n" for ref in images)
+    wt = tmp_path / ".worktrees" / "ds_180"
+    tag = _worktree_branch_tag(wt)
+    overlay = load_worktree_overlay(wt)
+    assert overlay is not None
+    project = overlay.compose_project_name
+    listed = "".join(f"{ref.format(tag=tag, project=project)}\n" for ref in images)
 
     def fake_compose(*args, **kwargs):
         compose_calls.append(args)
@@ -806,23 +810,31 @@ def _wipe_image_repo(
 def test_worktree_remove_wipe_drops_the_images_only_this_worktree_has(
     tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unnamed builds go via `--rmi local` (#165); branch-tagged named images by name (#177)."""
+    """The project's own builds (#165) and branch-tagged named images (#177); nothing shared."""
     config, compose_calls, image_rms, tag = _wipe_image_repo(
         tmp_path,
         monkeypatch,
         images=(
+            "{project}-frontend_portal",
             "ghcr.io/org/app-postgres:{tag}",
             "ghcr.io/org/app-django:{tag}",
             "ghcr.io/org/app-django:{tag}",
             "caddy:2",
+            "app_compose_dev-frontend_portal",  # the main stack's build, not ours
         ),
     )
 
+    project = load_worktree_overlay(tmp_path / ".worktrees" / "ds_180").compose_project_name
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
 
+    # compose's own `--rmi local` would also remove tagged `image:` refs on Compose v5 (#181).
     down = next(c for c in compose_calls if "down" in c)
-    assert "--rmi" in down and down[down.index("--rmi") + 1] == "local"
-    assert image_rms == [f"ghcr.io/org/app-postgres:{tag}", f"ghcr.io/org/app-django:{tag}"]
+    assert "--rmi" not in down
+    assert image_rms == [
+        f"{project}-frontend_portal",
+        f"ghcr.io/org/app-postgres:{tag}",
+        f"ghcr.io/org/app-django:{tag}",
+    ]
 
 
 def test_worktree_remove_without_wipe_keeps_images(
@@ -839,9 +851,14 @@ def test_worktree_remove_without_wipe_keeps_images(
 def test_worktree_remove_wipe_keeps_images_with_a_tag_it_cannot_own(
     tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An `image_tag` from config may be the main checkout's too, so it is never removed."""
-    config, _calls, image_rms, _tag = _wipe_image_repo(
-        tmp_path, monkeypatch, images=("ghcr.io/org/app-postgres:v1.2.3",)
+    """An `image_tag` from config may be the main checkout's too, so it is never removed.
+
+    The project's own builds still go: their name is the worktree's whatever the tag.
+    """
+    config, compose_calls, image_rms, _tag = _wipe_image_repo(
+        tmp_path,
+        monkeypatch,
+        images=("ghcr.io/org/app-postgres:v1.2.3", "{project}-frontend_portal:v1.2.3"),
     )
     real_load = load_managed_deploy_context
 
@@ -852,8 +869,10 @@ def test_worktree_remove_wipe_keeps_images_with_a_tag_it_cannot_own(
         return ctx
 
     monkeypatch.setattr("catalpa_tooling.worktree.load_managed_deploy_context", pinned_ctx)
+    project = load_worktree_overlay(tmp_path / ".worktrees" / "ds_180").compose_project_name
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
-    assert image_rms == []
+    assert all("--rmi" not in c for c in compose_calls)
+    assert image_rms == [f"{project}-frontend_portal:v1.2.3"]
 
 
 def test_worktree_remove_wipe_image_failure_does_not_fail_the_wipe(
@@ -887,7 +906,7 @@ def test_worktree_remove_wipe_dry_run_lists_images_and_removes_none(
     capsys.readouterr()
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
     err = capsys.readouterr().err
-    assert "--rmi local" in err
+    assert "--rmi" not in err
     assert f"dry-run: would remove image(s) ghcr.io/org/app-postgres:{tag}" in err
     assert image_rms == []
 

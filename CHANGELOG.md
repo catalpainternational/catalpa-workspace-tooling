@@ -14,10 +14,11 @@
   one with Compose's project and volume labels, plus the driver, options and labels its compose
   entry declares, so the next `up` adopts it.
 - **`dk worktree remove --wipe` now removes the images the worktree's stack made (#165, #177).**
-  - `compose down` gets `--rmi local`, which removes the untagged `<project>-<service>` builds. In
-    swlt_ws2, 260 of these had piled up.
+  - The `<project>-<service>` builds are removed. In swlt_ws2, 260 of these had piled up.
   - Named images tagged with the worktree's branch (e.g. `swlt-postgres:worktree-<slug>`) are
-    removed by name.
+    removed too.
+  - dk chooses these images itself and doesn't use `compose down --rmi local`, because on
+    Compose v5 that also removes tagged `image:` refs, including ones the main checkout uses.
   - Images whose tag comes from `image_tag` or a git tag at HEAD are kept, because the main
     checkout may use them too.
   - A failed image removal only warns, and `--dry-run` lists what would be removed. A plain

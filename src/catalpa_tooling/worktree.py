@@ -1335,13 +1335,9 @@ def _teardown_worktree_stack(
     )
     env_r["COMPOSE_PROJECT_NAME"] = overlay.compose_project_name
     compose_abs = str((wt_config.repo_root / ctx.compose_file).resolve())
-    # `--rmi local` drops the images compose built without a tag of their own
-    # (`<project>-<service>`), which only this project uses. Named `image:` refs stay (#165).
-    down_args = (
-        ["down", "-v", "--rmi", "local", "--remove-orphans"]
-        if remove_volumes
-        else ["down", "--remove-orphans"]
-    )
+    # No `--rmi`: on Compose v5 even `--rmi local` removes images with an `image:` ref, which may
+    # be shared with the main checkout. `_remove_worktree_images` picks what is this worktree's.
+    down_args = ["down", "-v", "--remove-orphans"] if remove_volumes else ["down", "--remove-orphans"]
     if dry_run:
         print(
             f"dry-run: docker compose -f {compose_abs} {' '.join(down_args)} "
@@ -1350,7 +1346,7 @@ def _teardown_worktree_stack(
         )
         if not remove_volumes:
             return 0
-        _remove_worktree_tagged_images(compose_abs, env_r, worktree_root, dry_run=True)
+        _remove_worktree_images(compose_abs, env_r, worktree_root, dry_run=True)
         return remove_all_external_stack_volumes(env_r, config=wt_config, dry_run=True)
     result = _compose(
         compose_abs,
@@ -1362,32 +1358,44 @@ def _teardown_worktree_stack(
         return result.returncode
     if not remove_volumes:
         return 0
-    _remove_worktree_tagged_images(compose_abs, env_r, worktree_root)
+    _remove_worktree_images(compose_abs, env_r, worktree_root)
     return remove_all_external_stack_volumes(env_r, config=wt_config)
 
 
-def _remove_worktree_tagged_images(
+def _is_project_build(ref: str, project: str) -> bool:
+    """``<project>-<service>[:tag]``: the name compose gives a ``build:`` with no ``image:``."""
+    name = ref.rsplit(":", 1)[0] if ":" in ref.rsplit("/", 1)[-1] else ref
+    return bool(project) and "/" not in name and name.startswith(f"{project}-")
+
+
+def _remove_worktree_images(
     compose_abs: str,
     env_r: dict[str, str],
     worktree_root: Path,
     *,
     dry_run: bool = False,
 ) -> None:
-    """Delete the stack's named images tagged for this worktree's branch (#177, #165).
+    """Delete the stack images that belong to this worktree alone (#165, #177).
 
-    ``--rmi local`` keeps an image that has an ``image:`` ref, such as
-    ``<registry>/postgres:${STACK_IMAGE_TAG}``. Deleting those is only safe when the tag is
-    this worktree's alone. The default tag is the branch name, and git checks a branch out in
-    one worktree only, so that one qualifies. An ``image_tag`` set in config, or a git tag at
-    HEAD, may be shared with the main checkout, so neither is touched. Never fails the wipe.
+    Two kinds qualify:
+
+    - ``<project>-<service>`` builds. The project name is the worktree's, so nothing else
+      can use them.
+    - ``image:`` refs tagged with this worktree's branch, such as
+      ``<registry>/postgres:worktree-<slug>``. The default tag is the branch name, and git
+      checks a branch out in one worktree only. An ``image_tag`` set in config, or a git tag
+      at HEAD, may be the main checkout's too, so those images are kept.
+
+    ``compose down --rmi local`` can't make that distinction: on Compose v5 it also removes
+    tagged ``image:`` refs (seen in the #181 review). Never fails the wipe.
     """
+    project = (env_r.get("COMPOSE_PROJECT_NAME") or "").strip()
     tag = (env_r.get("STACK_IMAGE_TAG") or "").strip()
     branch = _git(
         "rev-parse", "--abbrev-ref", "HEAD", cwd=worktree_root, check=False, capture=True
     )
     branch_tag = (branch.stdout or "").strip().replace("/", "-") if branch.returncode == 0 else ""
-    if not tag or branch_tag in ("", "HEAD") or tag != branch_tag:
-        return
+    owns_tag = bool(tag) and branch_tag not in ("", "HEAD") and tag == branch_tag
     listed = _compose(
         compose_abs,
         "config",
@@ -1400,12 +1408,19 @@ def _remove_worktree_tagged_images(
     if listed.returncode != 0:
         print(
             "dk worktree remove --wipe: could not list the stack's images; "
-            f"any tagged :{tag} are left in place.",
+            "they are left in place.",
             file=sys.stderr,
         )
         return
     lines = (line.strip() for line in (listed.stdout or "").splitlines())
-    refs = list(dict.fromkeys(ref for ref in lines if ref.endswith(f":{tag}")))
+    refs = list(
+        dict.fromkeys(
+            ref
+            for ref in lines
+            if ref
+            and (_is_project_build(ref, project) or (owns_tag and ref.endswith(f":{tag}")))
+        )
+    )
     if not refs:
         return
     if dry_run:
