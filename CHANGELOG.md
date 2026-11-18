@@ -26,8 +26,10 @@
 - **`dk worktree remove --wipe --dry-run` lists every volume and image the real run removes**
   (#108). It used to name only the `external:` volumes and leave out the ones `compose down -v`
   takes, which on swlt_ws2 included the private upload store (5 listed, 8 removed). The dry run
-  and the real run now share one list: every volume the compose file declares, any other volume
-  labelled with the project, the `external:` volumes, and the images above.
+  and the real run now share one list: every volume the compose file declares that Docker labels
+  with the worktree's compose project, any other volume with that label, the `external:`
+  volumes, and the images above. A declared volume with a fixed `name:` that carries another
+  project's label (for example the main stack's) is shared, so it is kept.
 - **`dk worktree seed --from <path>` warns when the path is a worktree.** The seed always reads
   the main checkout's stack, so a sibling worktree's data was never what got copied.
 - **The db image is the one compose names.** `dk <env>` commands now take the db image name

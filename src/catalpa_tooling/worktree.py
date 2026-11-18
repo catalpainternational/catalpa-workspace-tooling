@@ -1341,7 +1341,10 @@ def worktree_wipe_targets(
 
     Volumes, deduplicated in this order:
 
-    - every volume the compose file declares that is not ``external:`` — what ``down -v`` takes;
+    - every volume the compose file declares that is not ``external:`` **and** that Docker labels
+      with this project (``com.docker.compose.project``) — what ``down -v`` takes. A declared
+      volume with a fixed ``name:`` may have been created by the main stack, and then carries
+      the main stack's label: it is shared, so it is kept;
     - any volume Docker labels with this project that the file no longer declares;
     - the ``external:`` stack volumes, which Compose never deletes (issue #64).
 
@@ -1362,18 +1365,24 @@ def worktree_wipe_targets(
     data = _load_compose_mapping(compose_abs, env, cwd=config.repo_root)
     raw_volumes = data.get("volumes")
     compose_volumes: dict[str, Any] = raw_volumes if isinstance(raw_volumes, dict) else {}
+    labelled = project_labelled_volume_names(env, project)
+    owned = set(labelled)
     declared = [
-        _docker_volume_name_for_key(
-            str(key), project=project, config=config, compose_volumes=compose_volumes
+        name
+        for name in (
+            _docker_volume_name_for_key(
+                str(key), project=project, config=config, compose_volumes=compose_volumes
+            )
+            for key, spec in compose_volumes.items()
+            if not (isinstance(spec, dict) and spec.get("external"))
         )
-        for key, spec in compose_volumes.items()
-        if not (isinstance(spec, dict) and spec.get("external"))
+        if name in owned
     ]
     volumes = tuple(
         dict.fromkeys(
             [
                 *declared,
-                *project_labelled_volume_names(env, project),
+                *labelled,
                 *external_stack_volume_names(env, config=config),
             ]
         )

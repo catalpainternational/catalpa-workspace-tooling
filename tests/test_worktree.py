@@ -964,6 +964,8 @@ volumes:
   django_static:
   renamed:
     name: custom_static_name
+  shared:
+    name: shared_with_main_stack
   postgres_data:
     external: true
 """
@@ -972,8 +974,10 @@ volumes:
 def _wipe_repo_with_compose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A worktree whose compose file has Compose-owned volumes and a build-only service.
 
-    Records every ``docker volume rm`` / ``docker image rm`` the real run issues, and reports one
-    labelled volume the compose file no longer declares (a renamed key left from an older file).
+    Records every ``docker volume rm`` / ``docker image rm`` the real run issues. Docker reports
+    the project's label on every declared volume except ``shared_with_main_stack`` (a fixed
+    ``name:`` the main stack created), plus one labelled volume the compose file no longer
+    declares (a renamed key left from an older file).
     """
     write_minimal_tooling_tree(tmp_path)
     write_dev_env(tmp_path)
@@ -991,7 +995,14 @@ def _wipe_repo_with_compose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def fake_run(cmd, **kwargs):
         cmd = list(cmd)
         if cmd[:3] == ["docker", "volume", "ls"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{project}_old_key\n", stderr="")
+            labelled = [
+                f"{project}_django_media",
+                f"{project}_django_private_uploads",
+                f"{project}_django_static",
+                "custom_static_name",
+                f"{project}_old_key",
+            ]
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(labelled) + "\n", stderr="")
         if cmd[:3] in (["docker", "volume", "rm"], ["docker", "image", "rm"]):
             removed.append((cmd[1], cmd[3]))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -1037,6 +1048,8 @@ def test_worktree_remove_wipe_dry_run_lists_exactly_what_the_real_run_removes(
     assert f"{project}_django_private_uploads" in volumes
     assert f"{project}_django_static" in volumes
     assert "custom_static_name" in volumes, "a volume's `name:` must be honoured"
+    # A fixed `name:` labelled with another project (the main stack) is shared: keep it.
+    assert "shared_with_main_stack" not in volumes
     # A labelled leftover the file no longer declares.
     assert f"{project}_old_key" in volumes
     # The external: volumes Compose never deletes (#64).
