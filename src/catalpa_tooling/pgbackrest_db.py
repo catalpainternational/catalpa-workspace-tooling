@@ -368,7 +368,9 @@ def _pg_restore_compose_role_suffix(
 
     When ``restore_as_super`` is true, use ``APP_USER`` (with temporary superuser promotion).
     When ``postgis`` is true and ``restore_as_super`` is false, use ``postgres`` so
-    ``COMMENT ON EXTENSION`` and extension catalog reload succeed.
+    ``COMMENT ON EXTENSION`` and extension catalog reload succeed. The objects that creates are
+    then owned by ``postgres``; :func:`_pg_restore_reassigns_to_app_user` decides when they are
+    handed back to ``APP_USER`` afterwards (issue #163).
     Otherwise default to ``APP_USER``.
     """
     if _pg_restore_has_role(extras):
@@ -378,6 +380,123 @@ def _pg_restore_compose_role_suffix(
     if postgis:
         return " --role postgres"
     return ' --role "$APP_USER"'
+
+
+def _pg_restore_reassigns_to_app_user(
+    extras: Sequence[str],
+    *,
+    target: DbRestoreTarget,
+    postgis: bool = False,
+    restore_as_super: bool = False,
+) -> bool:
+    """Whether the restore runs as ``postgres`` only for PostGIS's sake, so ownership must move.
+
+    That is the case when :func:`_pg_restore_compose_role_suffix` *chose* ``--role postgres``.
+    An explicit ``--role`` in ``pg_restore_args`` is the project's own decision and is left as
+    it is.
+    """
+    return (
+        target == "app"
+        and postgis
+        and not restore_as_super
+        and not _pg_restore_has_role(extras)
+    )
+
+
+# Run as the restore role (``postgres``) in the restored database, after ``pg_restore``. Hands
+# every object the restore created to the app role, so the app's migrations can ``ALTER`` them
+# (issue #163). Extension members (PostGIS's functions, types and ``spatial_ref_sys``) stay
+# with ``postgres``, as they do on a database the app migrated itself. ``REASSIGN OWNED BY
+# postgres`` can't be used: it would also try to move system objects ``postgres`` owns.
+#
+# Order matters: a table's owned sequences and indexes move with it, and changing an owned
+# sequence directly is an error, so tables go first and owned sequences are skipped.
+_REASSIGN_RESTORED_OBJECTS_SQL = r"""
+SET catalpa.app_user = :'app_user';
+DO $catalpa_reassign$
+DECLARE
+  app text := current_setting('catalpa.app_user');
+  me oid := (SELECT oid FROM pg_roles WHERE rolname = current_user);
+  r record;
+  n int := 0;
+BEGIN
+  FOR r IN
+    SELECT s.nspname FROM pg_namespace s
+    WHERE s.nspowner = me
+      AND s.nspname NOT IN ('public', 'information_schema') AND s.nspname NOT LIKE 'pg\_%'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_namespace'::regclass
+                      AND d.objid = s.oid AND d.deptype = 'e')
+  LOOP
+    EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, app);
+    n := n + 1;
+  END LOOP;
+
+  FOR r IN
+    SELECT c.oid, c.relkind FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace
+    WHERE c.relowner = me AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+      AND s.nspname <> 'information_schema' AND s.nspname NOT LIKE 'pg\_%'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass
+                      AND d.objid = c.oid AND d.deptype = 'e')
+  LOOP
+    EXECUTE format('ALTER %s %s OWNER TO %I',
+      CASE r.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
+                     WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END,
+      r.oid::regclass, app);
+    n := n + 1;
+  END LOOP;
+
+  FOR r IN
+    SELECT c.oid FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace
+    WHERE c.relowner = me AND c.relkind = 'S'
+      AND s.nspname <> 'information_schema' AND s.nspname NOT LIKE 'pg\_%'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass
+                      AND d.objid = c.oid AND d.deptype IN ('e', 'a', 'i'))
+  LOOP
+    EXECUTE format('ALTER SEQUENCE %s OWNER TO %I', r.oid::regclass, app);
+    n := n + 1;
+  END LOOP;
+
+  FOR r IN
+    SELECT p.oid, p.prokind FROM pg_proc p JOIN pg_namespace s ON s.oid = p.pronamespace
+    WHERE p.proowner = me
+      AND s.nspname <> 'information_schema' AND s.nspname NOT LIKE 'pg\_%'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass
+                      AND d.objid = p.oid AND d.deptype = 'e')
+  LOOP
+    EXECUTE format('ALTER %s %s OWNER TO %I',
+      CASE r.prokind WHEN 'p' THEN 'PROCEDURE' WHEN 'a' THEN 'AGGREGATE' ELSE 'FUNCTION' END,
+      r.oid::regprocedure, app);
+    n := n + 1;
+  END LOOP;
+
+  FOR r IN
+    SELECT t.oid, t.typtype FROM pg_type t JOIN pg_namespace s ON s.oid = t.typnamespace
+    WHERE t.typowner = me
+      AND (t.typtype IN ('e', 'd', 'r')
+           OR (t.typtype = 'c' AND (SELECT relkind FROM pg_class WHERE oid = t.typrelid) = 'c'))
+      AND s.nspname <> 'information_schema' AND s.nspname NOT LIKE 'pg\_%'
+      AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_type'::regclass
+                      AND d.objid = t.oid AND d.deptype = 'e')
+  LOOP
+    EXECUTE format('ALTER %s %s OWNER TO %I',
+      CASE r.typtype WHEN 'd' THEN 'DOMAIN' ELSE 'TYPE' END, r.oid::regtype, app);
+    n := n + 1;
+  END LOOP;
+
+  RAISE NOTICE 'pg_restore: gave % restored object(s) to role %', n, app;
+END
+$catalpa_reassign$;
+"""
+
+
+def _reassign_restored_objects_shell() -> str:
+    """Shell lines (after ``pg_restore``) that run :data:`_REASSIGN_RESTORED_OBJECTS_SQL`."""
+    return (
+        'psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -q -v ON_ERROR_STOP=1 '
+        '-v app_user="$APP_USER" <<\'CATALPA_SQL\'\n'
+        f"{_REASSIGN_RESTORED_OBJECTS_SQL.strip()}\n"
+        "CATALPA_SQL\n"
+    )
 
 
 def _pg_restore_promote_app_superuser(
@@ -422,6 +541,27 @@ def _pg_restore_compose_inner_script(
         restore_as_super=restore_as_super,
     )
     pg_restore_cmd += " " + shlex.quote(container_path)
+
+    reassign = not promote_app_superuser and _pg_restore_reassigns_to_app_user(
+        extras,
+        target=target,
+        postgis=postgis,
+        restore_as_super=restore_as_super,
+    )
+    if reassign:
+        # Ownership runs even when pg_restore exits non-zero: with ignored errors it still
+        # restored nearly everything, and a database owned by the wrong role is the worse state.
+        # pg_restore's own status wins when it failed.
+        return (
+            f"{shell_vars}\n"
+            'export PGPASSWORD="$POSTGRES_PASSWORD"\n'
+            f"{pg_restore_cmd}\n"
+            "_restore_rc=$?\n"
+            f"{_reassign_restored_objects_shell()}"
+            "_owner_rc=$?\n"
+            'if [ "$_restore_rc" -ne 0 ]; then exit "$_restore_rc"; fi\n'
+            'exit "$_owner_rc"\n'
+        )
 
     if not promote_app_superuser:
         return (
@@ -603,8 +743,9 @@ def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
 
     When ``postgis`` is true, create PostGIS as superuser and grant catalog tables to the
     app user before ``pg_restore``. Compose restore uses ``--role postgres`` when
-    ``postgis`` is true and ``restore_as_super`` is false; use ``restore_as_super: true``
-    for ``--role APP_USER`` with temporary superuser promotion instead.
+    ``postgis`` is true and ``restore_as_super`` is false, then hands the restored objects to
+    the app user; use ``restore_as_super: true`` for ``--role APP_USER`` with temporary
+    superuser promotion instead.
     """
     lines = [
         "GRANT ALL PRIVILEGES ON DATABASE ${APP_DB} TO ${APP_USER};",

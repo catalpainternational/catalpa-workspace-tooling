@@ -23,6 +23,13 @@
     checkout may use them too.
   - A failed image removal only warns, and `--dry-run` lists what would be removed. A plain
     `remove` keeps images, as before.
+- **`dk worktree remove --wipe --dry-run` lists every volume and image the real run removes**
+  (#108). It used to name only the `external:` volumes and leave out the ones `compose down -v`
+  takes, which on swlt_ws2 included the private upload store (5 listed, 8 removed). The dry run
+  and the real run now share one list: every volume the compose file declares that Docker labels
+  with the worktree's compose project, any other volume with that label, the `external:`
+  volumes, and the images above. A declared volume with a fixed `name:` that carries another
+  project's label (for example the main stack's) is shared, so it is kept.
 - **`dk worktree seed --from <path>` warns when the path is a worktree.** The seed always reads
   the main checkout's stack, so a sibling worktree's data was never what got copied.
 - **The db image is the one compose names.** `dk <env>` commands now take the db image name
@@ -32,6 +39,22 @@
   recommends) now works with `ops: {}`, and on Podman the name matches the `localhost/…` image
   compose built. An explicit `Postgres_IMAGE` still wins, and the old naming still applies if
   compose cannot be resolved.
+- **A restored PostGIS database is owned by the app role again** (#163). With
+  `native.reset_db.postgis: true` (and no `restore_as_super`), Compose `pg_restore` runs as
+  `--role postgres` so the extension restores, which left every table owned by `postgres`. The
+  next migration that altered a table then failed with "must be owner of table". This hit
+  `dk worktree seed`/`create` (pas_indmo#329), and also `dk <env> db restore` and
+  `dk transfer --db`, which share the restore. After the restore, every restored schema,
+  table, view, materialized view, sequence, function and type is now handed to the app role.
+  PostGIS's own objects stay with `postgres`. An explicit `--role` in `pg_restore_args` is left
+  alone.
+- **Concurrent `dk … up` runs no longer drop each other's proxy route** (#110). Registering a
+  route read the shared proxy's whole server block, changed it and wrote it back. Two worktrees
+  started in the same second could each write a block without the other's route, leaving one
+  host with a TLS error (curl exit 35) on a healthy stack. Each route is now replaced by its id
+  (`PATCH /id/<route-id>`) or appended on its own (`POST …/routes`), so no run rewrites
+  another's. Writes that lose a race, and admin connections Caddy drops mid-reload, are retried.
+  Afterwards the route is read back, and `up` fails if it is missing.
 
 ### Added
 

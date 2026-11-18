@@ -23,6 +23,8 @@ from catalpa_tooling.media_storage import (
     MediaStorageError,
     MediaStorageKind,
     StackVolumes,
+    _docker_volume_name_for_key,
+    load_compose_config,
     resolve_media_storage,
     resolve_stack_volumes,
 )
@@ -34,7 +36,15 @@ from catalpa_tooling.pgbackrest_db import (
     run_pg_dump_to_file,
     run_pg_restore,
 )
-from catalpa_tooling.pgbackrest_volume_config import remove_all_external_stack_volumes
+from catalpa_tooling.pgbackrest_volume_config import (
+    external_stack_volume_names,
+    project_labelled_volume_names,
+    remove_images,
+)
+from catalpa_tooling.pgbackrest_volume_config import (
+    # Aliased: `_teardown_worktree_stack` has a `remove_volumes: bool` parameter.
+    remove_volumes as remove_volumes_fn,
+)
 from catalpa_tooling.post_db_restore import (
     post_db_restore_applies,
     run_post_db_restore_manage_commands,
@@ -1295,6 +1305,117 @@ def worktree_info(config: ProjectConfig, *, slug: str | None = None) -> int:
     return 0
 
 
+class WipeTargets(NamedTuple):
+    """Everything ``remove --wipe`` deletes for one compose project, in removal order."""
+
+    volumes: tuple[str, ...]
+    images: tuple[str, ...]
+
+
+def _load_compose_mapping(compose_abs: str, env: dict[str, str], *, cwd: Path) -> dict[str, Any]:
+    """Merged ``docker compose config``, or the raw YAML when Compose cannot be run."""
+    data = load_compose_config(compose_abs, env, cwd=cwd)
+    if data is None:
+        try:
+            import yaml
+
+            data = yaml.safe_load(Path(compose_abs).read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError):
+            data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def worktree_wipe_targets(
+    compose_abs: str,
+    env: dict[str, str],
+    *,
+    config: ProjectConfig,
+    project: str,
+    worktree_root: Path | None = None,
+) -> WipeTargets:
+    """The volumes and images a ``--wipe`` of compose project ``project`` removes.
+
+    The dry run prints this list and the real run removes exactly this list, so the preview
+    cannot under-count (issue #108). It must be computed **before** ``down``, while the
+    project's labelled volumes still exist to be found.
+
+    Volumes, deduplicated in this order:
+
+    - every volume the compose file declares that is not ``external:`` **and** that Docker labels
+      with this project (``com.docker.compose.project``) — what ``down -v`` takes. A declared
+      volume with a fixed ``name:`` may have been created by the main stack, and then carries
+      the main stack's label: it is shared, so it is kept;
+    - any volume Docker labels with this project that the file no longer declares;
+    - the ``external:`` stack volumes, which Compose never deletes (issue #64).
+
+    Images, the ones that belong to this worktree alone:
+
+    - ``<project>-<service>`` for each service with ``build:`` and no ``image:`` (issue #165).
+      Compose names those for this project only.
+    - ``image:`` refs tagged with this worktree's branch, such as
+      ``<registry>/postgres:worktree-<slug>`` (issue #177). The default ``STACK_IMAGE_TAG`` is
+      the branch name, and git checks a branch out in one worktree only. A tag from
+      ``image_tag`` in config, or a git tag at HEAD, may be the main checkout's too, so those
+      images are kept. Needs ``worktree_root`` to read the branch.
+
+    Any other ``image:`` (a base image, or a shared app tag) is never listed. ``down --rmi
+    local`` can't make that distinction: on Compose v5 it also removes tagged ``image:`` refs
+    (seen in the #181 review), so dk spells the list out instead.
+    """
+    data = _load_compose_mapping(compose_abs, env, cwd=config.repo_root)
+    raw_volumes = data.get("volumes")
+    compose_volumes: dict[str, Any] = raw_volumes if isinstance(raw_volumes, dict) else {}
+    labelled = project_labelled_volume_names(env, project)
+    owned = set(labelled)
+    declared = [
+        name
+        for name in (
+            _docker_volume_name_for_key(
+                str(key), project=project, config=config, compose_volumes=compose_volumes
+            )
+            for key, spec in compose_volumes.items()
+            if not (isinstance(spec, dict) and spec.get("external"))
+        )
+        if name in owned
+    ]
+    volumes = tuple(
+        dict.fromkeys(
+            [
+                *declared,
+                *labelled,
+                *external_stack_volume_names(env, config=config),
+            ]
+        )
+    )
+
+    raw_services = data.get("services")
+    services: dict[str, Any] = raw_services if isinstance(raw_services, dict) else {}
+    builds = [
+        f"{project}-{name}"
+        for name, svc in services.items()
+        if isinstance(svc, dict) and svc.get("build") and not svc.get("image")
+    ]
+    tag = (env.get("STACK_IMAGE_TAG") or "").strip()
+    branch_tag = _worktree_branch_tag(worktree_root) if worktree_root is not None else ""
+    owns_tag = bool(tag) and branch_tag not in ("", "HEAD") and tag == branch_tag
+    tagged = [
+        str(svc["image"]).strip()
+        for svc in services.values()
+        if owns_tag
+        and isinstance(svc, dict)
+        and isinstance(svc.get("image"), str)
+        and str(svc["image"]).strip().endswith(f":{tag}")
+    ]
+    images = tuple(dict.fromkeys([*builds, *tagged]))
+    return WipeTargets(volumes=volumes, images=images)
+
+
+def _worktree_branch_tag(worktree_root: Path) -> str:
+    """The checkout's branch as the default image tag would spell it (``/`` → ``-``)."""
+    r = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=worktree_root, check=False, capture=True)
+    return (r.stdout or "").strip().replace("/", "-") if r.returncode == 0 else ""
+
+
 def _teardown_worktree_stack(
     worktree_root: Path,
     overlay: WorktreeOverlay,
@@ -1308,10 +1429,9 @@ def _teardown_worktree_stack(
     whether the data goes. Retiring the checkout without stopping the stack is not one of the
     modes: the containers outlive the only thing that could name them.
 
-    With ``remove_volumes``, this also sweeps the ``external:`` volumes. Compose never deletes
-    one — it does not own what it did not create — so ``down -v`` alone leaves the worktree's
-    PGDATA, media and conf volumes behind for a project name that no longer has a checkout.
-    See issue #64.
+    With ``remove_volumes`` (``--wipe``), this removes everything :func:`worktree_wipe_targets`
+    lists: every volume of the project, ``external:`` ones included (issue #64), and the images
+    the stack built (issue #165). The dry run prints that same list (issue #108).
     """
     label = "dk worktree remove --wipe" if remove_volumes else "dk worktree remove"
     try:
@@ -1336,18 +1456,31 @@ def _teardown_worktree_stack(
     env_r["COMPOSE_PROJECT_NAME"] = overlay.compose_project_name
     compose_abs = str((wt_config.repo_root / ctx.compose_file).resolve())
     # No `--rmi`: on Compose v5 even `--rmi local` removes images with an `image:` ref, which may
-    # be shared with the main checkout. `_remove_worktree_images` picks what is this worktree's.
+    # be shared with the main checkout. `worktree_wipe_targets` picks what is this worktree's.
     down_args = ["down", "-v", "--remove-orphans"] if remove_volumes else ["down", "--remove-orphans"]
+    # Listed before `down`: afterwards the project's labelled volumes are gone and can't be found.
+    targets = (
+        worktree_wipe_targets(
+            compose_abs,
+            env_r,
+            config=wt_config,
+            project=overlay.compose_project_name,
+            worktree_root=worktree_root,
+        )
+        if remove_volumes
+        else None
+    )
     if dry_run:
         print(
             f"dry-run: docker compose -f {compose_abs} {' '.join(down_args)} "
             f"(COMPOSE_PROJECT_NAME={overlay.compose_project_name})",
             file=sys.stderr,
         )
-        if not remove_volumes:
+        if targets is None:
             return 0
-        _remove_worktree_images(compose_abs, env_r, worktree_root, dry_run=True)
-        return remove_all_external_stack_volumes(env_r, config=wt_config, dry_run=True)
+        remove_volumes_fn(targets.volumes, env_r, dry_run=True)
+        remove_images(targets.images, env_r, dry_run=True)
+        return 0
     result = _compose(
         compose_abs,
         *down_args,
@@ -1356,90 +1489,20 @@ def _teardown_worktree_stack(
     )
     if result.returncode != 0:
         return result.returncode
-    if not remove_volumes:
+    if targets is None:
         return 0
-    _remove_worktree_images(compose_abs, env_r, worktree_root)
-    return remove_all_external_stack_volumes(env_r, config=wt_config)
-
-
-def _is_project_build(ref: str, project: str) -> bool:
-    """``<project>-<service>[:tag]``: the name compose gives a ``build:`` with no ``image:``."""
-    name = ref.rsplit(":", 1)[0] if ":" in ref.rsplit("/", 1)[-1] else ref
-    return bool(project) and "/" not in name and name.startswith(f"{project}-")
-
-
-def _remove_worktree_images(
-    compose_abs: str,
-    env_r: dict[str, str],
-    worktree_root: Path,
-    *,
-    dry_run: bool = False,
-) -> None:
-    """Delete the stack images that belong to this worktree alone (#165, #177).
-
-    Two kinds qualify:
-
-    - ``<project>-<service>`` builds. The project name is the worktree's, so nothing else
-      can use them.
-    - ``image:`` refs tagged with this worktree's branch, such as
-      ``<registry>/postgres:worktree-<slug>``. The default tag is the branch name, and git
-      checks a branch out in one worktree only. An ``image_tag`` set in config, or a git tag
-      at HEAD, may be the main checkout's too, so those images are kept.
-
-    ``compose down --rmi local`` can't make that distinction: on Compose v5 it also removes
-    tagged ``image:`` refs (seen in the #181 review). Never fails the wipe.
-    """
-    project = (env_r.get("COMPOSE_PROJECT_NAME") or "").strip()
-    tag = (env_r.get("STACK_IMAGE_TAG") or "").strip()
-    branch = _git(
-        "rev-parse", "--abbrev-ref", "HEAD", cwd=worktree_root, check=False, capture=True
-    )
-    branch_tag = (branch.stdout or "").strip().replace("/", "-") if branch.returncode == 0 else ""
-    owns_tag = bool(tag) and branch_tag not in ("", "HEAD") and tag == branch_tag
-    listed = _compose(
-        compose_abs,
-        "config",
-        "--images",
-        check=False,
-        env_add=env_r,
-        print_cmd=False,
-        capture_output=True,
-    )
-    if listed.returncode != 0:
+    # `down -v` has already taken the volumes Compose owns; these report "already absent".
+    # Running the full list anyway is what keeps the real run identical to the preview.
+    rc = remove_volumes_fn(targets.volumes, env_r)
+    if remove_images(targets.images, env_r) != 0:
+        # Images hold no data and can be rebuilt; a leftover one is not worth stranding the
+        # checkout over, unlike a volume.
         print(
-            "dk worktree remove --wipe: could not list the stack's images; "
-            "they are left in place.",
+            f"{label}: some images were left behind (see above); "
+            "remove them with `docker image rm` once nothing uses them.",
             file=sys.stderr,
         )
-        return
-    lines = (line.strip() for line in (listed.stdout or "").splitlines())
-    refs = list(
-        dict.fromkeys(
-            ref
-            for ref in lines
-            if ref
-            and (_is_project_build(ref, project) or (owns_tag and ref.endswith(f":{tag}")))
-        )
-    )
-    if not refs:
-        return
-    if dry_run:
-        print(f"dry-run: would remove image(s) {', '.join(refs)}", file=sys.stderr)
-        return
-    for ref in refs:
-        r = run_cmd(
-            ["docker", "image", "rm", ref],
-            env={**os.environ, **env_r},
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if r.returncode != 0 and "No such image" not in (r.stderr or ""):
-            print(
-                f"dk worktree remove --wipe: could not remove image {ref}: "
-                f"{(r.stderr or '').strip()}",
-                file=sys.stderr,
-            )
+    return rc
 
 
 def worktree_remove(
@@ -1534,9 +1597,11 @@ def worktree_remove(
         project = overlay.compose_project_name
         what = "Its stack is still running, with its volumes" if keep_stack else "Its volumes are kept"
         print(
-            f"{what} (use --wipe to remove them). To reclaim later:\n"
+            f"{what}, as are the images it built (use --wipe to remove both). "
+            "To reclaim later:\n"
             f"  docker volume rm $(docker volume ls -q "
-            f"--filter label=com.docker.compose.project={project})",
+            f"--filter label=com.docker.compose.project={project})\n"
+            f"  docker image rm $(docker image ls -q --filter reference='{project}-*')",
             file=sys.stderr,
         )
     return 0

@@ -11,6 +11,8 @@ import yaml
 from catalpa_tooling.cli.dk_argv import peel_worktree_flag
 from catalpa_tooling.config import (
     ProjectConfig as ProjectConfigT,
+)
+from catalpa_tooling.config import (
     ProjectConfigError,
     load_project_config,
 )
@@ -177,7 +179,10 @@ def test_load_worktree_overlay_unreadable_marker_raises_overlay_error(
     tmp_path: Path, content: bytes
 ) -> None:
     """Callers catch WorktreeOverlayError; a parse error used to escape as a traceback."""
-    from catalpa_tooling.worktree_overlay import WorktreeOverlayError, load_worktree_overlay
+    from catalpa_tooling.worktree_overlay import (
+        WorktreeOverlayError,
+        load_worktree_overlay,
+    )
 
     (tmp_path / ".catalpa-worktree.yaml").write_bytes(content)
     with pytest.raises(WorktreeOverlayError, match="cannot read worktree marker"):
@@ -771,39 +776,40 @@ def _wipe_image_repo(
     images: tuple[str, ...],
     image_rm_stderr: str = "",
 ):
-    """A worktree whose `compose config --images` lists ``images``; records `docker image rm`.
+    """A worktree whose resolved compose config has services using ``images``.
 
-    ``{tag}`` and ``{project}`` in an image ref become the worktree's branch tag and compose
-    project, known only once it exists. Returns ``(config, compose_calls, image_rms, tag)``.
+    ``{project}-<service>`` becomes a build-only service (``build:``, no ``image:``); any other
+    ref becomes a service's ``image:``. ``{tag}`` and ``{project}`` become the worktree's branch
+    tag and compose project, known only once it exists. Records `docker image rm`.
+    Returns ``(config, compose_calls, image_rms, tag)``.
     """
-    from catalpa_tooling import worktree as worktree_mod
-
     config, compose_calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
     wt = tmp_path / ".worktrees" / "ds_180"
     tag = _worktree_branch_tag(wt)
     overlay = load_worktree_overlay(wt)
     assert overlay is not None
     project = overlay.compose_project_name
-    listed = "".join(f"{ref.format(tag=tag, project=project)}\n" for ref in images)
-
-    def fake_compose(*args, **kwargs):
-        compose_calls.append(args)
-        if "config" in args and "--images" in args:
-            return subprocess.CompletedProcess(list(args), 0, stdout=listed)
-        return subprocess.CompletedProcess(list(args), 0)
-
-    monkeypatch.setattr("catalpa_tooling.worktree._compose", fake_compose)
+    services: dict[str, dict[str, str]] = {}
+    for i, raw in enumerate(images):
+        ref = raw.format(tag=tag, project=project)
+        if raw.startswith("{project}-"):
+            services[ref[len(project) + 1 :].split(":", 1)[0]] = {"build": "."}
+        else:
+            services[f"svc{i}"] = {"image": ref}
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.load_compose_config",
+        lambda *a, **k: {"services": services},
+    )
     image_rms: list[str] = []
-    real_run = worktree_mod.run_cmd
 
     def fake_run(cmd, **kwargs):
         if list(cmd[:3]) == ["docker", "image", "rm"]:
             image_rms.append(cmd[3])
             rc = 1 if image_rm_stderr else 0
             return subprocess.CompletedProcess(list(cmd), rc, stdout="", stderr=image_rm_stderr)
-        return real_run(cmd, **kwargs)  # git, which the tag check reads
+        return subprocess.CompletedProcess(list(cmd), 0, stdout="", stderr="")
 
-    monkeypatch.setattr("catalpa_tooling.worktree.run_cmd", fake_run)
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
     return config, compose_calls, image_rms, tag
 
 
@@ -872,7 +878,7 @@ def test_worktree_remove_wipe_keeps_images_with_a_tag_it_cannot_own(
     project = load_worktree_overlay(tmp_path / ".worktrees" / "ds_180").compose_project_name
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
     assert all("--rmi" not in c for c in compose_calls)
-    assert image_rms == [f"{project}-frontend_portal:v1.2.3"]
+    assert image_rms == [f"{project}-frontend_portal"]
 
 
 def test_worktree_remove_wipe_image_failure_does_not_fail_the_wipe(
@@ -890,7 +896,7 @@ def test_worktree_remove_wipe_image_failure_does_not_fail_the_wipe(
 
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
     assert image_rms == [f"ghcr.io/org/app-postgres:{tag}"]
-    assert "could not remove image" in capsys.readouterr().err
+    assert "images were left behind" in capsys.readouterr().err
 
 
 def test_worktree_remove_wipe_dry_run_lists_images_and_removes_none(
@@ -907,7 +913,7 @@ def test_worktree_remove_wipe_dry_run_lists_images_and_removes_none(
     assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
     err = capsys.readouterr().err
     assert "--rmi" not in err
-    assert f"dry-run: would remove image(s) ghcr.io/org/app-postgres:{tag}" in err
+    assert f"dry-run: docker image rm ghcr.io/org/app-postgres:{tag}" in err
     assert image_rms == []
 
 
@@ -936,6 +942,173 @@ def test_worktree_remove_without_dry_run_still_reports_the_removal(
     err = capsys.readouterr().err
     assert "Removed worktree" in err
     assert "Would remove worktree" not in err
+
+
+# --- issues #108 and #165: the dry run lists what the real --wipe removes, images included ----
+
+_WIPE_COMPOSE = """\
+services:
+  django:
+    build: .
+    image: ghcr.io/example/app-django:latest
+    volumes:
+      - django_media:/app/media
+      - django_private_uploads:/app/private_uploads
+  frontend_portal:
+    build: ./frontend
+  redis:
+    image: redis:8-alpine
+volumes:
+  django_media:
+  django_private_uploads:
+  django_static:
+  renamed:
+    name: custom_static_name
+  shared:
+    name: shared_with_main_stack
+  postgres_data:
+    external: true
+"""
+
+
+def _wipe_repo_with_compose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A worktree whose compose file has Compose-owned volumes and a build-only service.
+
+    Records every ``docker volume rm`` / ``docker image rm`` the real run issues. Docker reports
+    the project's label on every declared volume except ``shared_with_main_stack`` (a fixed
+    ``name:`` the main stack created), plus one labelled volume the compose file no longer
+    declares (a renamed key left from an older file).
+    """
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    (tmp_path / "compose.dev.yaml").write_text(_WIPE_COMPOSE, encoding="utf-8")
+    git_init_commit(tmp_path)
+    config = load_project_config(tmp_path)
+    assert worktree_create(config, slug="ds_180", dry_run=False, seed=False) == 0
+    overlay = load_worktree_overlay(tmp_path / ".worktrees" / "ds_180")
+    assert overlay is not None
+    project = overlay.compose_project_name
+
+    compose_calls: list[tuple] = []
+    removed: list[tuple[str, str]] = []
+
+    def fake_run(cmd, **kwargs):
+        cmd = list(cmd)
+        if cmd[:3] == ["docker", "volume", "ls"]:
+            labelled = [
+                f"{project}_django_media",
+                f"{project}_django_private_uploads",
+                f"{project}_django_static",
+                "custom_static_name",
+                f"{project}_old_key",
+            ]
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(labelled) + "\n", stderr="")
+        if cmd[:3] in (["docker", "volume", "rm"], ["docker", "image", "rm"]):
+            removed.append((cmd[1], cmd[3]))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def fake_compose(*args, **kwargs):
+        compose_calls.append(args)
+        return subprocess.CompletedProcess(list(args), 0)
+
+    # Raw-YAML path: the test must not depend on a Docker CLI being installed.
+    monkeypatch.setattr("catalpa_tooling.worktree.load_compose_config", lambda *a, **k: None)
+    monkeypatch.setattr("catalpa_tooling.worktree._compose", fake_compose)
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+    return config, project, compose_calls, removed
+
+
+def _dry_run_targets(err: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for line in err.splitlines():
+        parts = line.split()
+        if parts[:2] == ["dry-run:", "docker"] and parts[3:4] == ["rm"]:
+            out.append((parts[2], parts[4]))
+    return out
+
+
+def test_worktree_remove_wipe_dry_run_lists_exactly_what_the_real_run_removes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """#108: the preview named only the external: volumes and missed what `down -v` takes."""
+    config, project, _, removed = _wipe_repo_with_compose(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True, dry_run=True) == 0
+    assert removed == [], "a dry run must not remove anything"
+    previewed = _dry_run_targets(capsys.readouterr().err)
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+
+    assert previewed == removed, "dry run and real run disagree"
+    volumes = {name for kind, name in removed if kind == "volume"}
+    # Compose-owned volumes `down -v` deletes — the ones the old preview left out.
+    assert f"{project}_django_private_uploads" in volumes
+    assert f"{project}_django_static" in volumes
+    assert "custom_static_name" in volumes, "a volume's `name:` must be honoured"
+    # A fixed `name:` labelled with another project (the main stack) is shared: keep it.
+    assert "shared_with_main_stack" not in volumes
+    # A labelled leftover the file no longer declares.
+    assert f"{project}_old_key" in volumes
+    # The external: volumes Compose never deletes (#64).
+    for suffix in ("postgres_data", "caddy_data", "postgres_conf", "pgbackrest_conf"):
+        assert any(v.endswith(suffix) for v in volumes), f"{suffix} missing: {volumes}"
+    assert len(volumes) == len([n for k, n in removed if k == "volume"]), "removed twice"
+
+
+def test_worktree_remove_wipe_removes_only_the_images_the_stack_built(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#165: build-only services get `<project>-<service>` images that nothing else removes.
+
+    A service that names its `image:` shares it with the main stack and sibling worktrees, so
+    it must be left alone even though it also has `build:`.
+    """
+    config, project, compose_calls, removed = _wipe_repo_with_compose(tmp_path, monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+
+    images = [name for kind, name in removed if kind == "image"]
+    assert images == [f"{project}-frontend_portal"]
+    assert "down" in compose_calls[0] and "-v" in compose_calls[0]
+
+
+def test_worktree_remove_wipe_does_not_keep_the_checkout_for_a_stuck_image(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """An image holds no data; failing to remove one warns rather than blocking the remove."""
+    config, _, _, _ = _wipe_repo_with_compose(tmp_path, monkeypatch)
+
+    def fake_run(cmd, **kwargs):
+        cmd = list(cmd)
+        if cmd[:3] == ["docker", "image", "rm"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="image is being used")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+
+    assert worktree_remove(config, slug="ds_180", wipe=True, yes=True) == 0
+    assert not (tmp_path / ".worktrees" / "ds_180").exists()
+    assert "images were left behind" in capsys.readouterr().err
+
+
+def test_worktree_remove_without_wipe_keeps_built_images(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    config, project, _, removed = _wipe_repo_with_compose(tmp_path, monkeypatch)
+    assert worktree_remove(config, slug="ds_180", yes=True) == 0
+    assert removed == []
+    assert f"reference='{project}-*'" in capsys.readouterr().err
 
 
 # --- `remove` without --wipe must still stop the stack ----------------------------------------
@@ -2070,3 +2243,67 @@ def test_worktree_create_dry_run_previews_local_when_ahead(
     assert _dry_run_start(err) == "trunk", "dry run must match the real run's local cut"
     assert "local trunk has 1 commit(s) not on origin/trunk" in err
     assert not (behind_repo / ".worktrees" / "dr").exists()
+
+
+# --- issue #163: a seeded PostGIS database must be owned by the app role ----------------------
+
+
+def test_worktree_seed_restore_gives_postgis_objects_to_the_app_role(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#163: with `postgis: true` the seed restored as postgres and left every table postgres's.
+
+    pas_indmo's next `ALTER TABLE` migration then failed with "must be owner of table". The
+    seed's restore must still run `--role postgres` (PostGIS needs it) and then hand the
+    restored objects to `$APP_USER`.
+    """
+    from catalpa_tooling.worktree import _seed_database
+    from tests.test_fetch_config import _write_minimal_tooling
+
+    _write_minimal_tooling(tmp_path, extra="native:\n  reset_db:\n    postgis: true\n")
+    config = load_project_config(tmp_path)
+    assert config.native.reset_db.postgis
+
+    dump = tmp_path / "pg.dump"
+
+    def fake_dump(compose_file, env, path):
+        Path(path).write_bytes(b"PGDMP-test-archive")
+        return 0
+
+    drop_create: list[bool] = []
+    scripts: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        cmd = list(cmd)
+        if "sh" in cmd and "pg_restore -h" in cmd[-1]:
+            scripts.append(cmd[-1])
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_db_service_running", lambda *a, **k: 0)
+    monkeypatch.setattr("catalpa_tooling.worktree.run_pg_dump_to_file", fake_dump)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.run_drop_create_app_database",
+        lambda *a, postgis=False, **k: drop_create.append(postgis) or 0,
+    )
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_db.run_cmd", fake_run)
+
+    rc, outcome = _seed_database(
+        "src.yml",
+        {},
+        "dst.yml",
+        {},
+        src_config=config,
+        dest_config=config,
+        base_env="dev",
+        dump_path=dump,
+    )
+
+    assert (rc, outcome) == (0, "restored")
+    assert drop_create == [True], "PostGIS must be pre-created in the fresh database"
+    assert len(scripts) == 1
+    script = scripts[0]
+    assert "--role postgres" in script
+    assert script.index("pg_restore -h") < script.index('-v app_user="$APP_USER"')
+    assert "ALTER %s %s OWNER TO %I" in script

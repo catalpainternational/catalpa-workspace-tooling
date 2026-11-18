@@ -87,7 +87,7 @@ already exists, or for worktrees created before this was added. `base_ref` is om
 
 `dk full`, `staging`, `prod` are unchanged. Media is seeded between the two stacks' **media storages** — the named volume a Docker project serves from, or its host bind — so the copy reaches the stack rather than a host directory the stack never mounts.
 
-**Proxy:** `dk worktree up` ensures the shared reverse proxy and registers remapped routes on compose `up`. Main and worktree stacks get distinct hostnames and upstreams.
+**Proxy:** `dk worktree up` ensures the shared reverse proxy and registers remapped routes on compose `up`. Main and worktree stacks get distinct hostnames and upstreams. Each `up` adds or replaces only its own routes, by route id, so several worktrees can be brought up at the same time. Afterwards it reads the routes back, and fails if its own route is missing (since #110).
 
 ## Commands
 
@@ -109,7 +109,7 @@ dk worktree remove <slug> [--wipe] [--keep-stack] [--dry-run] [-y]
 - **create** — worktree + overlay + `AGENTS.local.md` + submodule init; seeds DB + media from the main checkout's base env by default (`--no-seed` to skip). Pass **`--up`** to proxy + compose up after create.
 - **up / down / restart / logs** — remapped compose lifecycle via the worktree overlay (volumes kept on `down`).
 - **status / context** — stack status (`running` / `stopped` / `unknown`) and agent-oriented identity.
-- **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus a copy of that stack's media storage (volume or bind) onto the worktree's. The media copy replaces whatever the destination held, and takes Wagtail originals and renditions together from the same source stack as the dump, so image rows and files stay consistent. A source with no media is skipped, not an error; the final line reports what each step did. After the database step, the project's `ops.post_db_restore` hooks run against the worktree's stack (subject to their `envs` list, matched against the base env). The copied rows still name the main checkout's hosts, so a hook that rewrites them, such as Wagtail `Site` rows, should take the worktree's host from `{site_host}` or `{site_origin}`. See [post-restore hooks](../README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore).
+- **seed** — re-run `pg_dump` / restore from the main checkout’s base env compose project, plus a copy of that stack's media storage (volume or bind) onto the worktree's. The media copy replaces whatever the destination held, and takes Wagtail originals and renditions together from the same source stack as the dump, so image rows and files stay consistent. A source with no media is skipped, not an error; the final line reports what each step did. After the database step, the project's `ops.post_db_restore` hooks run against the worktree's stack (subject to their `envs` list, matched against the base env). The copied rows still name the main checkout's hosts, so a hook that rewrites them, such as Wagtail `Site` rows, should take the worktree's host from `{site_host}` or `{site_origin}`. See [post-restore hooks](../README_PGBACKREST.md#post-restore-hooks-opspost_db_restore--opspost_metabase_db_restore). The restored tables, views, sequences, functions and types are owned by the app's database role, as in the main stack, so the worktree's migrations can alter them. With `native.reset_db.postgis` the restore runs as `postgres` and then hands them over; PostGIS's own objects stay with `postgres` (since #163).
 
 ### Seeding more than one file volume
 
@@ -139,13 +139,24 @@ Otherwise, `seed` prints a line for every other named volume the web service mou
 saying it was not seeded. The database is copied whole, so rows that point at files in an
 unseeded volume will be missing their files in the worktree. Volumes the app regenerates, such
 as collected static files, don't need seeding; ignore their lines.
-- **remove** — `compose down` for the remapped project, then git worktree remove. **Volumes are
-  kept**; the command prints how to reclaim them. Since 1.4.1: before that, the stack was left
-  running for a project name that no longer had a checkout.
-- **remove --wipe** — the same, but `compose down -v`, then removes the `external:` volumes
-  Compose will not touch (`postgres_data`, `django_media`, `caddy_data`, `postgres_conf`,
-  `pgbackrest_conf`). Destroys that worktree’s database and uploads — there is no undo. Built
-  images tagged with the worktree’s project name are left in place.
+- **remove** — `compose down` for the remapped project, then git worktree remove. **Volumes and
+  built images are kept**; the command prints how to reclaim them. Since 1.4.1: before that, the
+  stack was left running for a project name that no longer had a checkout.
+- **remove --wipe** — the same, but `compose down -v`, then removes everything else the
+  worktree's compose project owns. Destroys that worktree’s database and uploads — there is no
+  undo. It removes:
+  - every volume the compose file declares, `external:` ones included (Compose never deletes
+    `postgres_data`, `django_media`, `caddy_data`, `postgres_conf` or `pgbackrest_conf` itself);
+  - any other volume Docker labels with the project, such as one whose key has since been
+    renamed;
+  - the images the stack built: `<project>-<service>` for each service with `build:` and no
+    `image:`. A service that names an `image:` shares it with the main stack and other
+    worktrees, so that image is never removed. An image that can't be removed is reported but
+    doesn't stop the remove.
+
+  **`--wipe --dry-run` prints that same list**, one `docker volume rm` or `docker image rm` line
+  per item, before anything is touched. The real run removes exactly the listed items. Volumes
+  that `down -v` has already taken show as "already absent (skipped)".
 - **remove --keep-stack** — the pre-1.4.1 behaviour: retire the checkout and leave the stack up.
   Mostly useful when the Docker daemon is not running and you want the checkout gone anyway.
 

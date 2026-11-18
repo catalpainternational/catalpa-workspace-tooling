@@ -196,41 +196,205 @@ def test_build_route_config_host_rewrite() -> None:
     ]
 
 
-def test_upsert_route_dedupes_by_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    import json
+class _FakeCaddyAdmin:
+    """In-memory Caddy admin API with the behaviour measured on caddy:2-alpine (issue #110).
 
-    server = {
-        "listen": [":443"],
-        "routes": [
-            {"@id": "local-proxy-ambulancia-dev", "match": [{"host": ["old"]}]},
-            {"@id": "local-proxy-other-dev", "match": [{"host": ["keep"]}]},
-        ],
-    }
-    calls: list[tuple[str, str, dict | None]] = []
+    - ``GET …/routes`` on a server with no list returns ``200 null``;
+    - ``PATCH /id/<id>`` returns 404 for an unknown id and replaces the route otherwise;
+    - ``POST …/routes`` appends, and returns 400 (rolled back) for a duplicate ``@id``;
+    - ``PUT …/routes`` creates the list, and returns 409 when it already exists;
+    - whole-server ``GET``/``PATCH`` are supported too, so a regression to read-modify-write
+      shows up as a lost route rather than an unexpected call.
 
-    def fake_admin_request(method, path, *, body=None, timeout=10.0):
-        calls.append((method, path, body))
-        if method == "GET" and path == "/config/apps/http/servers":
-            return 200, json.dumps({"srv0": {"listen": [":443"]}})
-        if method == "GET" and path == "/config/apps/http/servers/srv0":
-            return 200, json.dumps(server)
-        if method == "PATCH":
-            return 200, ""
+    Each call is applied under one lock, as Caddy does. ``barrier`` (when set) holds every
+    caller just after its first call that reads or writes routes has been applied, until all
+    callers have made theirs. So everyone has read before anyone writes: the interleaving that
+    lost a route in swlt_ws2's wave 19.
+    """
+
+    SERVER = "/config/apps/http/servers/srv0"
+    ROUTES = SERVER + "/routes"
+
+    def __init__(self, routes: list[dict] | None = None, barrier=None) -> None:
+        import threading
+
+        self.server: dict = {"listen": [":443"]}
+        if routes is not None:
+            self.server["routes"] = routes
+        self.lock = threading.Lock()
+        self.barrier = barrier
+        self.seen = threading.local()
+        self.calls: list[tuple[str, str]] = []
+
+    def _wait_once(self, path: str) -> None:
+        if self.barrier is not None and path != "/config/apps/http/servers":
+            if not getattr(self.seen, "waited", False):
+                self.seen.waited = True
+                self.barrier.wait(timeout=5)
+
+    def __call__(self, method, path, *, body=None, timeout=10.0):
+        result = self._apply(method, path, body)
+        self._wait_once(path)
+        return result
+
+    def _apply(self, method, path, body):
+        import copy
+        import json
+
+        with self.lock:
+            self.calls.append((method, path))
+            routes = self.server.get("routes")
+            if method == "GET" and path == "/config/apps/http/servers":
+                return 200, json.dumps({"srv0": {"listen": [":443"]}})
+            if method == "GET" and path == self.SERVER:
+                return 200, json.dumps(self.server)
+            if method == "PATCH" and path == self.SERVER:
+                self.server = copy.deepcopy(body)
+                return 200, ""
+            if method == "GET" and path == self.ROUTES:
+                return 200, json.dumps(routes)
+            if method == "PATCH" and path.startswith("/id/"):
+                rid = path[len("/id/"):]
+                for i, r in enumerate(routes or []):
+                    if r.get("@id") == rid:
+                        routes[i] = copy.deepcopy(body)
+                        return 200, ""
+                return 404, json.dumps({"error": f"unknown object ID '{rid}'"})
+            if method == "POST" and path == self.ROUTES:
+                if not isinstance(routes, list):
+                    return 500, "cannot unmarshal object into RouteList"
+                if any(r.get("@id") == body.get("@id") for r in routes):
+                    return 400, "duplicate ID"
+                routes.append(copy.deepcopy(body))
+                return 200, ""
+            if method == "PUT" and path == self.ROUTES:
+                if routes is not None:
+                    return 409, "key already exists: routes"
+                self.server["routes"] = copy.deepcopy(body)
+                return 200, ""
         raise AssertionError(f"unexpected admin call {method} {path}")
 
-    monkeypatch.setattr(local_proxy, "_admin_request", fake_admin_request)
+    def ids(self) -> list[str]:
+        return [r["@id"] for r in self.server.get("routes") or []]
+
+
+def test_upsert_route_replaces_its_own_route_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeCaddyAdmin(
+        [
+            {"@id": "local-proxy-ambulancia-dev", "match": [{"host": ["old"]}]},
+            {"@id": "local-proxy-other-dev", "match": [{"host": ["keep"]}]},
+        ]
+    )
+    monkeypatch.setattr(local_proxy, "_admin_request", fake)
 
     rc = upsert_route(
         "local-proxy-ambulancia-dev",
         "ambulancia-dev.localdev.temp.build",
         "ambulancia_dev-caddy:80",
     )
+
     assert rc == 0
-    patch_call = next(c for c in calls if c[0] == "PATCH")
-    routes = patch_call[2]["routes"]
-    ids = [r["@id"] for r in routes]
-    assert ids.count("local-proxy-ambulancia-dev") == 1
-    assert "local-proxy-other-dev" in ids
+    assert fake.ids() == ["local-proxy-ambulancia-dev", "local-proxy-other-dev"]
+    assert fake.server["routes"][0]["match"] == [{"host": ["ambulancia-dev.localdev.temp.build"]}]
+    assert ("PATCH", fake.SERVER) not in fake.calls, "must not rewrite the whole server block"
+
+
+def test_upsert_route_creates_the_list_on_a_fresh_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bootstrap `:443 {}` server has no routes list until the first route."""
+    fake = _FakeCaddyAdmin()
+    monkeypatch.setattr(local_proxy, "_admin_request", fake)
+    assert upsert_route("r1", "one.test", "one:80") == 0
+    assert fake.ids() == ["r1"]
+
+
+@pytest.mark.parametrize("existing", [None, [{"@id": "other", "match": [{"host": ["o"]}]}]])
+def test_concurrent_upserts_both_survive(
+    monkeypatch: pytest.MonkeyPatch, existing: list[dict] | None
+) -> None:
+    """#110: two `dk worktree up` runs in the same second; each must leave its route behind.
+
+    Both callers are held until each has made its first routes call, so neither has written
+    when the other reads. Read-modify-write of the server block loses one route here.
+    """
+    import threading
+
+    fake = _FakeCaddyAdmin(existing, barrier=threading.Barrier(2))
+    monkeypatch.setattr(local_proxy, "_admin_request", fake)
+    monkeypatch.setattr(local_proxy, "_route_retry_pause", lambda attempt: None)
+
+    results: dict[str, int] = {}
+
+    def run(rid: str) -> None:
+        results[rid] = upsert_route(rid, f"{rid}.test", f"{rid}:80")
+
+    threads = [threading.Thread(target=run, args=(rid,)) for rid in ("wt-a", "wt-b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert results == {"wt-a": 0, "wt-b": 0}
+    assert sorted(i for i in fake.ids() if i.startswith("wt-")) == ["wt-a", "wt-b"]
+    if existing:
+        assert "other" in fake.ids()
+
+
+def test_concurrent_upserts_of_the_same_route_leave_one_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both see 404, both append; Caddy rejects the duplicate and the loser's retry PATCHes."""
+    import threading
+
+    fake = _FakeCaddyAdmin([], barrier=threading.Barrier(2))
+    monkeypatch.setattr(local_proxy, "_admin_request", fake)
+    monkeypatch.setattr(local_proxy, "_route_retry_pause", lambda attempt: None)
+    rcs: list[int] = []
+    threads = [
+        threading.Thread(target=lambda: rcs.append(upsert_route("same", "same.test", "s:80")))
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert rcs == [0, 0]
+    assert fake.ids() == ["same"]
+
+
+def test_upsert_route_retries_a_connection_caddy_dropped_mid_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under concurrent writes Caddy can close an admin connection with no reply (seen live)."""
+    fake = _FakeCaddyAdmin([])
+    dropped = {"n": 0}
+
+    def flaky(method, path, *, body=None, timeout=10.0):
+        if method == "POST" and dropped["n"] == 0:
+            dropped["n"] += 1
+            fake(method, path, body=body)  # the write lands, but the reply is lost
+            raise LocalProxyConfigError("Remote end closed connection without response")
+        return fake(method, path, body=body)
+
+    monkeypatch.setattr(local_proxy, "_admin_request", flaky)
+    monkeypatch.setattr(local_proxy, "_route_retry_pause", lambda attempt: None)
+    assert upsert_route("r1", "one.test", "one:80") == 0
+    assert fake.ids() == ["r1"], "the retry must replace, not duplicate"
+
+
+def test_upsert_route_fails_loudly_when_the_route_is_missing_afterwards(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A lost write should fail the `up`, not surface later as curl exit 35."""
+    fake = _FakeCaddyAdmin([])
+
+    def forgetful(method, path, *, body=None, timeout=10.0):
+        if method == "GET" and path == fake.ROUTES and fake.ids():
+            return 200, "[]"  # someone else's write erased it
+        return fake(method, path, body=body)
+
+    monkeypatch.setattr(local_proxy, "_admin_request", forgetful)
+    assert upsert_route("r1", "one.test", "one:80") == 1
+    assert "missing after it was written" in capsys.readouterr().err
 
 
 def test_local_proxy_routes_single(minimal_config: ProjectConfig) -> None:
