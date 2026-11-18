@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`dk` now echoes the commands it runs (`$ …`) to stderr, not stdout (#196).** Redirecting a
+  `dk` command's output to a file put the echo line at the top of the file. For binary output
+  that broke the file, e.g. `dk <env> docker exec db pg_dump -Fc > x.dump` gave a dump that
+  `pg_restore` rejected. This affected `dk <env> docker …` and the compose passthrough verbs
+  (`exec`, `logs` and others). If you `grep` `dk` output for the `$ ` line, add `2>&1`.
+
 ## 1.7.0
 
 ### Fixed
