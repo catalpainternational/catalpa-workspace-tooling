@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.7.0
+
 ### Fixed
 
 - **`dk <env> stop` no longer rebuilds the stack first.** After a new commit, `stop`, `kill`,
