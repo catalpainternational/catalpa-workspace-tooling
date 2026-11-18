@@ -1,4 +1,8 @@
-"""Echo subprocess argv before run (default) for CLI transparency."""
+"""Echo subprocess argv before run (default) for CLI transparency.
+
+The echo goes to stderr so a command's stdout stays exactly the child's output
+(e.g. ``dk <env> docker exec db pg_dump -Fc > x.dump``).
+"""
 
 from __future__ import annotations
 
@@ -62,7 +66,7 @@ def run_interruptible(
     ``docker compose run`` to exit on its own.
     """
     if print_cmd:
-        print(f"$ {format_shell_command(cmd)}", flush=True)
+        print(f"$ {format_shell_command(cmd)}", file=sys.stderr, flush=True)
     popen_kwargs = dict(kwargs)
     popen_kwargs.pop("check", None)
     proc = subprocess.Popen(list(cmd), start_new_session=True, **popen_kwargs)
@@ -110,5 +114,5 @@ def run_interruptible(
 
 def run(cmd: Sequence[str], *, print_cmd: bool = True, **kwargs: Any) -> subprocess.CompletedProcess:
     if print_cmd:
-        print(f"$ {format_shell_command(cmd)}", flush=True)
+        print(f"$ {format_shell_command(cmd)}", file=sys.stderr, flush=True)
     return subprocess.run(cmd, **kwargs)
