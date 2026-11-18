@@ -49,6 +49,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
     postgres_image_from_env,
     remove_wipe_data_volumes,
     run_pgbackrest_verify,
+    set_db_image_from_compose,
     should_materialize_for_compose,
 )
 from catalpa_tooling.remote_deploy import (
@@ -486,6 +487,9 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     env_add = resolve_env_with_compose_project(
         compose_file, env_add, config=config, dk_env_name=env_name
     )
+    # Name the db image the way compose does, once, so every later step runs the same image.
+    if compose_file:
+        set_db_image_from_compose(config, compose_file, env_add)
 
     # False unless the central hook below both ran and left the stack images in a known-good
     # state. Defaulting to False means every path that does not reach the hook — a pinned

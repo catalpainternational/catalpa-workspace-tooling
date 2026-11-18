@@ -33,7 +33,11 @@ from catalpa_tooling.local_proxy import (
 )
 from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context, resolve_compose_file_from_info
 from catalpa_tooling.pgbackrest_db import db_service_responds
-from catalpa_tooling.pgbackrest_volume_config import materialize_configs, postgres_image_from_env
+from catalpa_tooling.pgbackrest_volume_config import (
+    materialize_configs,
+    postgres_image_from_env,
+    set_db_image_from_compose,
+)
 from catalpa_tooling.remote_deploy import _ensure_local_stack_images_built, _insert_up_build_if_no_registry
 from catalpa_tooling.restic_files import resolve_env_with_compose_project
 from catalpa_tooling.run_cmd import run as run_cmd
@@ -77,6 +81,7 @@ def _resolve_deploy_context(
         config=config,
         dk_env_name=env_name,
     )
+    set_db_image_from_compose(config, compose_file, env_add)
     site_origin = primary_site_origin_from_info(ctx.info) or ctx.site_origin
     return compose_file, env_add, site_origin, ctx, ctx.info
 
