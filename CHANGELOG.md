@@ -34,6 +34,13 @@
   Metabase dump, and the next `db restore` loaded it into Metabase's database. Entries other than
   `app` now dump their `db_name`. The `app` entry still dumps the database the stack's `db`
   service is configured with (`DJANGO_DB`), as before. No project fetches Metabase this way yet.
+- **The proxy now serves the LAN CA (`/catalpa-local-ca.crt`) as
+  `application/x-x509-ca-cert` (#168).** It used to send no `Content-Type`, so Chrome on Android
+  showed the PEM as text instead of offering to install it. `dk proxy ca` also has more Android
+  notes: a screen lock is required, choose *VPN and apps* for credential use, Firefox needs *Use
+  third-party CA certificates*, and the Android 8.x settings path. A proxy that is already
+  running keeps its old Caddyfile (#70), so run `dk proxy down` then `dk proxy up` to pick this
+  up.
 
 ## 1.7.0
 

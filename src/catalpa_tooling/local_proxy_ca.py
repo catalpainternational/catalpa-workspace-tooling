@@ -92,6 +92,10 @@ def print_proxy_ca_instructions(
     print("  3. Android:", file=out)
     print("     - Open the URL, download the .crt, install via Settings > Security > Encryption & credentials", file=out)
     print("       > Install a certificate > CA certificate", file=out)
+    print("     - Android 8.x: Settings > Security & location > Encryption & credentials > Install from storage", file=out)
+    print("     - A screen lock (PIN, pattern or password) is required before Android will install a CA", file=out)
+    print("     - If asked for Credential use, choose VPN and apps (not Wi-Fi)", file=out)
+    print("     - Chrome trusts it; Firefox for Android only does with Use third-party CA certificates enabled", file=out)
     print("", file=out)
     print(f"  4. Browse your LAN dev URLs (https://…). HTTP path {LOCAL_PROXY_CA_HTTP_PATH} only serves the CA.", file=out)
     if shutil.which("open"):
