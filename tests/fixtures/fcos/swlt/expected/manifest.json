@@ -1,0 +1,206 @@
+{
+  "env": "staging",
+  "compose_file": "compose.yml",
+  "user": "deploy",
+  "uid": 1001,
+  "subuid": {
+    "start": 589824,
+    "count": 65536
+  },
+  "auto_update": false,
+  "network": "swlt_shape_default",
+  "id_ranges": {
+    "caddy": {
+      "start": 10000,
+      "size": 5000,
+      "host_root_uid": 599823,
+      "services": [
+        "caddy"
+      ]
+    },
+    "db": {
+      "start": 15000,
+      "size": 5000,
+      "host_root_uid": 604823,
+      "services": [
+        "db"
+      ]
+    },
+    "django": {
+      "start": 20000,
+      "size": 5000,
+      "host_root_uid": 609823,
+      "services": [
+        "django",
+        "migrate",
+        "rqscheduler"
+      ]
+    },
+    "mailpit": {
+      "start": 25000,
+      "size": 5000,
+      "host_root_uid": 614823,
+      "services": [
+        "mailpit"
+      ]
+    },
+    "redis": {
+      "start": 30000,
+      "size": 5000,
+      "host_root_uid": 619823,
+      "services": [
+        "redis"
+      ]
+    }
+  },
+  "bind_volumes": {
+    "caddy_data": {
+      "path": "/var/mnt/data/caddy_data",
+      "services": [
+        "caddy"
+      ],
+      "id_range": "caddy"
+    },
+    "django_media": {
+      "path": "/var/mnt/data/django_media",
+      "services": [
+        "caddy",
+        "django"
+      ],
+      "id_range": "django"
+    },
+    "django_private_uploads": {
+      "path": "/var/mnt/data/django_private_uploads",
+      "services": [
+        "django"
+      ],
+      "id_range": "django"
+    },
+    "postgres_data": {
+      "path": "/var/mnt/data/postgres_data",
+      "services": [
+        "db"
+      ],
+      "id_range": "db"
+    }
+  },
+  "podman_volumes": {},
+  "images": {
+    "caddy": "ghcr.io/example/swlt-caddy:v0.16.1",
+    "db": "ghcr.io/example/swlt-postgres:v0.16.1",
+    "django": "ghcr.io/example/swlt-django:v0.16.1",
+    "mailpit": "docker.io/axllent/mailpit:v1.31.1",
+    "migrate": "ghcr.io/example/swlt-django:v0.16.1",
+    "redis": "docker.io/library/redis:8-alpine",
+    "rqscheduler": "ghcr.io/example/swlt-django:v0.16.1"
+  },
+  "secrets": {
+    "django_secret_key": "DJANGO_SECRET_KEY",
+    "postgres_password": "POSTGRES_PASSWORD",
+    "site_auth": "SITE_AUTH"
+  },
+  "install": [
+    {
+      "file": "caddy/caddy.json",
+      "dest": "/var/home/deploy/.config/swlt_shape/caddy.json",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "env/caddy.env",
+      "dest": "/etc/swlt_shape/caddy.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "env/db.env",
+      "dest": "/etc/swlt_shape/db.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "env/django.env",
+      "dest": "/etc/swlt_shape/django.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "env/mailpit.env",
+      "dest": "/etc/swlt_shape/mailpit.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "env/migrate.env",
+      "dest": "/etc/swlt_shape/migrate.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "env/redis.env",
+      "dest": "/etc/swlt_shape/redis.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "env/rqscheduler.env",
+      "dest": "/etc/swlt_shape/rqscheduler.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy.container",
+      "dest": "/etc/containers/systemd/users/1001/caddy.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/db.container",
+      "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django.container",
+      "dest": "/etc/containers/systemd/users/1001/django.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/mailpit.container",
+      "dest": "/etc/containers/systemd/users/1001/mailpit.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/migrate.container",
+      "dest": "/etc/containers/systemd/users/1001/migrate.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/redis.container",
+      "dest": "/etc/containers/systemd/users/1001/redis.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/rqscheduler.container",
+      "dest": "/etc/containers/systemd/users/1001/rqscheduler.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/swlt_shape_default.network",
+      "dest": "/etc/containers/systemd/users/1001/swlt_shape_default.network",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/caddy.socket",
+      "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
+      "owner": "deploy",
+      "mode": "0644"
+    }
+  ]
+}

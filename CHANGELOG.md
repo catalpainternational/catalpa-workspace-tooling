@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **`dk <env> fcos render` and `dk <env> fcos check` (#182).** These are the first part of
+  deploying to Fedora CoreOS with rootless Podman. `render` turns the env's resolved compose
+  file into quadlets, settings files, the edge's socket unit and its Caddy JSON, and writes them
+  to `docker/envs/<env>/generated/fcos/` for you to commit. `check` fails when the committed files
+  differ from a fresh render. It also fails when plain `docker compose up` would start without a
+  credential, so write each credential as `${KEY:?…}`. An env with `runtime: quadlet` in its
+  `info.yaml` refuses the compose commands. See `docs/FCOS.md`. Installing the files on a host
+  comes in a later release.
+
 ### Fixed
 
 - **`dk` now echoes the commands it runs (`$ …`) to stderr, not stdout (#196).** Redirecting a

@@ -1,0 +1,12 @@
+name: staging
+compose_file: compose.yaml
+site_origin:
+  - staging.bero.example
+docker_host: ssh://deploy@staging.bero.example/run/user/1001/podman/podman.sock
+image_registry: ghcr.io/example
+image_tag: v7.4.1
+env:
+  compose_project_name: bero_shape
+runtime: quadlet
+fcos:
+  auto_update: true

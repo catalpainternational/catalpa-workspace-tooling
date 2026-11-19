@@ -1,0 +1,11 @@
+name: staging
+site_origin:
+  - staging.swlt.example
+docker_host: ssh://deploy@staging.swlt.example/run/user/1001/podman/podman.sock
+image_registry: ghcr.io/example
+image_tag: v0.16.1
+env:
+  CADDY_SITE_AUTH: "true"
+runtime: quadlet
+fcos:
+  drop_ports: [mailpit]

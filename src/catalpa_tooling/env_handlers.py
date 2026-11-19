@@ -102,6 +102,11 @@ from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
 
+#: What ``dk <env>`` may do for an env with ``runtime: quadlet``: everything else drives
+#: docker compose, which has no stack there.
+QUADLET_ENV_COMMANDS = frozenset({"info", "secrets", "host", "docker", "fcos"})
+
+
 def _cmd_env_info(info_path: Path, *, edit: bool, dry_run: bool) -> int:
     if edit:
         if dry_run:
@@ -385,6 +390,29 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     env_command = getattr(ns, "env_command", None)
     dry_run = bool(getattr(ns, "dry_run", False))
     tag_override = getattr(ns, "tag", None)
+
+    from catalpa_tooling.fcos.settings import FcosConfigError, runtime_of
+
+    try:
+        runtime = runtime_of(info)
+    except FcosConfigError as exc:
+        print(f"{info_path}: {exc}", file=sys.stderr)
+        return 1
+    if runtime == "quadlet" and env_command not in QUADLET_ENV_COMMANDS:
+        shown = env_command or " ".join(getattr(ns, "implicit_compose_argv", None) or ["up", "-d"])
+        print(
+            f"{env_name} runs as Podman quadlets (info.yaml `runtime: quadlet`), not compose: "
+            f"`dk {env_name} {shown}` would find nothing there, or start a second stack beside "
+            f"it. Use `dk {env_name} fcos …`, or `dk {env_name} docker …` against the host's "
+            "Podman socket.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if env_command == "fcos":
+        from catalpa_tooling.fcos.cli import handle_fcos_command
+
+        return handle_fcos_command(ns, config, env_name)
 
     if env_command is None:
         compose_args = list(getattr(ns, "implicit_compose_argv", None) or [])

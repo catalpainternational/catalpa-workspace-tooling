@@ -232,6 +232,8 @@ def load_managed_deploy_context(
     compose_file: str | None = None,
     tag_override: str | None = None,
     apply_worktree: bool = True,
+    credentials: dict | None = None,
+    register_host_key: bool = True,
 ) -> ManagedDeployContext | None:
     """Load ``info.yaml`` + ``credentials.yaml`` and build ``env_add`` for docker compose.
 
@@ -240,6 +242,10 @@ def load_managed_deploy_context(
     When ``apply_worktree`` is true and ``.catalpa-worktree.yaml`` is present for
     ``base_env``, remaps compose project + localdev origins for isolation.
     Prints summary to stderr. Returns None on missing files / SOPS failure.
+
+    ``credentials``, when given, is used in place of decrypting ``credentials.yaml`` (``dk <env>
+    fcos render`` passes a marker per key, so nothing is decrypted). ``register_host_key=False``
+    skips adding ``docker_host`` to ``~/.ssh/known_hosts``, for callers that never connect.
     """
     repo_root = config.repo_root
     deploy_dir = config.deploy_envs_dir / env_name
@@ -275,9 +281,13 @@ def load_managed_deploy_context(
 
     from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_docker_host
 
-    kh_rc = ensure_ssh_known_host_for_docker_host(
-        str(docker_host or ""),
-        recovery_env_name=env_name,
+    kh_rc = (
+        ensure_ssh_known_host_for_docker_host(
+            str(docker_host or ""),
+            recovery_env_name=env_name,
+        )
+        if register_host_key
+        else 0
     )
     if kh_rc != 0:
         print(
@@ -297,7 +307,9 @@ def load_managed_deploy_context(
     )
 
     creds: dict = {}
-    if not creds_path.is_file():
+    if credentials is not None:
+        creds = dict(credentials)
+    elif not creds_path.is_file():
         if config.credentials_optional_for_env(env_name):
             print(
                 f"Note: {creds_path} not found; using env from info.yaml only "
