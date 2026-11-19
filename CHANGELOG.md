@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`tests backend` now passes extra arguments on to pytest (#189).** `uv run tests backend -k
+  name -n 4 tests/test_foo.py` used to exit 2 with "unrecognized arguments", so projects ran
+  `uv run --group test pytest …` from `paths.backend` instead. A leading `--` is dropped.
+  `tests workspace` also accepts a pytest option as its first argument now (`tests workspace -k
+  name`); before, that only worked after a path or a `--`.
+
 ### Fixed
 
 - **`dk` now echoes the commands it runs (`$ …`) to stderr, not stdout (#196).** Redirecting a
