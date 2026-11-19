@@ -9,6 +9,12 @@
   that broke the file, e.g. `dk <env> docker exec db pg_dump -Fc > x.dump` gave a dump that
   `pg_restore` rejected. This affected `dk <env> docker …` and the compose passthrough verbs
   (`exec`, `logs` and others). If you `grep` `dk` output for the `$ ` line, add `2>&1`.
+- **dk's Zabbix backup checks no longer depend on the agent image version (#148).** `dk <env>
+  zabbix install` mounted the UserParameters in `/etc/zabbix/zabbix_agent2.d/`, which 7.0 agent
+  images don't read, so on 7.0 the backup checks stopped reporting with no error. They now go in
+  `/etc/zabbix/zabbix_agentd.d/`, which 7.0 and 7.4 both read. The default image is now pinned to
+  `zabbix/zabbix-agent2:alpine-7.0-latest` to match the 7.0 server, instead of `alpine-latest`
+  (currently 7.4). Re-run `install` and `restart` on existing hosts.
 
 ## 1.7.0
 
