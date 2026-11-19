@@ -6,7 +6,8 @@
 
 - **`tests backend` now passes extra arguments on to pytest (#189).** `uv run tests backend -k
   name -n 4 tests/test_foo.py` used to exit 2 with "unrecognized arguments", so projects ran
-  `uv run --group test pytest …` from `paths.backend` instead. A leading `--` is dropped.
+  `uv run --group test pytest …` from `paths.backend` instead. Every `--` is dropped, not only a
+  leading one, for `backend` and `workspace` alike.
   `tests workspace` also accepts a pytest option as its first argument now (`tests workspace -k
   name`); before, that only worked after a path or a `--`.
 
@@ -33,7 +34,8 @@
   dumped the stack's app database, so a `metabase` entry with `via: dk` wrote app data into the
   Metabase dump, and the next `db restore` loaded it into Metabase's database. Entries other than
   `app` now dump their `db_name`. The `app` entry still dumps the database the stack's `db`
-  service is configured with (`DJANGO_DB`), as before. No project fetches Metabase this way yet.
+  service is configured with (`DJANGO_APP_DB`, falling back to `DJANGO_DB`), as before, and
+  ignores its own `db_name`. No project fetches Metabase this way yet.
 - **The proxy now serves the LAN CA (`/catalpa-local-ca.crt`) as
   `application/x-x509-ca-cert` (#168).** It used to send no `Content-Type`, so Chrome on Android
   showed the PEM as text instead of offering to install it. `dk proxy ca` also has more Android

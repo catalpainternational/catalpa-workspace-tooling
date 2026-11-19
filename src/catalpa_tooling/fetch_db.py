@@ -118,10 +118,12 @@ def _fetch_via_dk(
 ) -> None:
     """Dump ``db_name`` from the ``dk_env`` stack's ``db`` service to ``dest``.
 
-    The ``app`` entry dumps the app DB as the container resolves it (``$APP_DB`` from
-    ``DJANGO_APP_DB`` / ``DJANGO_DB``), as before: its ``db_name`` defaults to the stem of
-    ``paths.fetch_db_dump``, which names the local dump file and need not match the stack's
-    database. Every other entry (e.g. ``metabase``) dumps its ``db_name``.
+    The ``app`` entry dumps the app DB as the container resolves it (``$APP_DB``: ``DJANGO_APP_DB``,
+    falling back to ``DJANGO_DB``), as before. A ``via: dk`` entry always comes from an explicit
+    ``native.fetch.databases`` block, where ``db_name`` is required, so ``app`` has one; it is
+    ignored here, for compatibility with what ``via: dk`` has always dumped (catalpa-site, the
+    one ``via: dk`` consumer, sets ``catalpa_db``). Every other entry (e.g. ``metabase``) dumps
+    its ``db_name``.
     """
     ctx = load_managed_deploy_context(config, dk_env)
     if ctx is None:

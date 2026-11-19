@@ -157,6 +157,16 @@ def test_workspace_forwards_leading_pytest_option(
     assert captured == [["uv", "run", "--group", "test", "pytest", "-k", "foo", "tests/t.py"]]
 
 
+def test_workspace_drops_the_pytest_separator(
+    project: Path, captured: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use(monkeypatch, project)
+
+    assert _run_tests_main(monkeypatch, "workspace", "--", "-k", "foo") == 0
+
+    assert captured == [["uv", "run", "--group", "test", "pytest", "-k", "foo"]]
+
+
 def test_unknown_option_still_rejected_for_other_commands(
     project: Path, captured: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
