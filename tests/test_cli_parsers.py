@@ -17,7 +17,7 @@ from catalpa_tooling.cli.dk_argv import (
 from catalpa_tooling.config import load_project_config
 from catalpa_tooling.native_parser import build_native_parser
 from catalpa_tooling.dk_parser import build_dk_parser
-from catalpa_tooling.test_parser import build_test_parser
+from catalpa_tooling.test_parser import build_test_parser, parse_test_args
 from tests.helpers import write_minimal_tooling_tree
 
 
@@ -46,6 +46,17 @@ def test_test_parser_workspace_remainder() -> None:
     ns = parser.parse_args(["workspace", "tests/test_foo.py", "-k", "bar"])
     assert ns.command == "workspace"
     assert ns.pytest_args == ["tests/test_foo.py", "-k", "bar"]
+
+
+def test_test_parser_backend_takes_pytest_args() -> None:
+    parser = build_test_parser()
+    ns = parse_test_args(parser, ["backend", "-k", "foo", "-n", "4", "path"])
+    assert ns.command == "backend"
+    assert ns.pytest_args == ["-k", "foo", "-n", "4", "path"]
+
+    ns = parse_test_args(parser, ["backend"])
+    assert ns.command == "backend"
+    assert ns.pytest_args == []
 
 
 def test_test_parser_compliance_flags() -> None:

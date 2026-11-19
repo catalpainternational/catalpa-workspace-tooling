@@ -636,12 +636,21 @@ def run_version(compose_file: str, env: dict[str, str]) -> int:
     return _compose_exec_pgbackrest(compose_file, env, "version")
 
 
-def _pg_dump_inner_script(extra_pg_dump_args: Sequence[str] | None) -> str:
+def _pg_dump_inner_script(
+    extra_pg_dump_args: Sequence[str] | None,
+    database: str | None = None,
+) -> str:
+    """Shell script for ``pg_dump -Fc`` inside the ``db`` container.
+
+    ``database`` names the database to dump (shell-quoted). When ``None``, dumps the app DB
+    resolved in the container (``"$APP_DB"`` from ``DJANGO_APP_DB`` / ``DJANGO_DB``).
+    """
     extras = tuple(extra_pg_dump_args or ())
+    db_arg = '"$APP_DB"' if database is None else shlex.quote(database)
     inner = (
         _DJANGO_APP_SHELL_VARS
         + 'export PGPASSWORD="$POSTGRES_PASSWORD"; '
-        + 'exec pg_dump -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -Fc'
+        + f"exec pg_dump -h 127.0.0.1 -p 5432 -U postgres -d {db_arg} -Fc"
     )
     if extras:
         inner = inner + " " + " ".join(shlex.quote(a) for a in extras)
@@ -652,14 +661,17 @@ def run_pg_dump(
     compose_file: str,
     env: dict[str, str],
     extra_pg_dump_args: Sequence[str] | None = None,
+    *,
+    database: str | None = None,
 ) -> int:
     """Run ``pg_dump`` in the ``db`` container against the app DB (``DJANGO_DB`` / ``DJANGO_APP_DB``); stream to stdout.
 
     Uses the superuser inside the container (``postgres`` / ``POSTGRES_PASSWORD``). Optional
-    ``extra_pg_dump_args`` are appended (shell-quoted). Command echo is suppressed so stdout is
-    suitable for ``> file`` or piping.
+    ``extra_pg_dump_args`` are appended (shell-quoted). ``database`` dumps that database
+    instead of the app DB. Command echo is suppressed so stdout is suitable for ``> file`` or
+    piping.
     """
-    inner = _pg_dump_inner_script(extra_pg_dump_args)
+    inner = _pg_dump_inner_script(extra_pg_dump_args, database)
     r = run_cmd(
         [
             "docker",
@@ -686,12 +698,15 @@ def run_pg_dump_to_file(
     env: dict[str, str],
     dest: Path,
     extra_pg_dump_args: Sequence[str] | None = None,
+    *,
+    database: str | None = None,
 ) -> int:
     """Same as ``run_pg_dump`` but writes the ``-Fc`` archive to ``dest`` (binary-safe).
 
-    Writes to a ``.tmp`` sibling first, then replaces ``dest`` on success.
+    Writes to a ``.tmp`` sibling first, then replaces ``dest`` on success. ``database`` as for
+    ``run_pg_dump``.
     """
-    inner = _pg_dump_inner_script(extra_pg_dump_args)
+    inner = _pg_dump_inner_script(extra_pg_dump_args, database)
     cmd = [
         "docker",
         "compose",

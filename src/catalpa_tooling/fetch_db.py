@@ -111,10 +111,20 @@ def _fetch_via_dk(
     config: ProjectConfig,
     *,
     dk_env: str,
+    key: str,
     db_name: str,
     dest: Path,
     pg_dump_args: Sequence[str] | None,
 ) -> None:
+    """Dump ``db_name`` from the ``dk_env`` stack's ``db`` service to ``dest``.
+
+    The ``app`` entry dumps the app DB as the container resolves it (``$APP_DB``: ``DJANGO_APP_DB``,
+    falling back to ``DJANGO_DB``), as before. A ``via: dk`` entry always comes from an explicit
+    ``native.fetch.databases`` block, where ``db_name`` is required, so ``app`` has one; it is
+    ignored here, for compatibility with what ``via: dk`` has always dumped (catalpa-site, the
+    one ``via: dk`` consumer, sets ``catalpa_db``). Every other entry (e.g. ``metabase``) dumps
+    its ``db_name``.
+    """
     ctx = load_managed_deploy_context(config, dk_env)
     if ctx is None:
         raise SystemExit(1)
@@ -129,8 +139,10 @@ def _fetch_via_dk(
         )
         if rc != 0:
             raise SystemExit(rc)
-    print(f"Fetching {db_name} via dk {dk_env} bkp_db pgdump → {dest}", file=sys.stderr)
-    rc = run_pg_dump_to_file(compose_file, env_add, dest, pg_dump_args)
+    database = None if key == "app" else db_name
+    label = "the app database" if database is None else database
+    print(f"Fetching {label} via dk {dk_env} db pgdump → {dest}", file=sys.stderr)
+    rc = run_pg_dump_to_file(compose_file, env_add, dest, pg_dump_args, database=database)
     if rc != 0:
         raise SystemExit(rc)
     if dest.stat().st_size < _MIN_CUSTOM_DUMP_BYTES:
@@ -200,6 +212,7 @@ def run_fetch_database(
         _fetch_via_dk(
             config,
             dk_env=dk_env,
+            key=key,
             db_name=entry.db_name,
             dest=dest,
             pg_dump_args=pg_dump_args,

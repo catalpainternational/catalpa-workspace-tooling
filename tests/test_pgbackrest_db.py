@@ -28,6 +28,15 @@ class TestPgDumpInnerScript(unittest.TestCase):
         self.assertIn('-d "$APP_DB"', script)
         self.assertNotIn('"$DJANGO_APP_DB"', script)
 
+    def test_database_overrides_app_db(self) -> None:
+        script = _pg_dump_inner_script(None, "metabase_db")
+        self.assertIn("-d metabase_db -Fc", script)
+        self.assertNotIn('-d "$APP_DB"', script)
+
+    def test_database_is_shell_quoted(self) -> None:
+        script = _pg_dump_inner_script(["--schema-only"], "odd db;rm")
+        self.assertIn("-d 'odd db;rm' -Fc --schema-only", script)
+
 
 class TestComposeExecPgbackrest(unittest.TestCase):
     def test_backup_runs_as_postgres_user(self) -> None:
