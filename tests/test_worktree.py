@@ -2450,3 +2450,116 @@ def test_worktree_seed_restore_gives_postgis_objects_to_the_app_role(
     assert "--role postgres" in script
     assert script.index("pg_restore -h") < script.index('-v app_user="$APP_USER"')
     assert "ALTER %s %s OWNER TO %I" in script
+
+
+def _patch_seed_db_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    src_running: bool,
+    dump_rc: int = 0,
+    dst_ensure_rc: int = 0,
+) -> list[str]:
+    """Fake the seed's db steps; return the compose files ``_compose_stop_db`` was called with."""
+    stopped: list[str] = []
+
+    def fake_responds(compose_file, env):
+        return src_running if compose_file == "src.yml" else True
+
+    def fake_ensure(compose_file, env, **kwargs):
+        return dst_ensure_rc if compose_file == "dst.yml" else 0
+
+    monkeypatch.setattr("catalpa_tooling.worktree.db_service_responds", fake_responds)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_db_service_running", fake_ensure)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.run_pg_dump_to_file", lambda *a, **k: dump_rc
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.run_drop_create_app_database", lambda *a, **k: 0
+    )
+    monkeypatch.setattr("catalpa_tooling.worktree.run_pg_restore", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose_stop_db",
+        lambda compose_file, env: stopped.append(compose_file) or 0,
+    )
+    return stopped
+
+
+def _run_seed_database(tmp_path: Path) -> tuple[int, str]:
+    from catalpa_tooling.worktree import _seed_database
+    from tests.test_fetch_config import _write_minimal_tooling
+
+    _write_minimal_tooling(tmp_path)
+    config = load_project_config(tmp_path)
+    return _seed_database(
+        "src.yml",
+        {},
+        "dst.yml",
+        {},
+        src_config=config,
+        dest_config=config,
+        base_env="dev",
+        dump_path=tmp_path / "pg.dump",
+    )
+
+
+def test_worktree_seed_stops_source_db_it_started(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#195: a stopped main-checkout db is started for the dump, then stopped again."""
+    stopped = _patch_seed_db_steps(monkeypatch, src_running=False)
+
+    assert _run_seed_database(tmp_path) == (0, "restored")
+    assert stopped == ["src.yml"], "only the source db is stopped, the destination keeps running"
+    assert "started source dev db for the dump; stopped it again" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("dump_rc", "dst_ensure_rc", "outcome"),
+    [
+        (1, 0, "failed during pg_dump"),
+        (0, 1, "failed, destination db would not start"),
+    ],
+)
+def test_worktree_seed_stops_source_db_it_started_when_seed_fails(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    dump_rc: int,
+    dst_ensure_rc: int,
+    outcome: str,
+) -> None:
+    """#195: a failed dump (or destination start) still stops the source db the seed started."""
+    stopped = _patch_seed_db_steps(
+        monkeypatch, src_running=False, dump_rc=dump_rc, dst_ensure_rc=dst_ensure_rc
+    )
+
+    assert _run_seed_database(tmp_path) == (1, outcome)
+    assert stopped == ["src.yml"]
+
+
+def test_worktree_seed_leaves_running_source_db_running(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#195: a source db that was already running is never stopped."""
+    stopped = _patch_seed_db_steps(monkeypatch, src_running=True)
+
+    assert _run_seed_database(tmp_path) == (0, "restored")
+    assert stopped == []
+    assert "stopped it again" not in capsys.readouterr().err
+
+
+def test_worktree_seed_leaves_running_source_db_running_when_dump_fails(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = _patch_seed_db_steps(monkeypatch, src_running=True, dump_rc=1)
+
+    assert _run_seed_database(tmp_path) == (1, "failed during pg_dump")
+    assert stopped == []

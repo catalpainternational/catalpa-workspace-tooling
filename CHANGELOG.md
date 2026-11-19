@@ -17,6 +17,10 @@
   do, a route that can't be removed only warns, and `--dry-run` lists the routes it would
   delete. Routes left by worktrees removed before this release, and LAN routes for an old LAN
   IP, still have to be deleted by hand.
+- **`dk worktree seed` (and so `dk worktree create`) no longer leaves the main checkout's `db`
+  running (#195).** The seed starts a stopped source `db` to `pg_dump` it. It now stops that
+  service again once the dump is done, or has failed, and says so in one line. A source `db` that
+  was already running is left running, and the worktree's own `db` stays up as before.
 
 ## 1.7.0
 

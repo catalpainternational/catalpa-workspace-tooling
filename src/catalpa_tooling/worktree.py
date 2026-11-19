@@ -34,7 +34,9 @@ from catalpa_tooling.media_storage import (
 )
 from catalpa_tooling.media_transfer import run_transfer_media
 from catalpa_tooling.pgbackrest_db import (
+    _compose_stop_db,
     compose_pg_restore_extras_for_config,
+    db_service_responds,
     ensure_db_service_running,
     run_drop_create_app_database,
     run_pg_dump_to_file,
@@ -1843,6 +1845,21 @@ def _plan_seed_volumes(
     return planned, unlisted
 
 
+def _stop_seeded_source_db(src_compose: str, src_r: dict[str, str], *, base_env: str) -> None:
+    """Stop the source ``db`` that the seed started for its dump (#195)."""
+    if _compose_stop_db(src_compose, src_r) == 0:
+        print(
+            f"worktree seed: started source {base_env} db for the dump; stopped it again.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"worktree seed: started source {base_env} db for the dump but could not stop it "
+            f"again; stop it with `dk {base_env} stop db`.",
+            file=sys.stderr,
+        )
+
+
 def _seed_database(
     src_compose: str,
     src_r: dict[str, str],
@@ -1854,36 +1871,46 @@ def _seed_database(
     base_env: str,
     dump_path: Path,
 ) -> tuple[int, str]:
-    """``pg_dump`` the source stack and restore it into the worktree's. ``(rc, outcome)``."""
-    rc = ensure_db_service_running(
-        src_compose,
-        src_r,
-        config=src_config,
-        dk_env_name=base_env,
-    )
-    if rc != 0:
-        print(
-            f"worktree seed: could not ensure source `{base_env}` db service is running.",
-            file=sys.stderr,
-        )
-        return rc, "failed, source db would not start"
-    rc = ensure_db_service_running(
-        dst_compose,
-        dst_r,
-        config=dest_config,
-        dk_env_name=base_env,
-    )
-    if rc != 0:
-        print(
-            f"worktree seed: could not ensure destination `{base_env}` db service is running.",
-            file=sys.stderr,
-        )
-        return rc, "failed, destination db would not start"
+    """``pg_dump`` the source stack and restore it into the worktree's. ``(rc, outcome)``.
 
-    print("worktree seed: pg_dump (source) …", file=sys.stderr)
-    rc = run_pg_dump_to_file(src_compose, src_r, dump_path)
-    if rc != 0:
-        return rc, "failed during pg_dump"
+    The source ``db`` is started for the dump if it was stopped, and stopped again once the
+    dump is done (or has failed), so the main checkout is left as it was (#195). The
+    destination ``db`` stays up: the worktree's stack is meant to run.
+    """
+    src_was_running = db_service_responds(src_compose, src_r)
+    try:
+        rc = ensure_db_service_running(
+            src_compose,
+            src_r,
+            config=src_config,
+            dk_env_name=base_env,
+        )
+        if rc != 0:
+            print(
+                f"worktree seed: could not ensure source `{base_env}` db service is running.",
+                file=sys.stderr,
+            )
+            return rc, "failed, source db would not start"
+        rc = ensure_db_service_running(
+            dst_compose,
+            dst_r,
+            config=dest_config,
+            dk_env_name=base_env,
+        )
+        if rc != 0:
+            print(
+                f"worktree seed: could not ensure destination `{base_env}` db service is running.",
+                file=sys.stderr,
+            )
+            return rc, "failed, destination db would not start"
+
+        print("worktree seed: pg_dump (source) …", file=sys.stderr)
+        rc = run_pg_dump_to_file(src_compose, src_r, dump_path)
+        if rc != 0:
+            return rc, "failed during pg_dump"
+    finally:
+        if not src_was_running:
+            _stop_seeded_source_db(src_compose, src_r, base_env=base_env)
     print("worktree seed: drop + recreate app database (destination) …", file=sys.stderr)
     rc = run_drop_create_app_database(
         dst_compose,
