@@ -45,6 +45,16 @@ from catalpa_tooling.worktree_overlay import (
 from tests.helpers import git_init_commit, write_dev_env, write_minimal_tooling_tree
 
 
+@pytest.fixture(autouse=True)
+def _no_real_local_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`worktree remove` drops proxy routes (#184); never reach the machine's real proxy.
+
+    With no proxy container, ``remove_route`` is a no-op. Tests that check the routes patch
+    this back with a fake container and admin API.
+    """
+    monkeypatch.setattr("catalpa_tooling.local_proxy.proxy_container_id", lambda: "")
+
+
 def _patch_media_transfer(
     monkeypatch: pytest.MonkeyPatch,
     calls: list[dict],
@@ -1174,6 +1184,139 @@ def test_worktree_remove_keeps_the_checkout_when_the_stack_will_not_stop(
 
     assert worktree_remove(config, slug="ds_180", yes=True) != 0
     assert (tmp_path / ".worktrees" / "ds_180").is_dir(), "checkout must survive a failed down"
+
+
+# --- issue #184: `worktree remove` must take the stack's routes out of the shared proxy -------
+
+
+def _record_proxy_deletes(
+    monkeypatch: pytest.MonkeyPatch, *, status: int = 200, running: bool = True
+) -> list[str]:
+    """A running proxy whose admin API records each request; returns the DELETE paths."""
+    deleted: list[str] = []
+
+    def fake_admin(method, path, **kwargs):
+        assert method == "DELETE", f"unexpected admin request {method} {path}"
+        deleted.append(path)
+        return status, "boom" if status >= 400 else ""
+
+    monkeypatch.setattr(
+        "catalpa_tooling.local_proxy.proxy_container_id", lambda: "abc123" if running else ""
+    )
+    monkeypatch.setattr("catalpa_tooling.local_proxy._admin_request", fake_admin)
+    return deleted
+
+
+def _worktree_route_ids(tmp_path: Path, slug: str) -> tuple[set[str], set[str]]:
+    """``(worktree route ids, main checkout route ids)`` for the dev env, LAN ones included."""
+    from catalpa_tooling.local_proxy import local_proxy_routes
+
+    wt_config = load_project_config(tmp_path / ".worktrees" / slug)
+    wt_ctx = load_managed_deploy_context(wt_config, "dev")
+    main_ctx = load_managed_deploy_context(
+        load_project_config(tmp_path), "dev", apply_worktree=False
+    )
+    assert wt_ctx is not None and main_ctx is not None
+    ids = []
+    for cfg, ctx in ((wt_config, wt_ctx), (load_project_config(tmp_path), main_ctx)):
+        routes = local_proxy_routes(
+            ctx.info, cfg, "dev", ctx.env_add["COMPOSE_PROJECT_NAME"], env_add=ctx.env_add
+        )
+        ids.append({r.route_id for r in routes})
+    return ids[0], ids[1]
+
+
+@pytest.mark.parametrize("wipe", [False, True], ids=["remove", "wipe"])
+def test_worktree_remove_drops_only_its_own_proxy_routes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    wipe: bool,
+) -> None:
+    """Both modes left every route, local and LAN, answering 502 for a dead upstream."""
+    monkeypatch.setattr("catalpa_tooling.local_proxy.lan_access_enabled", lambda info: True)
+    monkeypatch.setattr("catalpa_tooling.local_proxy.detect_dev_lan_ipv4", lambda: ["192.168.1.42"])
+    config, _calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    wt_ids, main_ids = _worktree_route_ids(tmp_path, "ds_180")
+    assert any("-lan-" in rid for rid in wt_ids), "test setup must include LAN routes"
+    assert wt_ids.isdisjoint(main_ids)
+    deleted = _record_proxy_deletes(monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", wipe=wipe, yes=True) == 0
+
+    assert set(deleted) == {f"/id/{rid}" for rid in wt_ids}
+    assert not any(path.removeprefix("/id/") in main_ids for path in deleted)
+
+
+def test_worktree_remove_dry_run_removes_no_proxy_routes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    wt_ids, _main_ids = _worktree_route_ids(tmp_path, "ds_180")
+    deleted = _record_proxy_deletes(monkeypatch)
+
+    capsys.readouterr()
+    assert worktree_remove(config, slug="ds_180", yes=True, dry_run=True) == 0
+
+    assert deleted == []
+    err = capsys.readouterr().err
+    for rid in wt_ids:
+        assert f"dry-run: would DELETE /id/{rid}" in err
+
+
+def test_worktree_remove_skips_routes_quietly_when_the_proxy_is_not_running(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    deleted = _record_proxy_deletes(monkeypatch, running=False)
+
+    assert worktree_remove(config, slug="ds_180", yes=True) == 0
+
+    assert deleted == []
+    assert "proxy" not in capsys.readouterr().err.lower()
+    assert not (tmp_path / ".worktrees" / "ds_180").exists()
+
+
+def test_worktree_remove_route_failure_warns_but_still_removes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The stack is already down; a stuck route must not strand the checkout."""
+    config, _calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    deleted = _record_proxy_deletes(monkeypatch, status=500)
+
+    assert worktree_remove(config, slug="ds_180", yes=True) == 0
+
+    assert deleted, "every route must still be attempted"
+    err = capsys.readouterr().err
+    assert "Failed to remove local proxy route" in err
+    assert "local proxy routes were left behind" in err
+    assert not (tmp_path / ".worktrees" / "ds_180").exists()
+
+
+def test_worktree_remove_failed_down_keeps_the_proxy_routes(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The routes go with the stack: a re-run after a failed `down` removes both."""
+    config, _calls, _removed = _wipe_recording_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 1),
+    )
+    deleted = _record_proxy_deletes(monkeypatch)
+
+    assert worktree_remove(config, slug="ds_180", yes=True) != 0
+    assert deleted == []
 
 
 # --- issue #62: the worktree stack must run the worktree's code, whatever the cwd -------------
@@ -2307,3 +2450,116 @@ def test_worktree_seed_restore_gives_postgis_objects_to_the_app_role(
     assert "--role postgres" in script
     assert script.index("pg_restore -h") < script.index('-v app_user="$APP_USER"')
     assert "ALTER %s %s OWNER TO %I" in script
+
+
+def _patch_seed_db_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    src_running: bool,
+    dump_rc: int = 0,
+    dst_ensure_rc: int = 0,
+) -> list[str]:
+    """Fake the seed's db steps; return the compose files ``_compose_stop_db`` was called with."""
+    stopped: list[str] = []
+
+    def fake_responds(compose_file, env):
+        return src_running if compose_file == "src.yml" else True
+
+    def fake_ensure(compose_file, env, **kwargs):
+        return dst_ensure_rc if compose_file == "dst.yml" else 0
+
+    monkeypatch.setattr("catalpa_tooling.worktree.db_service_responds", fake_responds)
+    monkeypatch.setattr("catalpa_tooling.worktree.ensure_db_service_running", fake_ensure)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.run_pg_dump_to_file", lambda *a, **k: dump_rc
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree.run_drop_create_app_database", lambda *a, **k: 0
+    )
+    monkeypatch.setattr("catalpa_tooling.worktree.run_pg_restore", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose_stop_db",
+        lambda compose_file, env: stopped.append(compose_file) or 0,
+    )
+    return stopped
+
+
+def _run_seed_database(tmp_path: Path) -> tuple[int, str]:
+    from catalpa_tooling.worktree import _seed_database
+    from tests.test_fetch_config import _write_minimal_tooling
+
+    _write_minimal_tooling(tmp_path)
+    config = load_project_config(tmp_path)
+    return _seed_database(
+        "src.yml",
+        {},
+        "dst.yml",
+        {},
+        src_config=config,
+        dest_config=config,
+        base_env="dev",
+        dump_path=tmp_path / "pg.dump",
+    )
+
+
+def test_worktree_seed_stops_source_db_it_started(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#195: a stopped main-checkout db is started for the dump, then stopped again."""
+    stopped = _patch_seed_db_steps(monkeypatch, src_running=False)
+
+    assert _run_seed_database(tmp_path) == (0, "restored")
+    assert stopped == ["src.yml"], "only the source db is stopped, the destination keeps running"
+    assert "started source dev db for the dump; stopped it again" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("dump_rc", "dst_ensure_rc", "outcome"),
+    [
+        (1, 0, "failed during pg_dump"),
+        (0, 1, "failed, destination db would not start"),
+    ],
+)
+def test_worktree_seed_stops_source_db_it_started_when_seed_fails(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    dump_rc: int,
+    dst_ensure_rc: int,
+    outcome: str,
+) -> None:
+    """#195: a failed dump (or destination start) still stops the source db the seed started."""
+    stopped = _patch_seed_db_steps(
+        monkeypatch, src_running=False, dump_rc=dump_rc, dst_ensure_rc=dst_ensure_rc
+    )
+
+    assert _run_seed_database(tmp_path) == (1, outcome)
+    assert stopped == ["src.yml"]
+
+
+def test_worktree_seed_leaves_running_source_db_running(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#195: a source db that was already running is never stopped."""
+    stopped = _patch_seed_db_steps(monkeypatch, src_running=True)
+
+    assert _run_seed_database(tmp_path) == (0, "restored")
+    assert stopped == []
+    assert "stopped it again" not in capsys.readouterr().err
+
+
+def test_worktree_seed_leaves_running_source_db_running_when_dump_fails(
+    tmp_path: Path,
+    isolated_tooling: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped = _patch_seed_db_steps(monkeypatch, src_running=True, dump_rc=1)
+
+    assert _run_seed_database(tmp_path) == (1, "failed during pg_dump")
+    assert stopped == []

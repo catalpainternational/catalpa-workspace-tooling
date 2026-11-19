@@ -18,7 +18,11 @@ from catalpa_tooling.smoke_cli import (
     run_smoke,
 )
 from catalpa_tooling.compliance_cli import run_compliance
-from catalpa_tooling.test_parser import FUNCTIONAL_HEADED_SLOWMO_MS, build_test_parser
+from catalpa_tooling.test_parser import (
+    FUNCTIONAL_HEADED_SLOWMO_MS,
+    build_test_parser,
+    parse_test_args,
+)
 
 
 def _config() -> ProjectConfig:
@@ -169,15 +173,15 @@ def _run_functional(args: object) -> int:
 def _test_main() -> None:
     parser = build_test_parser(config=_config())
     activate(parser)
-    args = parser.parse_args()
+    args = parse_test_args(parser)
     extra = list(getattr(args, "pytest_args", None) or [])
 
     if args.command == "backend":
-        sys.exit(_run_pytest(extra))
+        sys.exit(_run_pytest(_strip_pytest_sep(extra)))
     if args.command == "frontend":
         sys.exit(_run_vitest(extra))
     if args.command == "workspace":
-        sys.exit(_run_workspace_tests(extra))
+        sys.exit(_run_workspace_tests(_strip_pytest_sep(extra)))
     if args.command == "ci":
         sys.exit(_run_ci_gate(args))
     if args.command == "guest":

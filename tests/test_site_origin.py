@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import catalpa_tooling.site_origin as so
 import pytest
 
-from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
+from catalpa_tooling.managed_deploy_env import (
+    load_managed_deploy_context,
+    remote_env_site_origin_error,
+)
 from catalpa_tooling.site_origin import (
     derive_dev_hostname,
     derive_site_origin,
@@ -274,3 +279,90 @@ def test_primary_site_origin_for_env_derives_when_missing(minimal_config) -> Non
     assert primary_site_origin_for_env({}, minimal_config, "dev") == (
         "https://minimal-dev.localdev.temp.build"
     )
+
+
+def _write_info(config, name: str, body: str) -> None:
+    env_dir = config.deploy_envs_dir / name
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "info.yaml").write_text(
+        f"name: {name}\ncredentials_decrypt_optional: true\n{body}", encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("docker_host", ["ssh://deploy@203.0.113.5", "tcp://203.0.113.5:2376"])
+def test_remote_env_with_empty_site_origin_refuses(
+    minimal_project, capsys: pytest.CaptureFixture[str], docker_host: str
+) -> None:
+    """#186: a remote env must not deploy on an invented *.localdev hostname."""
+    _write_info(minimal_project, "staging", f'docker_host: {docker_host}\nsite_origin: ""\n')
+    with patch(
+        "catalpa_tooling.ssh_known_hosts.ensure_ssh_known_host_for_docker_host",
+        return_value=0,
+    ):
+        ctx = load_managed_deploy_context(minimal_project, "staging")
+    assert ctx is None
+    err = capsys.readouterr().err
+    assert "docker/envs/staging/info.yaml: site_origin is empty" in err
+    assert "remote env" in err
+    assert "SITE_ORIGIN=" not in err
+
+
+def test_remote_env_with_site_origin_loads(minimal_project) -> None:
+    # "local" only because the fixture makes credentials optional for that name.
+    _write_info(
+        minimal_project,
+        "local",
+        "docker_host: ssh://deploy@203.0.113.5\nsite_origin: app.example.org\n",
+    )
+    with patch(
+        "catalpa_tooling.ssh_known_hosts.ensure_ssh_known_host_for_docker_host",
+        return_value=0,
+    ):
+        ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["SITE_ORIGIN"] == "https://app.example.org"
+
+
+@pytest.mark.parametrize("docker_host_line", ["", "docker_host: unix:///var/run/docker.sock\n"])
+def test_local_env_with_empty_site_origin_still_derives(
+    minimal_project, docker_host_line: str
+) -> None:
+    _write_info(minimal_project, "local", f'{docker_host_line}site_origin: ""\n')
+    ctx = load_managed_deploy_context(minimal_project, "local")
+    assert ctx is not None
+    assert ctx.env_add["SITE_ORIGIN"] == derive_site_origin(minimal_project, "local")
+
+
+def test_remote_env_dry_run_with_empty_site_origin_refuses(
+    minimal_project, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--dry-run` skips the context load, so it needs the same check."""
+    import argparse
+
+    from catalpa_tooling.env_handlers import handle_env_command
+
+    _write_info(
+        minimal_project, "staging", 'docker_host: ssh://deploy@203.0.113.5\nsite_origin: ""\n'
+    )
+    ns = argparse.Namespace(
+        env_name="staging",
+        env_command=None,
+        dry_run=True,
+        tag=None,
+        implicit_compose_argv=["up", "-d"],
+    )
+    assert handle_env_command(ns, minimal_project) == 1
+    err = capsys.readouterr().err
+    assert "docker/envs/staging/info.yaml: site_origin is empty" in err
+    assert "SITE_ORIGIN=" not in err
+
+
+def test_remote_env_site_origin_error_helper(minimal_project) -> None:
+    remote = {"docker_host": "ssh://deploy@203.0.113.5", "site_origin": ""}
+    assert remote_env_site_origin_error(remote, minimal_project, "prod")
+    explicit = {**remote, "site_origin": "app.example.org"}
+    assert (
+        remote_env_site_origin_error(explicit, minimal_project, "prod")
+        is None
+    )
+    assert remote_env_site_origin_error({"site_origin": ""}, minimal_project, "local") is None

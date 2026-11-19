@@ -58,6 +58,33 @@ def test_local_proxy_caddyfile_shipped() -> None:
     assert "/catalpa-local-ca.crt" in text
 
 
+def test_local_proxy_caddyfile_ca_route_sets_content_type() -> None:
+    """Without a type, Android Chrome shows the CA as text instead of installing it (#168)."""
+    text = local_proxy_caddyfile_path().read_text(encoding="utf-8")
+    start = text.index("handle_path /catalpa-local-ca.crt {")
+    block = text[start : text.index("}", start)]
+    assert "header Content-Type application/x-x509-ca-cert" in block
+
+
+def test_proxy_ca_instructions_include_android_notes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import io
+
+    from catalpa_tooling import local_proxy_ca
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(local_proxy_ca, "detect_dev_lan_ipv4", lambda: ["192.168.1.42"])
+    monkeypatch.setattr(local_proxy_ca, "_print_qr", lambda url, *, file: None)
+    out = io.StringIO()
+    assert local_proxy_ca.print_proxy_ca_instructions(dry_run=True, file=out) == 0
+    text = out.getvalue()
+    assert "screen lock" in text
+    assert "VPN and apps" in text
+    assert "Use third-party CA certificates" in text
+    assert "Security & location > Encryption & credentials > Install from storage" in text
+
+
 def test_local_proxy_data_dir_respects_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     assert local_proxy.local_proxy_data_dir() == tmp_path / "cfg" / "catalpa" / "local-proxy"

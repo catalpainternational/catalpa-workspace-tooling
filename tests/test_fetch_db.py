@@ -105,6 +105,54 @@ def test_run_fetch_ssh_native(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, i
     assert dump_path_usable(dest)
 
 
+def test_run_fetch_via_dk_dumps_each_entrys_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, isolated_tooling: None
+) -> None:
+    """#173: a ``via: dk`` metabase entry dumps its own ``db_name``, not ``$APP_DB``."""
+    _write_tooling(tmp_path)
+    tooling = tmp_path / "tooling.yaml"
+    text = tooling.read_text(encoding="utf-8")
+    text = text.replace(
+        "  fetch_db_dump: docker/dumps/app_db.custom\n",
+        "  fetch_db_dump: docker/dumps/app_db.custom\n"
+        "  fetch_metabase_db_dump: docker/dumps/metabase_db.custom\n",
+    ).replace(
+        "      app:\n        db_name: app_db\n        via: ssh_native\n",
+        "      app:\n        db_name: app_db\n        via: dk\n"
+        "      metabase:\n        db_name: metabase_db\n        via: dk\n",
+    )
+    tooling.write_text(text, encoding="utf-8")
+    cfg = load_project_config(tmp_path)
+
+    class _Ctx:
+        compose_file = "compose.yml"
+        env_add: dict[str, str] = {}
+
+    scripts: list[str] = []
+
+    class _Result:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _Result:
+        scripts.append(cmd[-1])
+        kwargs["stdout"].write(b"PGDMP" + b"x" * 200_000)  # type: ignore[attr-defined]
+        return _Result()
+
+    monkeypatch.setattr("catalpa_tooling.fetch_db.load_managed_deploy_context", lambda *_a: _Ctx())
+    monkeypatch.setattr("catalpa_tooling.fetch_db.db_service_responds", lambda *_a: True)
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_db.run_cmd", fake_run)
+
+    run_fetch_all_dbs(cfg)
+
+    assert len(scripts) == 2
+    app_script, metabase_script = scripts
+    assert '-d "$APP_DB" -Fc' in app_script
+    assert "-d metabase_db -Fc" in metabase_script
+    assert '"$APP_DB" -Fc' not in metabase_script
+    assert dump_path_usable(cfg.fetch_metabase_db_dump_path)
+
+
 def test_pgbackrest_restore_configured_read_mode() -> None:
     env = {
         f"{PREFIX_READ}BUCKET": "b",

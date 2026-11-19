@@ -16,7 +16,11 @@ from typing import Any, NamedTuple
 
 from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig, load_project_config
-from catalpa_tooling.local_proxy import ensure_proxy_running
+from catalpa_tooling.local_proxy import (
+    LocalProxyConfigError,
+    ensure_proxy_running,
+    sync_local_proxy_for_compose_action,
+)
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
 from catalpa_tooling.media_storage import (
     MediaStorage,
@@ -30,7 +34,9 @@ from catalpa_tooling.media_storage import (
 )
 from catalpa_tooling.media_transfer import run_transfer_media
 from catalpa_tooling.pgbackrest_db import (
+    _compose_stop_db,
     compose_pg_restore_extras_for_config,
+    db_service_responds,
     ensure_db_service_running,
     run_drop_create_app_database,
     run_pg_dump_to_file,
@@ -1416,6 +1422,37 @@ def _worktree_branch_tag(worktree_root: Path) -> str:
     return (r.stdout or "").strip().replace("/", "-") if r.returncode == 0 else ""
 
 
+def _remove_worktree_proxy_routes(
+    info: dict[str, Any],
+    config: ProjectConfig,
+    env_name: str,
+    env_add: dict[str, str],
+    *,
+    label: str,
+    dry_run: bool = False,
+) -> None:
+    """Drop the stopped stack's routes (local and ``-lan-<ip>``) from the shared proxy (#184).
+
+    Goes through the same ``down`` branch as ``dk <env> down``, so the routes are exactly the
+    ones ``up`` registered for this compose project. Best effort: a proxy that isn't running is
+    skipped by ``remove_route``, and a failure only warns, because the stack is already down
+    and a leftover route is less harm than a stranded checkout.
+    """
+    try:
+        rc = sync_local_proxy_for_compose_action(
+            info, config, env_name, ["down"], env_add, dry_run=dry_run
+        )
+    except LocalProxyConfigError as exc:
+        print(f"{label}: could not remove local proxy routes: {exc}", file=sys.stderr)
+        return
+    if rc != 0:
+        print(
+            f"{label}: some local proxy routes were left behind (see above); "
+            "`dk proxy status` lists them.",
+            file=sys.stderr,
+        )
+
+
 def _teardown_worktree_stack(
     worktree_root: Path,
     overlay: WorktreeOverlay,
@@ -1432,6 +1469,8 @@ def _teardown_worktree_stack(
     With ``remove_volumes`` (``--wipe``), this removes everything :func:`worktree_wipe_targets`
     lists: every volume of the project, ``external:`` ones included (issue #64), and the images
     the stack built (issue #165). The dry run prints that same list (issue #108).
+
+    Either way, once the stack is down its routes come out of the shared local proxy (#184).
     """
     label = "dk worktree remove --wipe" if remove_volumes else "dk worktree remove"
     try:
@@ -1476,6 +1515,9 @@ def _teardown_worktree_stack(
             f"(COMPOSE_PROJECT_NAME={overlay.compose_project_name})",
             file=sys.stderr,
         )
+        _remove_worktree_proxy_routes(
+            ctx.info, wt_config, overlay.base_env, env_r, label=label, dry_run=True
+        )
         if targets is None:
             return 0
         remove_volumes_fn(targets.volumes, env_r, dry_run=True)
@@ -1489,6 +1531,9 @@ def _teardown_worktree_stack(
     )
     if result.returncode != 0:
         return result.returncode
+    # Only once the stack is down, as `dk <env> down` does: a failed `down` keeps the checkout
+    # and the routes, and the re-run removes both.
+    _remove_worktree_proxy_routes(ctx.info, wt_config, overlay.base_env, env_r, label=label)
     if targets is None:
         return 0
     # `down -v` has already taken the volumes Compose owns; these report "already absent".
@@ -1800,6 +1845,21 @@ def _plan_seed_volumes(
     return planned, unlisted
 
 
+def _stop_seeded_source_db(src_compose: str, src_r: dict[str, str], *, base_env: str) -> None:
+    """Stop the source ``db`` that the seed started for its dump (#195)."""
+    if _compose_stop_db(src_compose, src_r) == 0:
+        print(
+            f"worktree seed: started source {base_env} db for the dump; stopped it again.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"worktree seed: started source {base_env} db for the dump but could not stop it "
+            f"again; stop it with `dk {base_env} stop db`.",
+            file=sys.stderr,
+        )
+
+
 def _seed_database(
     src_compose: str,
     src_r: dict[str, str],
@@ -1811,36 +1871,46 @@ def _seed_database(
     base_env: str,
     dump_path: Path,
 ) -> tuple[int, str]:
-    """``pg_dump`` the source stack and restore it into the worktree's. ``(rc, outcome)``."""
-    rc = ensure_db_service_running(
-        src_compose,
-        src_r,
-        config=src_config,
-        dk_env_name=base_env,
-    )
-    if rc != 0:
-        print(
-            f"worktree seed: could not ensure source `{base_env}` db service is running.",
-            file=sys.stderr,
-        )
-        return rc, "failed, source db would not start"
-    rc = ensure_db_service_running(
-        dst_compose,
-        dst_r,
-        config=dest_config,
-        dk_env_name=base_env,
-    )
-    if rc != 0:
-        print(
-            f"worktree seed: could not ensure destination `{base_env}` db service is running.",
-            file=sys.stderr,
-        )
-        return rc, "failed, destination db would not start"
+    """``pg_dump`` the source stack and restore it into the worktree's. ``(rc, outcome)``.
 
-    print("worktree seed: pg_dump (source) …", file=sys.stderr)
-    rc = run_pg_dump_to_file(src_compose, src_r, dump_path)
-    if rc != 0:
-        return rc, "failed during pg_dump"
+    The source ``db`` is started for the dump if it was stopped, and stopped again once the
+    dump is done (or has failed), so the main checkout is left as it was (#195). The
+    destination ``db`` stays up: the worktree's stack is meant to run.
+    """
+    src_was_running = db_service_responds(src_compose, src_r)
+    try:
+        rc = ensure_db_service_running(
+            src_compose,
+            src_r,
+            config=src_config,
+            dk_env_name=base_env,
+        )
+        if rc != 0:
+            print(
+                f"worktree seed: could not ensure source `{base_env}` db service is running.",
+                file=sys.stderr,
+            )
+            return rc, "failed, source db would not start"
+        rc = ensure_db_service_running(
+            dst_compose,
+            dst_r,
+            config=dest_config,
+            dk_env_name=base_env,
+        )
+        if rc != 0:
+            print(
+                f"worktree seed: could not ensure destination `{base_env}` db service is running.",
+                file=sys.stderr,
+            )
+            return rc, "failed, destination db would not start"
+
+        print("worktree seed: pg_dump (source) …", file=sys.stderr)
+        rc = run_pg_dump_to_file(src_compose, src_r, dump_path)
+        if rc != 0:
+            return rc, "failed during pg_dump"
+    finally:
+        if not src_was_running:
+            _stop_seeded_source_db(src_compose, src_r, base_env=base_env)
     print("worktree seed: drop + recreate app database (destination) …", file=sys.stderr)
     rc = run_drop_create_app_database(
         dst_compose,

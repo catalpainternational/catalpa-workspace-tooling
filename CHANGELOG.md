@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **`tests backend` now passes extra arguments on to pytest (#189).** `uv run tests backend -k
+  name -n 4 tests/test_foo.py` used to exit 2 with "unrecognized arguments", so projects ran
+  `uv run --group test pytest …` from `paths.backend` instead. Every `--` is dropped, not only a
+  leading one, for `backend` and `workspace` alike.
+  `tests workspace` also accepts a pytest option as its first argument now (`tests workspace -k
+  name`); before, that only worked after a path or a `--`.
+
 ### Fixed
 
 - **`dk` now echoes the commands it runs (`$ …`) to stderr, not stdout (#196).** Redirecting a
@@ -15,6 +24,39 @@
   `/etc/zabbix/zabbix_agentd.d/`, which 7.0 and 7.4 both read. The default image is now pinned to
   `zabbix/zabbix-agent2:alpine-7.0-latest` to match the 7.0 server, instead of `alpine-latest`
   (currently 7.4). Re-run `install` and `restart` on existing hosts.
+- **`dk worktree remove` (with or without `--wipe`) now removes the worktree's routes from the
+  shared local proxy (#184).** It stopped the stack with its own `compose down` and never took the
+  routes out, so every removed worktree's hostnames, and their `-lan-<ip>` twins, stayed in the
+  proxy and answered 502. The routes are removed once the stack is down, as `dk <env> down`
+  does. Only that worktree's routes are touched. If the proxy isn't running there is nothing to
+  do, a route that can't be removed only warns, and `--dry-run` lists the routes it would
+  delete. Routes left by worktrees removed before this release, and LAN routes for an old LAN
+  IP, still have to be deleted by hand.
+- **`dk worktree seed` (and so `dk worktree create`) no longer leaves the main checkout's `db`
+  running (#195).** The seed starts a stopped source `db` to `pg_dump` it. It now stops that
+  service again once the dump is done, or has failed, and says so in one line. A source `db` that
+  was already running is left running, and the worktree's own `db` stays up as before.
+- **`dk fetch db` with `via: dk` now dumps the database each entry names (#173).** It always
+  dumped the stack's app database, so a `metabase` entry with `via: dk` wrote app data into the
+  Metabase dump, and the next `db restore` loaded it into Metabase's database. Entries other than
+  `app` now dump their `db_name`. The `app` entry still dumps the database the stack's `db`
+  service is configured with (`DJANGO_APP_DB`, falling back to `DJANGO_DB`), as before, and
+  ignores its own `db_name`. No project fetches Metabase this way yet.
+- **The proxy now serves the LAN CA (`/catalpa-local-ca.crt`) as
+  `application/x-x509-ca-cert` (#168).** It used to send no `Content-Type`, so Chrome on Android
+  showed the PEM as text instead of offering to install it. `dk proxy ca` also has more Android
+  notes: a screen lock is required, choose *VPN and apps* for credential use, Firefox needs *Use
+  third-party CA certificates*, and the Android 8.x settings path. A proxy that is already
+  running keeps its old Caddyfile (#70), so run `dk proxy down` then `dk proxy up` to pick this
+  up.
+- **`dk <env>` now refuses a remote env whose `info.yaml` has an empty `site_origin` (#186).**
+  When `site_origin` was empty, dk made up a `{slug}-{env}.{dev.site_origin_base}` hostname
+  even for an env with a remote `docker_host`. An env copied from `_template/info.yaml` (which
+  ships `site_origin: ""`) then deployed on a `*.localdev.temp.build` host nobody controls, and
+  sign-in and invitation links in emails pointed there. dk now stops with
+  `docker/envs/<env>/info.yaml: site_origin is empty; a remote env … needs an explicit
+  site_origin`, including under `--dry-run`. Local envs with no `docker_host` still get the
+  derived hostname.
 
 ## 1.7.0
 

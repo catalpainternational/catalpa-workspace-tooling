@@ -9,6 +9,11 @@ from catalpa_tooling.config import ProjectConfig
 # Default Playwright slow-mo for ``tests functional headed`` (milliseconds).
 FUNCTIONAL_HEADED_SLOWMO_MS = 250
 
+# Subcommands whose only arguments are pytest's. argparse leaves a leading option such as
+# ``-k foo`` out of an ``argparse.REMAINDER`` positional and reports it as unrecognised, so
+# ``parse_test_args`` puts it back in front of ``pytest_args``.
+PYTEST_PASSTHROUGH_COMMANDS = frozenset({"backend", "workspace"})
+
 
 def _add_stack_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--env", default="dev", help="Deploy env (default: dev).")
@@ -34,9 +39,14 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser(
+    p_backend = subparsers.add_parser(
         "backend",
         help="pytest in paths.backend (`uv run --group test pytest`).",
+    )
+    p_backend.add_argument(
+        "pytest_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded to pytest (e.g. -k name -n 4 tests/test_foo.py).",
     )
     subparsers.add_parser(
         "frontend",
@@ -140,3 +150,20 @@ def build_test_parser(*, config: ProjectConfig | None = None) -> argparse.Argume
         help="CI mode (non-interactive).",
     )
     return parser
+
+
+def parse_test_args(
+    parser: argparse.ArgumentParser, argv: list[str] | None = None
+) -> argparse.Namespace:
+    """Parse ``tests`` argv, letting pytest-only subcommands take leading options.
+
+    ``tests backend -k foo path`` would otherwise exit 2: argparse hands ``-k`` back as
+    unrecognised and the REMAINDER positional starts at ``foo``. The unrecognised arguments
+    always come before the remainder, so prepending them keeps the original order.
+    """
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        if args.command not in PYTEST_PASSTHROUGH_COMMANDS:
+            parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+        args.pytest_args = [*unknown, *(args.pytest_args or [])]
+    return args

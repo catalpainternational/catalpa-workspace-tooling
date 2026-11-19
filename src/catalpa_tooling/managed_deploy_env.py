@@ -207,6 +207,33 @@ def print_managed_deploy_header(
     )
 
 
+def remote_env_site_origin_error(info: dict, config: ProjectConfig, env_name: str) -> str | None:
+    """Message when a remote env (non-local ``docker_host``) has no explicit ``site_origin``.
+
+    Local envs derive ``{slug}-{env}.{dev.site_origin_base}`` when ``site_origin`` is empty. A
+    remote env must not: that hostname is nobody's, and the app would send sign-in and invitation
+    links to it. ``_template/info.yaml`` ships ``site_origin: ""``, so a copied env hits this.
+    See issue #186.
+    """
+    from catalpa_tooling.local_proxy import docker_endpoint_is_local
+
+    docker_host = str(info.get("docker_host") or "").strip()
+    if docker_endpoint_is_local(docker_host):
+        return None
+    if parse_site_origins_from_info(info):
+        return None
+    info_path = config.deploy_envs_dir / env_name / "info.yaml"
+    try:
+        shown = info_path.relative_to(config.repo_root)
+    except ValueError:
+        shown = info_path
+    return (
+        f"{shown}: site_origin is empty; a remote env (docker_host={docker_host!r}) needs an "
+        "explicit site_origin (e.g. `site_origin: app.example.org`). dk derives a "
+        f"*.{config.dev.site_origin_base} hostname only for local envs."
+    )
+
+
 def stack_platform_for_env(
     images_config: dict, *, docker_host: str, use_prepulled_registry: bool
 ) -> str:
@@ -266,6 +293,11 @@ def load_managed_deploy_context(
         compose_file = _resolve_compose_file_from_info(info, config)
         if compose_file is None:
             return None
+
+    origin_error = remote_env_site_origin_error(info, config, env_name)
+    if origin_error:
+        print(origin_error, file=sys.stderr)
+        return None
 
     site_origins_list = resolve_site_origins_for_env(info, config, env_name)
     site_origin = site_origins_list[0] if site_origins_list else ""

@@ -29,6 +29,9 @@
 	handle_path /catalpa-local-ca.crt {
 		root * /data/caddy/pki/authorities/local
 		rewrite * /root.crt
+		# Without a type, Android Chrome shows the PEM as text instead of
+		# handing it to the certificate installer (#168).
+		header Content-Type application/x-x509-ca-cert
 		file_server
 	}
 	handle {

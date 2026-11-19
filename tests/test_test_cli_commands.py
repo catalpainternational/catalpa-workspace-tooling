@@ -110,3 +110,67 @@ def test_frontend_script_is_configurable(
     test_cli._run_vitest([])
 
     assert captured[0] == ["npm", "run", "test:unit"]
+
+
+def _run_tests_main(monkeypatch: pytest.MonkeyPatch, *argv: str) -> int:
+    monkeypatch.setattr("sys.argv", ["tests", *argv])
+    with pytest.raises(SystemExit) as exc:
+        test_cli._test_main()
+    return exc.value.code
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ([], []),
+        (["-k", "foo", "-n", "4", "path"], ["-k", "foo", "-n", "4", "path"]),
+        (["path", "-k", "foo"], ["path", "-k", "foo"]),
+        (
+            ["-x", "--lf", "-k", "a or b", "tests/t.py", "-q"],
+            ["-x", "--lf", "-k", "a or b", "tests/t.py", "-q"],
+        ),
+        (["--maxfail=2"], ["--maxfail=2"]),
+        (["--", "-k", "foo"], ["-k", "foo"]),
+    ],
+)
+def test_backend_forwards_pytest_args(
+    project: Path,
+    captured: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected: list[str],
+) -> None:
+    _use(monkeypatch, project)
+
+    assert _run_tests_main(monkeypatch, "backend", *argv) == 0
+
+    assert captured == [["uv", "run", "--group", "test", "pytest", *expected]]
+
+
+def test_workspace_forwards_leading_pytest_option(
+    project: Path, captured: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use(monkeypatch, project)
+
+    assert _run_tests_main(monkeypatch, "workspace", "-k", "foo", "tests/t.py") == 0
+
+    assert captured == [["uv", "run", "--group", "test", "pytest", "-k", "foo", "tests/t.py"]]
+
+
+def test_workspace_drops_the_pytest_separator(
+    project: Path, captured: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use(monkeypatch, project)
+
+    assert _run_tests_main(monkeypatch, "workspace", "--", "-k", "foo") == 0
+
+    assert captured == [["uv", "run", "--group", "test", "pytest", "-k", "foo"]]
+
+
+def test_unknown_option_still_rejected_for_other_commands(
+    project: Path, captured: list[list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use(monkeypatch, project)
+
+    assert _run_tests_main(monkeypatch, "frontend", "--bogus") == 2
+    assert captured == []
