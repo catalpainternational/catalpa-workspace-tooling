@@ -41,6 +41,14 @@
   third-party CA certificates*, and the Android 8.x settings path. A proxy that is already
   running keeps its old Caddyfile (#70), so run `dk proxy down` then `dk proxy up` to pick this
   up.
+- **`dk <env>` now refuses a remote env whose `info.yaml` has an empty `site_origin` (#186).**
+  When `site_origin` was empty, dk made up a `{slug}-{env}.{dev.site_origin_base}` hostname
+  even for an env with a remote `docker_host`. An env copied from `_template/info.yaml` (which
+  ships `site_origin: ""`) then deployed on a `*.localdev.temp.build` host nobody controls, and
+  sign-in and invitation links in emails pointed there. dk now stops with
+  `docker/envs/<env>/info.yaml: site_origin is empty; a remote env … needs an explicit
+  site_origin`, including under `--dry-run`. Local envs with no `docker_host` still get the
+  derived hostname.
 
 ## 1.7.0
 

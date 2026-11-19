@@ -28,6 +28,7 @@ from catalpa_tooling.managed_deploy_env import (
     apply_worktree_overlay_for_env,
     load_managed_deploy_context,
     print_managed_deploy_header,
+    remote_env_site_origin_error,
     resolve_compose_file_from_info,
 )
 from catalpa_tooling.media_pull import run_pull_media
@@ -459,6 +460,10 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             info, config.repo_root, env_name
         )
         if not ok:
+            return 1
+        origin_error = remote_env_site_origin_error(dry_run_info, config, env_name)
+        if origin_error:
+            print(origin_error, file=sys.stderr)
             return 1
         print_managed_deploy_header(
             config, env_name, dry_run_info, compose_file, tag_override=tag_override
