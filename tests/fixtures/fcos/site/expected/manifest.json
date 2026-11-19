@@ -43,7 +43,9 @@
       "services": [
         "caddy"
       ],
-      "id_range": "caddy"
+      "id_range": "caddy",
+      "owner_uid": 619823,
+      "mode": "0700"
     },
     "django_media": {
       "path": "/var/mnt/data/django_media",
@@ -52,14 +54,18 @@
         "django",
         "migrate"
       ],
-      "id_range": "django"
+      "id_range": "django",
+      "owner_uid": 609823,
+      "mode": "0755"
     },
     "pgdata": {
       "path": "/var/mnt/data/pgdata",
       "services": [
         "db"
       ],
-      "id_range": "db"
+      "id_range": "db",
+      "owner_uid": 600822,
+      "mode": "0700"
     }
   },
   "podman_volumes": {
@@ -168,5 +174,9 @@
       "owner": "deploy",
       "mode": "0644"
     }
-  ]
+  ],
+  "hostname": "site-staging",
+  "timezone": "UTC",
+  "system_secrets": {},
+  "timers": []
 }

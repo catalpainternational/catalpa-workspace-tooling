@@ -15,7 +15,7 @@ EnvironmentFile=/etc/swlt_shape/django.env
 Secret=django_secret_key,type=env,target=DJANGO_SECRET_KEY
 Secret=site_auth,type=env,target=SITE_AUTH
 Volume=/var/mnt/data/django_media:/app/media:z
-Volume=/var/mnt/data/django_private_uploads:/app/private_uploads:Z
+Volume=/var/mnt/data/django_private_uploads:/app/private_uploads:z
 Tmpfs=/tmp
 RunInit=true
 

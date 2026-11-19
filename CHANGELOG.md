@@ -10,8 +10,11 @@
   to `docker/envs/<env>/generated/fcos/` for you to commit. `check` fails when the committed files
   differ from a fresh render. It also fails when plain `docker compose up` would start without a
   credential, so write each credential as `${KEY:?…}`. An env with `runtime: quadlet` in its
-  `info.yaml` refuses the compose commands. See `docs/FCOS.md`. Installing the files on a host
-  comes in a later release.
+  `info.yaml` refuses the compose commands. A render also writes the host's Butane config
+  (`host.bu`), the backups (pgBackRest and restic, from the existing `pgbr_s3_write_*`,
+  `restic_write_*` and `ops` keys, with every repository setting as a Podman secret) and
+  monitoring (an unprivileged Zabbix agent and a read-only Podman API). See `docs/FCOS.md`.
+  Pushing secrets and applying the files to a host come in a later release.
 
 ### Fixed
 

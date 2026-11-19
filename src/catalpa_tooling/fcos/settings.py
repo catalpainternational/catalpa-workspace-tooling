@@ -10,13 +10,23 @@
       bind_volumes: [pgdata, django_media, caddy_data]
                                 # compose volumes kept on data_mount (default: the ops
                                 # pgbackrest/restic data volumes and caddy_data)
+      volume_owners: {pgdata: 999}
+                                # the uid inside the container that owns a bind volume's
+                                # directory (default 0; the pgBackRest data volume 999)
       id_ranges: {db: 10000}    # pin a group's container ID range (keyed by any of its services)
       auto_update: false        # podman auto-update from the registry (staging/test sites only)
       drop_ports: []            # services whose compose `ports` are dropped rather than refused
       caddyfile: /etc/caddy/Caddyfile  # the Caddyfile's path inside the edge image
+      # The host (host.bu):
+      hostname: catalpa-site-prod   # default <project>-<env>
+      timezone: Asia/Dili       # default: tooling.yaml digitalocean.timezone, else UTC
+      block_volume: catalpa-site-prod-data  # DO volume name; default <hostname>-data; false: none
+      ssh_authorized_keys: [...]  # public keys for core (admins) and the account (dk)
+      update_window: {days: [Sun], start: "02:00", minutes: 60}  # Zincati reboots
+      zabbix_image: docker.io/zabbix/zabbix-agent2:alpine-7.0-latest
 
-Everything else (images, settings, credentials, backups) comes from the keys ``dk`` already
-reads for compose deploys.
+Everything else (images, settings, credentials, backups, monitoring) comes from the keys ``dk``
+already reads for compose deploys.
 """
 
 from __future__ import annotations
@@ -29,15 +39,25 @@ RUNTIMES = ("compose", "quadlet")
 
 #: deploy's first subordinate ID, pinned in /etc/subuid and /etc/subgid by the host config.
 #: FCOS gives core 524288-589823, and the next account 589824 onwards.
+CORE_SUBUID_START = 524288
 SUBUID_START = 589824
 SUBUID_COUNT = 65536
 #: Each group of containers gets its own ID range in deploy's user namespace.
 ID_RANGE_SIZE = 5000
 ID_RANGE_FIRST = 10000
+#: Pinned to the Zabbix server's series: a newer agent than the server isn't supported.
+DEFAULT_ZABBIX_IMAGE = "docker.io/zabbix/zabbix-agent2:alpine-7.0-latest"
 
 
 class FcosConfigError(ValueError):
     """Invalid ``runtime`` or ``fcos:`` in info.yaml."""
+
+
+@dataclass(frozen=True)
+class UpdateWindow:
+    days: tuple[str, ...] = ("Sun",)
+    start: str = "02:00"
+    minutes: int = 60
 
 
 @dataclass(frozen=True)
@@ -46,10 +66,17 @@ class FcosSettings:
     uid: int = 1001
     data_mount: str = "/var/mnt/data"
     bind_volumes: tuple[str, ...] | None = None
+    volume_owners: dict[str, int] = field(default_factory=dict)
     id_ranges: dict[str, int] = field(default_factory=dict)
     auto_update: bool = False
     drop_ports: tuple[str, ...] = ()
     caddyfile: str = "/etc/caddy/Caddyfile"
+    hostname: str | None = None
+    timezone: str | None = None
+    block_volume: str | bool | None = None
+    ssh_authorized_keys: tuple[str, ...] = ()
+    update_window: UpdateWindow = UpdateWindow()
+    zabbix_image: str = DEFAULT_ZABBIX_IMAGE
 
     @property
     def home(self) -> str:
@@ -70,12 +97,21 @@ _KEYS = {
     "uid",
     "data_mount",
     "bind_volumes",
+    "volume_owners",
     "id_ranges",
     "auto_update",
     "drop_ports",
     "caddyfile",
+    "hostname",
+    "timezone",
+    "block_volume",
+    "ssh_authorized_keys",
+    "update_window",
+    "zabbix_image",
 }
 _NAME = re.compile(r"^[a-z_][a-z0-9_-]*$")
+_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 def runtime_of(info: dict) -> str:
@@ -90,8 +126,37 @@ def _str_list(raw: Any, field_name: str) -> tuple[str, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list) or not all(isinstance(v, str) and v.strip() for v in raw):
-        raise FcosConfigError(f"fcos.{field_name} must be a list of names")
+        raise FcosConfigError(f"fcos.{field_name} must be a list of strings")
     return tuple(v.strip() for v in raw)
+
+
+def _int_map(raw: Any, field_name: str, *, low: int, high: int) -> dict[str, int]:
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise FcosConfigError(f"fcos.{field_name} must be a mapping")
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+            raise FcosConfigError(f"fcos.{field_name}.{key} must be an integer {low}-{high}")
+        out[str(key)] = value
+    return out
+
+
+def _update_window(raw: Any) -> UpdateWindow:
+    if raw is None:
+        return UpdateWindow()
+    if not isinstance(raw, dict) or set(raw) - {"days", "start", "minutes"}:
+        raise FcosConfigError("fcos.update_window takes days, start and minutes")
+    days = _str_list(raw.get("days", ["Sun"]), "update_window.days")
+    if not days or set(days) - set(_DAYS):
+        raise FcosConfigError(f"fcos.update_window.days: use {', '.join(_DAYS)}")
+    start = str(raw.get("start", "02:00"))
+    if not re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", start):
+        raise FcosConfigError("fcos.update_window.start must be HH:MM")
+    minutes = raw.get("minutes", 60)
+    if not isinstance(minutes, int) or isinstance(minutes, bool) or not 30 <= minutes <= 1440:
+        raise FcosConfigError("fcos.update_window.minutes must be 30-1440")
+    return UpdateWindow(days=days, start=start, minutes=minutes)
 
 
 def parse_fcos_settings(info: dict) -> FcosSettings:
@@ -117,19 +182,13 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
     bind_raw = raw.get("bind_volumes")
     bind_volumes = None if bind_raw is None else _str_list(bind_raw, "bind_volumes")
 
-    ranges_raw = raw.get("id_ranges") or {}
-    if not isinstance(ranges_raw, dict):
-        raise FcosConfigError("fcos.id_ranges must map a service name to its range's first ID")
-    id_ranges: dict[str, int] = {}
-    for svc, start in ranges_raw.items():
-        if not isinstance(start, int) or isinstance(start, bool) or start < 1:
-            raise FcosConfigError(f"fcos.id_ranges.{svc} must be a positive integer")
+    id_ranges = _int_map(raw.get("id_ranges"), "id_ranges", low=1, high=SUBUID_COUNT)
+    for svc, start in id_ranges.items():
         if start + ID_RANGE_SIZE - 1 > SUBUID_COUNT:
             raise FcosConfigError(
                 f"fcos.id_ranges.{svc}: {start} + {ID_RANGE_SIZE} IDs goes past the account's "
                 f"{SUBUID_COUNT} subordinate IDs"
             )
-        id_ranges[str(svc)] = start
 
     auto_update = raw.get("auto_update", False)
     if not isinstance(auto_update, bool):
@@ -138,13 +197,32 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
     if not caddyfile.startswith("/"):
         raise FcosConfigError("fcos.caddyfile must be an absolute path inside the edge image")
 
+    hostname = raw.get("hostname")
+    if hostname is not None and not _HOSTNAME.fullmatch(str(hostname)):
+        raise FcosConfigError(f"fcos.hostname must be a host name label (got {hostname!r})")
+    block_volume = raw.get("block_volume")
+    if block_volume is not None and block_volume is not False:
+        if not isinstance(block_volume, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", block_volume):
+            raise FcosConfigError("fcos.block_volume must be a DO volume name, or false for none")
+    keys = _str_list(raw.get("ssh_authorized_keys"), "ssh_authorized_keys")
+    for key in keys:
+        if not re.match(r"^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp\d+|sk-\S+) [A-Za-z0-9+/=]+( .*)?$", key):
+            raise FcosConfigError(f"fcos.ssh_authorized_keys: not a public key: {key[:40]!r}…")
+
     return FcosSettings(
         user=user,
         uid=uid,
         data_mount=data_mount,
         bind_volumes=bind_volumes,
+        volume_owners=_int_map(raw.get("volume_owners"), "volume_owners", low=0, high=4999),
         id_ranges=id_ranges,
         auto_update=auto_update,
         drop_ports=_str_list(raw.get("drop_ports"), "drop_ports"),
         caddyfile=caddyfile,
+        hostname=str(hostname) if hostname is not None else None,
+        timezone=str(raw["timezone"]) if raw.get("timezone") else None,
+        block_volume=block_volume,
+        ssh_authorized_keys=keys,
+        update_window=_update_window(raw.get("update_window")),
+        zabbix_image=str(raw.get("zabbix_image") or DEFAULT_ZABBIX_IMAGE),
     )

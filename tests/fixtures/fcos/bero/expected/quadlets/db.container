@@ -13,6 +13,16 @@ GIDMap=0:15000:5000
 EnvironmentFile=/etc/bero_shape/db.env
 Secret=postgres_password,type=env,target=POSTGRES_PASSWORD
 Volume=/var/mnt/data/postgres_data:/var/lib/postgresql:Z
+Secret=pgbr_s3_write_bucket,type=env,target=PGBACKREST_REPO1_S3_BUCKET
+Secret=pgbr_s3_write_endpoint,type=env,target=PGBACKREST_REPO1_S3_ENDPOINT
+Secret=pgbr_s3_write_key,type=env,target=PGBACKREST_REPO1_S3_KEY
+Secret=pgbr_s3_write_region,type=env,target=PGBACKREST_REPO1_S3_REGION
+Secret=pgbr_s3_write_repo_path,type=env,target=PGBACKREST_REPO1_PATH
+Secret=pgbr_s3_write_secret,type=env,target=PGBACKREST_REPO1_S3_KEY_SECRET
+Secret=pgbr_s3_write_stanza,type=env,target=PGBACKREST_STANZA
+Environment=PGBACKREST_PG1_PATH=/var/lib/postgresql/18/docker
+Volume=/var/home/deploy/.config/bero_shape/50-bero_shape-managed.conf:/etc/pgbackrest/conf.d/50-bero_shape-managed.conf:ro,Z
+Volume=/var/home/deploy/.config/bero_shape/30-bero_shape-pgbackrest-archive.conf:/etc/postgresql/conf.d/30-bero_shape-pgbackrest-archive.conf:ro,Z
 ShmSize=268435456
 HealthCmd=["pg_isready", "-U", "postgres"]
 HealthInterval=5s

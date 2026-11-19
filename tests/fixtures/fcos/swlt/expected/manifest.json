@@ -59,29 +59,39 @@
       "services": [
         "caddy"
       ],
-      "id_range": "caddy"
+      "id_range": "caddy",
+      "owner_uid": 599823,
+      "mode": "0700"
     },
     "django_media": {
       "path": "/var/mnt/data/django_media",
       "services": [
         "caddy",
-        "django"
+        "django",
+        "swlt-restic-files-backup"
       ],
-      "id_range": "django"
+      "id_range": "django",
+      "owner_uid": 609823,
+      "mode": "0755"
     },
     "django_private_uploads": {
       "path": "/var/mnt/data/django_private_uploads",
       "services": [
-        "django"
+        "django",
+        "swlt-restic-files-backup"
       ],
-      "id_range": "django"
+      "id_range": "django",
+      "owner_uid": 609823,
+      "mode": "0700"
     },
     "postgres_data": {
       "path": "/var/mnt/data/postgres_data",
       "services": [
         "db"
       ],
-      "id_range": "db"
+      "id_range": "db",
+      "owner_uid": 605822,
+      "mode": "0700"
     }
   },
   "podman_volumes": {},
@@ -96,10 +106,31 @@
   },
   "secrets": {
     "django_secret_key": "DJANGO_SECRET_KEY",
+    "pgbr_s3_write_bucket": "PGBR_S3_WRITE_BUCKET",
+    "pgbr_s3_write_endpoint": "PGBR_S3_WRITE_ENDPOINT",
+    "pgbr_s3_write_key": "PGBR_S3_WRITE_KEY",
+    "pgbr_s3_write_region": "PGBR_S3_WRITE_REGION",
+    "pgbr_s3_write_repo_path": "PGBR_S3_WRITE_REPO_PATH",
+    "pgbr_s3_write_secret": "PGBR_S3_WRITE_SECRET",
+    "pgbr_s3_write_stanza": "PGBR_S3_WRITE_STANZA",
     "postgres_password": "POSTGRES_PASSWORD",
+    "restic_write_password": "RESTIC_WRITE_PASSWORD",
+    "restic_write_repository": "RESTIC_WRITE_REPOSITORY",
     "site_auth": "SITE_AUTH"
   },
   "install": [
+    {
+      "file": "backup/pgbackrest.conf",
+      "dest": "/var/home/deploy/.config/swlt_shape/50-swlt_shape-managed.conf",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "backup/postgres-archive.conf",
+      "dest": "/var/home/deploy/.config/swlt_shape/30-swlt_shape-pgbackrest-archive.conf",
+      "owner": "deploy",
+      "mode": "0644"
+    },
     {
       "file": "caddy/caddy.json",
       "dest": "/var/home/deploy/.config/swlt_shape/caddy.json",
@@ -191,6 +222,12 @@
       "mode": "0644"
     },
     {
+      "file": "quadlets/swlt-restic-files-backup.container",
+      "dest": "/etc/containers/systemd/users/1001/swlt-restic-files-backup.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
       "file": "quadlets/swlt_shape_default.network",
       "dest": "/etc/containers/systemd/users/1001/swlt_shape_default.network",
       "owner": "root",
@@ -201,6 +238,38 @@
       "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
       "owner": "deploy",
       "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-pgbackrest-backup-diff.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-pgbackrest-backup-diff.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-pgbackrest-backup-full.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-pgbackrest-backup-full.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-pgbackrest-backup@.service",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-pgbackrest-backup@.service",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-restic-files-backup.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-restic-files-backup.timer",
+      "owner": "deploy",
+      "mode": "0644"
     }
+  ],
+  "hostname": "swlt-shape-staging",
+  "timezone": "UTC",
+  "system_secrets": {},
+  "timers": [
+    "swlt-pgbackrest-backup-diff.timer",
+    "swlt-pgbackrest-backup-full.timer",
+    "swlt-restic-files-backup.timer"
   ]
 }

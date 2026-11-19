@@ -328,3 +328,102 @@ def test_explicit_http_server_uses_fd3_and_no_redirect_is_added() -> None:
 def test_other_ports_cannot_be_socket_activated() -> None:
     with pytest.raises(CaddyJsonError, match="only 80 and 443"):
         rewrite_listeners({"apps": {"http": {"servers": {"a": {"listen": [":8443"]}}}}})
+
+
+# --- host config, backups, monitoring (PR 2) ----------------------------------------------
+
+
+@needs_compose
+@pytest.mark.parametrize("name", ["site", "bero", "swlt"])
+def test_host_bu_compiles_with_butane_strict(name: str, tmp_path: Path) -> None:
+    import subprocess
+
+    if os.environ.get("SKIP_BUTANE"):
+        pytest.skip("SKIP_BUTANE set")
+    _config, render = _render(name)
+    write_render(tmp_path, render.files)
+    r = subprocess.run(
+        ["docker", "run", "--rm", "-v", f"{tmp_path}:/work", "-w", "/work",
+         "quay.io/coreos/butane:release", "--strict", "--files-dir", ".", "host.bu"],
+        capture_output=True, text=True, timeout=300, check=False,
+    )
+    if r.returncode != 0 and "Cannot connect to the Docker daemon" in r.stderr:
+        pytest.skip("no Docker daemon")
+    assert r.returncode == 0, r.stderr
+    import json
+
+    ign = json.loads(r.stdout)
+    placed = {f["path"] for f in ign["storage"]["files"]}
+    manifest = json.loads(render.files["manifest.json"])
+    assert {i["dest"] for i in manifest["install"]} <= placed
+
+
+@needs_compose
+def test_backup_repository_settings_are_secrets_not_files() -> None:
+    _config, render = _render("bero")
+    db = render.files["quadlets/db.container"]
+    assert "Secret=pgbr_s3_write_bucket,type=env,target=PGBACKREST_REPO1_S3_BUCKET" in db
+    assert "Secret=pgbr_s3_write_stanza,type=env,target=PGBACKREST_STANZA" in db
+    conf = render.files["backup/pgbackrest.conf"]
+    options = [line for line in conf.splitlines() if line and not line.startswith(("#", "["))]
+    assert not [o for o in options if o.startswith(("repo1-s3-", "repo1-path", "stanza"))]
+    assert "archive_command = 'pgbackrest archive-push %p'" in render.files["backup/postgres-archive.conf"]
+    restic = render.files["quadlets/bero_shape-restic-files-backup.container"]
+    assert "Secret=restic_write_repository,type=env,target=RESTIC_REPOSITORY" in restic
+    # restic runs in the range of the services that write the media.
+    assert "UIDMap=0:10000:5000" in restic
+
+
+@needs_compose
+def test_restic_makes_a_private_label_shared() -> None:
+    _config, render = _render("swlt")
+    assert "/app/private_uploads:z" in render.files["quadlets/django.container"]
+
+
+@needs_compose
+def test_zabbix_psk_becomes_system_secrets_and_metadata_tokens() -> None:
+    _config, render = _render("bero")
+    agent = render.files["quadlets/zabbix-agent2.container"]
+    assert "Secret=zbx_tlspsk,type=env,target=ZBX_TLSPSK" in agent
+    assert "Environment=ZBX_TLSCONNECT=psk" in agent
+    assert "Environment=ZBX_HOSTNAME=bero-staging.example" in agent
+    assert "Environment=ZBX_METADATA=docker app" in agent
+    assert "quadlets/zabbix-agent2.container" not in _render("swlt")[1].files
+
+
+@needs_compose
+def test_backup_credentials_without_required_keys_or_timers_are_refused(tmp_path: Path) -> None:
+    root = tmp_path / "bero"
+    shutil.copytree(FIXTURES / "bero", root, ignore=shutil.ignore_patterns("expected"))
+    creds = root / "docker" / "envs" / "staging" / "credentials.yaml"
+    creds.write_text(creds.read_text().replace("pgbr_s3_write_stanza:", "ignored_stanza:"))
+    with pytest.raises(RenderError, match="pgbr_s3_write_stanza"):
+        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+    tooling = root / "tooling.yaml"
+    tooling.write_text(tooling.read_text().replace("      - bero_shape-restic-files-backup.timer\n", ""))
+    with pytest.raises(RenderError, match="restic-files-backup.timer"):
+        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+
+
+@needs_compose
+def test_host_bu_needs_ssh_keys(tmp_path: Path) -> None:
+    root = tmp_path / "site"
+    shutil.copytree(FIXTURES / "site", root, ignore=shutil.ignore_patterns("expected"))
+    info = root / "docker" / "envs" / "staging" / "info.yaml"
+    text = info.read_text()
+    start = text.index("  ssh_authorized_keys:")
+    end = text.index("  bind_volumes:")
+    info.write_text(text[:start] + text[end:])
+    with pytest.raises(RenderError, match="ssh_authorized_keys is empty"):
+        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+
+
+def test_host_settings_validation() -> None:
+    s = parse_fcos_settings({"fcos": {"update_window": {"days": ["Sun"], "start": "03:00"}}})
+    assert s.update_window.start == "03:00"
+    with pytest.raises(FcosConfigError, match="days"):
+        parse_fcos_settings({"fcos": {"update_window": {"days": ["Sunday"]}}})
+    with pytest.raises(FcosConfigError, match="not a public key"):
+        parse_fcos_settings({"fcos": {"ssh_authorized_keys": ["hunter2"]}})
+    with pytest.raises(FcosConfigError, match="host name"):
+        parse_fcos_settings({"fcos": {"hostname": "Bad_Name"}})

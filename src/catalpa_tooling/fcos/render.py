@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -19,7 +20,10 @@ from pathlib import Path
 import yaml
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.fcos.backups import backup_files, plan_backups, restic_unit_name
+from catalpa_tooling.fcos.butane import host_bu
 from catalpa_tooling.fcos.caddy_json import CaddyJsonError, caddy_json_text, run_adapt
+from catalpa_tooling.fcos.monitoring import monitor_dir, monitoring_files
 from catalpa_tooling.fcos.quadlets import (
     SECRET_MARK,
     ComposeNotSupported,
@@ -183,6 +187,18 @@ def render_env(
         bind_volumes = tuple(v for v in bind_volumes if v in declared)
     config_dir = config.ops.config_dir if config.has_ops else f"/etc/{project}"
     compose_rel = os.path.relpath(compose_file, config.repo_root)
+    hostname = settings.hostname or _default_hostname(project, env_name)
+    db_service = config.stack.services.db
+    plan = plan_backups(
+        config,
+        settings,
+        keys,
+        project=project,
+        declared_volumes=set(resolved.get("volumes") or {}),
+    )
+    if plan.problems:
+        raise RenderError("backups:\n" + "\n".join(f"  - {p}" for p in plan.problems))
+    restic_container = (restic_unit_name(config) or "") if plan.restic else ""
     inputs = RenderInputs(
         env_name=env_name,
         project=project,
@@ -192,6 +208,9 @@ def render_env(
         bind_volumes=bind_volumes,
         config_dir=config_dir,
         previous_ranges=previous_ranges(gen_dir),
+        extra_lines={db_service: plan.db_lines} if plan.db_lines else {},
+        extra_volume_users={v: (restic_container,) for v in plan.restic_volumes},
+        volume_owners=_volume_owners(config, settings),
     )
     try:
         q = quadlets_from_compose(resolved, inputs)
@@ -211,8 +230,106 @@ def render_env(
         )
     files = dict(q.files)
     files["caddy/caddy.json"] = caddy_json
-    files[MANIFEST] = json.dumps(q.manifest, indent=2) + "\n"
+    manifest = dict(q.manifest)
+
+    monitoring_on = config.has_ops and config.ops.zabbix is not None
+    backups_on = bool(plan.pgbackrest or plan.restic)
+    mon_dir = monitor_dir(project) if (monitoring_on and backups_on) else None
+    try:
+        b = backup_files(
+            plan,
+            config,
+            settings,
+            header=q.header,
+            project=project,
+            compose_project=q.compose_project,
+            hostname=hostname,
+            db_service=db_service,
+            bind_volumes=bind_volumes,
+            service_ranges=q.service_ranges,
+            writers=q.volume_writers,
+            monitor_dir=mon_dir,
+            env=env,
+        )
+    except ValueError as exc:
+        raise RenderError(f"backups: {exc}") from exc
+    files.update(b.files)
+    install = list(q.install) + b.install
+    timers = list(b.timers)
+    tmpfiles: list[str] = []
+    system_secrets: dict[str, str] = {}
+    if monitoring_on:
+        from catalpa_tooling.remote_deploy import _zabbix_env_defaults
+        from catalpa_tooling.zabbix_systemd import hostname_from_site_origin
+
+        zbx_env = _zabbix_env_defaults(info, env)
+        site_host = hostname_from_site_origin(env.get("SITE_ORIGIN"))
+        try:
+            m = monitoring_files(
+                settings=settings,
+                header=q.header,
+                project=project,
+                config_dir=config_dir,
+                userparams_file=config.ops.zabbix.userparams_file,
+                zbx_env=zbx_env,
+                hostname=site_host or hostname,
+                backups=backups_on,
+            )
+        except ValueError as exc:
+            raise RenderError(f"zabbix: {exc}") from exc
+        files.update(m.files)
+        install += m.install
+        tmpfiles = m.tmpfiles
+        system_secrets = m.system_secrets
+
+    install = sorted(install, key=lambda i: i["file"])
+    timezone = settings.timezone or (
+        (config.digitalocean.timezone if config.digitalocean else None) or "UTC"
+    )
+    try:
+        files["host.bu"] = host_bu(
+            settings=settings,
+            header=q.header,
+            hostname=hostname,
+            timezone=timezone,
+            install=install,
+            bind_volumes=manifest["bind_volumes"],
+            proxy=inputs.proxy,
+            timers=timers,
+            tmpfiles=tmpfiles,
+            monitor_dir=mon_dir,
+            config_dir=config_dir,
+        )
+    except ValueError as exc:
+        raise RenderError(str(exc)) from exc
+
+    manifest.update(
+        {
+            "hostname": hostname,
+            "timezone": timezone,
+            "secrets": dict(sorted({**manifest["secrets"], **plan.secrets}.items())),
+            "system_secrets": dict(sorted(system_secrets.items())),
+            "timers": sorted(timers),
+            "install": install,
+        }
+    )
+    files[MANIFEST] = json.dumps(manifest, indent=2) + "\n"
     return Render(files=files, compose_file=compose_file, env=env, secret_keys=used)
+
+
+def _default_hostname(project: str, env_name: str) -> str:
+    name = re.sub(r"[^a-z0-9-]+", "-", f"{project}-{env_name}".lower()).strip("-")
+    return name[:63].rstrip("-")
+
+
+def _volume_owners(config: ProjectConfig, settings: FcosSettings) -> dict[str, int]:
+    """The uid inside its range that owns each bind volume: postgres (999 in the Debian-based
+    images) for the pgBackRest data volume, root otherwise, unless fcos.volume_owners says."""
+    owners: dict[str, int] = {}
+    if config.has_ops:
+        owners[config.ops.pgbackrest.data_volume] = 999
+    owners.update(settings.volume_owners)
+    return owners
 
 
 def required_secret_problems(

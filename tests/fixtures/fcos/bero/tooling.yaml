@@ -33,3 +33,22 @@ ops:
     data_volume: postgres_data
   restic:
     data_volume: django_media
+  zabbix:
+    unit_name: bero_shape-zabbix-agent2.service
+    userparams_file: 99-bero_shape-userparams.conf
+  systemd_units:
+    pgbackrest:
+      - bero_shape-pgbackrest-backup-full.service
+      - bero_shape-pgbackrest-backup-incr.service
+      - bero_shape-pgbackrest-backup-full.timer
+      - bero_shape-pgbackrest-backup-incr.timer
+    restic:
+      - bero_shape-restic-files-backup.service
+      - bero_shape-restic-files-backup.timer
+    timers_enable_pgbackrest:
+      - bero_shape-pgbackrest-backup-full.timer
+      - bero_shape-pgbackrest-backup-incr.timer
+    timers_enable_restic:
+      - bero_shape-restic-files-backup.timer
+digitalocean:
+  timezone: Asia/Dili
