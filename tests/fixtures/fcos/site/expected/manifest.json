@@ -85,31 +85,31 @@
       "mode": "0644"
     },
     {
-      "file": "env/caddy.env",
+      "file": "envfiles/caddy.env",
       "dest": "/etc/site/caddy.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/collectstatic.env",
+      "file": "envfiles/collectstatic.env",
       "dest": "/etc/site/collectstatic.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/db.env",
+      "file": "envfiles/db.env",
       "dest": "/etc/site/db.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/django.env",
+      "file": "envfiles/django.env",
       "dest": "/etc/site/django.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/migrate.env",
+      "file": "envfiles/migrate.env",
       "dest": "/etc/site/migrate.env",
       "owner": "root",
       "mode": "0644"

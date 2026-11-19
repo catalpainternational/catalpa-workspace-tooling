@@ -257,7 +257,8 @@ def quadlets_from_compose(resolved: dict, inputs: RenderInputs) -> QuadletRender
         )
         add(f"quadlets/{name}.container", text, f"{s.quadlet_dir}/{name}.container", "root")
         add(
-            f"env/{name}.env",
+            # Not `env/`: Python projects commonly gitignore that (virtualenvs).
+            f"envfiles/{name}.env",
             f"# Settings for {name}; credentials are Podman secrets (see {name}.container).\n"
             + "".join(f"{line}\n" for line in env_lines),
             f"{inputs.config_dir}/{name}.env",

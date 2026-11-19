@@ -107,43 +107,43 @@
       "mode": "0644"
     },
     {
-      "file": "env/caddy.env",
+      "file": "envfiles/caddy.env",
       "dest": "/etc/swlt_shape/caddy.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/db.env",
+      "file": "envfiles/db.env",
       "dest": "/etc/swlt_shape/db.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/django.env",
+      "file": "envfiles/django.env",
       "dest": "/etc/swlt_shape/django.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/mailpit.env",
+      "file": "envfiles/mailpit.env",
       "dest": "/etc/swlt_shape/mailpit.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/migrate.env",
+      "file": "envfiles/migrate.env",
       "dest": "/etc/swlt_shape/migrate.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/redis.env",
+      "file": "envfiles/redis.env",
       "dest": "/etc/swlt_shape/redis.env",
       "owner": "root",
       "mode": "0644"
     },
     {
-      "file": "env/rqscheduler.env",
+      "file": "envfiles/rqscheduler.env",
       "dest": "/etc/swlt_shape/rqscheduler.env",
       "owner": "root",
       "mode": "0644"

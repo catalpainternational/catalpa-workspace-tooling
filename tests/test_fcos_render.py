@@ -101,7 +101,7 @@ def test_render_holds_no_secret_value_and_names_secrets() -> None:
     django = render.files["quadlets/django.container"]
     assert "Secret=django_secret_key,type=env,target=DJANGO_SECRET_KEY" in django
     # Credentials never reach a settings file, which `podman inspect` shows.
-    assert "DJANGO_SECRET_KEY" not in render.files["env/django.env"]
+    assert "DJANGO_SECRET_KEY" not in render.files["envfiles/django.env"]
 
 
 @needs_compose

@@ -55,7 +55,7 @@ deploys. The `bind_volumes` default comes from `ops`: `ops.pgbackrest.data_volum
 |---|---|---|
 | `quadlets/<service>.container` | `/etc/containers/systemd/users/<uid>/` (root-owned) | one per running service; `ContainerName` is the service name |
 | `quadlets/<project>_default.network`, `quadlets/<volume>.volume` | same | compose's default network; volumes not kept on the data mount |
-| `env/<service>.env` | `/etc/<project>/` | settings without credentials |
+| `envfiles/<service>.env` | `/etc/<project>/` | settings without credentials |
 | `systemd/<proxy>.socket` | `~<user>/.config/systemd/user/` | opens 80/443 for the edge |
 | `caddy/caddy.json` | `~<user>/.config/<project>/` | the edge's config |
 | `manifest.json` | — | ID ranges and host uids, bind volumes, secrets, images, the install map |
