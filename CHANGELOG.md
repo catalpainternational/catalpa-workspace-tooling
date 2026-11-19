@@ -9,6 +9,14 @@
   that broke the file, e.g. `dk <env> docker exec db pg_dump -Fc > x.dump` gave a dump that
   `pg_restore` rejected. This affected `dk <env> docker …` and the compose passthrough verbs
   (`exec`, `logs` and others). If you `grep` `dk` output for the `$ ` line, add `2>&1`.
+- **`dk worktree remove` (with or without `--wipe`) now removes the worktree's routes from the
+  shared local proxy (#184).** It stopped the stack with its own `compose down` and never took the
+  routes out, so every removed worktree's hostnames, and their `-lan-<ip>` twins, stayed in the
+  proxy and answered 502. The routes are removed once the stack is down, as `dk <env> down`
+  does. Only that worktree's routes are touched. If the proxy isn't running there is nothing to
+  do, a route that can't be removed only warns, and `--dry-run` lists the routes it would
+  delete. Routes left by worktrees removed before this release, and LAN routes for an old LAN
+  IP, still have to be deleted by hand.
 
 ## 1.7.0
 

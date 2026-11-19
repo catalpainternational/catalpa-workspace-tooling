@@ -16,7 +16,11 @@ from typing import Any, NamedTuple
 
 from catalpa_tooling.compose import _compose
 from catalpa_tooling.config import ProjectConfig, load_project_config
-from catalpa_tooling.local_proxy import ensure_proxy_running
+from catalpa_tooling.local_proxy import (
+    LocalProxyConfigError,
+    ensure_proxy_running,
+    sync_local_proxy_for_compose_action,
+)
 from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
 from catalpa_tooling.media_storage import (
     MediaStorage,
@@ -1416,6 +1420,37 @@ def _worktree_branch_tag(worktree_root: Path) -> str:
     return (r.stdout or "").strip().replace("/", "-") if r.returncode == 0 else ""
 
 
+def _remove_worktree_proxy_routes(
+    info: dict[str, Any],
+    config: ProjectConfig,
+    env_name: str,
+    env_add: dict[str, str],
+    *,
+    label: str,
+    dry_run: bool = False,
+) -> None:
+    """Drop the stopped stack's routes (local and ``-lan-<ip>``) from the shared proxy (#184).
+
+    Goes through the same ``down`` branch as ``dk <env> down``, so the routes are exactly the
+    ones ``up`` registered for this compose project. Best effort: a proxy that isn't running is
+    skipped by ``remove_route``, and a failure only warns, because the stack is already down
+    and a leftover route is less harm than a stranded checkout.
+    """
+    try:
+        rc = sync_local_proxy_for_compose_action(
+            info, config, env_name, ["down"], env_add, dry_run=dry_run
+        )
+    except LocalProxyConfigError as exc:
+        print(f"{label}: could not remove local proxy routes: {exc}", file=sys.stderr)
+        return
+    if rc != 0:
+        print(
+            f"{label}: some local proxy routes were left behind (see above); "
+            "`dk proxy status` lists them.",
+            file=sys.stderr,
+        )
+
+
 def _teardown_worktree_stack(
     worktree_root: Path,
     overlay: WorktreeOverlay,
@@ -1432,6 +1467,8 @@ def _teardown_worktree_stack(
     With ``remove_volumes`` (``--wipe``), this removes everything :func:`worktree_wipe_targets`
     lists: every volume of the project, ``external:`` ones included (issue #64), and the images
     the stack built (issue #165). The dry run prints that same list (issue #108).
+
+    Either way, once the stack is down its routes come out of the shared local proxy (#184).
     """
     label = "dk worktree remove --wipe" if remove_volumes else "dk worktree remove"
     try:
@@ -1476,6 +1513,9 @@ def _teardown_worktree_stack(
             f"(COMPOSE_PROJECT_NAME={overlay.compose_project_name})",
             file=sys.stderr,
         )
+        _remove_worktree_proxy_routes(
+            ctx.info, wt_config, overlay.base_env, env_r, label=label, dry_run=True
+        )
         if targets is None:
             return 0
         remove_volumes_fn(targets.volumes, env_r, dry_run=True)
@@ -1489,6 +1529,9 @@ def _teardown_worktree_stack(
     )
     if result.returncode != 0:
         return result.returncode
+    # Only once the stack is down, as `dk <env> down` does: a failed `down` keeps the checkout
+    # and the routes, and the re-run removes both.
+    _remove_worktree_proxy_routes(ctx.info, wt_config, overlay.base_env, env_r, label=label)
     if targets is None:
         return 0
     # `down -v` has already taken the volumes Compose owns; these report "already absent".
