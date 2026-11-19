@@ -21,6 +21,11 @@
   running (#195).** The seed starts a stopped source `db` to `pg_dump` it. It now stops that
   service again once the dump is done, or has failed, and says so in one line. A source `db` that
   was already running is left running, and the worktree's own `db` stays up as before.
+- **`dk fetch db` with `via: dk` now dumps the database each entry names (#173).** It always
+  dumped the stack's app database, so a `metabase` entry with `via: dk` wrote app data into the
+  Metabase dump, and the next `db restore` loaded it into Metabase's database. Entries other than
+  `app` now dump their `db_name`. The `app` entry still dumps the database the stack's `db`
+  service is configured with (`DJANGO_DB`), as before. No project fetches Metabase this way yet.
 
 ## 1.7.0
 
