@@ -1,0 +1,90 @@
+name: ${COMPOSE_PROJECT_NAME:-site}
+
+services:
+  django-app-base:
+    image: ${STACK_IMAGE_REGISTRY:-ghcr.io/example}/site-django:${STACK_IMAGE_TAG:-latest}
+    platform: linux/amd64
+    environment:
+      DJANGO_DB: site_db
+      DATABASE_HOST: db
+      DOMAIN: ${DOMAIN:-site.localhost}
+      SITE_ORIGIN: ${SITE_ORIGIN:-}
+      ALTCHA_HMAC_SECRET: ${ALTCHA_HMAC_SECRET:?ALTCHA_HMAC_SECRET must be set}
+      PRICE_NOTE: "costs $$5"
+    scale: 0
+
+  db:
+    image: ${STACK_IMAGE_REGISTRY:-ghcr.io/example}/site-postgres:${STACK_IMAGE_TAG:-latest}
+    build:
+      context: .
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    extends:
+      service: django-app-base
+    command: python manage.py migrate --noinput
+    restart: "no"
+    scale: 1
+    volumes:
+      - django_media:/media
+    depends_on:
+      db:
+        condition: service_healthy
+
+  collectstatic:
+    extends:
+      service: django-app-base
+    command: python manage.py collectstatic --noinput
+    restart: "no"
+    scale: 1
+    volumes:
+      - django_static:/app/static
+
+  django:
+    extends:
+      service: django-app-base
+    scale: 1
+    volumes:
+      - django_media:/media
+    restart: unless-stopped
+    mem_limit: 1g
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      collectstatic:
+        condition: service_completed_successfully
+
+  caddy:
+    image: ${STACK_IMAGE_REGISTRY:-ghcr.io/example}/site-caddy:${STACK_IMAGE_TAG:-latest}
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-site.localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - django_static:/srv/static:ro
+      - django_media:/srv/media:ro
+    depends_on:
+      - django
+
+volumes:
+  pgdata:
+  django_media:
+  django_static:
+  caddy_data:
+  caddy_config:

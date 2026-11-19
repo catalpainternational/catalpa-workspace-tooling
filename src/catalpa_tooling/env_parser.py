@@ -7,6 +7,7 @@ import argparse
 from catalpa_tooling.cli.completion import attach_choices_completer
 from catalpa_tooling.cli.parents import build_env_flags_parent
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.fcos.cli import attach_fcos_parser
 from catalpa_tooling.remote_deploy import list_dk_env_names
 from catalpa_tooling.zabbix_systemd import DEFAULT_IMAGE, UNIT_NAME
 
@@ -416,6 +417,7 @@ def _attach_env_command_parsers(
     )
 
     _attach_zabbix_commands(cmd_sub, env_name)
+    attach_fcos_parser(cmd_sub)
 
     cmd_sub.add_parser("ensure_volumes", help="Ensure external stack volumes exist.")
 

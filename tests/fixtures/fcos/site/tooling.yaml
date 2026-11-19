@@ -1,0 +1,35 @@
+project:
+  name: site
+  root_marker: tooling.yaml
+paths:
+  backend: app
+  frontend: app
+  scripts: tools
+  env_local: .env.local
+  email_backend_dir: email_out
+  fetch_db_dump: docker/dumps/app.custom
+  deploy:
+    envs_dir: docker/envs
+    images_config: docker/images.yaml
+    default_compose: compose.yml
+    dev_compose: compose.yml
+stack:
+  compose_project_default: site
+  services:
+    web: django
+    proxy: caddy
+    db: db
+  images:
+    registry_key: image_registry
+    components:
+      web: site-django
+      proxy: site-caddy
+      db: site-postgres
+  healthcheck:
+    service: django
+    url: http://127.0.0.1:8001/
+ops:
+  pgbackrest:
+    data_volume: pgdata
+  restic:
+    data_volume: django_media

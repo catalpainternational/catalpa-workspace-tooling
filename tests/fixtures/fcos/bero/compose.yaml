@@ -1,0 +1,8 @@
+name: bero_shape
+
+include:
+  - path:
+      - ./base/compose.yaml
+      - ./base/compose.secrets.required.yaml
+    env_file:
+      - ./bero_shape.env

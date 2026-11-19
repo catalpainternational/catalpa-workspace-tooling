@@ -24,6 +24,7 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "dc-backup",
         "compose",
         "docker",
+        "fcos",
     }
 )
 

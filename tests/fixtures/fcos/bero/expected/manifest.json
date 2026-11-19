@@ -1,0 +1,231 @@
+{
+  "env": "staging",
+  "compose_file": "compose.yaml",
+  "user": "deploy",
+  "uid": 1001,
+  "subuid": {
+    "start": 589824,
+    "count": 65536
+  },
+  "auto_update": true,
+  "network": "bero_shape_default",
+  "id_ranges": {
+    "db": {
+      "start": 15000,
+      "size": 5000,
+      "host_root_uid": 604823,
+      "services": [
+        "db"
+      ]
+    },
+    "django": {
+      "start": 10000,
+      "size": 5000,
+      "host_root_uid": 599823,
+      "services": [
+        "caddy",
+        "collectstatic",
+        "django",
+        "migrate",
+        "rq_worker"
+      ]
+    },
+    "metabase": {
+      "start": 20000,
+      "size": 5000,
+      "host_root_uid": 609823,
+      "services": [
+        "metabase"
+      ]
+    },
+    "redis": {
+      "start": 25000,
+      "size": 5000,
+      "host_root_uid": 614823,
+      "services": [
+        "redis"
+      ]
+    }
+  },
+  "bind_volumes": {
+    "caddy_data": {
+      "path": "/var/mnt/data/caddy_data",
+      "services": [
+        "caddy"
+      ],
+      "id_range": "django"
+    },
+    "django_media": {
+      "path": "/var/mnt/data/django_media",
+      "services": [
+        "caddy",
+        "collectstatic",
+        "django",
+        "migrate",
+        "rq_worker"
+      ],
+      "id_range": "django"
+    },
+    "postgres_data": {
+      "path": "/var/mnt/data/postgres_data",
+      "services": [
+        "db"
+      ],
+      "id_range": "db"
+    }
+  },
+  "podman_volumes": {
+    "caddy_config": "bero_shape_caddy_config",
+    "django_static": "bero_shape_django_static",
+    "redis_data": "bero_shape_redis_data"
+  },
+  "images": {
+    "caddy": "ghcr.io/example/bero_shape-caddy:v7.4.1",
+    "collectstatic": "ghcr.io/example/bero_shape-django:v7.4.1",
+    "db": "ghcr.io/example/bero_shape-db:v7.4.1",
+    "django": "ghcr.io/example/bero_shape-django:v7.4.1",
+    "metabase": "docker.io/metabase/metabase:v0.62.x",
+    "migrate": "ghcr.io/example/bero_shape-django:v7.4.1",
+    "redis": "docker.io/library/redis:8.0-alpine",
+    "rq_worker": "ghcr.io/example/bero_shape-django:v7.4.1"
+  },
+  "secrets": {
+    "django_secret_key": "DJANGO_SECRET_KEY",
+    "metabase_db_password": "METABASE_DB_PASSWORD",
+    "postgres_password": "POSTGRES_PASSWORD"
+  },
+  "install": [
+    {
+      "file": "caddy/caddy.json",
+      "dest": "/var/home/deploy/.config/bero_shape/caddy.json",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/caddy.env",
+      "dest": "/etc/bero_shape/caddy.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/collectstatic.env",
+      "dest": "/etc/bero_shape/collectstatic.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/db.env",
+      "dest": "/etc/bero_shape/db.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/django.env",
+      "dest": "/etc/bero_shape/django.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/metabase.env",
+      "dest": "/etc/bero_shape/metabase.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/migrate.env",
+      "dest": "/etc/bero_shape/migrate.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/redis.env",
+      "dest": "/etc/bero_shape/redis.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/rq_worker.env",
+      "dest": "/etc/bero_shape/rq_worker.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/bero_shape_default.network",
+      "dest": "/etc/containers/systemd/users/1001/bero_shape_default.network",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy.container",
+      "dest": "/etc/containers/systemd/users/1001/caddy.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy_config.volume",
+      "dest": "/etc/containers/systemd/users/1001/caddy_config.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/collectstatic.container",
+      "dest": "/etc/containers/systemd/users/1001/collectstatic.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/db.container",
+      "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django.container",
+      "dest": "/etc/containers/systemd/users/1001/django.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django_static.volume",
+      "dest": "/etc/containers/systemd/users/1001/django_static.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/metabase.container",
+      "dest": "/etc/containers/systemd/users/1001/metabase.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/migrate.container",
+      "dest": "/etc/containers/systemd/users/1001/migrate.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/redis.container",
+      "dest": "/etc/containers/systemd/users/1001/redis.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/redis_data.volume",
+      "dest": "/etc/containers/systemd/users/1001/redis_data.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/rq_worker.container",
+      "dest": "/etc/containers/systemd/users/1001/rq_worker.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/caddy.socket",
+      "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
+      "owner": "deploy",
+      "mode": "0644"
+    }
+  ]
+}
