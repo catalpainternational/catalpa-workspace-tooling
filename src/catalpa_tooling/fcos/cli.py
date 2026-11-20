@@ -27,7 +27,7 @@ HOST_COMMANDS = ("diff", "apply", "secrets", "provision")
 #: ``dk <env> <verb>`` for a rendered host (tooling 2.0): the verbs ``dk <env> fcos …`` had.
 RENDER_VERBS = ("render", "check", "diff", "apply")
 #: ``dk <env> host <verb>``: a new host from the render.
-HOST_VERBS = ("ignition", "provision")
+HOST_VERBS = ("ignition", "provision", "login")
 
 
 def _flag(sp: argparse.ArgumentParser, *names: str, help: str) -> None:
@@ -102,6 +102,14 @@ def add_host_verbs(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Don't start the stack (restoring: the database must be restored first).",
     )
+    lg = sub.add_parser(
+        "login",
+        help=(
+            "Log the account in to the image registry again, from registry_user/registry_token "
+            "in sops (`dk secrets`): after rotating the bot's token."
+        ),
+    )
+    _host_arg(lg)
 
 
 def add_secrets_push(sub: argparse._SubParsersAction) -> None:
@@ -288,6 +296,8 @@ def _host_command(
 
     if command == "secrets":
         return _secrets_push(ns, config, env_name, c, target, dry_run=dry_run)
+    if command == "login":
+        return _login(ns, config, env_name, c, target, dry_run=dry_run)
     if command == "provision":
         return _provision(ns, config, env_name, c, target, dry_run=dry_run)
 
@@ -386,9 +396,81 @@ def _print_restarts(r, *, no_restart: bool) -> None:
 
 
 def _credentials(config: ProjectConfig, env_name: str) -> dict:
-    from catalpa_tooling.sops_credentials import decrypt_credentials_yaml
+    """The project's ``credentials.yaml``, then the env's on top."""
+    from catalpa_tooling.project_credentials import credentials_for_env
 
-    return decrypt_credentials_yaml(config.deploy_envs_dir / env_name / "credentials.yaml")
+    return credentials_for_env(config, env_name)
+
+
+def _registry_login(c, target, creds: dict, *, force: bool, label: str) -> int:
+    """Log the account in to each private registry its images come from.
+
+    With ``registry_user``/``registry_token`` in the credentials (project or env), non-interactive:
+    the token goes over SSH's stdin, never on a command line. Without them, ``podman login``
+    asks on a terminal. ``force``: log in again even when already logged in (a rotated token)."""
+    from catalpa_tooling.fcos import host as h
+    from catalpa_tooling.project_credentials import registry_login
+
+    stored = registry_login(creds)
+    for registry in h.private_registries(c):
+        if not force and h.logged_in(target, c, registry):
+            print(f"  {registry}: logged in", file=sys.stderr)
+            continue
+        if stored:
+            user, token = stored
+            print(f"  {registry}: logging in as {user} (registry_token from sops)", file=sys.stderr)
+            rc = h.login(target, c, registry, user, token)
+            if rc != 0:
+                print(
+                    f"{label}: podman login to {registry} failed (the token expired?).",
+                    file=sys.stderr,
+                )
+                return rc
+            continue
+        cmd = f"podman login --authfile {shlex.quote(h.auth_file(c))} {shlex.quote(registry)}"
+        hint = (
+            "To skip this next time, keep the bot's login in sops: `dk secrets` (the project's "
+            "credentials.yaml), keys registry_user and registry_token."
+        )
+        if not sys.stdin.isatty():
+            print(
+                f"Log in to {registry}, then run this again:\n  ssh -t {c.user}@{target.address} "
+                f"'{cmd}'\n{hint}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Log in to {registry} as {c.user} (the bot's token). {hint}", file=sys.stderr)
+        if target.interactive(c.user, cmd) != 0:
+            return 1
+    return 0
+
+
+def _login(ns, config, env_name: str, c, target, *, dry_run: bool) -> int:
+    """``dk <env> host login``: log in again from sops (after rotating the bot's token)."""
+    from catalpa_tooling.fcos import host as h
+
+    registries = h.private_registries(c)
+    if not registries:
+        print(f"dk {env_name} host login: every image is public; no login needed.", file=sys.stderr)
+        return 0
+    if dry_run:
+        print(f"dry-run: would log {c.user} in to {', '.join(registries)}", file=sys.stderr)
+        return 0
+    creds = _credentials(config, env_name)
+    rc = _registry_login(c, target, creds, force=True, label=f"dk {env_name} host login")
+    if rc != 0:
+        return rc
+    for registry in registries:
+        r = target.ssh(
+            c.user,
+            f"podman login --get-login --authfile {shlex.quote(h.auth_file(c))} {shlex.quote(registry)}",
+            check=False,
+        )
+        who = r.stdout.decode().strip() if r.returncode == 0 else "not logged in"
+        print(f"{target.address}: {registry}: {who}", file=sys.stderr)
+        if r.returncode != 0:
+            return 1
+    return 0
 
 
 def _secrets_push(ns, config, env_name, c, target, *, dry_run: bool) -> int:
@@ -454,7 +536,8 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
         print(f"! {line}", file=sys.stderr)
 
     # 2. Secrets.
-    values, problems = h.secret_values(c, _credentials(config, env_name), None)
+    creds = _credentials(config, env_name)
+    values, problems = h.secret_values(c, creds, None)
     if problems:
         for p in problems:
             print(f"host provision: {p}", file=sys.stderr)
@@ -463,17 +546,9 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
     h.push_secrets(target, c, values)
 
     # 3. Registry login, kept in the account's home (host.bu points REGISTRY_AUTH_FILE there).
-    for registry in h.private_registries(c):
-        if h.logged_in(target, c, registry):
-            print(f"  {registry}: logged in", file=sys.stderr)
-            continue
-        cmd = f"podman login --authfile {shlex.quote(h.auth_file(c))} {shlex.quote(registry)}"
-        if not sys.stdin.isatty():
-            print(f"Log in to {registry}, then run provision again:\n  ssh -t {c.user}@{target.address} '{cmd}'", file=sys.stderr)
-            return 1
-        print(f"Log in to {registry} as {c.user} (the bot's token):", file=sys.stderr)
-        if target.interactive(c.user, cmd) != 0:
-            return 1
+    rc = _registry_login(c, target, creds, force=False, label=f"dk {env_name} host provision")
+    if rc != 0:
+        return rc
 
     if ns.no_start:
         print(

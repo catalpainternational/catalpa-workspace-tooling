@@ -173,12 +173,13 @@ def _main_impl() -> None:
             "next-branch",
             "worktree",
             "context",
+            "secrets",
         ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
                 f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk next-branch`, `dk worktree`, "
-                f"`dk context`, or a name with {envs_dir}/<name>/info.yaml.",
+                f"`dk context`, `dk secrets`, or a name with {envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
             if envs:
@@ -262,6 +263,10 @@ def _main_impl() -> None:
         sys.exit(cmd_worktree(ns, config))
     if cmd == "context":
         sys.exit(cmd_context(ns, config))
+    if cmd == "secrets":
+        from catalpa_tooling.project_credentials import cmd_project_secrets
+
+        sys.exit(cmd_project_secrets(config, dry_run=ns.dry_run))
 
     if getattr(ns, "env_name", None):
         sys.exit(handle_env_command(ns, config))

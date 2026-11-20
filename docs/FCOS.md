@@ -311,7 +311,8 @@ manages the system units, with one `sudo sh` per command and the script on stdin
 | Command | What it does |
 |---|---|
 | `host ignition -o FILE` | Compile `host.bu` to Ignition, the droplet's user data |
-| `host provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, log in to the image registry (asks for the token), start the stack |
+| `host provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, log in to the image registry (from `registry_user`/`registry_token` in sops, or asks for the token), start the stack |
+| `host login` | Log the account in to the image registry again from sops, and show who it's logged in as: after rotating the bot's token |
 | `secrets push [NAME…] [--restart]` | Stream secrets from `credentials.yaml` into Podman secrets |
 | `diff [--names-only]` | Compare the host with the render: each installed file's content, mode and owner, the data directories, the timers, the secret names |
 | `apply [--no-restart] [-y] [--force]` | Install what differs, then reload systemd and restart only the units affected |
@@ -358,6 +359,26 @@ dk <env> host provision --host <ip>
 
 Provisioning is safe to run again. The registry login is kept in the account's home
 (`~/.config/containers/auth.json`, where host.bu points systemd's `REGISTRY_AUTH_FILE`).
+
+**Registry login.** The host pulls private images with nobody connected, so the account keeps
+its own login. Keep the bot's in the project's `credentials.yaml` (`dk secrets`, which edits
+`docker/credentials.yaml` with sops):
+
+```yaml
+registry_user: <the bot's GitHub login>
+registry_token: <a classic PAT with only read:packages, with an expiry date>
+```
+
+`host provision` then logs in without asking, the token going over SSH's stdin to
+`podman login --password-stdin`: never on a command line, never printed. Without the two keys
+it asks, as before. A provisioned host keeps its login, so after rotating the token run
+`sops`/`dk secrets`, then `dk <env> host login`.
+
+**The project's `credentials.yaml`** holds what every env shares. It needs its own creation rule
+in `.sops.yaml` (`path_regex: ^docker/credentials\.yaml$`), which can name fewer people than the
+env files' rule. An env's own `credentials.yaml` overrides a project value of the same name, and
+the render sees both files' names, so a secret can live in either. Compose envs don't read it
+yet.
 
 **Restoring.** Run `host provision --no-start`: on an empty data volume, starting `db` would
 initialise an empty cluster. Restore the database and media, then run `host provision`

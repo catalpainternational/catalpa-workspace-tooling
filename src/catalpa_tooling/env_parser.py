@@ -61,6 +61,7 @@ RESERVED_DK_TOP_COMMANDS = frozenset(
         "next-branch",
         "worktree",
         "context",
+        "secrets",
     }
 )
 

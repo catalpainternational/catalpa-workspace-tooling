@@ -171,8 +171,15 @@ def render_env(
     except FcosConfigError as exc:
         raise RenderError(str(exc)) from exc
 
-    creds_path = config.deploy_envs_dir / env_name / "credentials.yaml"
-    keys = credential_keys(creds_path)
+    from catalpa_tooling.project_credentials import (
+        env_credentials_path,
+        project_credentials_path,
+    )
+
+    # The project's credentials, and the env's (which override a project value of the same name).
+    keys = credential_keys(project_credentials_path(config)) | credential_keys(
+        env_credentials_path(config, env_name)
+    )
     markers = {k: SECRET_MARK.format(key=k.upper()) for k in keys}
     compose_file, env, pulled = compose_env(config, env_name, info, markers)
     if not pulled:

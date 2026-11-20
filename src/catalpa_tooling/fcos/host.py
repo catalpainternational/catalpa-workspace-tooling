@@ -674,6 +674,21 @@ def auth_file(c: Committed) -> str:
     return f"{c.home}/.config/containers/auth.json"
 
 
+def login(host: Host, c: Committed, registry: str, user: str, token: str) -> int:
+    """``podman login`` as the account, the token on stdin (never in argv or the output)."""
+    r = host.ssh(
+        c.user,
+        f"podman login --authfile {shlex.quote(auth_file(c))} --username {shlex.quote(user)} "
+        f"--password-stdin {shlex.quote(registry)} >/dev/null",
+        input=token.encode(),
+        check=False,
+    )
+    if r.returncode != 0:
+        err = (r.stderr or b"").decode(errors="replace").replace(token, "<token>").strip()
+        print(f"  {registry}: {err}", file=sys.stderr)
+    return r.returncode
+
+
 def logged_in(host: Host, c: Committed, registry: str) -> bool:
     r = host.ssh(
         c.user,

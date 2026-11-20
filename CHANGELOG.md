@@ -4,6 +4,19 @@
 
 ### Added
 
+- **A project-level `credentials.yaml`, and the registry login kept in it (tooling 2.0, M3c).**
+  `docker/credentials.yaml` (beside `envs/`) holds what every env shares; `dk secrets` edits it
+  with sops. It needs its own `.sops.yaml` creation rule, which can name fewer people than the
+  env files'. An env's `credentials.yaml` overrides a value of the same name. Rendered hosts
+  read both files: the render sees both files' names, and `secrets push`, `host provision` and
+  `host login` both files' values. Compose envs don't read it yet.
+
+  With `registry_user` and `registry_token` in it, `dk <env> host provision` logs a new host in
+  to the image registry without asking; the token goes over SSH's stdin to
+  `podman login --password-stdin`, never on a command line or in the output. The new
+  `dk <env> host login` logs in again from sops after the token is rotated, and shows who the
+  host is logged in as. Without the keys, provision asks for the token as before.
+
 - **`dk <env> host destroy` tears a disposable env's DigitalOcean host down (#69, tooling 2.0
   M2b).** It's the inverse of `host create` and of a rendered host's provisioning, and runs only
   for an env with `digitalocean.allow_destroy: true` in `info.yaml`. No flag overrides that. In

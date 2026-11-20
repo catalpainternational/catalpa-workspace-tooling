@@ -297,6 +297,19 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     )
     attach_context_arguments(p_context)
 
+    p_secrets = sub.add_parser(
+        "secrets",
+        help="Edit the project's credentials.yaml with SOPS: values every env shares.",
+        description=(
+            "Edit credentials.yaml beside the envs directory (docker/credentials.yaml): values "
+            "every env shares, such as the registry bot's login (registry_user, "
+            "registry_token). An env's own credentials.yaml (`dk <env> secrets`) overrides a "
+            "value of the same name. Rendered hosts (runtime: quadlet) read it; compose envs "
+            "don't yet. Creating it needs a .sops.yaml creation rule for its path."
+        ),
+    )
+    p_secrets.add_argument("--dry-run", action="store_true", help="Print the sops command only.")
+
     attach_env_subparsers(sub, config)
 
     return parser

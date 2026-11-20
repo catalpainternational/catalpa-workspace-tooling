@@ -51,6 +51,9 @@ to a runtime, dk refuses it with a hint saying what to use instead.
    each operation is written once.
 6. **Options are dk's.** Verbs take dk's own options and map them per backend. They no longer
    pass compose's flags through unchanged.
+7. **Shared secrets live once, in the project's `credentials.yaml`.** `docker/credentials.yaml`
+   holds what every env shares (first, the registry bot's login), with its own `.sops.yaml`
+   recipients. An env's file overrides it. Rendered hosts read it now; compose envs with M7.
 
 ## Milestones
 
@@ -64,6 +67,7 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 | M2b | `host destroy` (#69): the exact inverse of creating a host. DNS records pointing at it, the droplet, its volumes, `docker_host` and the known_hosts entry, guarded by `allow_destroy` in `info.yaml` | done |
 | M3 | Implicit compose passthrough refused with a hint; `compose …` explicit | small |
 | M3b | `db backup` defaults to `incr`, as pgBackRest does (it takes a full one when the repository has none); `full`/`incr`/`diff` still accepted. Both runtimes share the parser, so compose envs get it too | small |
+| M3c | Project-level `docker/credentials.yaml` (`dk secrets`; an env's file overrides it), and the registry bot's login kept there: `host provision` logs in from it, `host login` after rotating the token | done |
 | M4 | Test branches in catalpa-site, swlt_ws2, catalpa_bero and partisipa pinned to `dev-2.0`, each with a checklist | ongoing from here |
 | M5 | Backend primitives: `ComposeBackend` extracted, operations rewritten once (restore, transfer, fetch, hooks) | large |
 | M5b | Restore-only envs (#204): `restore_from:` in `info.yaml`, per-env read keys created by dk, read and write as two roles, quadlet read mode | medium |
