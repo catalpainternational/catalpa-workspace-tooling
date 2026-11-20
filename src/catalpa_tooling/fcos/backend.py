@@ -203,7 +203,9 @@ class Backend:
         print(f"{self.host.address}: systemctl --user start {unit}", file=sys.stderr)
         return self._ssh(
             f't=$(date +%s); systemctl --user start {q}; rc=$?; '
-            f'journalctl --user -u {q} --since "@$t" --no-pager -o cat; exit $rc',
+            f'journalctl --user -u {q} --since "@$t" --no-pager -o cat '
+            # Podman's own event records ("… m=+0.09 container exec …") land in the unit's log.
+            f"| grep -vE ' m=\\+[0-9.]+ (container|image|pod|volume|network) ' ; exit $rc",
             tty=False,
         )
 

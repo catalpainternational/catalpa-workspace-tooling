@@ -369,6 +369,9 @@ def backup_files(
             "# A fixed --host: the container's own hostname changes every run, so restic would",
             "# find no parent snapshot and `forget` couldn't group snapshots.",
             f"Exec=backup --host {hostname} {' '.join(paths)}",
+            "# Output once, as the unit's (journalctl -u): a one-shot needs no `podman logs`,",
+            "# and with Podman's journald driver every line was logged twice.",
+            "LogDriver=passthrough",
         ]
         service = ["", "[Service]", "Type=oneshot", "TimeoutStartSec=3600"]
         text = header + "\n".join(unit + container + service) + "\n" + status_post

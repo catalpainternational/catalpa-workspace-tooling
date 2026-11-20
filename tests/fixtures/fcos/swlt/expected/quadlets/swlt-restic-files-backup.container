@@ -19,6 +19,9 @@ Volume=swlt_shape_restic_cache:/root/.cache/restic
 # A fixed --host: the container's own hostname changes every run, so restic would
 # find no parent snapshot and `forget` couldn't group snapshots.
 Exec=backup --host swlt-shape-staging /backup/django_media /backup/django_private_uploads
+# Output once, as the unit's (journalctl -u): a one-shot needs no `podman logs`,
+# and with Podman's journald driver every line was logged twice.
+LogDriver=passthrough
 
 [Service]
 Type=oneshot
