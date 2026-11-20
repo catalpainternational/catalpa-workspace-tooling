@@ -59,7 +59,7 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 | # | What | Size |
 |---|---|---|
 | M0 | `dev-2.0` = `main` + `feat/182-fcos-render` | done |
-| M1 | A bare `dk <env>` on quadlet: check render → apply → pull → restart changed units | small |
+| M1 | A bare `dk <env>` on quadlet: check render → apply → pull → restart changed units | done |
 | M2 | `render`/`check`/`diff`/`apply` as env verbs; `host ignition`/`host provision`; `secrets push`; `fcos …` deprecated alias | small |
 | M3 | Implicit compose passthrough refused with a hint; `compose …` explicit | small |
 | M4 | Test branches in catalpa-site, swlt_ws2 and bero pinned to `dev-2.0`, each with a checklist | ongoing from here |

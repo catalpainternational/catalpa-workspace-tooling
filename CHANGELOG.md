@@ -4,6 +4,18 @@
 
 ### Added
 
+- **A bare `dk <env>` brings a quadlet env up to date (tooling 2.0, M1).** On a compose env it
+  runs `up -d`; on a `runtime: quadlet` env it was refused. Now it:
+  1. checks the committed render is current;
+  2. checks every secret is on the host;
+  3. installs any files that differ, as `fcos apply` does;
+  4. pulls every image the account's quadlets run, and restarts the units whose image changed;
+  5. checks the stack's units are active.
+
+  Step 4 is how a new image under the same tag goes out with `fcos.auto_update` off. `--tag`
+  is refused on a quadlet env (images follow `image_tag`, through a render), and
+  `--dry-run` shows the plan without pulling. See `docs/TOOLING_2.md` for the 2.0 plan.
+
 - **`tests backend` now passes extra arguments on to pytest (#189).** `uv run tests backend -k
   name -n 4 tests/test_foo.py` used to exit 2 with "unrecognized arguments", so projects ran
   `uv run --group test pytest …` from `paths.backend` instead. Every `--` is dropped, not only a

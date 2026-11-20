@@ -73,7 +73,8 @@ dk
     │   ├── disable
     │   ├── restart
     │   └── logs
-    │   (runtime: quadlet envs: logs, ps, exec, manage, restart/stop/start go to the host's
+    │   (runtime: quadlet envs: a bare `dk <env>` applies the committed render, pulls and
+    │    restarts what changed; logs, ps, exec, manage, restart/stop/start go to the host's
     │    systemd/podman over SSH; other compose verbs are refused — docs/FCOS.md)
     ├── fcos                         # Fedora CoreOS rootless quadlets (docs/FCOS.md)
     │   ├── render                   # write docker/envs/<env>/generated/fcos/ (commit it)

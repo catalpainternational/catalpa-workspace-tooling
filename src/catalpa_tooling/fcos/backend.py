@@ -528,9 +528,9 @@ def podman_run_args(
 
 
 REFUSED_HINT = {
-    "up": "`dk {env} fcos apply` installs a changed render and restarts what it changed",
+    "up": "a bare `dk {env}` brings the host up to date: it applies the committed render, pulls the images and restarts what changed",
     "down": "`dk {env} stop` stops the stack's units",
-    "pull": "the units pull their images when they start; a new image_tag goes out with `fcos render` + `fcos apply`",
+    "pull": "a bare `dk {env}` pulls the images and restarts the units whose image changed",
     "build": "the host pulls images; build and push them, then `fcos render` + `fcos apply`",
     "run": "`dk {env} exec SERVICE …` runs a command in a running container",
     "rm": "the units remove their containers when they stop",
@@ -609,6 +609,15 @@ def handle(
         argv = []
     elif command in (None, "compose"):
         argv = list(getattr(ns, "implicit_compose_argv", None) or getattr(ns, "compose_argv", None) or [])
+        if not argv and command is None:
+            # A bare `dk <env>`: bring the host up to date (compose's `up -d`).
+            from catalpa_tooling.fcos.deploy import deploy
+
+            return deploy(
+                config, env_name, info,
+                yes=bool(getattr(ns, "yes", False)), dry_run=bool(getattr(ns, "dry_run", False)),
+                tag=getattr(ns, "tag", None),
+            )  # fmt: skip
         if not argv:
             argv = ["up", "-d"]
         verb, argv = argv[0], argv[1:]

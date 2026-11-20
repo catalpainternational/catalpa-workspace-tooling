@@ -222,10 +222,27 @@ and the committed `generated/fcos/manifest.json`, so there's no SOPS decrypt and
 | `dk <env> manage [--user U] …` | `podman exec <web> ./manage.py …` as `stack.manage_user` |
 | `dk <env> restart\|stop\|start [svc…]` | `systemctl --user` on those units. With no service, the whole stack: `stop` stops the edge's socket first, so a request can't start it again |
 
+A bare `dk <env>` brings the host up to date, as `up -d` does on a compose env:
+
+1. The committed render must match a fresh one, as for `fcos check`, so only committed files
+   reach the host.
+2. Every secret the render needs must exist on the host. A unit started without one fails, so
+   dk stops here and points to `fcos secrets push`.
+3. Files that differ are installed and the units they affect restarted, as `fcos apply` does
+   (it shows the plan and asks, unless `-y`).
+4. Every image an account quadlet runs is pulled. A unit whose image changed is restarted,
+   unless step 3 already did. Backup one-shots pick a new image up on their next run, and
+   `migrate`/`collectstatic` re-run with `django` (`PartOf=`).
+5. The stack's units must all be active afterwards.
+
+Step 4 is how a new image under the same tag goes out with `fcos.auto_update` off. `--tag`
+is refused: a quadlet env's images follow `image_tag` in `info.yaml`, through a render and a
+commit. `--dry-run` shows the plan and the images it would pull. The system quadlets
+(Zabbix) aren't pulled.
+
 `up`, `down`, `pull`, `build`, `run`, `rm`, `wipe` and the other compose verbs are refused:
-they would start a second stack beside the quadlets. A change reaches the host with
-`fcos render`, a commit, then `fcos apply`. `dk <env> docker …` still works against the
-account's Podman socket.
+they would start a second stack beside the quadlets. `dk <env> docker …` still works against
+the account's Podman socket.
 
 `dk fetch db --env <env>` and `dk fetch media --env <env>` work too, for `via: dk` databases:
 
@@ -247,16 +264,14 @@ Backups (`files` is the media backup; #43 renames it `media`):
 | `dk <env> db pgdump [args]` | `pg_dump -Fc` to stdout, as for `fetch db` |
 | `dk <env> files backup` | starts the restic unit, waits, shows its log |
 | `dk <env> files snapshots \| check \| stats \| init` | a one-off restic container built from that unit's quadlet: same image, ID range, secrets and mounts |
-
 | `dk <env> db restore [--dry-run] [pgbackrest args]` | as on compose envs: stops the app and `db`, runs `pgbackrest restore --delta` in a one-off container like `db` (its image, ID range, settings, secrets and mounts), then starts the app again. `db` is healthy only once WAL replay ends, so the app waits for recovery, up to `db`'s start timeout (15 min) |
 | `dk <env> files restore [SNAPSHOT]` | `restic restore SNAPSHOT:/backup/<vol> --target /backup/<vol> --delete` in the backup unit's ID range, so each media directory ends up exactly as in the snapshot, with the right owner. `latest` means the latest from this host (`--host`) |
-
-Both restores ask you to type the env name first, unless you pass dk's `--yes`. Unlike compose's
-`files restore`, the media is restored in place rather than through a staging volume: a restore
-that fails part-way leaves a mix. Run it again to finish.
-
 | `dk <env> db restore --file PATH` / `--dumps` | replaces the app database with a local `pg_dump -Fc` archive (`--dumps`: `paths.fetch_db_dump`): stops the app (not `db`), copies the archive into `db` over SSH and checks its SHA-256, drops and recreates the database and runs `pg_restore` with the compose scripts, starts the app, then runs the `ops.post_db_restore` hooks. Asks for the env name. The Metabase dump isn't restored on quadlet envs yet |
 | `dk <env> pull_media [--target DIR]` | the same rsync as `fetch media` (see #43 on deprecating `pull_media`) |
+
+The restores ask you to type the env name first, unless you pass dk's `--yes`. Unlike compose's
+`files restore`, the media is restored in place rather than through a staging volume: a restore
+that fails part-way leaves a mix. Run it again to finish.
 
 `dk transfer SRC DST` works when either end is a quadlet env. The steps are the usual ones, each
 end done its own way: a quadlet destination stops everything but `db` (the edge's socket

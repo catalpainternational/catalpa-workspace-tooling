@@ -242,26 +242,45 @@ def _host_command(
             print(line)
         print(f"{target.address}: files match the render; nothing to apply.", file=sys.stderr)
         return 0 if plan.secrets_in_sync else 1
+    rc, _restarted = apply_plan(
+        c, target, plan, lines, env_name,
+        dry_run=dry_run, yes=bool(getattr(ns, "yes", False)),
+        force=bool(getattr(ns, "force", False)), no_restart=bool(getattr(ns, "no_restart", False)),
+    )  # fmt: skip
+    if rc == 0 and not dry_run and not plan.secrets_in_sync:
+        print(f"Secrets are missing: `dk {env_name} fcos secrets push`.", file=sys.stderr)
+    return rc
+
+
+def apply_plan(
+    c, target, plan, lines: list[str], env_name: str,
+    *, dry_run: bool, yes: bool, force: bool, no_restart: bool,
+) -> tuple[int, list[str]]:  # fmt: skip
+    """Show ``plan``, ask, install it as root and restart what it affects.
+
+    Returns (exit code, the account units it restarted). What ``fcos apply`` and a bare
+    ``dk <env>`` share."""
+    from catalpa_tooling.fcos import host as h
+
     restarts = h.restarts_for(c, [ch.dest for ch in plan.changes] + plan.remove)
-    no_restart = bool(getattr(ns, "no_restart", False))
     for line in lines:
         print(line)
     _print_restarts(restarts, no_restart=no_restart)
     lockout = h.lockout_problem(c, plan, h.local_public_keys())
     if lockout:
-        print(f"{'warning' if getattr(ns, 'force', False) else 'refused'}: {lockout}", file=sys.stderr)
-        if not getattr(ns, "force", False) and not dry_run:
+        print(f"{'warning' if force else 'refused'}: {lockout}", file=sys.stderr)
+        if not force and not dry_run:
             print("Pass --force if that is what you want.", file=sys.stderr)
-            return 1
+            return 1, []
     if dry_run:
         print("dry-run: nothing changed.", file=sys.stderr)
-        return 0
-    if not getattr(ns, "yes", False):
+        return 0, []
+    if not yes:
         from catalpa_tooling.cli_confirm import confirm_yes_default_no
 
         if not confirm_yes_default_no(f"Apply this to {target.address} ({env_name})? [y/N]: "):
             print("Nothing changed.", file=sys.stderr)
-            return 1
+            return 1, []
     root_after, user_after = h.restart_commands(c, plan, restarts, restart=not no_restart)
     target.root_script(h.apply_script(c, plan) + root_after + "\n")
     if user_after:
@@ -270,9 +289,8 @@ def _host_command(
         f"{target.address}: {len(plan.changes)} files installed, {len(plan.remove)} removed.",
         file=sys.stderr,
     )
-    if not plan.secrets_in_sync:
-        print(f"Secrets are missing: `dk {env_name} fcos secrets push`.", file=sys.stderr)
-    return 0
+    restarted = [] if no_restart else [*restarts.user, *(f"{s}.service" for s in restarts.sockets)]
+    return 0, restarted
 
 
 def _print_restarts(r, *, no_restart: bool) -> None:
