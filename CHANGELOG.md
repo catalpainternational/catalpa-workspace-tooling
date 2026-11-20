@@ -74,6 +74,11 @@
 
 ### Fixed
 
+- **An interrupted media push into a quadlet env still hands the files to the media's owner.**
+  The `podman unshare chown -R` after rsync ran only when rsync succeeded. A Ctrl-C or a failure
+  left the files it had written owned by the account's namespace root, so Django couldn't write
+  beside them. The chown now runs in any case.
+
 - **A quadlet env's Postgres no longer crash-loops when archiving fails.** pgBackRest's async
   `archive-push` leaves a process behind, which postgres (PID 1 in the container) inherited.
   When that process exited non-zero, for example with the repository unreachable, postgres

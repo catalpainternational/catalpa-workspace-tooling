@@ -419,12 +419,18 @@ class Backend:
             f"{source.resolve()}/", f"{self.ssh_target}:{media}/",
         ]  # fmt: skip
         print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-        rc = run_cmd(cmd, check=False, print_cmd=False).returncode
-        if rc != 0 or dry_run:
-            return rc
-        chown = f"podman unshare chown -R {uid}:{uid} {shlex.quote(media)}"
-        print(f"{self.env_name}: {chown}", file=sys.stderr)
-        return self._ssh(chown, tty=False)
+        if dry_run:
+            return run_cmd(cmd, check=False, print_cmd=False).returncode
+        # The chown runs even when rsync fails or is interrupted (Ctrl-C): files it already
+        # wrote belong to the account's namespace root, and django couldn't write beside them.
+        rc = 1
+        try:
+            rc = run_cmd(cmd, check=False, print_cmd=False).returncode
+        finally:
+            chown = f"podman unshare chown -R {uid}:{uid} {shlex.quote(media)}"
+            print(f"{self.env_name}: {chown}", file=sys.stderr)
+            chown_rc = self._ssh(chown, tty=False)
+        return rc or chown_rc
 
     def stop_writers(self) -> list[str]:
         """Stop everything but db (the edge's socket first); returns what to start again."""

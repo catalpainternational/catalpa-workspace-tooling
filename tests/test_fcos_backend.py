@@ -436,3 +436,16 @@ def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:
     assert t.run_transfer(swlt, **kw) == 23
     assert log[-1] == ("start", ("django.service",)) and "hooks" not in log
     assert t.run_transfer(swlt, **{**kw, "media_method": "tar"}) == 1
+
+
+def test_push_media_chowns_even_when_rsync_is_interrupted(swlt, tmp_path, monkeypatch) -> None:
+    r = Recorder()
+    b = _backend(swlt, r)
+
+    def interrupted(cmd, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("catalpa_tooling.run_cmd.run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        b.push_media(tmp_path)
+    assert r.calls[-1][-1].startswith("podman unshare chown -R ")
