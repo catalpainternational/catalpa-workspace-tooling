@@ -101,6 +101,14 @@
 
 ### Fixed
 
+- **A change to comments only no longer restarts a quadlet env's stack.** `dk <env> apply` and
+  a bare `dk <env>` restarted every unit a changed file touched, even when only a comment
+  changed. That happens to every file at once when a newer dk rewords the render's header. Those
+  files are still installed (and systemd reloaded) but nothing restarts. They're listed as
+  `(comments only)`, and the "Podman keeps the existing volume" notes and the core-keys lockout
+  check skip them. In a dry run of a bare `dk <env>`, "nothing changed" now comes last, and the
+  plan no longer prints after the messages about it when output is piped.
+
 - **An interrupted media push into a quadlet env still hands the files to the media's owner.**
   The `podman unshare chown -R` after rsync ran only when rsync succeeded. A Ctrl-C or a failure
   left the files it had written owned by the account's namespace root, so Django couldn't write

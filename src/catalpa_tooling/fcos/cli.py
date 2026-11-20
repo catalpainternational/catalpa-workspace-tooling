@@ -298,6 +298,7 @@ def _host_command(
     if command == "diff":
         for line in lines:
             print(line)
+        sys.stdout.flush()
         if plan.files_in_sync and plan.secrets_in_sync:
             print(f"{target.address}: matches the render.", file=sys.stderr)
             return 0
@@ -307,6 +308,7 @@ def _host_command(
     if plan.files_in_sync:
         for line in lines:
             print(line)
+        sys.stdout.flush()
         print(f"{target.address}: files match the render; nothing to apply.", file=sys.stderr)
         return 0 if plan.secrets_in_sync else 1
     rc, _restarted = apply_plan(
@@ -321,18 +323,26 @@ def _host_command(
 
 def apply_plan(
     c, target, plan, lines: list[str], env_name: str,
-    *, dry_run: bool, yes: bool, force: bool, no_restart: bool,
+    *, dry_run: bool, yes: bool, force: bool, no_restart: bool, more_follows: bool = False,
 ) -> tuple[int, list[str]]:  # fmt: skip
     """Show ``plan``, ask, install it as root and restart what it affects.
+
+    A change to comments only is installed but restarts nothing (a header reworded by a newer
+    dk shouldn't restart the stack). ``more_follows``: the caller has more to do after a dry
+    run, so don't end with "nothing changed".
 
     Returns (exit code, the account units it restarted). What ``dk <env> apply`` and a bare
     ``dk <env>`` share."""
     from catalpa_tooling.fcos import host as h
 
-    restarts = h.restarts_for(c, [ch.dest for ch in plan.changes] + plan.remove)
+    restarts = h.restarts_for(c, [ch.dest for ch in plan.changes if ch.restarts] + plan.remove)
     for line in lines:
         print(line)
+    # The plan goes to stdout, the rest to stderr: flush so a pipe keeps them in order.
+    sys.stdout.flush()
     _print_restarts(restarts, no_restart=no_restart)
+    if plan.changes and not any(ch.restarts for ch in plan.changes) and not plan.remove:
+        print("Comments only: nothing to restart.", file=sys.stderr)
     lockout = h.lockout_problem(c, plan, h.local_public_keys())
     if lockout:
         print(f"{'warning' if force else 'refused'}: {lockout}", file=sys.stderr)
@@ -340,7 +350,8 @@ def apply_plan(
             print("Pass --force if that is what you want.", file=sys.stderr)
             return 1, []
     if dry_run:
-        print("dry-run: nothing changed.", file=sys.stderr)
+        if not more_follows:
+            print("dry-run: nothing changed.", file=sys.stderr)
         return 0, []
     if not yes:
         from catalpa_tooling.cli_confirm import confirm_yes_default_no

@@ -137,6 +137,7 @@ def deploy(
         if not plan.secrets_in_sync:
             for line in h.describe(plan, show_diff=False):
                 print(line)
+            sys.stdout.flush()
             print(
                 f"dk {env_name}: secrets are missing on the host; push them first "
                 f"(`dk {env_name} secrets push`).",
@@ -150,7 +151,7 @@ def deploy(
         else:
             rc, restarted = apply_plan(
                 c, target, plan, h.describe(plan), env_name,
-                dry_run=dry_run, yes=yes, force=False, no_restart=False,
+                dry_run=dry_run, yes=yes, force=False, no_restart=False, more_follows=True,
             )  # fmt: skip
             if rc != 0:
                 return rc
@@ -159,6 +160,7 @@ def deploy(
         if dry_run:
             print(f"dry-run: would pull {', '.join(images)}", file=sys.stderr)
             print("dry-run: and restart the units whose image changed.", file=sys.stderr)
+            print("dry-run: nothing changed.", file=sys.stderr)
             return 0
         print(f"{target.address}: pulling {len(images)} images …", file=sys.stderr)
         out = target.ssh(c.user, "sh -s", input=pull_script(c, images).encode()).stdout.decode()

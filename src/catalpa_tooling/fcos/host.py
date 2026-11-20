@@ -266,9 +266,34 @@ class Change:
     file: str
     owner: str
     mode: int
-    why: str  # "new", "changed", "mode", "owner"
+    why: str  # "new", "changed", "comments only", "mode …", "owner …"
     old: str | None = None
     new: str = ""
+
+    @property
+    def restarts(self) -> bool:
+        """Whether a running unit could behave differently after this change."""
+        return self.why != COMMENTS_ONLY
+
+
+COMMENTS_ONLY = "comments only"
+
+
+def _without_comments(text: str) -> list[str]:
+    """``text`` minus its whole-line comments (``#``, and ``;`` as systemd allows), keeping a
+    first-line shebang. Every file dk renders (units, quadlets, configs, shell, key files)
+    treats those lines as inert."""
+    out = []
+    for i, line in enumerate(text.splitlines()):
+        s = line.lstrip()
+        if (s.startswith("#") and not (i == 0 and s.startswith("#!"))) or s.startswith(";"):
+            continue
+        out.append(line)
+    return out
+
+
+def comments_only(old: str, new: str) -> bool:
+    return old != new and _without_comments(old) == _without_comments(new)
 
 
 @dataclass
@@ -306,7 +331,9 @@ def make_plan(c: Committed, state: HostState) -> Plan:
         if have is None:
             p.changes.append(Change(why="new", **args))
         elif have.text != new:
-            p.changes.append(Change(why="changed", old=have.text, **args))
+            same_perms = have.mode == want_mode and have.owner == e["owner"]
+            why = COMMENTS_ONLY if same_perms and comments_only(have.text, new) else "changed"
+            p.changes.append(Change(why=why, old=have.text, **args))
         elif have.mode != want_mode:
             p.changes.append(Change(why=f"mode {have.mode:o} → {want_mode:o}", old=have.text, **args))
         elif have.owner != e["owner"]:
@@ -686,7 +713,7 @@ def local_public_keys(*, runner: Runner = run, home: Path | None = None) -> set[
 
 def core_keys_change(c: Committed, p: Plan) -> bool:
     core_dir = keys_dir("core") + "/"
-    return any(ch.dest.startswith(core_dir) for ch in p.changes) or any(
+    return any(ch.dest.startswith(core_dir) and ch.why != COMMENTS_ONLY for ch in p.changes) or any(
         k.startswith(core_dir) for k in p.stray_keys
     )
 
