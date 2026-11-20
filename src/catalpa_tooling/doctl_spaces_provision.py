@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
+import shutil
 import sys
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -23,7 +28,10 @@ from catalpa_tooling.doctl_binary import (
     run_doctl,
     run_doctl_json,
 )
-from catalpa_tooling.doctl_projects import list_project_resource_urns, resolve_project_id
+from catalpa_tooling.doctl_projects import (
+    list_project_resource_urns,
+    resolve_project_id,
+)
 from catalpa_tooling.pgbackrest_volume_config import (
     PREFIX_WRITE,
     _extract_stanza_vars,
@@ -271,16 +279,30 @@ def _ensure_bucket_in_project(
         )
 
 
+@contextmanager
 def _s3cmd_spaces_args(
     defaults: SpacesBackupDefaults, *, access_key: str, secret_key: str
-) -> list[str]:
-    return [
-        f"--access_key={access_key}",
-        f"--secret_key={secret_key}",
-        f"--host={defaults.endpoint}",
-        f"--host-bucket={defaults.host_bucket}",
-        f"--region={defaults.region}",
-    ]
+) -> Iterator[list[str]]:
+    """s3cmd arguments for the Spaces endpoint, with the key in a private config file.
+
+    Never ``--access_key``/``--secret_key``: ``run_cmd`` echoes every command line, and an
+    argument is also visible to other users in ``ps``. The file is 0600 in a 0700 directory and
+    removed afterwards.
+    """
+    tmp = tempfile.mkdtemp(prefix="dk-s3cmd-")
+    try:
+        cfg = Path(tmp) / "s3cfg"
+        fd = os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"[default]\naccess_key = {access_key}\nsecret_key = {secret_key}\n")
+        yield [
+            "-c", str(cfg),
+            f"--host={defaults.endpoint}",
+            f"--host-bucket={defaults.host_bucket}",
+            f"--region={defaults.region}",
+        ]  # fmt: skip
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _normalize_key_record(item: dict) -> tuple[str, str, str]:
@@ -390,10 +412,8 @@ def _bucket_exists(
             file=sys.stderr,
         )
         return False
-    result = run_s3cmd(
-        ["info", f"s3://{defaults.bucket}", *_s3cmd_spaces_args(defaults, access_key=access_key, secret_key=secret_key)],
-        capture_output=True,
-    )
+    with _s3cmd_spaces_args(defaults, access_key=access_key, secret_key=secret_key) as args:
+        result = run_s3cmd(["info", f"s3://{defaults.bucket}", *args], capture_output=True)
     return result.returncode == 0
 
 
@@ -410,10 +430,8 @@ def _create_bucket(
             file=sys.stderr,
         )
         return
-    result = run_s3cmd(
-        ["mb", f"s3://{defaults.bucket}", *_s3cmd_spaces_args(defaults, access_key=access_key, secret_key=secret_key)],
-        capture_output=True,
-    )
+    with _s3cmd_spaces_args(defaults, access_key=access_key, secret_key=secret_key) as args:
+        result = run_s3cmd(["mb", f"s3://{defaults.bucket}", *args], capture_output=True)
     if result.returncode == 0:
         return
     combined = f"{result.stderr or ''}\n{result.stdout or ''}"

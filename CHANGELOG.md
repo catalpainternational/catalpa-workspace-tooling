@@ -74,6 +74,12 @@
 
 ### Fixed
 
+- **Spaces provisioning no longer prints a key's secret.** Creating a bucket ran
+  `s3cmd info`/`mb` with `--access_key=… --secret_key=…`, and dk echoes every command it runs,
+  so the temporary full-access bootstrap key's secret appeared in the terminal (and in `ps`).
+  dk deleted that key seconds later, which limited the exposure. The key now goes to s3cmd in a
+  0600 config file in a private temporary directory, removed afterwards.
+
 - **`dk` now echoes the commands it runs (`$ …`) to stderr, not stdout (#196).** Redirecting a
   `dk` command's output to a file put the echo line at the top of the file. For binary output
   that broke the file, e.g. `dk <env> docker exec db pg_dump -Fc > x.dump` gave a dump that
