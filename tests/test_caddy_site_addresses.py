@@ -1,17 +1,21 @@
-"""Tests for CADDY_*_SITE_ADDRESS injection (deployed HTTPS + local-proxy HTTP)."""
+"""Tests for CADDY_*_SITE_ADDRESS injection (deployed HTTPS + local-proxy HTTP).
+
+Deployed stacks are **explicit-only**: an address is injected from what ``info.yaml``
+declares, never from what the project is named. Local-proxy stacks still derive role
+subdomains, but from the declared ``local_proxy.roles`` capability.
+"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from catalpa_tooling.caddy_site_addresses import apply_caddy_site_addresses, is_bero_stack
+from catalpa_tooling.caddy_site_addresses import apply_caddy_site_addresses
 
 
 def _config(*frontend: str, metabase: bool = False) -> object:
     """Lightweight stand-in exposing the attrs the helper reads.
 
-    ``paths.frontend`` is a tuple, as ``PathsConfig`` builds it — passing a bare
-    string here would make ``is_bero_stack`` iterate characters and quietly pass.
+    ``paths.frontend`` is a tuple, as ``PathsConfig`` builds it.
 
     Deployed tests always pass an explicit ``site_origin`` so the helper never needs the
     dev-hostname derivation (which requires a full ``ProjectConfig``).
@@ -28,7 +32,6 @@ def _deployed(
     *,
     info: dict | None = None,
     site_origin: str = "https://app.example.com",
-    site_origins: list[str] | None = None,
 ) -> dict[str, str]:
     apply_caddy_site_addresses(
         env_add,
@@ -36,25 +39,9 @@ def _deployed(
         config=config,  # type: ignore[arg-type]
         env_name="staging",
         site_origin=site_origin,
-        site_origins=site_origins or [site_origin],
         behind_local_proxy=False,
     )
     return env_add
-
-
-def test_is_bero_stack() -> None:
-    assert is_bero_stack(_config("bero"))  # type: ignore[arg-type]
-    assert not is_bero_stack(_config("frontend"))  # type: ignore[arg-type]
-
-
-def test_is_bero_stack_finds_bero_beyond_the_primary_frontend() -> None:
-    """A bero project that adds a second SPA still ships the bero site block.
-
-    Declaring the new SPA first must not drop ``CADDY_DJANGO_SITE_ADDRESS``.
-    """
-    assert is_bero_stack(_config("bero", "frontend_vue"))  # type: ignore[arg-type]
-    assert is_bero_stack(_config("frontend_vue", "bero"))  # type: ignore[arg-type]
-    assert not is_bero_stack(_config("frontend_vue", "frontend_admin"))  # type: ignore[arg-type]
 
 
 def test_deployed_generic_sets_only_primary() -> None:
@@ -65,7 +52,7 @@ def test_deployed_generic_sets_only_primary() -> None:
     assert "DJANGO_ORIGIN" not in env
 
 
-def test_deployed_bero_with_explicit_origins() -> None:
+def test_deployed_explicit_origins_set_both_addresses() -> None:
     env = _deployed(
         {
             "DJANGO_ORIGIN": "https://admin.samtuku.temp.build",
@@ -79,53 +66,62 @@ def test_deployed_bero_with_explicit_origins() -> None:
     assert env["CADDY_METABASE_SITE_ADDRESS"] == "https://stats.samtuku.temp.build"
 
 
-def test_deployed_bero_staging_style_derives_admin_and_stats() -> None:
+def test_deployed_admin_address_does_not_depend_on_the_frontend_name() -> None:
+    """An explicit ``DJANGO_ORIGIN`` is honoured whatever the frontend is called.
+
+    Previously ``CADDY_DJANGO_SITE_ADDRESS`` was gated on ``paths.frontend == "bero"``,
+    so a project declaring the same origin got no admin site block.
+    """
+    env = _deployed(
+        {"DJANGO_ORIGIN": "https://admin.example.com"},
+        _config("frontend_vue"),
+    )
+    assert env["CADDY_DJANGO_SITE_ADDRESS"] == "https://admin.example.com"
+
+
+def test_deployed_without_django_origin_sets_no_admin_address() -> None:
+    """No ``admin.`` subdomain is invented, even for a frontend named ``bero``."""
+    env = _deployed({}, _config("bero"), site_origin="https://samtuku.temp.build")
+    assert "DJANGO_ORIGIN" not in env
+    assert "CADDY_DJANGO_SITE_ADDRESS" not in env
+
+
+def test_deployed_metabase_fetch_alone_does_not_route_metabase() -> None:
+    """``native.fetch.databases.metabase`` describes fetching, not public routing."""
     env = _deployed(
         {},
         _config("bero", metabase=True),
         site_origin="https://samtuku.temp.build",
     )
-    assert env["CADDY_SITE_ADDRESS"] == "https://samtuku.temp.build"
-    assert env["DJANGO_ORIGIN"] == "https://admin.samtuku.temp.build"
-    assert env["CADDY_DJANGO_SITE_ADDRESS"] == "https://admin.samtuku.temp.build"
-    assert env["CADDY_METABASE_SITE_ADDRESS"] == "https://stats.samtuku.temp.build"
-
-
-def test_deployed_bero_without_metabase_fetch_skips_metabase() -> None:
-    env = _deployed(
-        {},
-        _config("bero", metabase=False),
-        site_origin="https://samtuku.temp.build",
-    )
-    assert env["CADDY_DJANGO_SITE_ADDRESS"] == "https://admin.samtuku.temp.build"
     assert "CADDY_METABASE_SITE_ADDRESS" not in env
 
 
-def test_deployed_ambulancia_style_metabase_site_origin() -> None:
+def test_deployed_second_site_origin_is_not_a_metabase_signal() -> None:
+    """A second ``site_origin`` is just another host, not implicitly Metabase.
+
+    jid prod lists ``[app, admin, stats]``; the old positional fallback would have
+    pointed the Metabase site block at the *admin* host.
+    """
+    env = _deployed(
+        {},
+        _config("frontend"),
+        site_origin="https://primary.example.com",
+    )
+    assert "CADDY_METABASE_SITE_ADDRESS" not in env
+
+
+def test_deployed_metabase_site_origin_is_honoured() -> None:
+    """``METABASE_SITE_ORIGIN`` works as an alias for ``METABASE_ORIGIN``."""
     env = _deployed(
         {"METABASE_SITE_ORIGIN": "https://metabase.ambulancia-staging.catalpa.build"},
         _config("."),
         site_origin="https://ambulancia-staging.catalpa.build",
-        site_origins=[
-            "https://ambulancia-staging.catalpa.build",
-            "https://metabase.ambulancia-staging.catalpa.build",
-        ],
     )
     assert env["CADDY_METABASE_SITE_ADDRESS"] == (
         "https://metabase.ambulancia-staging.catalpa.build"
     )
     assert "CADDY_DJANGO_SITE_ADDRESS" not in env
     assert "DJANGO_ORIGIN" not in env
-
-
-def test_deployed_non_bero_second_site_origin_fallback() -> None:
-    env = _deployed(
-        {},
-        _config("."),
-        site_origin="https://primary.example.com",
-        site_origins=["https://primary.example.com", "https://metabase.example.com"],
-    )
-    assert env["CADDY_METABASE_SITE_ADDRESS"] == "https://metabase.example.com"
 
 
 def test_deployed_non_metabase_project_sets_no_metabase_address() -> None:
@@ -142,7 +138,8 @@ def test_deployed_respects_explicit_override() -> None:
     assert env["CADDY_SITE_ADDRESS"] == "https://custom.example.com"
 
 
-def test_deployed_stats_role_sets_metabase_for_non_bero() -> None:
+def test_deployed_stats_role_sets_metabase() -> None:
+    """A declared ``stats`` role still derives the subdomain on a deployed stack."""
     env = _deployed(
         {},
         _config("."),
@@ -160,7 +157,6 @@ def test_local_proxy_uses_http_addresses() -> None:
         config=_config("bero", metabase=True),  # type: ignore[arg-type]
         env_name="dev",
         site_origin="https://ncd-dev.localdev.temp.build",
-        site_origins=["https://ncd-dev.localdev.temp.build"],
         behind_local_proxy=True,
     )
     assert env["CADDY_SITE_ADDRESS"] == "http://ncd-dev.localdev.temp.build"
@@ -225,7 +221,6 @@ def test_local_proxy_redirect_origins_use_http() -> None:
         config=_config("bero"),  # type: ignore[arg-type]
         env_name="dev",
         site_origin="https://app-dev.localdev.temp.build",
-        site_origins=["https://app-dev.localdev.temp.build"],
         behind_local_proxy=True,
     )
     assert env["CADDY_REDIRECT_SITE_ADDRESSES"] == (
