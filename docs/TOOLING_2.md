@@ -83,7 +83,7 @@ checklist:
 | catalpa-site | Compose prod on DigitalOcean and the `fcos` quadlet env in one repo | `dev-2.0` (#1010) |
 | swlt_ws2 | Newest pin, extra env names (`content`, `qad`); a fixture in the tests | v1.7.0 |
 | catalpa_bero | Oldest common pin (as jid, ncd and tvi): the upgrade path from far behind | v1.3.3 |
-| partisipa | Being brought onto dk (branch `align_tooling`): only `dev` and `staging` are dk envs so far, and it takes the tooling from a local checkout | path `../../catalpa-workspace-tooling` |
+| partisipa | Branch `develop`. Its only dk envs are `dev` and `full`, with no deployed env yet: the local commands, then a first deployed env set up from scratch (a candidate for a rendered host) | v1.7.0 |
 
 `host destroy` (#69) is M2b, ahead of the larger milestones, because these test hosts get
 destroyed and rebuilt repeatedly, and by hand that leaves DNS records, volumes and known_hosts
