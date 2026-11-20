@@ -118,6 +118,10 @@ def plan_backups(
             # Files deploy owns, so rootless Podman can relabel them (:Z). No secrets in them.
             f"Volume={conf_dir}/{pg.pgbackrest_conf}:/etc/pgbackrest/conf.d/{pg.pgbackrest_conf}:ro,Z",
             f"Volume={conf_dir}/{pg.postgres_conf}:/etc/postgresql/conf.d/{pg.postgres_conf}:ro,Z",
+            # An init as PID 1. Async archive-push leaves a process behind; with postgres as
+            # PID 1 it inherits it, and when that exits non-zero (the repository unreachable)
+            # postgres takes it for a crashed backend and restarts in recovery mode.
+            "RunInit=true",
         )
         if not _timer_kinds(config.ops.systemd_units.pgbackrest, "pgbackrest-backup-"):
             plan.problems.append(

@@ -22,6 +22,7 @@ Secret=pgbr_s3_write_stanza,type=env,target=PGBACKREST_STANZA
 Environment=PGBACKREST_PG1_PATH=/var/lib/postgresql/18/docker
 Volume=/var/home/deploy/.config/swlt_shape/50-swlt_shape-managed.conf:/etc/pgbackrest/conf.d/50-swlt_shape-managed.conf:ro,Z
 Volume=/var/home/deploy/.config/swlt_shape/30-swlt_shape-pgbackrest-archive.conf:/etc/postgresql/conf.d/30-swlt_shape-pgbackrest-archive.conf:ro,Z
+RunInit=true
 HealthCmd=pg_isready -U postgres
 HealthInterval=5s
 Notify=healthy

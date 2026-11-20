@@ -65,6 +65,36 @@ def units_for_images(c: h.Committed, changed: list[str]) -> list[str]:
     return sorted(units)
 
 
+def start_what_is_down(target: h.Host, c: h.Committed) -> list[str]:
+    """Start the stack's long-running units that aren't active, as compose's ``up -d`` starts
+    stopped services. Their ``PartOf=`` one-shots (``migrate``) get ``reset-failed`` first, so
+    one that failed earlier runs again. Returns the units it started."""
+    user_units, _system = h.stack_units(c)
+    if not user_units:
+        return []
+    r = target.ssh(c.user, "systemctl --user is-active " + " ".join(user_units), check=False)
+    states = r.stdout.decode().split()
+    down = [u for u, s in zip(user_units, states, strict=False) if s != "active"]
+    if not down:
+        return []
+    related = sorted(
+        f"{stem}.service"
+        for stem, (_d, _t, is_user) in h._quadlets(c).items()
+        if is_user and h.long_running(c, stem) in down
+    )
+    proxy = c.manifest.get("proxy")
+    sockets = [f"{proxy}.socket"] if proxy else []
+    q = " ".join(shlex.quote(u) for u in related)
+    print(f"{target.address}: systemctl --user start {' '.join(down + sockets)}", file=sys.stderr)
+    target.ssh(
+        c.user,
+        f"systemctl --user reset-failed {q} 2>/dev/null; "
+        f"systemctl --user start {' '.join(shlex.quote(u) for u in down + sockets)}",
+        check=False,
+    )
+    return down
+
+
 def deploy(
     config: ProjectConfig,
     env_name: str,
@@ -141,6 +171,7 @@ def deploy(
             target.ssh(c.user, "systemctl --user restart " + " ".join(shlex.quote(u) for u in units))
         elif not changed:
             print(f"{target.address}: every image is current.", file=sys.stderr)
+        start_what_is_down(target, c)
     except h.HostError as exc:
         print(f"dk {env_name}: {exc}", file=sys.stderr)
         return 1

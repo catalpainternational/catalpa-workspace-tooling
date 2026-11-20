@@ -191,3 +191,30 @@ def test_bare_dk_env_deploys(site, monkeypatch) -> None:
     # An explicit `up` is still refused, with the hint.
     ns.implicit_compose_argv = ["up", "-d"]
     assert backend.handle(ns, site, "staging", INFO) == 2
+
+
+def test_a_unit_that_is_down_is_started(site, committed, monkeypatch, capsys) -> None:
+    """As compose's `up -d` starts stopped services: django (inactive after a failed migrate)
+    is started, with migrate/collectstatic reset first so they run again."""
+    monkeypatch.setattr(h, "read_host", lambda host, c: in_sync_state(c))
+    units, _ = h.stack_units(committed)
+    answers = iter(
+        [
+            " ".join("inactive" if u == "django.service" else "active" for u in units),
+            " ".join("active" for _ in units),
+        ]
+    )
+
+    class Host(FakeHost):
+        def __call__(self, argv, *, input=None, tty=False):
+            if "is-active" in argv[-1]:
+                self.calls.append((argv[-1], input))
+                return subprocess.CompletedProcess(argv, 0, next(answers).replace(" ", "\n").encode(), b"")
+            return super().__call__(argv, input=input, tty=tty)
+
+    fake = Host()
+    assert run_deploy(site, fake) == 0
+    start = next(cmd for cmd, _ in fake.calls if "systemctl --user start" in cmd)
+    assert "reset-failed" in start and "migrate.service" in start and "collectstatic.service" in start
+    assert start.split("start ", 1)[1].split()[0] == "django.service"
+    assert "up to date" in capsys.readouterr().err

@@ -135,6 +135,12 @@ These use the same keys as compose deploys:
 Schedules come from `dk`'s own timer templates, so both runtimes back up at the same times, in
 the host's time zone.
 
+`db` runs with an init as PID 1 (`RunInit=true`) whenever pgBackRest is configured. Async
+`archive-push` leaves a process behind. With postgres as PID 1, postgres inherits it, and when
+that process exits non-zero (the repository unreachable, or its credentials wrong) postgres
+takes it for a crashed backend and restarts in recovery mode, about every ten seconds. Compose
+deploys have the same exposure unless the db service sets `init: true`.
+
 A render never decrypts, so the repository settings can't go into pgBackRest's config as they
 do on compose hosts. Instead, every `pgbr_s3_write_*` key reaches `db` as a Podman secret in
 the variable pgBackRest reads: `PGBACKREST_REPO1_S3_BUCKET`, `PGBACKREST_REPO1_PATH`,
@@ -237,7 +243,9 @@ A bare `dk <env>` brings the host up to date, as `up -d` does on a compose env:
 4. Every image an account quadlet runs is pulled. A unit whose image changed is restarted,
    unless step 3 already did. Backup one-shots pick a new image up on their next run, and
    `migrate`/`collectstatic` re-run with `django` (`PartOf=`).
-5. The stack's units must all be active afterwards.
+5. Stack units that aren't running are started, as `up -d` starts stopped services. Their
+   `PartOf=` one-shots get `reset-failed` first, so a `migrate` that failed earlier runs again.
+6. The stack's units must all be active afterwards.
 
 Step 4 is how a new image under the same tag goes out with `fcos.auto_update` off. `--tag`
 is refused: a quadlet env's images follow `image_tag` in `info.yaml`, through a render and a

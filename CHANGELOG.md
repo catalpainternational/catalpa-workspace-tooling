@@ -74,6 +74,17 @@
 
 ### Fixed
 
+- **A quadlet env's Postgres no longer crash-loops when archiving fails.** pgBackRest's async
+  `archive-push` leaves a process behind, which postgres (PID 1 in the container) inherited.
+  When that process exited non-zero, for example with the repository unreachable, postgres
+  treated it as a crashed backend and restarted in recovery mode about every ten seconds. A
+  `migrate` that ran then failed, so `django` never started. The render now gives `db`
+  `RunInit=true` whenever pgBackRest is configured. **Compose deploys have the same exposure:**
+  prod's Postgres is PID 1 with no init. Add `init: true` to the db service.
+- **A bare `dk <env>` on a quadlet env starts stack units that are down,** as `up -d` does.
+  Their `PartOf=` one-shots get `reset-failed` first, so a failed `migrate` runs again. It used
+  to report the unit inactive and stop there.
+
 - **`dk <env> files backup` on a quadlet env shows restic's output again.** The restic quadlet
   logged with `LogDriver=passthrough`, so its output went to the journal as the container's
   ID-range uid (609823 on catalpa-site), which `deploy`, and so dk, can't read. Now

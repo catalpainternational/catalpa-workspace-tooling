@@ -686,7 +686,7 @@ def _container(
         c.append(f"User={_exec_escape(str(svc['user']))}")
     if svc.get("working_dir"):
         c.append(f"WorkingDir={_exec_escape(svc['working_dir'])}")
-    if svc.get("init"):
+    if svc.get("init") and "RunInit=true" not in c:
         c.append("RunInit=true")
     if svc.get("read_only"):
         c.append("ReadOnly=true")
