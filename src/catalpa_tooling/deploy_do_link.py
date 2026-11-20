@@ -23,6 +23,7 @@ digitalocean:
   region: sgp1                # optional; for `dk <env> host create`
   image: ubuntu-24-04-x64     # optional; for `dk <env> host create`
   dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300)
+  allow_destroy: false        # true: `dk <env> host destroy` may delete this host (disposable envs)
 """
 
 

@@ -4,6 +4,23 @@
 
 ### Added
 
+- **`dk <env> host destroy` tears a disposable env's DigitalOcean host down (#69, tooling 2.0
+  M2b).** It's the inverse of `host create` and of a rendered host's provisioning, and runs only
+  for an env with `digitalocean.allow_destroy: true` in `info.yaml`. No flag overrides that. In
+  order:
+  1. removes the env's DNS A records that point at the droplet;
+  2. shuts the droplet down cleanly, since a delete is a hard power cut that can lose file
+     writes still in the page cache;
+  3. detaches and deletes its volumes (for a rendered host, its data volume), deleting the
+     droplet in between;
+  4. forgets it locally: `docker_host` when it named the droplet's IP (a hostname is kept, since
+     it stays right for the next host), and the known_hosts entries.
+
+  It shows the plan, then asks for the env name, and for `delete-volumes` when volumes go. If the
+  droplet delete fails, it stops before the volumes. It takes no backup and never touches the
+  backups. `--dry-run` (either position), `--keep-dns`, `--keep-volumes` and
+  `--keep-docker-host` are available.
+
 - **A bare `dk <env>` brings a quadlet env up to date (tooling 2.0, M1).** On a compose env it
   runs `up -d`; on a `runtime: quadlet` env it was refused. Now it:
   1. checks the committed render is current;

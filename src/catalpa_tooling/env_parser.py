@@ -397,6 +397,12 @@ def _attach_env_command_parsers(
     # add_help=False: `host create --help` goes to the command's own parser, which lists the options.
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.", add_help=False)
     p_host_create.add_argument("host_create_args", nargs=argparse.REMAINDER)
+    p_host_destroy = host_sub.add_parser(
+        "destroy",
+        help="Destroy the env's droplet, its volumes and DNS records (digitalocean.allow_destroy only).",
+        add_help=False,
+    )
+    p_host_destroy.add_argument("host_destroy_args", nargs=argparse.REMAINDER)
     add_host_verbs(host_sub)
     p_host_logging = host_sub.add_parser(
         "logging",

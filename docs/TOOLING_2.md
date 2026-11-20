@@ -61,7 +61,7 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 | M0 | `dev-2.0` = `main` + `feat/182-fcos-render` | done |
 | M1 | A bare `dk <env>` on quadlet: check render → apply → pull → restart changed units | done |
 | M2 | `render`/`check`/`diff`/`apply` as env verbs; `host ignition`/`host provision`; `secrets push`; `fcos …` deprecated alias | done |
-| M2b | `host destroy` (#69): the exact inverse of creating a host. DNS records pointing at it, the droplet, its volumes, `docker_host` and the known_hosts entry, guarded by `allow_destroy` in `info.yaml` | small |
+| M2b | `host destroy` (#69): the exact inverse of creating a host. DNS records pointing at it, the droplet, its volumes, `docker_host` and the known_hosts entry, guarded by `allow_destroy` in `info.yaml` | done |
 | M3 | Implicit compose passthrough refused with a hint; `compose …` explicit | small |
 | M4 | Test branches in catalpa-site, swlt_ws2, catalpa_bero and partisipa pinned to `dev-2.0`, each with a checklist | ongoing from here |
 | M5 | Backend primitives: `ComposeBackend` extracted, operations rewritten once (restore, transfer, fetch, hooks) | large |

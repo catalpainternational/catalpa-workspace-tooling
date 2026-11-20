@@ -100,6 +100,22 @@ def host_in_known_hosts(host: str, path: Path | None = None) -> bool:
     return r.returncode == 0
 
 
+def remove_known_host(host: str, path: Path | None = None, *, dry_run: bool = False) -> int:
+    """``ssh-keygen -R host``: forget a host's key (a rebuilt host has a new one). A no-op when
+    there is no entry."""
+    h = (host or "").strip()
+    kh = path or known_hosts_path()
+    if not h or not kh.is_file() or not host_in_known_hosts(h, kh):
+        return 0
+    if dry_run:
+        print(f"dry-run: would run ssh-keygen -R {h} -f {kh}", file=sys.stderr)
+        return 0
+    r = run_cmd(["ssh-keygen", "-R", h, "-f", str(kh)], check=False, capture_output=True, print_cmd=False)
+    if r.returncode == 0:
+        print(f"Removed {h} from {kh}", file=sys.stderr)
+    return r.returncode
+
+
 def _ssh_port_open(host: str, port: int, *, timeout: float = 2.0) -> bool:
     """True if TCP connect to ``(host, port)`` succeeds."""
     try:

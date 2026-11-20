@@ -443,6 +443,16 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 tail,
                 global_dry_run=dry_run,
             )
+        if getattr(ns, "host_command", None) == "destroy":
+            from catalpa_tooling.host_destroy import cmd_env_host_destroy
+
+            return cmd_env_host_destroy(
+                config,
+                env_name,
+                list(getattr(ns, "host_destroy_args", None) or []),
+                global_dry_run=dry_run,
+                global_yes=bool(getattr(ns, "yes", False)),
+            )
         if getattr(ns, "host_command", None) == "logging":
             from catalpa_tooling.docker_logging import cmd_host_logging
 

@@ -470,3 +470,32 @@ def create_droplet(
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+
+
+def _droplet_action(args: list[str], what: str, *, context: str | None, dry_run: bool) -> int:
+    from catalpa_tooling.doctl_binary import format_doctl_failure, run_doctl
+
+    if dry_run:
+        print(f"dry-run: would run doctl {' '.join(args)}", file=sys.stderr)
+        return 0
+    result = run_doctl(args, context=context, check=False)
+    if result.returncode != 0:
+        print(f"doctl {what} failed: {format_doctl_failure(result)}", file=sys.stderr)
+    return result.returncode
+
+
+def shutdown_droplet(droplet_id: str, *, context: str | None = None, dry_run: bool = False) -> int:
+    """``doctl compute droplet-action shutdown <id> --wait``: a clean OS shutdown, so file writes
+    in the page cache reach the disk before a delete (which is a hard power cut)."""
+    return _droplet_action(
+        ["compute", "droplet-action", "shutdown", str(droplet_id), "--wait"],
+        "droplet shutdown", context=context, dry_run=dry_run,
+    )  # fmt: skip
+
+
+def delete_droplet(droplet_id: str, *, context: str | None = None, dry_run: bool = False) -> int:
+    """``doctl compute droplet delete <id> --force``; returns the exit code."""
+    return _droplet_action(
+        ["compute", "droplet", "delete", str(droplet_id), "--force"],
+        "droplet delete", context=context, dry_run=dry_run,
+    )  # fmt: skip
