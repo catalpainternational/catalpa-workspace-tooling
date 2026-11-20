@@ -33,7 +33,9 @@
   SSH as the account in `docker_host`: `journalctl --user`, `podman exec` and
   `systemctl --user`. They need no SOPS decrypt or compose file. The compose verbs that would
   start a second stack (`up`, `down`, `run`, …) are still refused, each with what to use
-  instead.
+  instead. `dk fetch db` and `dk fetch media` also work from a quadlet env:
+  `pg_dump` through `podman exec` (no password), and rsync of the media directory on the data
+  volume.
 
 ### Fixed
 

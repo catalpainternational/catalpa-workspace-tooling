@@ -227,8 +227,18 @@ they would start a second stack beside the quadlets. A change reaches the host w
 `fcos render`, a commit, then `fcos apply`. `dk <env> docker …` still works against the
 account's Podman socket.
 
-Not yet on quadlet envs: `db`/`files` (backup and restore), `fetch db`/`fetch media`,
-`transfer` and `pull_media`. They are still refused.
+`dk fetch db --env <env>` and `dk fetch media --env <env>` work too, for `via: dk` databases:
+
+- **`fetch db`** runs `podman exec -u postgres <db> pg_dump -Fc` over the container's local
+  socket, so it needs no password. It dumps the same database as the compose path
+  (`DJANGO_APP_DB`/`DJANGO_DB` in the container). The dump replaces the local file only once
+  it is a whole archive.
+- **`fetch media`** rsyncs the media volume's directory on the data volume (`fcos.bind_volumes`;
+  `ops.restic.data_volume`, default `django_media`) as the account, with no Docker volume
+  lookup.
+
+Not yet on quadlet envs: `db`/`files` (backup and restore), `transfer` and `pull_media`. They
+are still refused.
 
 ## On the host
 

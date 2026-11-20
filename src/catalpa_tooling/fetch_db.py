@@ -160,6 +160,18 @@ def _fetch_via_script(config: ProjectConfig, *, dest: Path, dk_env: str) -> None
     subprocess.run(["bash", str(script)], cwd=config.repo_root, env=env, check=True)
 
 
+def _quadlet(config: ProjectConfig, dk_env: str):
+    """The env's quadlet host when it has ``runtime: quadlet`` (no compose to exec into)."""
+    from catalpa_tooling.fcos.fetch import quadlet_env
+    from catalpa_tooling.fcos.host import HostError
+
+    try:
+        return quadlet_env(config, dk_env)
+    except (HostError, ValueError) as exc:
+        print(f"fetch db: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
 def _resolve_ssh_host(config: ProjectConfig, entry: FetchDatabaseEntry) -> str:
     host = (entry.ssh_host or config.native.fetch.ssh_host or "").strip()
     if not host:
@@ -196,6 +208,10 @@ def run_fetch_database(
             pg_user=entry.pg_user,
             dest=dest,
         )
+    elif entry.via == "dk" and (q := _quadlet(config, dk_env)) is not None:
+        from catalpa_tooling.fcos.fetch import fetch_db as fetch_quadlet_db
+
+        fetch_quadlet_db(config, q, dest=dest, pg_dump_args=pg_dump_args)
     elif entry.via == "dk":
         _fetch_via_dk(
             config,
