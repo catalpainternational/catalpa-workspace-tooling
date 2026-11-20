@@ -164,6 +164,16 @@ When tooling.yaml has `ops.zabbix`, the render adds three parts:
 - **`backup-status.sh` and a timer.** These write `pgbackrest info` and `restic snapshots` as
   JSON, which the agent reads through the same item keys as on Ubuntu hosts. The agent holds no
   credentials.
+- **The status files' age.** A failed status run keeps the previous file, so `pgbackrest.info`
+  and `restic.snapshots` would keep returning old data without any error. The rendered
+  userparams alias each file's modification time (`vfs.file.time`) to a fixed key,
+  `backup.status.pgbackrest.mtime` and `backup.status.restic.mtime`, for whichever backups
+  the env has. Import [`zabbix/catalpa-backup-status-fcos.yaml`](zabbix/catalpa-backup-status-fcos.yaml)
+  on the Zabbix server (Zabbix 7.0) and link it to the host. Its two triggers warn when a file
+  hasn't been written for `{$BACKUP.STATUS.MAX_AGE}` (3h: three missed hourly runs), or is
+  missing for that long. On a host with only one kind of backup, disable the other trigger.
+  Tested against Zabbix 7.0.32 with the 7.0 agent: the import is idempotent and exports back
+  unchanged, a 5-hour-old file fires its trigger, and a missing file fires through `nodata()`.
 
 The settings use the keys `dk <env> zabbix install` reads (`zbx_*`, `ZBX_*`). `zbx_tlspsk` and
 `zbx_tlspskidentity` become secrets of the system's Podman, listed under `system_secrets` in

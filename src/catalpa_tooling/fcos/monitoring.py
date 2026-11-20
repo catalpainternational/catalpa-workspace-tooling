@@ -55,7 +55,7 @@ def monitoring_files(
     userparams_file: str,
     zbx_env: dict[str, str],
     hostname: str,
-    backups: bool,
+    backups: tuple[str, ...],
 ) -> MonitoringFiles:
     import re
 
@@ -211,11 +211,20 @@ def monitoring_files(
     )
     if backups:
         d = monitor_dir(project)
+        files = {"pgbackrest": ("pgbackrest.info", "pgbackrest-info.json"),
+                 "restic": ("restic.snapshots", "restic-snapshots.json")}  # fmt: skip
+        lines = [
+            "# The same item keys as dk's userparams on Ubuntu, read from backup-status.sh's files.",
+            *(f"UserParameter={files[k][0]},cat {d}/{files[k][1]}" for k in backups),
+            "# When each file was last written. backup-status.sh keeps the previous file when a",
+            "# run fails, so a stuck job shows only as an old file: the template",
+            "# docs/zabbix/catalpa-backup-status-fcos.yaml (catalpa-workspace-tooling) alerts on it.",
+            "# Fixed keys, so the one template fits every project's directory.",
+            *(f"Alias=backup.status.{k}.mtime:vfs.file.time[{d}/{files[k][1]},modify]" for k in backups),
+        ]
         add(
             "monitoring/zabbix-userparams.conf",
-            "# The same item keys as dk's userparams on Ubuntu, read from backup-status.sh's files.\n"
-            f"UserParameter=pgbackrest.info,cat {d}/pgbackrest-info.json\n"
-            f"UserParameter=restic.snapshots,cat {d}/restic-snapshots.json\n",
+            "\n".join(lines) + "\n",
             f"{config_dir}/zabbix-userparams.conf",
         )
     out.tmpfiles.append(f"d {ro_dir} 0750 {settings.user} {ZABBIX_GID} -")

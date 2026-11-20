@@ -278,7 +278,7 @@ def render_env(
                 userparams_file=config.ops.zabbix.userparams_file,
                 zbx_env=zbx_env,
                 hostname=site_host or hostname,
-                backups=backups_on,
+                backups=tuple(k for k in ("pgbackrest", "restic") if getattr(plan, k)),
             )
         except ValueError as exc:
             raise RenderError(f"zabbix: {exc}") from exc

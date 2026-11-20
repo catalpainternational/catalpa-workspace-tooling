@@ -25,6 +25,9 @@
   apart from `fcos.ssh_authorized_keys` (the account that runs the stack, without sudo). Both
   are rendered as key files, so `fcos apply` changes a running host's keys and removes any
   other key file, and refuses to remove the last of your keys from `core`.
+  A Zabbix 7.0 template, `docs/zabbix/catalpa-backup-status-fcos.yaml`, alerts when an FCOS
+  host's backup status files stop being refreshed. The render aliases their modification times
+  to fixed agent keys (`backup.status.<kind>.mtime`).
 
 ### Fixed
 

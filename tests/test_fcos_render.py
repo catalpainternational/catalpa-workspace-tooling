@@ -391,6 +391,39 @@ def test_zabbix_psk_becomes_system_secrets_and_metadata_tokens() -> None:
     assert "quadlets/zabbix-agent2.container" not in _render("swlt")[1].files
 
 
+def test_status_file_age_keys_only_for_configured_backups() -> None:
+    from catalpa_tooling.fcos.monitoring import monitoring_files
+    from catalpa_tooling.fcos.settings import FcosSettings
+
+    def userparams(kinds):
+        m = monitoring_files(
+            settings=FcosSettings(), header="", project="p", config_dir="/etc/p",
+            userparams_file="99-p.conf", zbx_env={}, hostname="h", backups=kinds,
+        )  # fmt: skip
+        return m.files.get("monitoring/zabbix-userparams.conf", "")
+
+    both = userparams(("pgbackrest", "restic"))
+    assert "Alias=backup.status.pgbackrest.mtime:vfs.file.time[/var/lib/p-monitor/pgbackrest-info.json,modify]" in both
+    assert "Alias=backup.status.restic.mtime:vfs.file.time[/var/lib/p-monitor/restic-snapshots.json,modify]" in both
+    only_db = userparams(("pgbackrest",))
+    assert "restic" not in only_db and "pgbackrest.info" in only_db
+    assert userparams(()) == ""
+
+
+def test_zabbix_template_keys_match_the_rendered_aliases() -> None:
+    import yaml
+
+    doc = Path(__file__).resolve().parents[1] / "docs" / "zabbix" / "catalpa-backup-status-fcos.yaml"
+    t = yaml.safe_load(doc.read_text())["zabbix_export"]["templates"][0]
+    assert {i["key"] for i in t["items"]} == {
+        "backup.status.pgbackrest.mtime",
+        "backup.status.restic.mtime",
+    }
+    for item in t["items"]:
+        for trigger in item["triggers"]:
+            assert f"/{t['template']}/{item['key']}" in trigger["expression"]
+
+
 @needs_compose
 def test_backup_credentials_without_required_keys_or_timers_are_refused(tmp_path: Path) -> None:
     root = tmp_path / "bero"
