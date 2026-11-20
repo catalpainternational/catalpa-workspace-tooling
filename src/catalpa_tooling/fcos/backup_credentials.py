@@ -73,8 +73,17 @@ def ensure_backup_credentials(
     changed = {k for k, v in after.items() if _flat(before).get(k) != v}
     c = b.committed
     names = sorted(n for n, key in (c.manifest.get("secrets") or {}).items() if key.upper() in changed)
-    if not names:
-        return 0
+    rendered = {key.upper() for key in (c.manifest.get("secrets") or {}).values()}
+    if changed - rendered:
+        # The committed render predates these credentials, so it has no backup units for
+        # them: the render switches backups on by which credentials exist.
+        print(
+            f"{label}: the credentials are created, but the committed render has no backups for "
+            f"them yet. Run `dk {b.env_name} fcos render`, commit, `dk {b.env_name} fcos secrets "
+            f"push`, then a bare `dk {b.env_name}` to apply it, and run this again.",
+            file=sys.stderr,
+        )
+        return 1
     values, problems = h.secret_values(c, read_credentials(), names)
     if problems:
         for p in problems:

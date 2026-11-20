@@ -111,3 +111,21 @@ def test_an_env_can_have_its_own_bucket(swlt) -> None:
     info.write_text(info.read_text() + "  nope: x\n")
     with pytest.raises(dsp.EnvSpacesError, match="unknown key"):
         dsp.spaces_backup_defaults(swlt, "staging")
+
+
+def test_a_render_without_backups_says_to_render_first(swlt, monkeypatch, capsys) -> None:
+    """New credentials the committed render doesn't use (it predates them): nothing is pushed,
+    and dk says how to get the backup units onto the host."""
+    store: dict = {}
+
+    def provision(*a, **k):
+        store.update(PGBR, pgbr_s3_write_uri_style="path")
+        return 0
+
+    monkeypatch.setattr(dsp, "ensure_spaces_backup_credentials", provision)
+    r = Runner()
+    b = backend.open_backend(swlt, "staging", INFO, runner=r, register_key=False)
+    assert bc.ensure_backup_credentials(b, "pgbackrest", yes=True, dry_run=False, label="x",
+                                        read_credentials=lambda: dict(store)) == 1  # fmt: skip
+    assert r.calls == []
+    assert "fcos render" in capsys.readouterr().err

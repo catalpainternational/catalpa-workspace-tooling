@@ -89,6 +89,15 @@ Checklist per project: bare `dk <env>` and `dk <env> ps`/`logs`/`exec`/`manage` 
 db`/`fetch media`; `transfer staging dev`; `db info`/`backup`/`restore --dry-run`; `files
 snapshots`; `worktree create` and `dk dev` locally; every refused command gives a useful hint.
 
+## Open questions
+
+- **What switches a rendered env's backups on.** Today it's which `pgbr_s3_write_*` /
+  `restic_write_*` names `credentials.yaml` has (a render reads names, never values). So a new env
+  needs credentials before its render has backup units, and removing stale credentials changes
+  the render. Keying it on configuration (`ops.pgbackrest`/`ops.restic`, or an env setting)
+  instead would let `render` → `provision` → `db configure stanza-create` run in one order on
+  every env.
+
 ## Not changing
 
 Local dev (`dk dev`, `worktree`, `proxy`) stays compose. Top-level commands (`build`, `push`,
