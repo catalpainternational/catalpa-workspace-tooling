@@ -44,6 +44,16 @@ def dk_info_fetch_media_defaults(config: ProjectConfig, env_name: str) -> tuple[
     return ssh, project
 
 
+def _quadlet(config: ProjectConfig, dk_env: str):
+    from catalpa_tooling.fcos.fetch import quadlet_env
+    from catalpa_tooling.fcos.host import HostError
+
+    try:
+        return quadlet_env(config, dk_env)
+    except HostError as exc:
+        raise ValueError(str(exc)) from None
+
+
 def run_fetch_media(
     config: ProjectConfig,
     *,
@@ -64,6 +74,7 @@ def run_fetch_media(
         raise SystemExit(1)
 
     local_base = (dest if dest is not None else config.fetch_media_dest_path).resolve()
+    q = None
 
     if legacy_path:
         legacy = config.native.fetch_media.legacy
@@ -83,6 +94,13 @@ def run_fetch_media(
             )
         ssh_target = ssh_target_from_host(ssh_host)
         print(f"Rsync legacy path {remote_base!r} from {ssh_target} …", file=sys.stderr)
+    elif (q := _quadlet(config, dk_env)) is not None:
+        # No Docker volume: the media is a directory on the data volume (fcos.bind_volumes).
+        from catalpa_tooling.fcos.fetch import media_path
+
+        ssh_target = ssh_target_from_host(host) if host else q.ssh_target
+        remote_base = media_path(config, q)
+        print(f"Rsync {remote_base!r} from {ssh_target} ({dk_env}: runtime quadlet) …", file=sys.stderr)
     else:
         if host is None:
             ssh_target, project = dk_info_fetch_media_defaults(config, dk_env)
@@ -100,7 +118,7 @@ def run_fetch_media(
 
     _ensure_ssh_target_known(ssh_target)
 
-    if not legacy_path:
+    if not legacy_path and q is None:
         remote_base = docker_volume_mountpoint_ssh(ssh_target, volume, label="fetch media")
 
     if partial:

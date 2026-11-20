@@ -1,0 +1,46 @@
+project:
+  name: swlt_shape
+  root_marker: tooling.yaml
+paths:
+  backend: app
+  frontend: app
+  scripts: tools
+  env_local: .env.local
+  email_backend_dir: email_out
+  fetch_db_dump: docker/dumps/app.custom
+  deploy:
+    envs_dir: docker/envs
+    images_config: docker/images.yaml
+    default_compose: compose.yml
+    dev_compose: compose.yml
+stack:
+  compose_project_default: swlt_shape
+  services:
+    web: django
+    proxy: caddy
+    db: db
+  images:
+    registry_key: image_registry
+    components:
+      web: swlt-django
+      proxy: swlt-caddy
+      db: swlt-postgres
+  healthcheck:
+    service: django
+    url: http://127.0.0.1:8000/
+ops:
+  pgbackrest:
+    data_volume: postgres_data
+  restic:
+    data_volumes:
+      - django_media
+      - django_private_uploads
+  systemd_units:
+    pgbackrest:
+      - swlt-pgbackrest-backup-full.service
+      - swlt-pgbackrest-backup-diff.service
+      - swlt-pgbackrest-backup-full.timer
+      - swlt-pgbackrest-backup-diff.timer
+    restic:
+      - swlt-restic-files-backup.service
+      - swlt-restic-files-backup.timer

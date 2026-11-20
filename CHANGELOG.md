@@ -10,6 +10,42 @@
   leading one, for `backend` and `workspace` alike.
   `tests workspace` also accepts a pytest option as its first argument now (`tests workspace -k
   name`); before, that only worked after a path or a `--`.
+- **`dk <env> fcos render` and `dk <env> fcos check` (#182).** These are the first part of
+  deploying to Fedora CoreOS with rootless Podman. `render` turns the env's resolved compose
+  file into quadlets, settings files, the edge's socket unit and its Caddy JSON, and writes them
+  to `docker/envs/<env>/generated/fcos/` for you to commit. `check` fails when the committed files
+  differ from a fresh render. It also fails when plain `docker compose up` would start without a
+  credential, so write each credential as `${KEY:?…}`. An env with `runtime: quadlet` in its
+  `info.yaml` refuses the compose commands. A render also writes the host's Butane config
+  (`host.bu`), the backups (pgBackRest and restic, from the existing `pgbr_s3_write_*`,
+  `restic_write_*` and `ops` keys, with every repository setting as a Podman secret) and
+  monitoring (an unprivileged Zabbix agent and a read-only Podman API). See `docs/FCOS.md`.
+- **`dk <env> fcos ignition`, `provision`, `secrets push`, `diff` and `apply` (#182).** They
+  put a committed render on its host, and refuse to while the render differs from a fresh one.
+  `ignition` compiles `host.bu` for the droplet's user data. `provision` sets up a host that
+  booted from it: it pushes the secrets, logs in to the registry and starts the stack.
+  `secrets push` streams values from `credentials.yaml` into Podman secrets over SSH, without
+  writing or printing them. `diff` compares the host's files, data directories, timers and
+  secret names with the render. `apply` installs what differs and restarts only the units that
+  read a changed file. `info.yaml` `fcos.admin_keys` (logging in as `core`, with sudo) is set
+  apart from `fcos.ssh_authorized_keys` (the account that runs the stack, without sudo). Both
+  are rendered as key files, so `fcos apply` changes a running host's keys and removes any
+  other key file, and refuses to remove the last of your keys from `core`.
+  A Zabbix 7.0 template, `docs/zabbix/catalpa-backup-status-fcos.yaml`, alerts when an FCOS
+  host's backup status files stop being refreshed. The render aliases their modification times
+  to fixed agent keys (`backup.status.<kind>.mtime`).
+- **dk's stack commands on `runtime: quadlet` envs (#182).** `logs`, `ps`, `exec`, `manage`,
+  `restart`, `stop` and `start` now work on an env whose stack runs as Podman quadlets, over
+  SSH as the account in `docker_host`: `journalctl --user`, `podman exec` and
+  `systemctl --user`. They need no SOPS decrypt or compose file. The compose verbs that would
+  start a second stack (`up`, `down`, `run`, …) are still refused, each with what to use
+  instead. `dk fetch db` and `dk fetch media` also work from a quadlet env:
+  `pg_dump` through `podman exec` (no password), and rsync of the media directory on the data
+  volume. The backup commands work too: `db info/check/version/backup/pgdump`,
+  `db configure stanza-create/verify`, and `files backup/snapshots/check/stats/init`, through
+  the units and containers the render installed. `db restore` (pgBackRest, `--delta`) and
+  `files restore` work as well, each after you type the env name. So do `db restore --file/--dumps`,
+  `pull_media` (by rsync), and `dk transfer` with a quadlet env at either end.
 
 ### Fixed
 

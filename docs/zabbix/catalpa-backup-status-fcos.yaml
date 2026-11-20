@@ -1,0 +1,70 @@
+# Zabbix 7.0 template: alert when an FCOS host's backup status files stop being refreshed.
+#
+# `dk <env> fcos render` (docs/FCOS.md) makes the account's backup-status.service write
+# pgbackrest-info.json and restic-snapshots.json hourly and after every backup; the agent serves
+# them as pgbackrest.info / restic.snapshots. A failed run keeps the previous file, so those items
+# keep returning old data. This template watches the files' age instead, through the fixed keys
+# backup.status.<kind>.mtime that the rendered zabbix-userparams.conf aliases to vfs.file.time.
+#
+# Import: Data collection → Templates → Import. Link it to FCOS hosts with backups. A host
+# without restic (or pgBackRest) has no such key: unlink that item's trigger there, or the
+# nodata() part fires. Override {$BACKUP.STATUS.MAX_AGE} per host if needed.
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 497fac297c6243a7baf50043775c4e3d
+      name: Templates/Applications
+  templates:
+    - uuid: 718767fc04134e1cb6011ed867b9fbab
+      template: 'Catalpa backup status FCOS'
+      name: 'Catalpa backup status (FCOS)'
+      description: 'Alerts when backup-status.sh stops refreshing the backup status files on a Fedora CoreOS host (catalpa-workspace-tooling docs/FCOS.md).'
+      groups:
+        - name: Templates/Applications
+      items:
+        - uuid: 9e0e474c5acb40a5b7a4b258c8230b95
+          name: 'pgBackRest status file: last written'
+          type: ZABBIX_ACTIVE
+          key: backup.status.pgbackrest.mtime
+          delay: 5m
+          history: 7d
+          units: unixtime
+          description: 'When backup-status.sh last wrote its pgBackRest status file. It keeps the previous file when a run fails, so a stuck or failing status job shows only as an old file.'
+          tags:
+            - tag: component
+              value: backup
+          triggers:
+            - uuid: ae2be9110bab4041862d87e48ed40513
+              expression: 'now()-last(/Catalpa backup status FCOS/backup.status.pgbackrest.mtime)>{$BACKUP.STATUS.MAX_AGE} or nodata(/Catalpa backup status FCOS/backup.status.pgbackrest.mtime,{$BACKUP.STATUS.MAX_AGE})=1'
+              name: 'pgBackRest backup status not refreshed for {$BACKUP.STATUS.MAX_AGE}'
+              opdata: 'Last written: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'The pgBackRest status file is refreshed hourly and after every backup by the account''s backup-status.service. Older than {$BACKUP.STATUS.MAX_AGE} means that job is failing or not running, and the pgBackRest items show stale data. On the host: systemctl --user status <prefix>backup-status.service; journalctl --user -u <prefix>backup-status.service.'
+              tags:
+                - tag: scope
+                  value: availability
+        - uuid: 409a4d2020d544de8e40d50e27c92410
+          name: 'restic status file: last written'
+          type: ZABBIX_ACTIVE
+          key: backup.status.restic.mtime
+          delay: 5m
+          history: 7d
+          units: unixtime
+          description: 'When backup-status.sh last wrote its restic status file. It keeps the previous file when a run fails, so a stuck or failing status job shows only as an old file.'
+          tags:
+            - tag: component
+              value: backup
+          triggers:
+            - uuid: 55367403d85a4fc081ad439b0ae0294e
+              expression: 'now()-last(/Catalpa backup status FCOS/backup.status.restic.mtime)>{$BACKUP.STATUS.MAX_AGE} or nodata(/Catalpa backup status FCOS/backup.status.restic.mtime,{$BACKUP.STATUS.MAX_AGE})=1'
+              name: 'restic backup status not refreshed for {$BACKUP.STATUS.MAX_AGE}'
+              opdata: 'Last written: {ITEM.LASTVALUE1}'
+              priority: WARNING
+              description: 'The restic status file is refreshed hourly and after every backup by the account''s backup-status.service. Older than {$BACKUP.STATUS.MAX_AGE} means that job is failing or not running, and the restic items show stale data. On the host: systemctl --user status <prefix>backup-status.service; journalctl --user -u <prefix>backup-status.service.'
+              tags:
+                - tag: scope
+                  value: availability
+      macros:
+        - macro: '{$BACKUP.STATUS.MAX_AGE}'
+          value: 3h
+          description: 'How old a status file may get. They are written hourly, so 3h is three missed runs.'

@@ -1,0 +1,18 @@
+name: staging
+site_origin:
+  - staging.swlt.example
+docker_host: ssh://deploy@staging.swlt.example/run/user/1001/podman/podman.sock
+image_registry: ghcr.io/example
+image_tag: v0.16.1
+env:
+  CADDY_SITE_AUTH: "true"
+runtime: quadlet
+fcos:
+  block_volume: false
+  update_window: {days: [Sat, Sun], start: "01:00", minutes: 90}
+  admin_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
+  ssh_authorized_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey ci-deploy
+  drop_ports: [mailpit]

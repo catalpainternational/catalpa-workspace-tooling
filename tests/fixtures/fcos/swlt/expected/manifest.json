@@ -1,0 +1,298 @@
+{
+  "env": "staging",
+  "compose_file": "compose.yml",
+  "user": "deploy",
+  "uid": 1001,
+  "subuid": {
+    "start": 589824,
+    "count": 65536
+  },
+  "auto_update": false,
+  "network": "swlt_shape_default",
+  "id_ranges": {
+    "caddy": {
+      "start": 10000,
+      "size": 5000,
+      "host_root_uid": 599823,
+      "services": [
+        "caddy"
+      ]
+    },
+    "db": {
+      "start": 15000,
+      "size": 5000,
+      "host_root_uid": 604823,
+      "services": [
+        "db"
+      ]
+    },
+    "django": {
+      "start": 20000,
+      "size": 5000,
+      "host_root_uid": 609823,
+      "services": [
+        "django",
+        "migrate",
+        "rqscheduler"
+      ]
+    },
+    "mailpit": {
+      "start": 25000,
+      "size": 5000,
+      "host_root_uid": 614823,
+      "services": [
+        "mailpit"
+      ]
+    },
+    "redis": {
+      "start": 30000,
+      "size": 5000,
+      "host_root_uid": 619823,
+      "services": [
+        "redis"
+      ]
+    }
+  },
+  "bind_volumes": {
+    "caddy_data": {
+      "path": "/var/mnt/data/caddy_data",
+      "services": [
+        "caddy"
+      ],
+      "id_range": "caddy",
+      "owner_uid": 599823,
+      "mode": "0700"
+    },
+    "django_media": {
+      "path": "/var/mnt/data/django_media",
+      "services": [
+        "caddy",
+        "django",
+        "swlt-restic-files-backup"
+      ],
+      "id_range": "django",
+      "owner_uid": 609823,
+      "mode": "0755"
+    },
+    "django_private_uploads": {
+      "path": "/var/mnt/data/django_private_uploads",
+      "services": [
+        "django",
+        "swlt-restic-files-backup"
+      ],
+      "id_range": "django",
+      "owner_uid": 609823,
+      "mode": "0700"
+    },
+    "postgres_data": {
+      "path": "/var/mnt/data/postgres_data",
+      "services": [
+        "db"
+      ],
+      "id_range": "db",
+      "owner_uid": 605822,
+      "mode": "0700"
+    }
+  },
+  "podman_volumes": {},
+  "images": {
+    "caddy": "ghcr.io/example/swlt-caddy:v0.16.1",
+    "db": "ghcr.io/example/swlt-postgres:v0.16.1",
+    "django": "ghcr.io/example/swlt-django:v0.16.1",
+    "mailpit": "docker.io/axllent/mailpit:v1.31.1",
+    "migrate": "ghcr.io/example/swlt-django:v0.16.1",
+    "redis": "docker.io/library/redis:8-alpine",
+    "rqscheduler": "ghcr.io/example/swlt-django:v0.16.1"
+  },
+  "secrets": {
+    "django_secret_key": "DJANGO_SECRET_KEY",
+    "pgbr_s3_write_bucket": "PGBR_S3_WRITE_BUCKET",
+    "pgbr_s3_write_endpoint": "PGBR_S3_WRITE_ENDPOINT",
+    "pgbr_s3_write_key": "PGBR_S3_WRITE_KEY",
+    "pgbr_s3_write_region": "PGBR_S3_WRITE_REGION",
+    "pgbr_s3_write_repo_path": "PGBR_S3_WRITE_REPO_PATH",
+    "pgbr_s3_write_secret": "PGBR_S3_WRITE_SECRET",
+    "pgbr_s3_write_stanza": "PGBR_S3_WRITE_STANZA",
+    "postgres_password": "POSTGRES_PASSWORD",
+    "restic_write_password": "RESTIC_WRITE_PASSWORD",
+    "restic_write_repository": "RESTIC_WRITE_REPOSITORY",
+    "site_auth": "SITE_AUTH"
+  },
+  "install": [
+    {
+      "file": "backup/pgbackrest.conf",
+      "dest": "/var/home/deploy/.config/swlt_shape/50-swlt_shape-managed.conf",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "backup/postgres-archive.conf",
+      "dest": "/var/home/deploy/.config/swlt_shape/30-swlt_shape-pgbackrest-archive.conf",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "caddy/caddy.json",
+      "dest": "/var/home/deploy/.config/swlt_shape/caddy.json",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/caddy.env",
+      "dest": "/etc/swlt_shape/caddy.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/db.env",
+      "dest": "/etc/swlt_shape/db.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/django.env",
+      "dest": "/etc/swlt_shape/django.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/mailpit.env",
+      "dest": "/etc/swlt_shape/mailpit.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/migrate.env",
+      "dest": "/etc/swlt_shape/migrate.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/redis.env",
+      "dest": "/etc/swlt_shape/redis.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/rqscheduler.env",
+      "dest": "/etc/swlt_shape/rqscheduler.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "manifest.json",
+      "dest": "/etc/swlt_shape/fcos-manifest.json",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy.container",
+      "dest": "/etc/containers/systemd/users/1001/caddy.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/db.container",
+      "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django.container",
+      "dest": "/etc/containers/systemd/users/1001/django.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/mailpit.container",
+      "dest": "/etc/containers/systemd/users/1001/mailpit.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/migrate.container",
+      "dest": "/etc/containers/systemd/users/1001/migrate.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/redis.container",
+      "dest": "/etc/containers/systemd/users/1001/redis.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/rqscheduler.container",
+      "dest": "/etc/containers/systemd/users/1001/rqscheduler.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/swlt-restic-files-backup.container",
+      "dest": "/etc/containers/systemd/users/1001/swlt-restic-files-backup.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/swlt_shape_default.network",
+      "dest": "/etc/containers/systemd/users/1001/swlt_shape_default.network",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "ssh/core.keys",
+      "dest": "/var/home/core/.ssh/authorized_keys.d/dk",
+      "owner": "core",
+      "mode": "0600"
+    },
+    {
+      "file": "ssh/deploy.keys",
+      "dest": "/var/home/deploy/.ssh/authorized_keys.d/dk",
+      "owner": "deploy",
+      "mode": "0600"
+    },
+    {
+      "file": "systemd/caddy.socket",
+      "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-pgbackrest-backup-diff.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-pgbackrest-backup-diff.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-pgbackrest-backup-full.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-pgbackrest-backup-full.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-pgbackrest-backup@.service",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-pgbackrest-backup@.service",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/swlt-restic-files-backup.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/swlt-restic-files-backup.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    }
+  ],
+  "hostname": "swlt-shape-staging",
+  "timezone": "UTC",
+  "config_dir": "/etc/swlt_shape",
+  "masked_units": [
+    "afterburn-sshkeys@core.service"
+  ],
+  "proxy": "caddy",
+  "system_secrets": {},
+  "timers": [
+    "swlt-pgbackrest-backup-diff.timer",
+    "swlt-pgbackrest-backup-full.timer",
+    "swlt-restic-files-backup.timer"
+  ]
+}
