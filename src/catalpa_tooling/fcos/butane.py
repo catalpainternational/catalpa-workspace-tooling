@@ -9,13 +9,15 @@ and nowhere else; Butane embeds them (``contents.local``) when it compiles the I
 What the host needs beyond the files, all from the rootless proof of concept (catalpa-site
 docker/envs/fcos-rootless/host.bu, tested through rebuilds, power cuts and a restore):
 
-- ``core`` for admins (passwordless sudo) and the unprivileged account that runs the stack,
+- ``core`` for admins (passwordless sudo, ``fcos.admin_keys``) and the unprivileged account
+  that runs the stack (``fcos.ssh_authorized_keys``),
   with fixed uid and pinned subordinate IDs, so the data directories' owners stay valid;
 - the block storage volume, formatted on first boot only (a rebuilt host keeps its data);
 - linger, the edge's socket and Podman's API socket, the timers;
 - unprivileged ports from 80, the registry login kept in the account's home;
 - Zincati's reboot window, hostname, time zone;
-- hardening: SSH by key only, no root login; LLMNR and mDNS off.
+- hardening: SSH by key only, no root login, admins' keys apart from the account's (and
+  not DigitalOcean's account keys); LLMNR and mDNS off.
 """
 
 from __future__ import annotations
@@ -57,10 +59,15 @@ def host_bu(
     config_dir: str,
 ) -> str:
     s = settings
+    if not s.admin_keys:
+        raise ValueError(
+            "fcos.admin_keys is empty: list the admins' public keys. They log in as core, which "
+            "has passwordless sudo, so only people who may be root on the host"
+        )
     if not s.ssh_authorized_keys:
         raise ValueError(
-            "fcos.ssh_authorized_keys is empty: list the admins' public keys (core and "
-            f"{s.user} get them)"
+            f"fcos.ssh_authorized_keys is empty: list the public keys that log in as {s.user} "
+            "(dk, CI): they run and deploy the stack, with no sudo"
         )
     out: list[str] = [
         header.rstrip("\n"),
@@ -72,15 +79,17 @@ def host_bu(
         "",
         "passwd:",
         "  users:",
-        "    # Admins: passwordless sudo (FCOS default), so root-equivalent.",
+        "    # Admins (fcos.admin_keys): passwordless sudo (FCOS default), so root-equivalent.",
         "    - name: core",
-        "      ssh_authorized_keys: &keys",
-        *(f"        - {k}" for k in s.ssh_authorized_keys),
-        "    # Runs the stack (rootless Podman) and is what dk connects as. No sudo, no extra",
-        "    # groups. A fixed uid: the quadlets live in /etc/containers/systemd/users/<uid>/.",
+        "      ssh_authorized_keys:",
+        *(f"        - {k}" for k in s.admin_keys),
+        "    # Runs the stack (rootless Podman) and is what dk connects as (fcos.ssh_authorized_keys).",
+        "    # No sudo, no extra groups. A fixed uid: the quadlets live in",
+        "    # /etc/containers/systemd/users/<uid>/.",
         f"    - name: {s.user}",
         f"      uid: {s.uid}",
-        "      ssh_authorized_keys: *keys",
+        "      ssh_authorized_keys:",
+        *(f"        - {k}" for k in s.ssh_authorized_keys),
         "",
         "storage:",
     ]
@@ -103,7 +112,7 @@ def host_bu(
     if s.block_volume is False:
         out += [f"    - path: {s.data_mount}", "      mode: 0755"]
     out.append("    # Bind volumes, owned by the host uid of the user that writes them (see manifest.json).")
-    for name, spec in sorted(bind_volumes.items()):
+    for _name, spec in sorted(bind_volumes.items()):
         if "owner_uid" not in spec:
             continue
         uid = spec["owner_uid"]
@@ -262,5 +271,9 @@ def host_bu(
         "          contents: |",
         "            [Unit]",
         "            Wants=network-online.target",
+        "    # Only fcos.admin_keys log in as core: afterburn would add the droplet's DigitalOcean",
+        "    # account keys to it at every boot.",
+        "    - name: afterburn-sshkeys@core.service",
+        "      mask: true",
     ]
     return "\n".join(out) + "\n"

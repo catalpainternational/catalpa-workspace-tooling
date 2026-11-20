@@ -10,7 +10,9 @@ env:
 runtime: quadlet
 zbx_hostname: bero-staging.example
 fcos:
+  admin_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
   ssh_authorized_keys:
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
-    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey admin-b
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey ci-deploy
   auto_update: true

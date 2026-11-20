@@ -21,7 +21,8 @@
       hostname: catalpa-site-prod   # default <project>-<env>
       timezone: Asia/Dili       # default: tooling.yaml digitalocean.timezone, else UTC
       block_volume: catalpa-site-prod-data  # DO volume name; default <hostname>-data; false: none
-      ssh_authorized_keys: [...]  # public keys for core (admins) and the account (dk)
+      admin_keys: [...]         # public keys for core: admins, root through sudo
+      ssh_authorized_keys: [...]  # public keys for the account (dk, CI): no sudo
       update_window: {days: [Sun], start: "02:00", minutes: 60}  # Zincati reboots
       zabbix_image: docker.io/zabbix/zabbix-agent2:alpine-7.0-latest
 
@@ -75,6 +76,7 @@ class FcosSettings:
     timezone: str | None = None
     block_volume: str | bool | None = None
     ssh_authorized_keys: tuple[str, ...] = ()
+    admin_keys: tuple[str, ...] = ()
     update_window: UpdateWindow = UpdateWindow()
     zabbix_image: str = DEFAULT_ZABBIX_IMAGE
 
@@ -106,6 +108,7 @@ _KEYS = {
     "timezone",
     "block_volume",
     "ssh_authorized_keys",
+    "admin_keys",
     "update_window",
     "zabbix_image",
 }
@@ -159,6 +162,14 @@ def _update_window(raw: Any) -> UpdateWindow:
     return UpdateWindow(days=days, start=start, minutes=minutes)
 
 
+def _public_keys(raw: dict, field_name: str) -> tuple[str, ...]:
+    keys = _str_list(raw.get(field_name), field_name)
+    for key in keys:
+        if not re.match(r"^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp\d+|sk-\S+) [A-Za-z0-9+/=]+( .*)?$", key):
+            raise FcosConfigError(f"fcos.{field_name}: not a public key: {key[:40]!r}…")
+    return keys
+
+
 def parse_fcos_settings(info: dict) -> FcosSettings:
     raw = info.get("fcos")
     if raw is None:
@@ -204,10 +215,8 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
     if block_volume is not None and block_volume is not False:
         if not isinstance(block_volume, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", block_volume):
             raise FcosConfigError("fcos.block_volume must be a DO volume name, or false for none")
-    keys = _str_list(raw.get("ssh_authorized_keys"), "ssh_authorized_keys")
-    for key in keys:
-        if not re.match(r"^(ssh-(ed25519|rsa)|ecdsa-sha2-nistp\d+|sk-\S+) [A-Za-z0-9+/=]+( .*)?$", key):
-            raise FcosConfigError(f"fcos.ssh_authorized_keys: not a public key: {key[:40]!r}…")
+    keys = _public_keys(raw, "ssh_authorized_keys")
+    admin_keys = _public_keys(raw, "admin_keys")
 
     return FcosSettings(
         user=user,
@@ -223,6 +232,7 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
         timezone=str(raw["timezone"]) if raw.get("timezone") else None,
         block_volume=block_volume,
         ssh_authorized_keys=keys,
+        admin_keys=admin_keys,
         update_window=_update_window(raw.get("update_window")),
         zabbix_image=str(raw.get("zabbix_image") or DEFAULT_ZABBIX_IMAGE),
     )

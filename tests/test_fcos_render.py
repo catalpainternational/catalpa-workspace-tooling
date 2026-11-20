@@ -406,16 +406,34 @@ def test_backup_credentials_without_required_keys_or_timers_are_refused(tmp_path
 
 
 @needs_compose
-def test_host_bu_needs_ssh_keys(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("field", "until", "message"),
+    [
+        ("admin_keys", "  ssh_authorized_keys:", "admin_keys is empty"),
+        ("ssh_authorized_keys", "  bind_volumes:", "ssh_authorized_keys is empty"),
+    ],
+)
+def test_host_bu_needs_both_sets_of_keys(tmp_path: Path, field: str, until: str, message: str) -> None:
     root = tmp_path / "site"
     shutil.copytree(FIXTURES / "site", root, ignore=shutil.ignore_patterns("expected"))
     info = root / "docker" / "envs" / "staging" / "info.yaml"
     text = info.read_text()
-    start = text.index("  ssh_authorized_keys:")
-    end = text.index("  bind_volumes:")
+    start = text.index(f"  {field}:")
+    end = text.index(until)
     info.write_text(text[:start] + text[end:])
-    with pytest.raises(RenderError, match="ssh_authorized_keys is empty"):
+    with pytest.raises(RenderError, match=message):
         render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+
+
+@needs_compose
+def test_admin_keys_only_on_core_and_afterburn_keys_masked() -> None:
+    _config, render = _render("site")
+    bu = render.files["host.bu"]
+    core = bu[bu.index("    - name: core") : bu.index("    - name: deploy")]
+    deploy = bu[bu.index("    - name: deploy") : bu.index("storage:")]
+    assert "admin-a" in core and "ci-deploy" not in core
+    assert "admin-a" in deploy and "ci-deploy" in deploy
+    assert "- name: afterburn-sshkeys@core.service\n      mask: true" in bu
 
 
 def test_host_settings_validation() -> None:
@@ -425,5 +443,7 @@ def test_host_settings_validation() -> None:
         parse_fcos_settings({"fcos": {"update_window": {"days": ["Sunday"]}}})
     with pytest.raises(FcosConfigError, match="not a public key"):
         parse_fcos_settings({"fcos": {"ssh_authorized_keys": ["hunter2"]}})
+    with pytest.raises(FcosConfigError, match="admin_keys: not a public key"):
+        parse_fcos_settings({"fcos": {"admin_keys": ["hunter2"]}})
     with pytest.raises(FcosConfigError, match="host name"):
         parse_fcos_settings({"fcos": {"hostname": "Bad_Name"}})

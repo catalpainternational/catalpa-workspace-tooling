@@ -7,16 +7,18 @@ version: 1.6.0
 
 passwd:
   users:
-    # Admins: passwordless sudo (FCOS default), so root-equivalent.
+    # Admins (fcos.admin_keys): passwordless sudo (FCOS default), so root-equivalent.
     - name: core
-      ssh_authorized_keys: &keys
+      ssh_authorized_keys:
         - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
-        - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey admin-b
-    # Runs the stack (rootless Podman) and is what dk connects as. No sudo, no extra
-    # groups. A fixed uid: the quadlets live in /etc/containers/systemd/users/<uid>/.
+    # Runs the stack (rootless Podman) and is what dk connects as (fcos.ssh_authorized_keys).
+    # No sudo, no extra groups. A fixed uid: the quadlets live in
+    # /etc/containers/systemd/users/<uid>/.
     - name: deploy
       uid: 1001
-      ssh_authorized_keys: *keys
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
+        - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey ci-deploy
 
 storage:
   # The DO block storage volume, attached when the droplet is created. Formatted on
@@ -276,3 +278,7 @@ systemd:
           contents: |
             [Unit]
             Wants=network-online.target
+    # Only fcos.admin_keys log in as core: afterburn would add the droplet's DigitalOcean
+    # account keys to it at every boot.
+    - name: afterburn-sshkeys@core.service
+      mask: true

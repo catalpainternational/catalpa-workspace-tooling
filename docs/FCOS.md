@@ -43,8 +43,11 @@ fcos:                          # every key is optional
   volume_owners: {pgdata: 999} # uid inside its range that owns a bind volume (default 0;
                                # the pgBackRest data volume 999, postgres)
   # The host (host.bu):
-  ssh_authorized_keys:         # required: public keys for core (admins) and the account (dk)
-    - ssh-ed25519 AAAA… someone
+  admin_keys:                  # required: public keys for core (sudo, so root): admins only
+    - ssh-ed25519 AAAA… an-admin
+  ssh_authorized_keys:         # required: public keys for the account (dk, CI): no sudo
+    - ssh-ed25519 AAAA… an-admin
+    - ssh-ed25519 AAAA… ci-deploy
   hostname: catalpa-site-prod  # default <project>-<env>
   timezone: Asia/Dili          # default tooling.yaml digitalocean.timezone, else UTC
   block_volume: catalpa-site-prod-data  # DO volume to format and mount; default <hostname>-data;
@@ -175,8 +178,12 @@ too, as `<config_dir>/fcos-manifest.json`.
 
 Beyond the files, it sets up:
 
-- **Users.** `core` is for admins, with passwordless sudo. The account (`deploy`) has no sudo,
-  and its uid and subordinate IDs are pinned, so the data directories keep their owners.
+- **Users.** `core` is for admins, with passwordless sudo, so only `fcos.admin_keys` log in
+  as `core`. The account (`deploy`) has no sudo, and takes `fcos.ssh_authorized_keys`: the keys
+  dk and CI use, so a stolen deploy key can change the stack but not become root. A key may
+  be in both lists. Afterburn's copy of the droplet's DigitalOcean account keys to `core` is
+  masked, so those keys don't bypass the split. The account's uid and subordinate IDs are
+  pinned, so the data directories keep their owners.
 - **Data volume.** The DO block storage volume is formatted on first boot only, so a rebuilt
   host keeps its data. Each bind volume's directory is owned by its writers' host uid.
 - **The account's systemd.** Linger, the edge's socket and Podman's API socket, the timers,

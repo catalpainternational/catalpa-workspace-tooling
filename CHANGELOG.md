@@ -21,7 +21,8 @@
   `secrets push` streams values from `credentials.yaml` into Podman secrets over SSH, without
   writing or printing them. `diff` compares the host's files, data directories, timers and
   secret names with the render. `apply` installs what differs and restarts only the units that
-  read a changed file.
+  read a changed file. `info.yaml` `fcos.admin_keys` (logging in as `core`, with sudo) is set
+  apart from `fcos.ssh_authorized_keys` (the account that runs the stack, without sudo).
 
 ### Fixed
 
