@@ -65,6 +65,7 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 | M4 | Test branches in catalpa-site, swlt_ws2 and bero pinned to `dev-2.0`, each with a checklist | ongoing from here |
 | M5 | Backend primitives: `ComposeBackend` extracted, operations rewritten once (restore, transfer, fetch, hooks) | large |
 | M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work); `host destroy` as its exact inverse (#69: DNS, droplet, volumes, `docker_host`, known_hosts, guarded by `allow_destroy`) | medium |
+| M5b | Restore-only envs (#204): `restore_from:` in `info.yaml`, per-env read keys created by dk, read and write as two roles, quadlet read mode | medium |
 | M7 | Compose hosts rendered too: env files, timers and monitoring config as committed files, applied by `apply`, replacing `db init`, `install-systemd`, `zabbix install`, `storage ensure` | large; may follow 2.0 |
 
 M1–M3 are what users notice. M5 is what makes a third runtime cheap. M7 gives Ubuntu hosts the
