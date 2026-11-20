@@ -33,7 +33,16 @@ from catalpa_tooling.fcos.host import Committed, Host, HostError, load_committed
 from catalpa_tooling.fcos.render import generated_dir
 
 UNIT_VERBS = ("restart", "stop", "start")
-SUPPORTED = ("logs", "ps", "exec", "manage", *UNIT_VERBS)
+SUPPORTED = ("logs", "ps", "exec", "manage", *UNIT_VERBS, "db", "files")
+DB_COMMANDS = ("info", "check", "version", "backup", "pgdump", "configure")
+FILES_COMMANDS = ("backup", "snapshots", "check", "stats", "init")
+#: What the render owns on a quadlet env, and what to use instead.
+BACKUP_REFUSED = {
+    "init": "the render installs pgBackRest's config and units: `dk {env} db configure stanza-create` creates the stanza",
+    "install-systemd": "the render installs the backup units and timers (`fcos apply`)",
+    "push": "copy media into the media directory on the host, or restore it with restic",
+    "restore": "not on quadlet envs yet: see the env's README for the manual restore",
+}
 
 
 class Usage(Exception):
@@ -179,6 +188,73 @@ class Backend:
             tty=tty,
         )
 
+    # --- backups ------------------------------------------------------------------------------
+
+    def _installed(self, prefix: str, suffix: str) -> str | None:
+        """Unit name of the one rendered file ``prefix…suffix`` (e.g. ``systemd/…@.service``)."""
+        for e in self.committed.manifest["install"]:
+            f = e["file"]
+            if f.startswith(prefix) and f.endswith(suffix):
+                return f.rsplit("/", 1)[-1]
+        return None
+
+    def _start_and_show(self, unit: str) -> int:
+        """Start a one-shot unit, wait for it, then show what it logged (failures included)."""
+        q = shlex.quote(unit)
+        print(f"{self.host.address}: systemctl --user start {unit}", file=sys.stderr)
+        return self._ssh(
+            f't=$(date +%s); systemctl --user start {q}; rc=$?; '
+            f'journalctl --user -u {q} --since "@$t" --no-pager -o cat; exit $rc',
+            tty=False,
+        )
+
+    def db(self, sub: str, ns: argparse.Namespace) -> int:
+        db = self.config.stack.services.db
+        self._check_services([db])
+        pgbr = ["podman", "exec", "-u", "postgres", db, "pgbackrest"]
+        if sub == "version":
+            return self._ssh(shlex.join([*pgbr, "version"]), tty=False)
+        if sub in ("info", "check"):
+            return self._ssh(shlex.join([*pgbr, "--log-level-console=info", sub]), tty=False)
+        if sub == "configure":
+            mode = getattr(ns, "configure_mode", None)
+            if mode == "stanza-create":
+                return self._ssh(shlex.join([*pgbr, "--log-level-console=info", "stanza-create"]), tty=False)
+            if mode == "verify":
+                return self._ssh(shlex.join([*pgbr, "--log-level-console=info", "check"]), tty=False)
+            raise Usage(
+                f"dk {self.env_name} db configure: the render writes pgBackRest's config; "
+                "use `configure stanza-create` or `configure verify`"
+            )
+        if sub == "backup":
+            template = self._installed("systemd/", "pgbackrest-backup@.service")
+            if not template:
+                raise Usage(f"{self.env_name}'s render has no pgBackRest backup unit")
+            return self._start_and_show(template.replace("@.", f"@{ns.backup_type}."))
+        if sub == "pgdump":
+            from catalpa_tooling.fcos.fetch import pg_dump_command
+
+            args = [a for a in (getattr(ns, "pg_dump_args", None) or []) if a != "--"]
+            return self._ssh(pg_dump_command(db, args), tty=False)
+        raise Usage(f"dk {self.env_name} db {sub}: not on a quadlet env")
+
+    def _restic_quadlet(self) -> tuple[str, str]:
+        """(unit stem, quadlet text) of the rendered restic container."""
+        for e in self.committed.manifest["install"]:
+            f = e["file"]
+            text = self.committed.files.get(f, "")
+            if f.startswith("quadlets/") and f.endswith(".container") and "\nImage=" in text and "restic" in text.split("\nImage=", 1)[1].split("\n", 1)[0]:
+                return f.rsplit("/", 1)[-1][: -len(".container")], text
+        raise Usage(f"{self.env_name}'s render has no restic backup (restic_write_* credentials)")
+
+    def files(self, sub: str) -> int:
+        stem, text = self._restic_quadlet()
+        if sub == "backup":
+            return self._start_and_show(f"{stem}.service")
+        args = {"snapshots": ["snapshots"], "check": ["check"], "stats": ["stats"], "init": ["init"]}[sub]
+        cmd = ["podman", "run", "--rm", "-i", *podman_run_args(text), *args]
+        return self._ssh(shlex.join(cmd), tty=False)
+
     def units(self, verb: str, argv: list[str]) -> int:
         names = [a for a in argv if not a.startswith("-")]
         flags = [a for a in argv if a.startswith("-")]
@@ -200,6 +276,39 @@ class Backend:
         cmd = f"systemctl --user {verb} " + " ".join(shlex.quote(u) for u in units)
         print(f"{self.host.address}: systemctl --user {verb} {' '.join(units)}", file=sys.stderr)
         return self._ssh(cmd, tty=False)
+
+
+def podman_run_args(quadlet: str) -> list[str]:
+    """``podman run`` options for a one-off container like a rendered ``.container``: its image,
+    ID range, secrets, settings and mounts (not its name or command)."""
+    image = None
+    out: list[str] = []
+    in_container = False
+    for line in quadlet.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            in_container = line == "[Container]"
+            continue
+        if not in_container or not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "Image":
+            image = value
+        elif key == "UIDMap":
+            out += ["--uidmap", value]
+        elif key == "GIDMap":
+            out += ["--gidmap", value]
+        elif key == "Secret":
+            out += ["--secret", value]
+        elif key == "Environment":
+            out += ["-e", value]
+        elif key == "Volume":
+            out += ["-v", value]
+        elif key == "User":
+            out += ["--user", value]
+    if image is None:
+        raise Usage("the quadlet has no Image=")
+    return [*out, image]
 
 
 REFUSED_HINT = {
@@ -226,6 +335,9 @@ def handle(
     command = getattr(ns, "env_command", None)
     if command == "manage":
         verb, argv = "manage", []
+    elif command in ("db", "bkp_db", "files", "bkp_files"):
+        verb = command.removeprefix("bkp_")
+        argv = []
     elif command in (None, "compose"):
         argv = list(getattr(ns, "implicit_compose_argv", None) or getattr(ns, "compose_argv", None) or [])
         if not argv:
@@ -285,6 +397,13 @@ def handle(
         if verb == "manage":
             args = [a for a in getattr(ns, "manage_args", []) if a]
             return b.manage(args, user=getattr(ns, "user", None), tty=tty)
+        if verb in ("db", "files"):
+            sub = getattr(ns, f"{command}_command", None)
+            allowed = DB_COMMANDS if verb == "db" else FILES_COMMANDS
+            if sub not in allowed:
+                hint = BACKUP_REFUSED.get(sub, "not on a quadlet env").format(env=env_name)
+                raise Usage(f"dk {env_name} {verb} {sub}: {hint}")
+            return b.db(sub, ns) if verb == "db" else b.files(sub)
         return b.units(verb, argv)
     except Usage as exc:
         print(str(exc), file=sys.stderr)

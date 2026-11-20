@@ -237,8 +237,20 @@ account's Podman socket.
   `ops.restic.data_volume`, default `django_media`) as the account, with no Docker volume
   lookup.
 
-Not yet on quadlet envs: `db`/`files` (backup and restore), `transfer` and `pull_media`. They
-are still refused.
+Backups (`files` is the media backup; #43 renames it `media`):
+
+| Command | On the host |
+|---|---|
+| `dk <env> db info \| check \| version` | `pgbackrest` in `db`, which takes the repository from its Podman secrets |
+| `dk <env> db configure stanza-create \| verify` | `pgbackrest stanza-create` / `check` |
+| `dk <env> db backup full\|incr\|diff` | starts the timers' own `…-pgbackrest-backup@<type>` unit, waits, shows its log |
+| `dk <env> db pgdump [args]` | `pg_dump -Fc` to stdout, as for `fetch db` |
+| `dk <env> files backup` | starts the restic unit, waits, shows its log |
+| `dk <env> files snapshots \| check \| stats \| init` | a one-off restic container built from that unit's quadlet: same image, ID range, secrets and mounts |
+
+Refused, since the render owns them: `db init`, `install-systemd`, `files push`, and
+`db configure` without a mode. Not yet on quadlet envs: `db restore`, `files restore`,
+`transfer` and `pull_media`.
 
 ## On the host
 

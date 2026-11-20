@@ -146,3 +146,87 @@ def test_dk_routes_a_quadlet_env_here(site) -> None:
         env_name="staging", env_command=None, implicit_compose_argv=["up"], dry_run=False, tag=None
     )
     assert handle_env_command(ns, site) == 2
+
+
+# --- db / files (swlt has pgBackRest and restic) ----------------------------------------------
+
+
+@pytest.fixture
+def swlt(tmp_path: Path):
+    root = tmp_path / "swlt"
+    shutil.copytree(FIXTURES / "swlt", root)
+    shutil.copytree(root / "expected", root / "docker" / "envs" / "staging" / "generated" / "fcos")
+    return load_project_config(root)
+
+
+def run_sub(config, command: str, sub: str, **extra) -> tuple[int, Recorder]:
+    r = Recorder()
+    ns = argparse.Namespace(env_command=command, dry_run=False, **{f"{command}_command": sub}, **extra)
+    info = {"docker_host": "ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock"}
+    return backend.handle(ns, config, "staging", info, runner=r, tty=False), r
+
+
+def test_db_commands(swlt) -> None:
+    rc, r = run_sub(swlt, "db", "info")
+    assert rc == 0 and r.remote == [
+        "podman", "exec", "-u", "postgres", "db", "pgbackrest", "--log-level-console=info", "info",
+    ]  # fmt: skip
+    rc, r = run_sub(swlt, "db", "version")
+    assert r.remote[-1] == "version" and "--log-level-console=info" not in r.remote
+    rc, r = run_sub(swlt, "db", "configure", configure_mode="stanza-create")
+    assert r.remote[-1] == "stanza-create"
+    rc, r = run_sub(swlt, "db", "backup", backup_type="full")
+    assert "systemctl --user start swlt-pgbackrest-backup@full.service" in r.calls[-1][-1]
+    assert "journalctl --user -u swlt-pgbackrest-backup@full.service" in r.calls[-1][-1]
+    rc, r = run_sub(swlt, "db", "pgdump", pg_dump_args=["--", "-t", "x"])
+    assert r.remote[:6] == ["podman", "exec", "-i", "-u", "postgres", "db"]
+    assert r.remote[-1].endswith("-Fc -t x")
+    rc, r = run_sub(swlt, "bkp_db", "info")  # the old name works too
+    assert rc == 0
+
+
+def test_files_commands(swlt) -> None:
+    rc, r = run_sub(swlt, "files", "backup")
+    assert "systemctl --user start swlt-restic-files-backup.service" in r.calls[-1][-1]
+    rc, r = run_sub(swlt, "files", "snapshots")
+    cmd = r.remote
+    assert cmd[:4] == ["podman", "run", "--rm", "-i"] and cmd[-1] == "snapshots"
+    # The one-off container is the backup unit's: image, ID range, secrets, mounts.
+    assert cmd[-2].startswith("docker.io/restic/restic:")
+    assert "--uidmap" in cmd and "--secret" in cmd and "-v" in cmd
+    assert "restic_write_password,type=env,target=RESTIC_PASSWORD" in cmd
+    assert not any(a.startswith("backup") for a in cmd)  # not the unit's Exec=
+
+
+@pytest.mark.parametrize(
+    ("command", "sub", "hint"),
+    [
+        ("db", "init", "stanza-create"),
+        ("db", "install-systemd", "fcos apply"),
+        ("db", "restore", "README"),
+        ("files", "restore", "README"),
+        ("files", "push", "media directory"),
+    ],
+)
+def test_render_owned_backup_commands_are_refused(swlt, command, sub, hint, capsys) -> None:
+    rc, r = run_sub(swlt, command, sub)
+    assert rc == 2 and r.calls == []
+    assert hint in capsys.readouterr().err
+
+
+def test_files_without_restic(site, capsys) -> None:
+    rc, r = run_sub(site, "files", "snapshots")
+    assert rc == 2 and r.calls == []
+    assert "no restic backup" in capsys.readouterr().err
+
+
+def test_podman_run_args_reads_only_the_container_section() -> None:
+    q = (
+        "[Unit]\nDescription=x\n\n[Container]\nContainerName=r\nImage=docker.io/restic/restic:1\n"
+        "UIDMap=0:20000:5000\nSecret=a,type=env,target=A\nEnvironment=K=V\n"
+        "Volume=/d:/d:ro,z\nExec=backup /d\n# Image=nope\n\n[Service]\nEnvironment=NOT=this\n"
+    )
+    assert backend.podman_run_args(q) == [
+        "--uidmap", "0:20000:5000", "--secret", "a,type=env,target=A", "-e", "K=V",
+        "-v", "/d:/d:ro,z", "docker.io/restic/restic:1",
+    ]  # fmt: skip
