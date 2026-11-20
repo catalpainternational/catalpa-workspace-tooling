@@ -104,7 +104,7 @@ def run_transfer(
             return 1
         from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 
-        what = " and ".join(w for w, on in (("the app database", do_db), ("the media", do_media)) if on)
+        what = " and ".join(w for w, on in (("app database", do_db), ("media", do_media)) if on)
         print(f"WARNING: this replaces {dst}'s {what} with {src}'s.", file=sys.stderr)
         if not confirm_by_typing_env_name(dst):
             print("transfer: cancelled.", file=sys.stderr)
