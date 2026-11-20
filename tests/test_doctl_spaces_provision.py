@@ -342,3 +342,25 @@ digitalocean:
         encoding="utf-8",
     )
     return repo
+
+
+def test_s3cmd_gets_the_key_from_a_private_file_not_its_arguments(tmp_path: Path) -> None:
+    """run_cmd echoes every command line (and `ps` shows it): the key must not be in one."""
+    import stat
+
+    from catalpa_tooling.doctl_spaces_provision import SpacesBackupDefaults, _s3cmd_spaces_args
+
+    d = SpacesBackupDefaults(
+        endpoint="sgp1.digitaloceanspaces.com", region="sgp1", bucket="b", pgbackrest_repo_path="/p",
+        restic_path="r", stanza="main", write_key_name="b-prod-write",
+        host_bucket="%(bucket)s.sgp1.digitaloceanspaces.com",
+    )  # fmt: skip
+    with _s3cmd_spaces_args(d, access_key="AKID", secret_key="S3CR3T") as args:
+        assert not any("AKID" in a or "S3CR3T" in a for a in args)
+        cfg = Path(args[args.index("-c") + 1])
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+        assert stat.S_IMODE(cfg.parent.stat().st_mode) == 0o700
+        text = cfg.read_text()
+        assert "access_key = AKID" in text and "secret_key = S3CR3T" in text
+        assert "--host=sgp1.digitaloceanspaces.com" in args
+    assert not cfg.exists() and not cfg.parent.exists()
