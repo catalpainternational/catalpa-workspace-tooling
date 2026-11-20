@@ -32,6 +32,54 @@ from catalpa_tooling.fcos.settings import (
 )
 
 
+#: Each login's keys live in one file dk manages; ``fcos apply`` removes any other file in the
+#: directory (Ignition's, afterburn's, a key added by hand).
+KEYS_FILE = "dk"
+#: afterburn copies the droplet's DigitalOcean account keys to core at every boot.
+MASKED_UNITS = ("afterburn-sshkeys@core.service",)
+
+
+def home_of(user: str) -> str:
+    return f"/var/home/{user}"
+
+
+def keys_dir(user: str) -> str:
+    return f"{home_of(user)}/.ssh/authorized_keys.d"
+
+
+def key_files(settings: FcosSettings, header: str) -> tuple[dict[str, str], list[dict]]:
+    """``core``'s and the account's ``authorized_keys.d/dk``, as install-map files, so a key
+    change is a diff ``fcos apply`` can put on a running host."""
+    s = settings
+    if not s.admin_keys:
+        raise ValueError(
+            "fcos.admin_keys is empty: list the admins' public keys. They log in as core, which "
+            "has passwordless sudo, so only people who may be root on the host"
+        )
+    if not s.ssh_authorized_keys:
+        raise ValueError(
+            f"fcos.ssh_authorized_keys is empty: list the public keys that log in as {s.user} "
+            "(dk, CI): they run and deploy the stack, with no sudo"
+        )
+    files: dict[str, str] = {}
+    install: list[dict] = []
+    for user, keys, what in (
+        ("core", s.admin_keys, "fcos.admin_keys: admins, root through sudo"),
+        (s.user, s.ssh_authorized_keys, "fcos.ssh_authorized_keys: runs the stack, no sudo"),
+    ):
+        path = f"ssh/{user}.keys"
+        files[path] = header + f"# {what}\n" + "".join(f"{k}\n" for k in keys)
+        install.append(
+            {"file": path, "dest": f"{keys_dir(user)}/{KEYS_FILE}", "owner": user, "mode": "0600"}
+        )
+    return files, install
+
+
+def dir_mode(path: str) -> str:
+    """sshd wants ``~/.ssh`` private; everything else in a home is 0755."""
+    return "0700" if "/.ssh" in path else "0755"
+
+
 def _owner(user: str | None) -> list[str]:
     if not user or user == "root":
         return []
@@ -59,16 +107,6 @@ def host_bu(
     config_dir: str,
 ) -> str:
     s = settings
-    if not s.admin_keys:
-        raise ValueError(
-            "fcos.admin_keys is empty: list the admins' public keys. They log in as core, which "
-            "has passwordless sudo, so only people who may be root on the host"
-        )
-    if not s.ssh_authorized_keys:
-        raise ValueError(
-            f"fcos.ssh_authorized_keys is empty: list the public keys that log in as {s.user} "
-            "(dk, CI): they run and deploy the stack, with no sudo"
-        )
     out: list[str] = [
         header.rstrip("\n"),
         "# Compile in this directory:",
@@ -79,17 +117,14 @@ def host_bu(
         "",
         "passwd:",
         "  users:",
-        "    # Admins (fcos.admin_keys): passwordless sudo (FCOS default), so root-equivalent.",
+        "    # Admins: passwordless sudo (FCOS default), so root-equivalent. Keys: fcos.admin_keys,",
+        "    # installed below as ~/.ssh/authorized_keys.d/dk (so `fcos apply` can change them).",
         "    - name: core",
-        "      ssh_authorized_keys:",
-        *(f"        - {k}" for k in s.admin_keys),
-        "    # Runs the stack (rootless Podman) and is what dk connects as (fcos.ssh_authorized_keys).",
-        "    # No sudo, no extra groups. A fixed uid: the quadlets live in",
+        "    # Runs the stack (rootless Podman) and is what dk connects as. Keys:",
+        "    # fcos.ssh_authorized_keys. No sudo, no extra groups. A fixed uid: the quadlets live in",
         "    # /etc/containers/systemd/users/<uid>/.",
         f"    - name: {s.user}",
         f"      uid: {s.uid}",
-        "      ssh_authorized_keys:",
-        *(f"        - {k}" for k in s.ssh_authorized_keys),
         "",
         "storage:",
     ]
@@ -142,22 +177,23 @@ def host_bu(
         f"    # Root-owned: {s.user} runs these quadlets but can't edit them.",
         f"    - path: {s.quadlet_dir}",
         "      mode: 0755",
-        f"    # {s.user}'s own directories. Ignition makes missing parents as root, so each level is listed.",
+        f"    # core's and {s.user}'s own directories. Ignition makes missing parents as root, so",
+        "    # each level is listed.",
     ]
-    user_dirs = {
-        f"{s.user_unit_dir}/sockets.target.wants",
-        f"{s.user_unit_dir}/timers.target.wants",
+    owned: dict[str, str] = {
+        f"{s.user_unit_dir}/sockets.target.wants": s.user,
+        f"{s.user_unit_dir}/timers.target.wants": s.user,
     }
     for entry in install:
-        if entry["owner"] == s.user:
-            user_dirs.add(posixpath.dirname(entry["dest"]))
-    expanded = set()
-    for d in user_dirs:
-        while d.startswith(s.home + "/"):
-            expanded.add(d)
+        if entry["owner"] not in ("root", ""):
+            owned.setdefault(posixpath.dirname(entry["dest"]), entry["owner"])
+    expanded: dict[str, str] = {}
+    for d, user in owned.items():
+        while d.startswith(home_of(user) + "/"):
+            expanded[d] = user
             d = posixpath.dirname(d)
-    for d in sorted(expanded):
-        out += [f"    - path: {d}", "      mode: 0755", *_owner(s.user)]
+    for d, user in sorted(expanded.items()):
+        out += [f"    - path: {d}", f"      mode: {dir_mode(d)}", *_owner(user)]
     out += [f"    - path: {s.home}/.config/containers", "      mode: 0700", *_owner(s.user)]
 
     out += [
@@ -273,7 +309,7 @@ def host_bu(
         "            Wants=network-online.target",
         "    # Only fcos.admin_keys log in as core: afterburn would add the droplet's DigitalOcean",
         "    # account keys to it at every boot.",
-        "    - name: afterburn-sshkeys@core.service",
-        "      mask: true",
     ]
+    for unit in MASKED_UNITS:
+        out += [f"    - name: {unit}", "      mask: true"]
     return "\n".join(out) + "\n"

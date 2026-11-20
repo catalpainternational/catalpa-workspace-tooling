@@ -7,18 +7,14 @@ version: 1.6.0
 
 passwd:
   users:
-    # Admins (fcos.admin_keys): passwordless sudo (FCOS default), so root-equivalent.
+    # Admins: passwordless sudo (FCOS default), so root-equivalent. Keys: fcos.admin_keys,
+    # installed below as ~/.ssh/authorized_keys.d/dk (so `fcos apply` can change them).
     - name: core
-      ssh_authorized_keys:
-        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
-    # Runs the stack (rootless Podman) and is what dk connects as (fcos.ssh_authorized_keys).
-    # No sudo, no extra groups. A fixed uid: the quadlets live in
+    # Runs the stack (rootless Podman) and is what dk connects as. Keys:
+    # fcos.ssh_authorized_keys. No sudo, no extra groups. A fixed uid: the quadlets live in
     # /etc/containers/systemd/users/<uid>/.
     - name: deploy
       uid: 1001
-      ssh_authorized_keys:
-        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
-        - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey ci-deploy
 
 storage:
   # The DO block storage volume, attached when the droplet is created. Formatted on
@@ -56,7 +52,20 @@ storage:
     # Root-owned: deploy runs these quadlets but can't edit them.
     - path: /etc/containers/systemd/users/1001
       mode: 0755
-    # deploy's own directories. Ignition makes missing parents as root, so each level is listed.
+    # core's and deploy's own directories. Ignition makes missing parents as root, so
+    # each level is listed.
+    - path: /var/home/core/.ssh
+      mode: 0700
+      user:
+        name: core
+      group:
+        name: core
+    - path: /var/home/core/.ssh/authorized_keys.d
+      mode: 0700
+      user:
+        name: core
+      group:
+        name: core
     - path: /var/home/deploy/.config
       mode: 0755
       user:
@@ -89,6 +98,18 @@ storage:
         name: deploy
     - path: /var/home/deploy/.config/systemd/user/timers.target.wants
       mode: 0755
+      user:
+        name: deploy
+      group:
+        name: deploy
+    - path: /var/home/deploy/.ssh
+      mode: 0700
+      user:
+        name: deploy
+      group:
+        name: deploy
+    - path: /var/home/deploy/.ssh/authorized_keys.d
+      mode: 0700
       user:
         name: deploy
       group:
@@ -251,6 +272,14 @@ storage:
       mode: 0644
       contents:
         local: envfiles/migrate.env
+    - path: /var/home/core/.ssh/authorized_keys.d/dk
+      mode: 0600
+      user:
+        name: core
+      group:
+        name: core
+      contents:
+        local: ssh/core.keys
     - path: /var/home/deploy/.config/site/caddy.json
       mode: 0644
       user:
@@ -267,6 +296,14 @@ storage:
         name: deploy
       contents:
         local: systemd/caddy.socket
+    - path: /var/home/deploy/.ssh/authorized_keys.d/dk
+      mode: 0600
+      user:
+        name: deploy
+      group:
+        name: deploy
+      contents:
+        local: ssh/deploy.keys
 
 systemd:
   units:

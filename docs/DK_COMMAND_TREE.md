@@ -80,7 +80,7 @@ dk
     │   ├── provision [--no-start]   # new host: check files, push secrets, registry login, start
     │   ├── secrets push [NAME…]     # sops → podman secrets over SSH stdin [--restart]
     │   ├── diff [--names-only]      # host files/dirs/timers/secret names vs the render
-    │   └── apply [--no-restart] [-y] # install what differs; restart only affected units
+    │   └── apply [--no-restart] [-y] [--force] # install what differs (incl. SSH keys); restart affected units
     ├── ensure_volumes               # utility command 
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
     ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)

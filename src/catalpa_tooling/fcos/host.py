@@ -32,6 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from catalpa_tooling.fcos.butane import dir_mode, home_of, keys_dir
 from catalpa_tooling.fcos.render import MANIFEST, host_manifest_path
 
 #: Runs one command (argv), with optional stdin bytes; returns the finished process with
@@ -79,6 +80,15 @@ class Committed:
     @property
     def manifest_dest(self) -> str:
         return host_manifest_path(self.manifest["config_dir"])
+
+    @property
+    def key_dirs(self) -> list[str]:
+        """``authorized_keys.d`` of core and the account: dk manages every file in them."""
+        return [keys_dir("core"), keys_dir(self.user)]
+
+    @property
+    def masked_units(self) -> list[str]:
+        return list(self.manifest.get("masked_units") or [])
 
     def user_scope(self, dest: str) -> bool:
         """Is ``dest`` read by the account's systemd (else by the system's)?"""
@@ -167,6 +177,7 @@ class HostState:
     files: dict[str, HostFile | None] = field(default_factory=dict)
     dirs: dict[str, tuple[int, int] | None] = field(default_factory=dict)
     links: dict[str, str | None] = field(default_factory=dict)
+    key_files: set[str] = field(default_factory=set)
     system_secrets: set[str] = field(default_factory=set)
     secrets: set[str] = field(default_factory=set)
 
@@ -176,6 +187,10 @@ def _timer_links(c: Committed) -> dict[str, str]:
         f"{c.user_unit_dir}/timers.target.wants/{t}": f"../{t}"
         for t in c.manifest.get("timers") or []
     }
+
+
+def _unit_path(unit: str) -> str:
+    return f"/etc/systemd/system/{unit}"
 
 
 def state_script(c: Committed) -> str:
@@ -188,10 +203,14 @@ def state_script(c: Committed) -> str:
         "\"$(stat -c %u \"$1\")\"; else printf 'N\\t%s\\n' \"$1\"; fi; }",
         "l() { if [ -L \"$1\" ]; then printf 'L\\t%s\\t%s\\n' \"$1\" \"$(readlink \"$1\")\"; "
         "else printf 'X\\t%s\\n' \"$1\"; fi; }",
+        "k() { [ -d \"$1\" ] || return 0; for x in \"$1\"/* \"$1\"/.[!.]*; do "
+        "[ -e \"$x\" ] && printf 'K\\t%s\\n' \"$x\"; done; return 0; }",
     ]
     lines += [f"f {q(e['dest'])}" for e in c.manifest["install"]]
     lines += [f"d {q(v['path'])}" for v in (c.manifest.get("bind_volumes") or {}).values()]
     lines += [f"l {q(p)}" for p in _timer_links(c)]
+    lines += [f"l {q(_unit_path(u))}" for u in c.masked_units]
+    lines += [f"k {q(d)}" for d in c.key_dirs]
     if c.manifest.get("system_secrets"):
         lines.append("podman secret ls --format '{{.Name}}' | while read -r s; do printf 'S\\t%s\\n' \"$s\"; done")
     return "\n".join(lines) + "\n"
@@ -218,6 +237,8 @@ def parse_state(out: str) -> HostState:
             s.links[parts[1]] = parts[2]
         elif kind == "X":
             s.links[parts[1]] = None
+        elif kind == "K":
+            s.key_files.add(parts[1])
         elif kind == "S" and len(parts) == 2:
             s.system_secrets.add(parts[1])
     return s
@@ -252,6 +273,8 @@ class Plan:
     make_dirs: list[tuple[str, int, int]] = field(default_factory=list)
     dir_problems: list[str] = field(default_factory=list)
     links: list[tuple[str, str]] = field(default_factory=list)
+    stray_keys: list[str] = field(default_factory=list)
+    masks: list[str] = field(default_factory=list)
     secrets_missing: list[str] = field(default_factory=list)
     secrets_extra: list[str] = field(default_factory=list)
     system_secrets_missing: list[str] = field(default_factory=list)
@@ -259,7 +282,9 @@ class Plan:
 
     @property
     def files_in_sync(self) -> bool:
-        return not (self.changes or self.remove or self.make_dirs or self.links)
+        return not (
+            self.changes or self.remove or self.make_dirs or self.links or self.stray_keys or self.masks
+        )
 
     @property
     def secrets_in_sync(self) -> bool:
@@ -307,6 +332,10 @@ def make_plan(c: Committed, state: HostState) -> Plan:
         if state.links.get(link) != target:
             p.links.append((link, target))
 
+    rendered = {e["dest"] for e in c.manifest["install"]}
+    p.stray_keys = sorted(state.key_files - rendered)
+    p.masks = [u for u in c.masked_units if state.links.get(_unit_path(u)) != "/dev/null"]
+
     want = set(c.manifest.get("secrets") or {})
     p.secrets_missing = sorted(want - state.secrets)
     p.secrets_extra = sorted(state.secrets - want)
@@ -331,6 +360,8 @@ def describe(p: Plan, *, show_diff: bool = True) -> list[str]:
     out += [f"+ {d}/ (mode {m:o}, owner {u})" for d, m, u in p.make_dirs]
     out += [f"! {msg}" for msg in p.dir_problems]
     out += [f"+ {link} → {t} (enable timer)" for link, t in p.links]
+    out += [f"- {k} (key file not rendered: its keys stop working)" for k in p.stray_keys]
+    out += [f"+ mask {u}" for u in p.masks]
     out += [f"! secret {s} missing (fcos secrets push)" for s in p.secrets_missing]
     out += [f"! system secret {s} missing (fcos secrets push)" for s in p.system_secrets_missing]
     out += [f"? secret {s} on the host but not rendered (left alone)" for s in p.secrets_extra]
@@ -438,12 +469,14 @@ def stack_units(c: Committed) -> tuple[list[str], list[str]]:
 # --- Apply ----------------------------------------------------------------------------------
 
 
-def _parents(c: Committed, dest: str) -> list[str]:
-    """The account's directories above ``dest`` that may need creating, top first (Ignition
+def _parents(dest: str, owner: str) -> list[str]:
+    """``owner``'s directories above ``dest`` that may need creating, top first (Ignition
     and ``install -d`` would make them root's)."""
+    if owner in ("root", ""):
+        return []
     out = []
     d = posixpath.dirname(dest)
-    while d.startswith(c.home + "/"):
+    while d.startswith(home_of(owner) + "/"):
         out.append(d)
         d = posixpath.dirname(d)
     return list(reversed(out))
@@ -454,12 +487,15 @@ def apply_script(c: Committed, p: Plan) -> str:
     lines = ["set -eu", "umask 022"]
     made: set[str] = set()
     for ch in p.changes:
-        for d in _parents(c, ch.dest) if ch.owner == c.user else []:
+        for d in _parents(ch.dest, ch.owner):
             if d not in made:
                 made.add(d)
-                lines.append(f"[ -d {q(d)} ] || install -d -m 0755 -o {c.user} -g {c.user} {q(d)}")
+                lines.append(
+                    f"[ -d {q(d)} ] || {{ install -d -m {dir_mode(d)} -o {ch.owner} -g {ch.owner} "
+                    f"{q(d)}; restorecon {q(d)} 2>/dev/null || true; }}"
+                )
         parent = posixpath.dirname(ch.dest)
-        if ch.owner != c.user and parent not in made:
+        if ch.owner in ("root", "") and parent not in made:
             made.add(parent)
             lines.append(f"[ -d {q(parent)} ] || install -d -m 0755 {q(parent)}")
         owner = "root" if ch.owner in ("root", "") else ch.owner
@@ -472,8 +508,10 @@ def apply_script(c: Committed, p: Plan) -> str:
             f'mv -f "$t" {q(ch.dest)}',
             f"restorecon {q(ch.dest)} 2>/dev/null || true",
         ]
-    for dest in p.remove:
+    for dest in p.remove + p.stray_keys:
         lines.append(f"rm -f {q(dest)}")
+    for unit in p.masks:
+        lines.append(f"systemctl mask {q(unit)}")
     for path, mode, uid in p.make_dirs:
         lines.append(f"install -d -m {mode:o} -o {uid} -g {uid} {q(path)}")
     for link, target in p.links:
@@ -611,3 +649,56 @@ def logged_in(host: Host, c: Committed, registry: str) -> bool:
         check=False,
     )
     return r.returncode == 0
+
+
+# --- Not locking the admins out -------------------------------------------------------------
+
+
+def key_blobs(text: str) -> set[str]:
+    """The base64 part of each public key in ``text`` (comments and options ignored)."""
+    out = set()
+    for line in text.splitlines():
+        for part in line.split():
+            if part.startswith("AAAA"):
+                out.add(part)
+                break
+    return out
+
+
+def local_public_keys(*, runner: Runner = run, home: Path | None = None) -> set[str]:
+    """The public keys this machine could log in with: the agent's and ``~/.ssh/*.pub``."""
+    blobs = set()
+    r = runner(["ssh-add", "-L"])
+    if r.returncode == 0:
+        blobs |= key_blobs((r.stdout or b"").decode(errors="replace"))
+    for pub in sorted((home or Path.home()).joinpath(".ssh").glob("*.pub")):
+        try:
+            blobs |= key_blobs(pub.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return blobs
+
+
+def core_keys_change(c: Committed, p: Plan) -> bool:
+    core_dir = keys_dir("core") + "/"
+    return any(ch.dest.startswith(core_dir) for ch in p.changes) or any(
+        k.startswith(core_dir) for k in p.stray_keys
+    )
+
+
+def lockout_problem(c: Committed, p: Plan, local: set[str]) -> str | None:
+    """Why applying ``p`` could lock this machine out of ``core``, or None."""
+    if not core_keys_change(c, p):
+        return None
+    admin = key_blobs(c.files.get("ssh/core.keys", ""))
+    if local & admin:
+        return None
+    if not local:
+        return (
+            "this changes core's keys, and no public key was found here (ssh-add -L, "
+            "~/.ssh/*.pub) to check you keep access"
+        )
+    return (
+        "this changes core's keys, and none of your public keys (ssh-add -L, ~/.ssh/*.pub) is "
+        "in fcos.admin_keys: you would lose root on the host"
+    )

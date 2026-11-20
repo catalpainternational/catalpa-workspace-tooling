@@ -240,6 +240,18 @@
       "mode": "0644"
     },
     {
+      "file": "ssh/core.keys",
+      "dest": "/var/home/core/.ssh/authorized_keys.d/dk",
+      "owner": "core",
+      "mode": "0600"
+    },
+    {
+      "file": "ssh/deploy.keys",
+      "dest": "/var/home/deploy/.ssh/authorized_keys.d/dk",
+      "owner": "deploy",
+      "mode": "0600"
+    },
+    {
       "file": "systemd/caddy.socket",
       "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
       "owner": "deploy",
@@ -273,6 +285,9 @@
   "hostname": "swlt-shape-staging",
   "timezone": "UTC",
   "config_dir": "/etc/swlt_shape",
+  "masked_units": [
+    "afterburn-sshkeys@core.service"
+  ],
   "proxy": "caddy",
   "system_secrets": {},
   "timers": [

@@ -67,6 +67,11 @@ def attach_fcos_parser(cmd_sub: argparse._SubParsersAction) -> None:
     host_arg(a)
     a.add_argument("--no-restart", action="store_true", help="Install and reload; restart nothing.")
     a.add_argument("--yes", "-y", action="store_true", help="Don't ask before changing the host.")
+    a.add_argument(
+        "--force",
+        action="store_true",
+        help="Change core's keys even when none of your public keys stays in fcos.admin_keys.",
+    )
 
     s = sub.add_parser("secrets", help="Podman secrets on the host.")
     ssub = s.add_subparsers(dest="fcos_secrets_command", required=True)
@@ -237,6 +242,12 @@ def _host_command(
     for line in lines:
         print(line)
     _print_restarts(restarts, no_restart=no_restart)
+    lockout = h.lockout_problem(c, plan, h.local_public_keys())
+    if lockout:
+        print(f"{'warning' if getattr(ns, 'force', False) else 'refused'}: {lockout}", file=sys.stderr)
+        if not getattr(ns, "force", False) and not dry_run:
+            print("Pass --force if that is what you want.", file=sys.stderr)
+            return 1
     if dry_run:
         print("dry-run: nothing changed.", file=sys.stderr)
         return 0

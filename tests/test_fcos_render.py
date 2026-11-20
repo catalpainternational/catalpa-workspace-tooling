@@ -428,11 +428,15 @@ def test_host_bu_needs_both_sets_of_keys(tmp_path: Path, field: str, until: str,
 @needs_compose
 def test_admin_keys_only_on_core_and_afterburn_keys_masked() -> None:
     _config, render = _render("site")
-    bu = render.files["host.bu"]
-    core = bu[bu.index("    - name: core") : bu.index("    - name: deploy")]
-    deploy = bu[bu.index("    - name: deploy") : bu.index("storage:")]
+    core, deploy = render.files["ssh/core.keys"], render.files["ssh/deploy.keys"]
     assert "admin-a" in core and "ci-deploy" not in core
     assert "admin-a" in deploy and "ci-deploy" in deploy
+    install = {e["file"]: e for e in __import__("json").loads(render.files["manifest.json"])["install"]}
+    assert install["ssh/core.keys"]["dest"] == "/var/home/core/.ssh/authorized_keys.d/dk"
+    assert install["ssh/core.keys"]["owner"] == "core"
+    assert install["ssh/deploy.keys"]["mode"] == "0600"
+    bu = render.files["host.bu"]
+    assert "      ssh_authorized_keys:" not in bu
     assert "- name: afterburn-sshkeys@core.service\n      mask: true" in bu
 
 

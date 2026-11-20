@@ -181,8 +181,10 @@ Beyond the files, it sets up:
 - **Users.** `core` is for admins, with passwordless sudo, so only `fcos.admin_keys` log in
   as `core`. The account (`deploy`) has no sudo, and takes `fcos.ssh_authorized_keys`: the keys
   dk and CI use, so a stolen deploy key can change the stack but not become root. A key may
-  be in both lists. Afterburn's copy of the droplet's DigitalOcean account keys to `core` is
-  masked, so those keys don't bypass the split. The account's uid and subordinate IDs are
+  be in both lists. Each login's keys are a rendered file, `~/.ssh/authorized_keys.d/dk`, so
+  `fcos apply` changes them on a running host. `afterburn-sshkeys@core.service` is masked:
+  on DigitalOcean it would otherwise copy the droplet's account keys (the `--ssh-keys` given
+  when it was created) to `core` at every boot, getting around `admin_keys`. The account's uid and subordinate IDs are
   pinned, so the data directories keep their owners.
 - **Data volume.** The DO block storage volume is formatted on first boot only, so a rebuilt
   host keeps its data. Each bind volume's directory is owned by its writers' host uid.
@@ -213,7 +215,7 @@ manages the system units, with one `sudo sh` per command and the script on stdin
 | `fcos provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, log in to the image registry (asks for the token), start the stack |
 | `fcos secrets push [NAME…] [--restart]` | Stream secrets from `credentials.yaml` into Podman secrets |
 | `fcos diff [--names-only]` | Compare the host with the render: each installed file's content, mode and owner, the data directories, the timers, the secret names |
-| `fcos apply [--no-restart] [-y]` | Install what differs, then reload systemd and restart only the units affected |
+| `fcos apply [--no-restart] [-y] [--force]` | Install what differs, then reload systemd and restart only the units affected |
 
 **Secrets.** Each value goes from `sops -d` over SSH stdin into
 `podman secret create --replace`. It is never written to disk on either side, never on a
@@ -231,6 +233,11 @@ Secrets on the host that the render doesn't list are reported, never removed.
 - A missing data directory is created with its range's owner. An existing one with the wrong
   owner is reported and left alone: that means the ID range moved, which needs a person.
 - A missing timer link is created and the timer started.
+- **SSH keys.** Every file in `core`'s and the account's `~/.ssh/authorized_keys.d/` other
+  than the rendered `dk` is removed: Ignition's (from older renders), afterburn's, or a key
+  added by hand. A unit in `masked_units` that isn't masked is masked. `apply` refuses to change
+  `core`'s keys unless one of your public keys (`ssh-add -L`, `~/.ssh/*.pub`) stays in
+  `admin_keys`, so it can't lock you out of root; `--force` overrides.
 - A unit restarts only when something it reads changed: its quadlet, its settings file, a file
   it mounts (`caddy.json`, the pgBackRest config) or, for `secrets push --restart`, a secret.
   Changing `db`'s files restarts `db`, and Requires= restarts `django` with it. A one-shot that

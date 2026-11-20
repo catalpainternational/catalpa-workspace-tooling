@@ -21,7 +21,7 @@ import yaml
 
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.fcos.backups import backup_files, plan_backups, restic_unit_name
-from catalpa_tooling.fcos.butane import host_bu
+from catalpa_tooling.fcos.butane import MASKED_UNITS, host_bu, key_files
 from catalpa_tooling.fcos.caddy_json import CaddyJsonError, caddy_json_text, run_adapt
 from catalpa_tooling.fcos.monitoring import monitor_dir, monitoring_files
 from catalpa_tooling.fcos.quadlets import (
@@ -287,6 +287,12 @@ def render_env(
         tmpfiles = m.tmpfiles
         system_secrets = m.system_secrets
 
+    try:
+        key_text, key_install = key_files(settings, q.header)
+    except ValueError as exc:
+        raise RenderError(str(exc)) from exc
+    files.update(key_text)
+    install += key_install
     # The manifest goes on the host too: `fcos diff`/`apply` read the applied one back to find
     # files a later render no longer has.
     install.append(
@@ -318,6 +324,7 @@ def render_env(
             "hostname": hostname,
             "timezone": timezone,
             "config_dir": config_dir,
+            "masked_units": list(MASKED_UNITS),
             "proxy": inputs.proxy,
             "secrets": dict(sorted({**manifest["secrets"], **plan.secrets}.items())),
             "system_secrets": dict(sorted(system_secrets.items())),

@@ -34,6 +34,9 @@ def in_sync_state(c: h.Committed) -> h.HostState:
         s.dirs[v["path"]] = (int(v["mode"], 8), v["owner_uid"])
     for t in c.manifest["timers"]:
         s.links[f"{c.user_unit_dir}/timers.target.wants/{t}"] = f"../{t}"
+    for u in c.masked_units:
+        s.links[f"/etc/systemd/system/{u}"] = "/dev/null"
+    s.key_files = {e["dest"] for e in c.manifest["install"] if "/authorized_keys.d/" in e["dest"]}
     s.secrets = set(c.manifest["secrets"])
     s.system_secrets = set(c.manifest["system_secrets"])
     return s
@@ -247,18 +250,28 @@ FEDORA = "quay.io/fedora/fedora:41"
 def test_apply_then_state_in_fedora(name: str) -> None:
     c = committed(name)
     empty = h.HostState()
+    empty.key_files = {"/var/home/core/.ssh/authorized_keys.d/ignition", "/var/home/core/.ssh/authorized_keys.d/afterburn"}
     plan = h.make_plan(c, empty)
-    assert plan.make_dirs and plan.changes
+    assert plan.make_dirs and plan.changes and plan.masks
     marker = "=====STATE====="
     script = (
         "set -e\nmkdir -p /var/home /var/mnt/data\n"
+        "useradd -u 1000 -m -d /var/home/core core >/dev/null 2>&1\n"
         f"useradd -u {c.uid} -m -d {c.home} {c.user} >/dev/null 2>&1\n"
+        # An existing host: Ignition's and afterburn's key files, which apply must remove.
+        "install -d -m 700 -o core -g core /var/home/core/.ssh /var/home/core/.ssh/authorized_keys.d\n"
+        "echo old > /var/home/core/.ssh/authorized_keys.d/ignition\n"
+        "echo do-account > /var/home/core/.ssh/authorized_keys.d/afterburn\n"
+        # No systemd in the container: `systemctl mask` only makes the link.
+        "command -v systemctl >/dev/null || { printf '#!/bin/sh\\n[ \"$1\" = mask ] && "
+        "ln -sf /dev/null /etc/systemd/system/$2\\n' > /usr/local/bin/systemctl; "
+        "chmod +x /usr/local/bin/systemctl; mkdir -p /etc/systemd/system; }\n"
         + h.apply_script(c, plan)
         # Run it twice: applying is idempotent.
         + h.apply_script(c, plan)
         + f"echo {marker}\n"
         + h.state_script(c)
-        + f"stat -c '%U %a' {c.user_unit_dir} {c.home}/.config\n"
+        + f"stat -c '%U %a' {c.user_unit_dir} {c.home}/.config /var/home/core/.ssh\n"
     )
     r = subprocess.run(
         ["docker", "run", "--rm", "-i", FEDORA, "sh", "-s"],
@@ -273,5 +286,43 @@ def test_apply_then_state_in_fedora(name: str) -> None:
     after = h.make_plan(c, state)
     assert after.files_in_sync, h.describe(after, show_diff=False)
     assert after.dir_problems == []
-    # The account's directories are its own (systemd --user must be able to read them).
-    assert out.strip().splitlines()[-2:] == ["deploy 755", "deploy 755"]
+    assert after.stray_keys == [] and after.masks == []
+    # The account's directories are its own (systemd --user must be able to read them), and
+    # sshd wants ~/.ssh private.
+    assert out.strip().splitlines()[-3:] == ["deploy 755", "deploy 755", "core 700"]
+
+
+def test_stray_key_files_are_removed_and_afterburn_masked() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    stray = "/var/home/core/.ssh/authorized_keys.d/afterburn"
+    state.key_files.add(stray)
+    del state.links["/etc/systemd/system/afterburn-sshkeys@core.service"]
+    plan = h.make_plan(c, state)
+    assert plan.stray_keys == [stray]
+    assert plan.masks == ["afterburn-sshkeys@core.service"]
+    assert not plan.files_in_sync
+    script = h.apply_script(c, plan)
+    assert f"rm -f {stray}" in script
+    assert "systemctl mask afterburn-sshkeys@core.service" in script
+
+
+def test_lockout_guard() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    state.key_files.add("/var/home/core/.ssh/authorized_keys.d/ignition")
+    plan = h.make_plan(c, state)
+    admin = next(iter(h.key_blobs(c.files["ssh/core.keys"])))
+    deploy_only = next(iter(h.key_blobs(c.files["ssh/deploy.keys"]) - {admin}))
+    assert h.lockout_problem(c, plan, {admin}) is None
+    assert "lose root" in h.lockout_problem(c, plan, {deploy_only})
+    assert "no public key" in h.lockout_problem(c, plan, set())
+    # Nothing touches core's keys: nothing to check.
+    assert h.lockout_problem(c, h.make_plan(c, in_sync_state(c)), set()) is None
+
+
+def test_local_public_keys(tmp_path: Path) -> None:
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "id_ed25519.pub").write_text("ssh-ed25519 AAAAfile me@here\n")
+    runner = FakeRunner({"": b"ssh-ed25519 AAAAagent agent-key\n"})
+    assert h.local_public_keys(runner=runner, home=tmp_path) == {"AAAAfile", "AAAAagent"}

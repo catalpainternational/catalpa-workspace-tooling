@@ -301,6 +301,18 @@
       "mode": "0644"
     },
     {
+      "file": "ssh/core.keys",
+      "dest": "/var/home/core/.ssh/authorized_keys.d/dk",
+      "owner": "core",
+      "mode": "0600"
+    },
+    {
+      "file": "ssh/deploy.keys",
+      "dest": "/var/home/deploy/.ssh/authorized_keys.d/dk",
+      "owner": "deploy",
+      "mode": "0600"
+    },
+    {
       "file": "systemd/bero_shape-backup-status.service",
       "dest": "/var/home/deploy/.config/systemd/user/bero_shape-backup-status.service",
       "owner": "deploy",
@@ -346,6 +358,9 @@
   "hostname": "bero-shape-staging",
   "timezone": "Asia/Dili",
   "config_dir": "/etc/bero_shape",
+  "masked_units": [
+    "afterburn-sshkeys@core.service"
+  ],
   "proxy": "caddy",
   "system_secrets": {
     "zbx_tlspsk": "ZBX_TLSPSK",

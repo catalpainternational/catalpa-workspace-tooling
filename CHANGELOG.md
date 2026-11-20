@@ -22,7 +22,9 @@
   writing or printing them. `diff` compares the host's files, data directories, timers and
   secret names with the render. `apply` installs what differs and restarts only the units that
   read a changed file. `info.yaml` `fcos.admin_keys` (logging in as `core`, with sudo) is set
-  apart from `fcos.ssh_authorized_keys` (the account that runs the stack, without sudo).
+  apart from `fcos.ssh_authorized_keys` (the account that runs the stack, without sudo). Both
+  are rendered as key files, so `fcos apply` changes a running host's keys and removes any
+  other key file, and refuses to remove the last of your keys from `core`.
 
 ### Fixed
 
