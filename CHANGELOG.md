@@ -28,6 +28,12 @@
   A Zabbix 7.0 template, `docs/zabbix/catalpa-backup-status-fcos.yaml`, alerts when an FCOS
   host's backup status files stop being refreshed. The render aliases their modification times
   to fixed agent keys (`backup.status.<kind>.mtime`).
+- **dk's stack commands on `runtime: quadlet` envs (#182).** `logs`, `ps`, `exec`, `manage`,
+  `restart`, `stop` and `start` now work on an env whose stack runs as Podman quadlets, over
+  SSH as the account in `docker_host`: `journalctl --user`, `podman exec` and
+  `systemctl --user`. They need no SOPS decrypt or compose file. The compose verbs that would
+  start a second stack (`up`, `down`, `run`, …) are still refused, each with what to use
+  instead.
 
 ### Fixed
 

@@ -180,10 +180,11 @@ def test_quadlet_runtime_refuses_compose_commands() -> None:
     ns = argparse.Namespace(
         env_name="staging",
         env_command=None,
-        implicit_compose_argv=["ps"],
+        implicit_compose_argv=["up", "-d"],
         dry_run=False,
         tag=None,
     )
+    # up would start a second stack beside the quadlets (logs/ps/exec…: test_fcos_backend.py).
     assert handle_env_command(ns, config) == 2
 
 

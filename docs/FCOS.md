@@ -207,6 +207,29 @@ Beyond the files, it sets up:
 The `-incr` template runs daily at 02:30, so on Sundays it falls inside the default Zincati
 window (02:00–03:00). `Persistent=true` reruns a backup that a reboot interrupts.
 
+## dk's stack commands on a quadlet env
+
+Compose doesn't run these stacks, but every container keeps its compose service's name and has
+its own unit in the account's systemd. So with `runtime: quadlet`, dk's everyday stack
+commands go to the host over SSH, as the account in `docker_host`. They read only `docker_host`
+and the committed `generated/fcos/manifest.json`, so there's no SOPS decrypt and no compose.
+
+| Command | On the host |
+|---|---|
+| `dk <env> logs [-f] [--tail N] [--since T] [svc…]` | `journalctl --user -u <svc>.service`: container output and the unit's start, stop and failure messages in one stream. `--tail` counts lines of that merged stream, not per service |
+| `dk <env> ps` | the stack units' state (the edge's socket included), then `podman ps -a` |
+| `dk <env> exec [-T] [-u U] [-e K=V] [-w DIR] svc cmd…` | `podman exec` |
+| `dk <env> manage [--user U] …` | `podman exec <web> ./manage.py …` as `stack.manage_user` |
+| `dk <env> restart\|stop\|start [svc…]` | `systemctl --user` on those units. With no service, the whole stack: `stop` stops the edge's socket first, so a request can't start it again |
+
+`up`, `down`, `pull`, `build`, `run`, `rm`, `wipe` and the other compose verbs are refused:
+they would start a second stack beside the quadlets. A change reaches the host with
+`fcos render`, a commit, then `fcos apply`. `dk <env> docker …` still works against the
+account's Podman socket.
+
+Not yet on quadlet envs: `db`/`files` (backup and restore), `fetch db`/`fetch media`,
+`transfer` and `pull_media`. They are still refused.
+
 ## On the host
 
 Every command below first checks the render, as `fcos check` does, and refuses to touch the

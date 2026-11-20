@@ -41,6 +41,7 @@ Runner = Callable[..., subprocess.CompletedProcess]
 
 
 def run(argv: list[str], *, input: bytes | None = None, tty: bool = False) -> subprocess.CompletedProcess:
+    """``tty``: inherit this process's stdin/stdout/stderr instead of capturing."""
     if tty:
         return subprocess.run(argv, check=False)
     return subprocess.run(argv, input=input, capture_output=True, check=False)
@@ -144,7 +145,11 @@ class Host:
         return r
 
     def interactive(self, login: str, command: str) -> int:
-        return self.runner(self._argv(login, command, tty=True), tty=True).returncode
+        return self.stream(login, command, tty=True)
+
+    def stream(self, login: str, command: str, *, tty: bool = False) -> int:
+        """Run with this terminal's stdin/stdout/stderr (``tty``: allocate a remote one)."""
+        return self.runner(self._argv(login, command, tty=tty), tty=True).returncode
 
     def root_script(self, script: str) -> str:
         """Run ``script`` as root (``core`` with sudo); returns its stdout."""

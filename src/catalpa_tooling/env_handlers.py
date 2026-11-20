@@ -399,15 +399,10 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         print(f"{info_path}: {exc}", file=sys.stderr)
         return 1
     if runtime == "quadlet" and env_command not in QUADLET_ENV_COMMANDS:
-        shown = env_command or " ".join(getattr(ns, "implicit_compose_argv", None) or ["up", "-d"])
-        print(
-            f"{env_name} runs as Podman quadlets (info.yaml `runtime: quadlet`), not compose: "
-            f"`dk {env_name} {shown}` would find nothing there, or start a second stack beside "
-            f"it. Use `dk {env_name} fcos …`, or `dk {env_name} docker …` against the host's "
-            "Podman socket.",
-            file=sys.stderr,
-        )
-        return 2
+        # Not compose: logs/ps/exec/manage/restart… go to the units over SSH; the rest is refused.
+        from catalpa_tooling.fcos.backend import handle as handle_quadlet
+
+        return handle_quadlet(ns, config, env_name, info)
 
     if env_command == "fcos":
         from catalpa_tooling.fcos.cli import handle_fcos_command
