@@ -669,6 +669,15 @@ def handle(
                 hint = BACKUP_REFUSED.get(sub, "not on a quadlet env").format(env=env_name)
                 raise Usage(f"dk {env_name} {verb} {sub}: {hint}")
             yes = bool(getattr(ns, "yes", False))
+            from catalpa_tooling.fcos.backup_credentials import ensure_backup_credentials, needs_write
+
+            target = needs_write(verb, sub, ns)
+            if target:
+                rc = ensure_backup_credentials(
+                    b, target, yes=yes, dry_run=dry_run, label=f"dk {env_name} {verb} {sub}"
+                )
+                if rc != 0:
+                    return rc
             if verb == "db" and sub == "restore":
                 archive = getattr(ns, "archive_file", None)
                 if archive or getattr(ns, "restore_from_dumps", False):

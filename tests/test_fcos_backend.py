@@ -17,6 +17,14 @@ from catalpa_tooling.fcos import backend
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "fcos"
 
 
+@pytest.fixture(autouse=True)
+def credentials_in_place(monkeypatch):
+    """Backup credentials exist (their provisioning is tested in test_fcos_backup_credentials)."""
+    from catalpa_tooling.fcos import backup_credentials
+
+    monkeypatch.setattr(backup_credentials, "ensure_backup_credentials", lambda *a, **k: 0)
+
+
 @pytest.fixture
 def site(tmp_path: Path):
     root = tmp_path / "site"

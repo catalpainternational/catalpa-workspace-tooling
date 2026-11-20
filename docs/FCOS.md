@@ -124,7 +124,11 @@ edge image. Pulling an amd64 image on Apple Silicon takes a minute or two the fi
 
 These use the same keys as compose deploys:
 
-- `pgbr_s3_write_*` and `restic_write_*` in the env's `credentials.yaml`;
+- `pgbr_s3_write_*` and `restic_write_*` in the env's `credentials.yaml`. When they're missing,
+  `db configure stanza-create`, `db backup`, `files init` and `files backup` offer to create the
+  Spaces bucket and a key, as on compose envs (README_PGBACKREST.md, "Auto-provision"). Then they
+  push the changed Podman secrets to the host and restart `db`. `spaces:` in `info.yaml` gives
+  the env a bucket of its own;
 - `ops.pgbackrest` and `ops.restic` for what to back up;
 - `ops.systemd_units` for which timers exist and which are enabled, by the names listed there.
 

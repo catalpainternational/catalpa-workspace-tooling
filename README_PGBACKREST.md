@@ -92,6 +92,26 @@ digitalocean:
     pgbackrest_repo_path: /marktwain/prod/pgbackrest
 ```
 
+An env can override any of these in its own `info.yaml`, for example a bucket of its own, so its
+key can't reach any other env's backups:
+
+```yaml
+spaces:
+  bucket: catalpa-site-fcos-backups   # also: endpoint, region, pgbackrest_repo_path, restic_path, stanza
+```
+
+The write key is per env, `<bucket>-<env>-write`, with read-write on that bucket only. Envs sharing
+a bucket therefore each get their own key. (Before 2.0 it was `<bucket>-write`, so a second env on
+the same bucket was refused.) restic reuses the pgBackRest key when that is already set.
+
+Provisioning runs only when the credentials are missing. To replace credentials whose bucket or key
+was deleted, remove them first (`sops unset docker/envs/<env>/credentials.yaml '["pgbr_s3_write_key"]'`,
+and so on for each `pgbr_s3_write_*` / `restic_write_*` key), then run the command again.
+
+On a `runtime: quadlet` env, the same commands provision (`db configure stanza-create`, `db backup`,
+`files init`, `files backup`). The containers read these values as Podman secrets, so dk then pushes
+the changed secrets to the host and restarts `db`.
+
 Override binaries with `DOCTL_BIN` / `S3CMD_BIN`. Use global `--yes` to accept provisioning without typing `y`. `bkp_db pgdump` / bare `configure` do not trigger provisioning.
 
 ## `tooling.yaml` (`ops.pgbackrest`)

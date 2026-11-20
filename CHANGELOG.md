@@ -15,6 +15,19 @@
   Step 4 is how a new image under the same tag goes out with `fcos.auto_update` off. `--tag`
   is refused on a quadlet env (images follow `image_tag`, through a render), and
   `--dry-run` shows the plan without pulling. See `docs/TOOLING_2.md` for the 2.0 plan.
+- **Backup credentials are created on quadlet envs too, and an env can have its own bucket.**
+  - When `pgbr_s3_write_*` or `restic_write_*` are missing, `db configure stanza-create`, `db
+    backup`, `files init` and `files backup` on a `runtime: quadlet` env now offer the same Spaces
+    provisioning as on compose envs. They then push the changed Podman secrets to the host and
+    restart `db`.
+  - A `spaces:` block in an env's `info.yaml` overrides `digitalocean.spaces` for that env (for
+    example `bucket:`), so a test env's key can't reach prod's backups.
+
+### Changed
+
+- **The Spaces write key dk creates is per env: `<bucket>-<env>-write`** (was `<bucket>-write`).
+  Envs that share a bucket each get their own key, where a second env used to be refused because
+  the key name already existed. Existing keys and credentials aren't touched.
 
 - **`tests backend` now passes extra arguments on to pytest (#189).** `uv run tests backend -k
   name -n 4 tests/test_foo.py` used to exit 2 with "unrecognized arguments", so projects ran

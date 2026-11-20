@@ -74,7 +74,7 @@ ops:
     assert d.endpoint == "sgp1.digitaloceanspaces.com"
     assert d.pgbackrest_repo_path == "/myapp/prod/pgbackrest"
     assert d.restic_path == "myapp-prod-media"
-    assert d.write_key_name == "myapp-write"
+    assert d.write_key_name == "myapp-prod-write"
 
 
 def test_spaces_backup_defaults_with_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -148,7 +148,7 @@ digitalocean:
     assert d.pgbackrest_repo_path == "/custom/pg"
     assert d.restic_path == "custom-media"
     assert d.stanza == "primary"
-    assert d.write_key_name == "backups-write"
+    assert d.write_key_name == "backups-staging-write"
 
 
 def test_digitalocean_spaces_must_be_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
