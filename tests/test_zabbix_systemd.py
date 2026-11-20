@@ -511,6 +511,29 @@ def test_unit_file_includes_userparams_mount(minimal_config) -> None:
     assert f"Description={minimal_config.meta.name}:" in unit
 
 
+def test_userparams_mount_is_read_by_every_agent_series(minimal_config) -> None:
+    """#148: the 7.0 agent image ignores ``zabbix_agent2.d/*.conf``; mount where every series reads."""
+    from fnmatch import fnmatchcase
+    from pathlib import PurePosixPath
+
+    tag = zs.DEFAULT_IMAGE.rpartition(":")[2]
+    assert any(tag.startswith(f"alpine-{series}") for series in zs.AGENT_IMAGE_INCLUDES), (
+        "add the new series' Include globs to AGENT_IMAGE_INCLUDES"
+    )
+
+    zs._apply_config_globals(minimal_config)
+    unit = zs._unit_file_content(image=zs.DEFAULT_IMAGE, docker_group_gid=988)
+    prefix = f"-v {zs.USERPARAMS_FILE}:"
+    (line,) = [ln.strip() for ln in unit.splitlines() if ln.strip().startswith(prefix)]
+    target = PurePosixPath(line[len(prefix) :].split(":")[0])
+    for series, globs in zs.AGENT_IMAGE_INCLUDES.items():
+        assert any(
+            target.parent == PurePosixPath(glob).parent
+            and fnmatchcase(target.name, PurePosixPath(glob).name)
+            for glob in globs
+        ), f"{target} is not read by the {series} agent image"
+
+
 def test_run_zabbix_deploy_install_force_without_zbx(monkeypatch, minimal_config) -> None:
     called: dict[str, object] = {}
 
