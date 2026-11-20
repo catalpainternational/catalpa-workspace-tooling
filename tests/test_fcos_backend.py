@@ -362,10 +362,12 @@ def test_restore_archive_refuses_a_non_archive_and_cleans_up_on_failure(swlt, tm
 def test_media_owner_and_push(swlt, tmp_path, monkeypatch) -> None:
     from catalpa_tooling.fcos.settings import SUBUID_START
 
-    b = _backend(swlt, Recorder())
+    r = Recorder()
+    b = _backend(swlt, r)
     vol = b.committed.manifest["bind_volumes"]["django_media"]
     # podman unshare: ns uid N is host uid SUBUID_START + N - 1.
-    assert SUBUID_START + b.media_owner_ns_uid() - 1 == vol["owner_uid"]
+    uid = b.media_owner_ns_uid()
+    assert SUBUID_START + uid - 1 == vol["owner_uid"]
     cmds = []
     monkeypatch.setattr(
         "catalpa_tooling.run_cmd.run",
@@ -374,9 +376,15 @@ def test_media_owner_and_push(swlt, tmp_path, monkeypatch) -> None:
     assert b.push_media(tmp_path) == 0
     cmd = cmds[0]
     assert cmd[0] == "rsync" and "--delete" in cmd
-    assert f"--chown={b.media_owner_ns_uid()}:{b.media_owner_ns_uid()}" in cmd
+    # No --chown (macOS's openrsync lacks it) and no owner/group from the Mac.
+    assert not any(a.startswith("--chown") for a in cmd) and cmd[1] == "-rptDzv"
     assert "--rsync-path=podman unshare rsync" in cmd
     assert cmd[-1] == f"deploy@staging.site.example:{vol['path']}/"
+    assert r.calls[-1][-1] == f"podman unshare chown -R {uid}:{uid} {vol['path'].rstrip('/')}"
+
+    # rsync failed or dry run: no chown.
+    r.calls.clear()
+    assert b.push_media(tmp_path, dry_run=True) == 0 and r.calls == []
 
 
 def test_pull_media_dispatch(swlt, monkeypatch) -> None:

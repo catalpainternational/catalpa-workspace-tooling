@@ -399,20 +399,32 @@ class Backend:
         return rsync_pull_remote_to_local(self.ssh_target, f"{remote}/", target)
 
     def push_media(self, source: Path, *, dry_run: bool = False) -> int:
-        """Rsync ``source/`` over the media directory (``--delete``), writing as the media's
-        owner: rsync runs under ``podman unshare`` and chowns to the range's root."""
-        from catalpa_tooling.media_rsync import RSYNC_BASE, format_shell_command
+        """Rsync ``source/`` over the media directory (``--delete``), then hand it to the media's
+        owner (the range's root).
+
+        rsync runs under ``podman unshare``, so the account can write files the range owns.
+        It doesn't keep owners (no ``-o``/``-g``: local uids mean nothing there), and the chown
+        is a second step on the host, not ``--chown``: macOS's rsync (openrsync) has no
+        ``--chown``.
+        """
+        from catalpa_tooling.media_rsync import format_shell_command
         from catalpa_tooling.run_cmd import run as run_cmd
 
         uid = self.media_owner_ns_uid()
+        media = self.media_dir()
         cmd = [
-            *RSYNC_BASE, "--delete", f"--chown={uid}:{uid}",
+            "rsync", "-rptDzv", "--progress", "--delete",
             "--rsync-path=podman unshare rsync",
             *(["--dry-run", "--itemize-changes"] if dry_run else []),
-            f"{source.resolve()}/", f"{self.ssh_target}:{self.media_dir()}/",
+            f"{source.resolve()}/", f"{self.ssh_target}:{media}/",
         ]  # fmt: skip
         print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
-        return run_cmd(cmd, check=False, print_cmd=False).returncode
+        rc = run_cmd(cmd, check=False, print_cmd=False).returncode
+        if rc != 0 or dry_run:
+            return rc
+        chown = f"podman unshare chown -R {uid}:{uid} {shlex.quote(media)}"
+        print(f"{self.env_name}: {chown}", file=sys.stderr)
+        return self._ssh(chown, tty=False)
 
     def stop_writers(self) -> list[str]:
         """Stop everything but db (the edge's socket first); returns what to start again."""
