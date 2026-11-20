@@ -60,12 +60,13 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 |---|---|---|
 | M0 | `dev-2.0` = `main` + `feat/182-fcos-render` | done |
 | M1 | A bare `dk <env>` on quadlet: check render → apply → pull → restart changed units | done |
-| M2 | `render`/`check`/`diff`/`apply` as env verbs; `host ignition`/`host provision`; `secrets push`; `fcos …` deprecated alias | small |
+| M2 | `render`/`check`/`diff`/`apply` as env verbs; `host ignition`/`host provision`; `secrets push`; `fcos …` deprecated alias | done |
+| M2b | `host destroy` (#69): the exact inverse of creating a host. DNS records pointing at it, the droplet, its volumes, `docker_host` and the known_hosts entry, guarded by `allow_destroy` in `info.yaml` | small |
 | M3 | Implicit compose passthrough refused with a hint; `compose …` explicit | small |
-| M4 | Test branches in catalpa-site, swlt_ws2 and bero pinned to `dev-2.0`, each with a checklist | ongoing from here |
+| M4 | Test branches in catalpa-site, swlt_ws2, catalpa_bero and partisipa pinned to `dev-2.0`, each with a checklist | ongoing from here |
 | M5 | Backend primitives: `ComposeBackend` extracted, operations rewritten once (restore, transfer, fetch, hooks) | large |
-| M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work); `host destroy` as its exact inverse (#69: DNS, droplet, volumes, `docker_host`, known_hosts, guarded by `allow_destroy`) | medium |
 | M5b | Restore-only envs (#204): `restore_from:` in `info.yaml`, per-env read keys created by dk, read and write as two roles, quadlet read mode | medium |
+| M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work) | medium |
 | M7 | Compose hosts rendered too: env files, timers and monitoring config as committed files, applied by `apply`, replacing `db init`, `install-systemd`, `zabbix install`, `storage ensure` | large; may follow 2.0 |
 
 M1–M3 are what users notice. M5 is what makes a third runtime cheap. M7 gives Ubuntu hosts the
@@ -79,12 +80,14 @@ checklist:
 
 | Project | Why | Current pin |
 |---|---|---|
-| catalpa-site | Compose prod on DigitalOcean and the `fcos` quadlet env in one repo | `feat/182-fcos-render` (#1010) |
+| catalpa-site | Compose prod on DigitalOcean and the `fcos` quadlet env in one repo | `dev-2.0` (#1010) |
 | swlt_ws2 | Newest pin, extra env names (`content`, `qad`); a fixture in the tests | v1.7.0 |
 | catalpa_bero | Oldest common pin (as jid, ncd and tvi): the upgrade path from far behind | v1.3.3 |
+| partisipa | Being brought onto dk (branch `align_tooling`): only `dev` and `staging` are dk envs so far, and it takes the tooling from a local checkout | path `../../catalpa-workspace-tooling` |
 
-#69's `host destroy` is worth doing early: these test hosts get destroyed and rebuilt
-repeatedly, and by hand that leaves DNS records, volumes and known_hosts entries behind.
+`host destroy` (#69) is M2b, ahead of the larger milestones, because these test hosts get
+destroyed and rebuilt repeatedly, and by hand that leaves DNS records, volumes and known_hosts
+entries behind.
 
 Checklist per project: bare `dk <env>` and `dk <env> ps`/`logs`/`exec`/`manage` on staging; `fetch
 db`/`fetch media`; `transfer staging dev`; `db info`/`backup`/`restore --dry-run`; `files

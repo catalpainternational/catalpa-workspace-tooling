@@ -25,6 +25,16 @@
 
 ### Changed
 
+- **Rendered-host commands are plain env verbs (tooling 2.0, M2).** `dk <env> fcos render`,
+  `check`, `diff` and `apply` are now `dk <env> render`, `check`, `diff` and `apply`.
+  `fcos ignition` and `fcos provision` are now `dk <env> host ignition` and `host provision`, and
+  `fcos secrets push` is `dk <env> secrets push`. A bare `dk <env> secrets` still edits
+  `credentials.yaml`. The `fcos …` spelling still works and prints the new one. On a compose
+  env the new verbs are refused, since compose hosts aren't rendered yet. `--dry-run` and `-y`
+  now work before or after these verbs (`dk <env> --dry-run diff` used to lose `--dry-run`).
+  Generated files' header now says `dk <env> render`, so each rendered env's next `apply`
+  rewrites every file once.
+
 - **The Spaces write key dk creates is per env: `<bucket>-<env>-write`** (was `<bucket>-write`).
   Envs that share a bucket each get their own key, where a second env used to be refused because
   the key name already existed. Existing keys and credentials aren't touched.

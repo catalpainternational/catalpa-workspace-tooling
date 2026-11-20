@@ -2,10 +2,10 @@
 
 On a compose env a bare ``dk <env>`` runs ``docker compose up -d``. The quadlet equivalent:
 
-1. The committed render must match a fresh one (``fcos check``), so only committed files reach
+1. The committed render must match a fresh one (``dk <env> check``), so only committed files reach
    the host.
 2. The host's secrets must all exist: a unit started without one fails.
-3. Files that differ are installed, and the units they affect restarted (``fcos apply``).
+3. Files that differ are installed, and the units they affect restarted (``dk <env> apply``).
 4. Every image an account quadlet runs is pulled. A unit whose image changed is restarted,
    unless step 3 already restarted it. One-shot units (backups) pick the new image up on their
    next run, and ``migrate``/``collectstatic`` re-run with ``django`` (``PartOf=``).
@@ -111,7 +111,7 @@ def deploy(
     if tag:
         print(
             f"dk {env_name}: --tag doesn't apply to a quadlet env. Its images follow info.yaml's "
-            f"`image_tag`: change it, `dk {env_name} fcos render`, commit, then `dk {env_name}`.",
+            f"`image_tag`: change it, `dk {env_name} render`, commit, then `dk {env_name}`.",
             file=sys.stderr,
         )
         return 2
@@ -139,7 +139,7 @@ def deploy(
                 print(line)
             print(
                 f"dk {env_name}: secrets are missing on the host; push them first "
-                f"(`dk {env_name} fcos secrets push`).",
+                f"(`dk {env_name} secrets push`).",
                 file=sys.stderr,
             )
             return 1

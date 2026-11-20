@@ -144,7 +144,7 @@ def test_without_a_committed_render(site, capsys) -> None:
     shutil.rmtree(site.deploy_envs_dir / "staging" / "generated")
     rc, r = run(site, "ps")
     assert rc == 1 and r.calls == []
-    assert "fcos render" in capsys.readouterr().err
+    assert "dk <env> render" in capsys.readouterr().err
 
 
 def test_dk_routes_a_quadlet_env_here(site) -> None:
@@ -210,7 +210,7 @@ def test_files_commands(swlt) -> None:
     ("command", "sub", "hint"),
     [
         ("db", "init", "stanza-create"),
-        ("db", "install-systemd", "fcos apply"),
+        ("db", "install-systemd", "dk staging apply"),
         ("files", "push", "media directory"),
     ],
 )

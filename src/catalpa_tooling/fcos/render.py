@@ -1,4 +1,4 @@
-"""``dk <env> fcos render`` / ``fcos check``: build, write and compare the generated host files.
+"""``dk <env> render`` / ``dk <env> check``: build, write and compare the generated host files.
 
 A render reads only what anyone with the repository can read: ``info.yaml``, the compose file
 and the *names* in ``credentials.yaml`` (SOPS leaves keys in the clear). Each credential is
@@ -293,7 +293,7 @@ def render_env(
         raise RenderError(str(exc)) from exc
     files.update(key_text)
     install += key_install
-    # The manifest goes on the host too: `fcos diff`/`apply` read the applied one back to find
+    # The manifest goes on the host too: `dk <env> diff`/`apply` read the applied one back to find
     # files a later render no longer has.
     install.append(
         {"file": MANIFEST, "dest": host_manifest_path(config_dir), "owner": "root", "mode": "0644"}

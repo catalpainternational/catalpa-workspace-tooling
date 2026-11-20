@@ -271,7 +271,7 @@ def load_managed_deploy_context(
     Prints summary to stderr. Returns None on missing files / SOPS failure.
 
     ``credentials``, when given, is used in place of decrypting ``credentials.yaml`` (``dk <env>
-    fcos render`` passes a marker per key, so nothing is decrypted). ``register_host_key=False``
+    render`` passes a marker per key, so nothing is decrypted). ``register_host_key=False``
     skips adding ``docker_host`` to ``~/.ssh/known_hosts``, for callers that never connect.
     """
     repo_root = config.repo_root

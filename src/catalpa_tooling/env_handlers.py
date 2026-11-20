@@ -105,7 +105,9 @@ from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
 #: What ``dk <env>`` may do for an env with ``runtime: quadlet``: everything else drives
 #: docker compose, which has no stack there.
-QUADLET_ENV_COMMANDS = frozenset({"info", "secrets", "host", "docker", "fcos"})
+QUADLET_ENV_COMMANDS = frozenset(
+    {"info", "secrets", "host", "docker", "fcos", "render", "check", "diff", "apply"}
+)
 
 
 def _cmd_env_info(info_path: Path, *, edit: bool, dry_run: bool) -> int:
@@ -399,16 +401,16 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     except FcosConfigError as exc:
         print(f"{info_path}: {exc}", file=sys.stderr)
         return 1
+    from catalpa_tooling.fcos.cli import route as route_rendered_host
+
+    rc = route_rendered_host(ns, config, env_name, runtime)
+    if rc is not None:
+        return rc
     if runtime == "quadlet" and env_command not in QUADLET_ENV_COMMANDS:
         # Not compose: logs/ps/exec/manage/restart… go to the units over SSH; the rest is refused.
         from catalpa_tooling.fcos.backend import handle as handle_quadlet
 
         return handle_quadlet(ns, config, env_name, info)
-
-    if env_command == "fcos":
-        from catalpa_tooling.fcos.cli import handle_fcos_command
-
-        return handle_fcos_command(ns, config, env_name)
 
     if env_command is None:
         compose_args = list(getattr(ns, "implicit_compose_argv", None) or [])

@@ -7,7 +7,12 @@ import argparse
 from catalpa_tooling.cli.completion import attach_choices_completer
 from catalpa_tooling.cli.parents import build_env_flags_parent
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.fcos.cli import attach_fcos_parser
+from catalpa_tooling.fcos.cli import (
+    add_host_verbs,
+    add_render_verbs,
+    add_secrets_push,
+    attach_fcos_parser,
+)
 from catalpa_tooling.remote_deploy import list_dk_env_names
 from catalpa_tooling.zabbix_systemd import DEFAULT_IMAGE, UNIT_NAME
 
@@ -212,7 +217,10 @@ def _attach_env_command_parsers(
     p_info = cmd_sub.add_parser("info", help="Print or edit docker/envs/<env>/info.yaml.")
     p_info.add_argument("-e", "--edit", action="store_true", help="Edit info.yaml in $EDITOR.")
 
-    cmd_sub.add_parser("secrets", help="Edit credentials.yaml with SOPS.")
+    p_secrets = cmd_sub.add_parser(
+        "secrets", help="Edit credentials.yaml with SOPS (`secrets push`: to a rendered host)."
+    )
+    add_secrets_push(p_secrets.add_subparsers(dest="secrets_command", required=False))
 
     p_dc = cmd_sub.add_parser(
         "dc-backup",
@@ -389,6 +397,7 @@ def _attach_env_command_parsers(
     # add_help=False: `host create --help` goes to the command's own parser, which lists the options.
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.", add_help=False)
     p_host_create.add_argument("host_create_args", nargs=argparse.REMAINDER)
+    add_host_verbs(host_sub)
     p_host_logging = host_sub.add_parser(
         "logging",
         help="Check (or --apply) the host-wide Docker log rotation default in daemon.json.",
@@ -417,6 +426,7 @@ def _attach_env_command_parsers(
     )
 
     _attach_zabbix_commands(cmd_sub, env_name)
+    add_render_verbs(cmd_sub)
     attach_fcos_parser(cmd_sub)
 
     cmd_sub.add_parser("ensure_volumes", help="Ensure external stack volumes exist.")

@@ -25,6 +25,10 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "compose",
         "docker",
         "fcos",
+        "render",
+        "check",
+        "diff",
+        "apply",
     }
 )
 

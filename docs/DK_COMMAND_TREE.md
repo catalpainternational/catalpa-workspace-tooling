@@ -63,10 +63,13 @@ dk
 └── <env>  [--dry-run] [-y] [--tag TAG]  …
     ├── info [-e]                    # see or edit env info
     ├── secrets                      # edit env encrypted credentials via SOPS
+    │   └── push [NAME…] [--restart] # rendered host: sops → podman secrets over SSH stdin
     ├── dc-backup                    # TLS + Garage/Caddy on dc_backup_docker_host
     ├── host [--write]               # verify and show droplet info
     │   ├── create [--size …] …      # create droplet
-    │   └── logging [--apply] [--target app|backup]  # Docker log rotation in daemon.json
+    │   ├── logging [--apply] [--target app|backup]  # Docker log rotation in daemon.json
+    │   ├── ignition -o FILE         # rendered host: compile host.bu (Butane) → droplet user data
+    │   └── provision [--no-start]   # rendered host: check files, push secrets, registry login, start
     ├── zabbix                       # devops monitoring
     │   ├── install
     │   ├── enable
@@ -76,14 +79,11 @@ dk
     │   (runtime: quadlet envs: a bare `dk <env>` applies the committed render, pulls and
     │    restarts what changed; logs, ps, exec, manage, restart/stop/start go to the host's
     │    systemd/podman over SSH; other compose verbs are refused — docs/FCOS.md)
-    ├── fcos                         # Fedora CoreOS rootless quadlets (docs/FCOS.md)
-    │   ├── render                   # write docker/envs/<env>/generated/fcos/ (commit it)
-    │   ├── check                    # committed render == fresh render; secrets required
-    │   ├── ignition -o FILE         # compile host.bu (Butane) → droplet user data
-    │   ├── provision [--no-start]   # new host: check files, push secrets, registry login, start
-    │   ├── secrets push [NAME…]     # sops → podman secrets over SSH stdin [--restart]
-    │   ├── diff [--names-only]      # host files/dirs/timers/secret names vs the render
-    │   └── apply [--no-restart] [-y] [--force] # install what differs (incl. SSH keys); restart affected units
+    ├── render                       # rendered host (runtime: quadlet): write generated/fcos/ (commit it)
+    ├── check                        # committed render == fresh render; secrets required
+    ├── diff [--names-only]          # host files/dirs/timers/secret names vs the render
+    ├── apply [--no-restart] [-y] [--force] # install what differs (incl. SSH keys); restart affected units
+    ├── fcos …                       # deprecated spelling of the five above, with a note
     ├── ensure_volumes               # utility command 
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
     ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
@@ -136,7 +136,7 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host logging`, `zabbix`, `fcos render` / `check` / `ignition` / `provision` / `secrets push` / `diff` / `apply`, `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
+Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host logging`, `zabbix`, `render` / `check` / `diff` / `apply` / `host ignition` / `host provision` / `secrets push` (rendered hosts; `fcos …` is the deprecated spelling), `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
 
 `db` / `files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 

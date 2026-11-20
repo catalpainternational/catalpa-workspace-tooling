@@ -128,4 +128,4 @@ def test_a_render_without_backups_says_to_render_first(swlt, monkeypatch, capsys
     assert bc.ensure_backup_credentials(b, "pgbackrest", yes=True, dry_run=False, label="x",
                                         read_credentials=lambda: dict(store)) == 1  # fmt: skip
     assert r.calls == []
-    assert "fcos render" in capsys.readouterr().err
+    assert "dk staging render" in capsys.readouterr().err

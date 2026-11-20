@@ -1,7 +1,7 @@
-"""Put a committed render on its FCOS host: ``dk <env> fcos diff|apply|secrets|provision``.
+"""Put a committed render on its FCOS host: ``dk <env> diff|apply``, ``secrets push``, ``host provision``.
 
 Everything comes from the committed ``generated/fcos/`` (``manifest.json`` and the files its
-install map names), and only after ``fcos check`` passes, so a host only ever runs what was
+install map names), and only after ``dk <env> check`` passes, so a host only ever runs what was
 reviewed. Two logins, as on the host itself:
 
 - ``core`` (passwordless sudo) reads and installs the files, root-owned or the account's, and
@@ -99,7 +99,7 @@ class Committed:
 def load_committed(gen_dir: Path) -> Committed:
     path = gen_dir / MANIFEST
     if not path.is_file():
-        raise HostError(f"{path} is missing: run `dk <env> fcos render` and commit")
+        raise HostError(f"{path} is missing: run `dk <env> render` and commit")
     manifest = json.loads(path.read_text(encoding="utf-8"))
     for key in ("install", "config_dir", "user", "uid"):
         if key not in manifest:
@@ -367,8 +367,8 @@ def describe(p: Plan, *, show_diff: bool = True) -> list[str]:
     out += [f"+ {link} → {t} (enable timer)" for link, t in p.links]
     out += [f"- {k} (key file not rendered: its keys stop working)" for k in p.stray_keys]
     out += [f"+ mask {u}" for u in p.masks]
-    out += [f"! secret {s} missing (fcos secrets push)" for s in p.secrets_missing]
-    out += [f"! system secret {s} missing (fcos secrets push)" for s in p.system_secrets_missing]
+    out += [f"! secret {s} missing (secrets push)" for s in p.secrets_missing]
+    out += [f"! system secret {s} missing (secrets push)" for s in p.system_secrets_missing]
     out += [f"? secret {s} on the host but not rendered (left alone)" for s in p.secrets_extra]
     out += [
         f"? system secret {s} on the host but not rendered (left alone)"

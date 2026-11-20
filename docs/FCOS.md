@@ -1,13 +1,15 @@
 # Fedora CoreOS: rootless quadlets rendered from compose
 
-`dk <env> fcos render` turns an environment's compose stack into the files a Fedora CoreOS
+`dk <env> render` turns an environment's compose stack into the files a Fedora CoreOS
 host needs to run it as rootless Podman quadlets. The files go in
-`docker/envs/<env>/generated/fcos/`, and you commit them. `dk <env> fcos check` compares the
+`docker/envs/<env>/generated/fcos/`, and you commit them. `dk <env> check` compares the
 committed files with a fresh render, so what reaches a host is what was reviewed.
 
 This is #182 ("option B"). A render holds everything a new host needs, including its Butane
-config (`host.bu`), backups and monitoring. `fcos ignition`, `provision`, `secrets push`, `diff`
-and `apply` put it on a host ([On the host](#on-the-host)). The design and the proof of concept
+config (`host.bu`), backups and monitoring. `host ignition`, `host provision`, `secrets push`,
+`diff` and `apply` put it on a host ([On the host](#on-the-host)). Until tooling 2.0 these were
+`dk <env> fcos render|check|diff|apply|ignition|provision|secrets push`; that spelling still
+works, with a note giving the new one. The design and the proof of concept
 are in catalpa-site's `docker/envs/fcos-rootless/` (catalpa-site#1006).
 
 ## Principles
@@ -16,7 +18,7 @@ are in catalpa-site's `docker/envs/fcos-rootless/` (catalpa-site#1006).
   working in the repository without `dk`, which matters when a project is handed over. Nothing
   here needs a compose or Caddyfile change that only works under `dk`.
 - **Plain compose refuses to start without a secret.** Write each credential as
-  `${KEY:?KEY must be set}`, never with a default. `fcos check` enforces this: for each
+  `${KEY:?KEY must be set}`, never with a default. `check` enforces this: for each
   credential, it resolves the compose file without that credential and expects compose to
   refuse.
 - **A render holds no secret, and it's the same whoever runs it.** It reads only the *names*
@@ -192,7 +194,7 @@ the manifest.
 ## The host: host.bu
 
 `host.bu` is built from the install map, so each generated file is placed exactly once.
-`dk <env> fcos ignition -o host.ign` compiles it with Butane (in Docker, `--strict`) and
+`dk <env> host ignition -o host.ign` compiles it with Butane (in Docker, `--strict`) and
 refuses a result over DigitalOcean's 64 KiB user-data limit. The manifest itself is installed
 too, as `<config_dir>/fcos-manifest.json`.
 
@@ -202,7 +204,7 @@ Beyond the files, it sets up:
   as `core`. The account (`deploy`) has no sudo, and takes `fcos.ssh_authorized_keys`: the keys
   dk and CI use, so a stolen deploy key can change the stack but not become root. A key may
   be in both lists. Each login's keys are a rendered file, `~/.ssh/authorized_keys.d/dk`, so
-  `fcos apply` changes them on a running host. `afterburn-sshkeys@core.service` is masked:
+  `apply` changes them on a running host. `afterburn-sshkeys@core.service` is masked:
   on DigitalOcean it would otherwise copy the droplet's account keys (the `--ssh-keys` given
   when it was created) to `core` at every boot, getting around `admin_keys`. The account's uid and subordinate IDs are
   pinned, so the data directories keep their owners.
@@ -234,11 +236,11 @@ and the committed `generated/fcos/manifest.json`, so there's no SOPS decrypt and
 
 A bare `dk <env>` brings the host up to date, as `up -d` does on a compose env:
 
-1. The committed render must match a fresh one, as for `fcos check`, so only committed files
+1. The committed render must match a fresh one, as for `check`, so only committed files
    reach the host.
 2. Every secret the render needs must exist on the host. A unit started without one fails, so
-   dk stops here and points to `fcos secrets push`.
-3. Files that differ are installed and the units they affect restarted, as `fcos apply` does
+   dk stops here and points to `secrets push`.
+3. Files that differ are installed and the units they affect restarted, as `apply` does
    (it shows the plan and asks, unless `-y`).
 4. Every image an account quadlet runs is pulled. A unit whose image changed is restarted,
    unless step 3 already did. Backup one-shots pick a new image up on their next run, and
@@ -296,7 +298,7 @@ Refused, since the render owns them: `db init`, `install-systemd`, `files push`,
 
 ## On the host
 
-Every command below first checks the render, as `fcos check` does, and refuses to touch the
+Every command below first checks the render, as `check` does, and refuses to touch the
 host if the committed files differ from a fresh render. It then works only from the committed
 `generated/fcos/`. The host's address comes from `docker_host`; `--host ADDRESS` overrides it,
 for example for a new droplet before its DNS record moves. `--dry-run`
@@ -308,11 +310,11 @@ manages the system units, with one `sudo sh` per command and the script on stdin
 
 | Command | What it does |
 |---|---|
-| `fcos ignition -o FILE` | Compile `host.bu` to Ignition, the droplet's user data |
-| `fcos provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, log in to the image registry (asks for the token), start the stack |
-| `fcos secrets push [NAME…] [--restart]` | Stream secrets from `credentials.yaml` into Podman secrets |
-| `fcos diff [--names-only]` | Compare the host with the render: each installed file's content, mode and owner, the data directories, the timers, the secret names |
-| `fcos apply [--no-restart] [-y] [--force]` | Install what differs, then reload systemd and restart only the units affected |
+| `host ignition -o FILE` | Compile `host.bu` to Ignition, the droplet's user data |
+| `host provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, log in to the image registry (asks for the token), start the stack |
+| `secrets push [NAME…] [--restart]` | Stream secrets from `credentials.yaml` into Podman secrets |
+| `diff [--names-only]` | Compare the host with the render: each installed file's content, mode and owner, the data directories, the timers, the secret names |
+| `apply [--no-restart] [-y] [--force]` | Install what differs, then reload systemd and restart only the units affected |
 
 **Secrets.** Each value goes from `sops -d` over SSH stdin into
 `podman secret create --replace`. It is never written to disk on either side, never on a
@@ -348,17 +350,17 @@ Secrets on the host that the render doesn't list are reported, never removed.
 **Provisioning a new host.**
 
 ```bash
-dk <env> fcos ignition -o /tmp/<env>.ign
+dk <env> host ignition -o /tmp/<env>.ign
 # Create the volume (first time only) and the droplet with --user-data-file /tmp/<env>.ign
 # (doctl, or `dk <env> host create` once it takes the generated Ignition), then point DNS.
-dk <env> fcos provision --host <ip>
+dk <env> host provision --host <ip>
 ```
 
 Provisioning is safe to run again. The registry login is kept in the account's home
 (`~/.config/containers/auth.json`, where host.bu points systemd's `REGISTRY_AUTH_FILE`).
 
-**Restoring.** Run `fcos provision --no-start`: on an empty data volume, starting `db` would
-initialise an empty cluster. Restore the database and media, then run `fcos provision`
+**Restoring.** Run `host provision --no-start`: on an empty data volume, starting `db` would
+initialise an empty cluster. Restore the database and media, then run `host provision`
 again. Creating the pgBackRest stanza and the restic repository on a new, empty repository is
 still manual (catalpa-site `docker/envs/fcos-rootless/README.md`).
 

@@ -79,7 +79,7 @@ def ensure_backup_credentials(
         # them: the render switches backups on by which credentials exist.
         print(
             f"{label}: the credentials are created, but the committed render has no backups for "
-            f"them yet. Run `dk {b.env_name} fcos render`, commit, `dk {b.env_name} fcos secrets "
+            f"them yet. Run `dk {b.env_name} render`, commit, `dk {b.env_name} secrets "
             f"push`, then a bare `dk {b.env_name}` to apply it, and run this again.",
             file=sys.stderr,
         )

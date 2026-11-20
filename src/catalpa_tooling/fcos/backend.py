@@ -17,7 +17,7 @@ start [svc…]``             when none is named, the edge's socket included)
 
 They read only ``docker_host`` and the committed ``generated/fcos/manifest.json``: no compose
 file, no SOPS. Commands that would build or start a stack beside the quadlets (``up``,
-``down``, ``run``, ``pull`` …) stay refused; ``dk <env> fcos apply`` is how a change reaches
+``down``, ``run``, ``pull`` …) stay refused; ``dk <env> apply`` is how a change reaches
 the host.
 """
 
@@ -40,7 +40,7 @@ FILES_COMMANDS = ("backup", "snapshots", "check", "stats", "init", "restore")
 #: What the render owns on a quadlet env, and what to use instead.
 BACKUP_REFUSED = {
     "init": "the render installs pgBackRest's config and units: `dk {env} db configure stanza-create` creates the stanza",
-    "install-systemd": "the render installs the backup units and timers (`fcos apply`)",
+    "install-systemd": "the render installs the backup units and timers (`dk {env} apply`)",
     "push": "copy media into the media directory on the host, or restore it with restic",
 }
 
@@ -537,7 +537,7 @@ REFUSED_HINT = {
     "up": "a bare `dk {env}` brings the host up to date: it applies the committed render, pulls the images and restarts what changed",
     "down": "`dk {env} stop` stops the stack's units",
     "pull": "a bare `dk {env}` pulls the images and restarts the units whose image changed",
-    "build": "the host pulls images; build and push them, then `fcos render` + `fcos apply`",
+    "build": "the host pulls images; build and push them, then `dk {env} render`, commit, and a bare `dk {env}`",
     "run": "`dk {env} exec SERVICE …` runs a command in a running container",
     "rm": "the units remove their containers when they stop",
     "wipe": "deleting a quadlet env's data is a host-level operation, not a dk command",
@@ -636,7 +636,7 @@ def handle(
         print(
             f"{env_name} runs as Podman quadlets (info.yaml `runtime: quadlet`), not compose, so "
             f"`dk {env_name} {shown}` isn't available. {hint + '. ' if hint else ''}"
-            f"Available: {', '.join(SUPPORTED)}, `fcos …`, and `docker …` against the host's "
+            f"Available: {', '.join(SUPPORTED)}, `render|check|diff|apply`, `host provision`, `secrets push`, and `docker …` against the host's "
             "Podman socket.",
             file=sys.stderr,
         )

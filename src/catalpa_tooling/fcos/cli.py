@@ -1,4 +1,5 @@
-"""``dk <env> fcos render|check|diff|apply|secrets push|ignition|provision``."""
+"""Rendered-host commands: ``dk <env> render|check|diff|apply``, ``dk <env> host
+ignition|provision``, ``dk <env> secrets push`` (and the deprecated ``dk <env> fcos …``)."""
 
 from __future__ import annotations
 
@@ -23,17 +24,34 @@ from catalpa_tooling.fcos.render import (
 HOST_COMMANDS = ("diff", "apply", "secrets", "provision")
 
 
-def attach_fcos_parser(cmd_sub: argparse._SubParsersAction) -> None:
-    p = cmd_sub.add_parser(
-        "fcos",
-        help="Fedora CoreOS host files (rootless quadlets) rendered from the compose file.",
+#: ``dk <env> <verb>`` for a rendered host (tooling 2.0): the verbs ``dk <env> fcos …`` had.
+RENDER_VERBS = ("render", "check", "diff", "apply")
+#: ``dk <env> host <verb>``: a new host from the render.
+HOST_VERBS = ("ignition", "provision")
+
+
+def _flag(sp: argparse.ArgumentParser, *names: str, help: str) -> None:
+    """A boolean flag that doesn't reset the env-level one: ``dk <env> --dry-run diff`` and
+    ``dk <env> diff --dry-run`` both work (a subparser's default would overwrite the first)."""
+    sp.add_argument(*names, action="store_true", default=argparse.SUPPRESS, help=help)
+
+
+def _host_arg(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument(
+        "--host",
+        metavar="ADDRESS",
+        help="SSH to this address instead of docker_host's (a new droplet before DNS moves).",
     )
-    sub = p.add_subparsers(dest="fcos_command", required=True)
+    _flag(sp, "--dry-run", help="Show what would happen; change nothing.")
+
+
+def add_render_verbs(sub: argparse._SubParsersAction) -> None:
+    """render, check, diff, apply."""
     r = sub.add_parser(
         "render",
-        help="Write docker/envs/<env>/generated/fcos/ from compose + info.yaml (commit the result).",
+        help="Write docker/envs/<env>/generated/ from compose + info.yaml (commit the result).",
     )
-    r.add_argument("--dry-run", action="store_true", help="List what would change; write nothing.")
+    _flag(r, "--dry-run", help="List what would change; write nothing.")
     sub.add_parser(
         "check",
         help=(
@@ -41,56 +59,36 @@ def attach_fcos_parser(cmd_sub: argparse._SubParsersAction) -> None:
             "start without a credential."
         ),
     )
-
-    def host_arg(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument(
-            "--host",
-            metavar="ADDRESS",
-            help="SSH to this address instead of docker_host's (a new droplet before DNS moves).",
-        )
-        sp.add_argument("--dry-run", action="store_true", help="Show what would happen; change nothing.")
-
     d = sub.add_parser(
         "diff",
         help="Compare the host's files, data directories, timers and secret names with the render.",
     )
-    host_arg(d)
+    _host_arg(d)
     d.add_argument("--names-only", action="store_true", help="List what differs, without the diff.")
-
     a = sub.add_parser(
         "apply",
         help=(
             "Install what differs (as core, with sudo), reload systemd, restart only the units "
-            "that read a changed file."
+            "that read a changed file. A bare `dk <env>` does this and also pulls new images."
         ),
     )
-    host_arg(a)
+    _host_arg(a)
     a.add_argument("--no-restart", action="store_true", help="Install and reload; restart nothing.")
-    a.add_argument("--yes", "-y", action="store_true", help="Don't ask before changing the host.")
+    _flag(a, "--yes", "-y", help="Don't ask before changing the host.")
     a.add_argument(
         "--force",
         action="store_true",
         help="Change core's keys even when none of your public keys stays in fcos.admin_keys.",
     )
 
-    s = sub.add_parser("secrets", help="Podman secrets on the host.")
-    ssub = s.add_subparsers(dest="fcos_secrets_command", required=True)
-    sp = ssub.add_parser(
-        "push",
-        help="Stream the manifest's secrets from credentials.yaml (sops) into podman secrets.",
-    )
-    host_arg(sp)
-    sp.add_argument("names", nargs="*", metavar="NAME", help="Only these secrets (default: all).")
-    sp.add_argument(
-        "--restart", action="store_true", help="Restart the units that use a pushed secret."
-    )
 
+def add_host_verbs(sub: argparse._SubParsersAction) -> None:
+    """ignition, provision (under ``host``)."""
     i = sub.add_parser(
         "ignition",
-        help="Compile generated/fcos/host.bu to Ignition (droplet user data) with Butane.",
+        help="Compile the rendered host.bu to Ignition (droplet user data) with Butane.",
     )
     i.add_argument("-o", "--output", metavar="FILE", help="Write here (default: stdout).")
-
     pv = sub.add_parser(
         "provision",
         help=(
@@ -98,12 +96,81 @@ def attach_fcos_parser(cmd_sub: argparse._SubParsersAction) -> None:
             "to the registry, start the stack."
         ),
     )
-    host_arg(pv)
+    _host_arg(pv)
     pv.add_argument(
         "--no-start",
         action="store_true",
         help="Don't start the stack (restoring: the database must be restored first).",
     )
+
+
+def add_secrets_push(sub: argparse._SubParsersAction) -> None:
+    """push (under ``secrets``)."""
+    sp = sub.add_parser(
+        "push",
+        help="Stream the render's secrets from credentials.yaml (sops) into Podman secrets on the host.",
+    )
+    _host_arg(sp)
+    sp.add_argument("names", nargs="*", metavar="NAME", help="Only these secrets (default: all).")
+    sp.add_argument(
+        "--restart", action="store_true", help="Restart the units that use a pushed secret."
+    )
+
+
+def attach_fcos_parser(cmd_sub: argparse._SubParsersAction) -> None:
+    """``dk <env> fcos …``: deprecated; the same commands as plain env verbs (``fcos_alias``)."""
+    p = cmd_sub.add_parser(
+        "fcos",
+        help="Deprecated: use `dk <env> render|check|diff|apply`, `host ignition|provision`, `secrets push`.",
+    )
+    sub = p.add_subparsers(dest="fcos_command", required=True)
+    add_render_verbs(sub)
+    s = sub.add_parser("secrets", help="Podman secrets on the host.")
+    add_secrets_push(s.add_subparsers(dest="fcos_secrets_command", required=True))
+    add_host_verbs(sub)
+
+
+def new_name(env_name: str, fcos_command: str) -> str:
+    """The tooling 2.0 spelling of ``dk <env> fcos <fcos_command>``."""
+    if fcos_command in HOST_VERBS:
+        return f"dk {env_name} host {fcos_command}"
+    if fcos_command == "secrets":
+        return f"dk {env_name} secrets push"
+    return f"dk {env_name} {fcos_command}"
+
+
+def route(ns: argparse.Namespace, config: ProjectConfig, env_name: str, runtime: str) -> int | None:
+    """Run a rendered-host command, or None when ``ns`` isn't one.
+
+    ``dk <env> render|check|diff|apply``, ``host ignition|provision`` and ``secrets push``, and
+    the deprecated ``dk <env> fcos …`` they replace."""
+    cmd = getattr(ns, "env_command", None)
+    if cmd in RENDER_VERBS:
+        fcos_command = cmd
+    elif cmd == "host" and getattr(ns, "host_command", None) in HOST_VERBS:
+        fcos_command = ns.host_command
+    elif cmd == "secrets" and getattr(ns, "secrets_command", None) == "push":
+        fcos_command = "secrets"
+        ns.fcos_secrets_command = "push"
+    elif cmd == "fcos":
+        print(
+            f"note: `dk {env_name} fcos {ns.fcos_command}` is now "
+            f"`{new_name(env_name, ns.fcos_command)}`; the `fcos` spelling will go.",
+            file=sys.stderr,
+        )
+        return handle_fcos_command(ns, config, env_name)
+    else:
+        return None
+    if runtime != "quadlet":
+        print(
+            f"dk {env_name}: `{new_name(env_name, fcos_command)}` is for envs whose host is rendered "
+            f"(info.yaml `runtime: quadlet`); {env_name} runs compose. Compose hosts aren't "
+            "rendered yet (tooling 2.0, docs/TOOLING_2.md M7).",
+            file=sys.stderr,
+        )
+        return 2
+    ns.fcos_command = fcos_command
+    return handle_fcos_command(ns, config, env_name)
 
 
 def _check(config: ProjectConfig, env_name: str, render: Render, *, strict: bool) -> int:
@@ -113,7 +180,7 @@ def _check(config: ProjectConfig, env_name: str, render: Render, *, strict: bool
     diffs = compare_render(gen_dir, render.files)
     if diffs:
         print(
-            f"{rel} differs from a fresh render (run `dk {env_name} fcos render` and commit):",
+            f"{rel} differs from a fresh render (run `dk {env_name} render` and commit):",
             file=sys.stderr,
         )
         for line in diffs:
@@ -143,7 +210,7 @@ def handle_fcos_command(ns: argparse.Namespace, config: ProjectConfig, env_name:
     try:
         render = render_env(config, env_name)
     except RenderError as exc:
-        print(f"fcos {command}: {exc}", file=sys.stderr)
+        print(f"{new_name(env_name, command)}: {exc}", file=sys.stderr)
         return 1
 
     if command == "render":
@@ -156,7 +223,7 @@ def handle_fcos_command(ns: argparse.Namespace, config: ProjectConfig, env_name:
             print(line)
         print(
             f"{rel}: {len(render.files)} files, {len(changed)} changed. Commit them; "
-            f"`dk {env_name} fcos check` compares them with a fresh render.",
+            f"`dk {env_name} check` compares them with a fresh render.",
             file=sys.stderr,
         )
         for p in required_secret_problems(config, render):
@@ -168,14 +235,14 @@ def handle_fcos_command(ns: argparse.Namespace, config: ProjectConfig, env_name:
 
     # Host commands: only ever put on a host what is committed and matches a fresh render.
     if _check(config, env_name, render, strict=False) != 0:
-        print(f"fcos {command}: not touching the host until the render is committed.", file=sys.stderr)
+        print(f"{new_name(env_name, command)}: not touching the host until the render is committed.", file=sys.stderr)
         return 1
     from catalpa_tooling.fcos.host import HostError
 
     try:
         return _host_command(ns, config, env_name, gen_dir)
     except HostError as exc:
-        print(f"fcos {command}: {exc}", file=sys.stderr)
+        print(f"{new_name(env_name, command)}: {exc}", file=sys.stderr)
         return 1
 
 
@@ -183,16 +250,16 @@ def _ignition(ns: argparse.Namespace, gen_dir: Path) -> int:
     from catalpa_tooling.fcos.host import HostError, compile_ignition
 
     if not (gen_dir / "host.bu").is_file():
-        print(f"{gen_dir / 'host.bu'} is missing: run `fcos render`", file=sys.stderr)
+        print(f"{gen_dir / 'host.bu'} is missing: run `dk <env> render`", file=sys.stderr)
         return 1
     out = getattr(ns, "output", None)
     if not out and sys.stdout.isatty():
-        print("fcos ignition: pass -o FILE, or redirect stdout", file=sys.stderr)
+        print("host ignition: pass -o FILE, or redirect stdout", file=sys.stderr)
         return 1
     try:
         ign = compile_ignition(gen_dir)
     except HostError as exc:
-        print(f"fcos ignition: {exc}", file=sys.stderr)
+        print(f"host ignition: {exc}", file=sys.stderr)
         return 1
     if out:
         Path(out).write_bytes(ign)
@@ -248,7 +315,7 @@ def _host_command(
         force=bool(getattr(ns, "force", False)), no_restart=bool(getattr(ns, "no_restart", False)),
     )  # fmt: skip
     if rc == 0 and not dry_run and not plan.secrets_in_sync:
-        print(f"Secrets are missing: `dk {env_name} fcos secrets push`.", file=sys.stderr)
+        print(f"Secrets are missing: `dk {env_name} secrets push`.", file=sys.stderr)
     return rc
 
 
@@ -258,7 +325,7 @@ def apply_plan(
 ) -> tuple[int, list[str]]:  # fmt: skip
     """Show ``plan``, ask, install it as root and restart what it affects.
 
-    Returns (exit code, the account units it restarted). What ``fcos apply`` and a bare
+    Returns (exit code, the account units it restarted). What ``dk <env> apply`` and a bare
     ``dk <env>`` share."""
     from catalpa_tooling.fcos import host as h
 
@@ -319,7 +386,7 @@ def _secrets_push(ns, config, env_name, c, target, *, dry_run: bool) -> int:
     values, problems = h.secret_values(c, _credentials(config, env_name), ns.names or None)
     if problems:
         for p in problems:
-            print(f"fcos secrets push: {p}", file=sys.stderr)
+            print(f"secrets push: {p}", file=sys.stderr)
         return 1
     if dry_run:
         for name, _value, system in values:
@@ -368,7 +435,7 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
             print(line)
         print(
             f"{target.address} doesn't match the render (booted from an older Ignition?): "
-            f"`dk {env_name} fcos apply` first.",
+            f"`dk {env_name} apply` first.",
             file=sys.stderr,
         )
         return 1
@@ -379,7 +446,7 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
     values, problems = h.secret_values(c, _credentials(config, env_name), None)
     if problems:
         for p in problems:
-            print(f"fcos provision: {p}", file=sys.stderr)
+            print(f"host provision: {p}", file=sys.stderr)
         return 1
     print(f"Pushing {len(values)} secrets to {target.address}:", file=sys.stderr)
     h.push_secrets(target, c, values)
@@ -400,7 +467,7 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
     if ns.no_start:
         print(
             "Not started (--no-start). Restore the database and media, then "
-            f"`dk {env_name} fcos provision` again to start the stack.",
+            f"`dk {env_name} host provision` again to start the stack.",
             file=sys.stderr,
         )
         return 0

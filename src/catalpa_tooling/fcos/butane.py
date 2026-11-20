@@ -32,7 +32,7 @@ from catalpa_tooling.fcos.settings import (
 )
 
 
-#: Each login's keys live in one file dk manages; ``fcos apply`` removes any other file in the
+#: Each login's keys live in one file dk manages; ``dk <env> apply`` removes any other file in the
 #: directory (Ignition's, afterburn's, a key added by hand).
 KEYS_FILE = "dk"
 #: afterburn copies the droplet's DigitalOcean account keys to core at every boot.
@@ -49,7 +49,7 @@ def keys_dir(user: str) -> str:
 
 def key_files(settings: FcosSettings, header: str) -> tuple[dict[str, str], list[dict]]:
     """``core``'s and the account's ``authorized_keys.d/dk``, as install-map files, so a key
-    change is a diff ``fcos apply`` can put on a running host."""
+    change is a diff ``dk <env> apply`` can put on a running host."""
     s = settings
     if not s.admin_keys:
         raise ValueError(
@@ -118,7 +118,7 @@ def host_bu(
         "passwd:",
         "  users:",
         "    # Admins: passwordless sudo (FCOS default), so root-equivalent. Keys: fcos.admin_keys,",
-        "    # installed below as ~/.ssh/authorized_keys.d/dk (so `fcos apply` can change them).",
+        "    # installed below as ~/.ssh/authorized_keys.d/dk (so `dk <env> apply` can change them).",
         "    - name: core",
         "    # Runs the stack (rootless Podman) and is what dk connects as. Keys:",
         "    # fcos.ssh_authorized_keys. No sudo, no extra groups. A fixed uid: the quadlets live in",
