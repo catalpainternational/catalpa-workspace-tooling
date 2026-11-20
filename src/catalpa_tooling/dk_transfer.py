@@ -478,6 +478,24 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     else:
         do_db = do_media = True
 
+    # A quadlet end (runtime: quadlet) has no compose stack to exec into: fcos/transfer.py.
+    from catalpa_tooling.fcos.backend import EnvError, quadlet_backend
+
+    try:
+        src_b = quadlet_backend(config, src)
+        dst_b = quadlet_backend(config, dst)
+    except EnvError as exc:
+        print(f"dk transfer: {exc}", file=sys.stderr)
+        return 1
+    if src_b is not None or dst_b is not None:
+        from catalpa_tooling.fcos.transfer import run_transfer
+
+        return run_transfer(
+            config, src=src, dst=dst, src_b=src_b, dst_b=dst_b, do_db=do_db, do_media=do_media,
+            media_method=media_method, dry=dry, yes=yes, workdir=ns.workdir,
+            keep_workdir=bool(ns.keep_workdir),
+        )  # fmt: skip
+
     src_ctx = load_managed_deploy_context(config, src)
     if src_ctx is None:
         return 1

@@ -253,10 +253,16 @@ def test_db_restore_asks_first(swlt, monkeypatch) -> None:
     assert rc == 0 and "pgbackrest --log-level-console=info restore --delta" in r.calls[-1][-1]
 
 
-def test_db_restore_from_dumps_is_not_on_quadlet_envs(swlt, capsys) -> None:
-    rc, r = run_sub(swlt, "db", "restore", restore_from_dumps=True, yes=True)
-    assert rc == 2 and r.calls == []
-    assert "--dumps/--file" in capsys.readouterr().err
+def test_db_restore_file_dispatches(swlt, tmp_path, monkeypatch) -> None:
+    from catalpa_tooling.fcos import dbdump
+
+    seen = []
+    monkeypatch.setattr(dbdump, "restore_archive", lambda b, path, *a, **k: seen.append(path) or 0)
+    dump = tmp_path / "x.dump"
+    rc, r = run_sub(swlt, "db", "restore", archive_file=str(dump), yes=True)
+    assert rc == 0 and seen == [dump]
+    rc, r = run_sub(swlt, "db", "restore", archive_file=str(dump), yes=False, dry_run=True)
+    assert rc == 0 and seen == [dump]  # dry-run: not called again
 
 
 def test_files_restore(swlt) -> None:
@@ -292,3 +298,122 @@ def test_volume_units_resolve_to_their_podman_names(site) -> None:
     assert backend.podman_run_args(q, volumes=names) == ["-v", "site_caddy_config:/config:z", "i"]
     with pytest.raises(backend.Usage):
         backend.podman_run_args("[Container]\nImage=i\nVolume=nope.volume:/x\n", volumes=names)
+
+
+# --- dump restore, media, transfer ----------------------------------------------------------
+
+
+def _backend(config, runner):
+    info = {"docker_host": "ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock"}
+    return backend.open_backend(config, "staging", info, runner=runner, register_key=False)
+
+
+def test_restore_archive_sequence(swlt, tmp_path) -> None:
+    import hashlib
+
+    from catalpa_tooling.fcos.dbdump import restore_archive
+
+    dump = tmp_path / "app.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 1000)
+    r = Recorder()
+    uploads = []
+    b = _backend(swlt, r)
+    rc = restore_archive(b, dump, uploader=lambda argv, path: uploads.append((argv, path)) or 0)
+    assert rc == 0
+    cmds = [c[-1] for c in r.calls]
+    assert cmds[0].startswith("systemctl --user stop ") and "db.service" not in cmds[0]
+    assert "django.service" in cmds[0]
+    (up_argv, up_path), = uploads
+    assert up_path == dump and "podman exec -i -u root db sh -c" in up_argv[-1]
+    remote = up_argv[-1].split("cat > ")[1].split("'")[0]
+    assert hashlib.sha256(dump.read_bytes()).hexdigest() in cmds[1] and remote in cmds[1]
+    assert "dropdb" in cmds[2] and "createdb" in cmds[2]
+    assert "pg_restore" in cmds[3] and remote in cmds[3]
+    assert cmds[4] == f"podman exec -u root db rm -f {remote}"
+    assert cmds[5].startswith("systemctl --user start ") and "django.service" in cmds[5]
+
+
+def test_restore_archive_refuses_a_non_archive_and_cleans_up_on_failure(swlt, tmp_path) -> None:
+    from catalpa_tooling.fcos.dbdump import restore_archive
+
+    bad = tmp_path / "bad.dump"
+    bad.write_bytes(b"not a dump")
+    r = Recorder()
+    assert restore_archive(_backend(swlt, r), bad) == 1 and r.calls == []
+
+    good = tmp_path / "app.dump"
+    good.write_bytes(b"PGDMP" + b"x" * 10)
+
+    class FailRestore(Recorder):
+        def __call__(self, argv, *, input=None, tty=False):
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1 if "pg_restore" in argv[-1] else 0, b"", b"")
+
+    r = FailRestore()
+    assert restore_archive(_backend(swlt, r), good, uploader=lambda a, p: 0) == 1
+    tail = [c[-1] for c in r.calls[-2:]]
+    assert tail[0].startswith("podman exec -u root db rm -f ")  # archive removed
+    assert tail[1].startswith("systemctl --user start ")  # the app comes back
+
+
+def test_media_owner_and_push(swlt, tmp_path, monkeypatch) -> None:
+    from catalpa_tooling.fcos.settings import SUBUID_START
+
+    b = _backend(swlt, Recorder())
+    vol = b.committed.manifest["bind_volumes"]["django_media"]
+    # podman unshare: ns uid N is host uid SUBUID_START + N - 1.
+    assert SUBUID_START + b.media_owner_ns_uid() - 1 == vol["owner_uid"]
+    cmds = []
+    monkeypatch.setattr(
+        "catalpa_tooling.run_cmd.run",
+        lambda cmd, **k: cmds.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    assert b.push_media(tmp_path) == 0
+    cmd = cmds[0]
+    assert cmd[0] == "rsync" and "--delete" in cmd
+    assert f"--chown={b.media_owner_ns_uid()}:{b.media_owner_ns_uid()}" in cmd
+    assert "--rsync-path=podman unshare rsync" in cmd
+    assert cmd[-1] == f"deploy@staging.site.example:{vol['path']}/"
+
+
+def test_pull_media_dispatch(swlt, monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "catalpa_tooling.media_rsync.rsync_pull_remote_to_local", lambda *a: calls.append(a) or 0
+    )
+    r = Recorder()
+    ns = argparse.Namespace(env_command="pull_media", target="/tmp/m", dry_run=False)
+    info = {"docker_host": "ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock"}
+    assert backend.handle(ns, swlt, "staging", info, runner=r, tty=False) == 0
+    assert calls == [("deploy@staging.site.example", "/var/mnt/data/django_media/", Path("/tmp/m").resolve())]
+
+
+def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:
+    from catalpa_tooling.fcos import dbdump, fetch
+    from catalpa_tooling.fcos import transfer as t
+
+    log = []
+    r = Recorder()
+    src, dst = _backend(swlt, r), _backend(swlt, r)
+    monkeypatch.setattr(fetch, "fetch_db", lambda c, b, dest: log.append("dump") or dest.write_bytes(b"PGDMP"))
+    monkeypatch.setattr(dbdump, "restore_archive", lambda b, p, **k: log.append(("restore", k)) or 0)
+    monkeypatch.setattr(dbdump, "post_restore_hooks", lambda b: log.append("hooks") or 0)
+    monkeypatch.setattr(type(src), "pull_media", lambda self, d: log.append("pull") or 0)
+    monkeypatch.setattr(type(src), "push_media", lambda self, d: log.append("push") or 0)
+    monkeypatch.setattr(type(src), "stop_writers", lambda self: log.append("stop") or ["django.service"])
+    monkeypatch.setattr(type(src), "start_units", lambda self, u: log.append(("start", tuple(u))) or 0)
+    kw = dict(src="a", dst="b", src_b=src, dst_b=dst, do_db=True, do_media=True, media_method="rsync",
+              dry=False, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
+    assert t.run_transfer(swlt, **kw) == 0
+    assert log == [
+        "stop", "dump", ("restore", {"stop_app": False, "run_hooks": False}), "pull", "push",
+        ("start", ("django.service",)), "hooks",
+    ]  # fmt: skip
+    assert not list(tmp_path.glob("a_to_b_*"))  # session directory removed
+
+    # A failed step still brings the destination's writers back.
+    log.clear()
+    monkeypatch.setattr(type(src), "push_media", lambda self, d: log.append("push") or 23)
+    assert t.run_transfer(swlt, **kw) == 23
+    assert log[-1] == ("start", ("django.service",)) and "hooks" not in log
+    assert t.run_transfer(swlt, **{**kw, "media_method": "tar"}) == 1

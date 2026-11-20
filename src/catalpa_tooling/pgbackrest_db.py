@@ -767,6 +767,22 @@ def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
     return "\n".join(lines)
 
 
+def drop_create_app_database_script(*, postgis: bool, target: DbRestoreTarget = "app") -> str:
+    """Shell script, run in the ``db`` container, that replaces the app database with an empty
+    one (``run_drop_create_app_database``; quadlet envs run it through ``podman exec``)."""
+    psql_body = _drop_create_app_database_psql_block(postgis=postgis)
+    shell_vars = _db_shell_vars(target)
+    return f"""set -eu
+{shell_vars}
+export PGPASSWORD="$POSTGRES_PASSWORD"
+dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
+createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
+psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
+{psql_body}
+EOF
+"""
+
+
 def run_drop_create_app_database(
     compose_file: str,
     env: dict[str, str],
@@ -782,17 +798,7 @@ def run_drop_create_app_database(
     ``pg_restore``. Used by ``dk transfer`` and ``db restore``.
     """
     merged = _merged_process_env(env)
-    psql_body = _drop_create_app_database_psql_block(postgis=postgis)
-    shell_vars = _db_shell_vars(target)
-    script = f"""set -eu
-{shell_vars}
-export PGPASSWORD="$POSTGRES_PASSWORD"
-dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
-createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
-psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
-{psql_body}
-EOF
-"""
+    script = drop_create_app_database_script(postgis=postgis, target=target)
     r = run_cmd(
         [
             "docker",

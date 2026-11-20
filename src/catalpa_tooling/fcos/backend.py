@@ -25,15 +25,16 @@ from __future__ import annotations
 
 import argparse
 import shlex
+from pathlib import Path
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.fcos.host import Committed, Host, HostError, load_committed, run, stack_units
 from catalpa_tooling.fcos.render import generated_dir
 
 UNIT_VERBS = ("restart", "stop", "start")
-SUPPORTED = ("logs", "ps", "exec", "manage", *UNIT_VERBS, "db", "files")
+SUPPORTED = ("logs", "ps", "exec", "manage", *UNIT_VERBS, "db", "files", "pull_media")
 DB_COMMANDS = ("info", "check", "version", "backup", "pgdump", "configure", "restore")
 FILES_COMMANDS = ("backup", "snapshots", "check", "stats", "init", "restore")
 #: What the render owns on a quadlet env, and what to use instead.
@@ -60,6 +61,11 @@ class Backend:
     committed: Committed
     host: Host
     login: str
+    info: dict = field(default_factory=dict)
+
+    @property
+    def ssh_target(self) -> str:
+        return f"{self.login}@{self.host.address}"
 
     @property
     def services(self) -> list[str]:
@@ -308,6 +314,29 @@ class Backend:
             return 1
         return self._ssh(script, tty=False)
 
+    def db_restore_dump(self, archive: Path | None, *, yes: bool, dry_run: bool) -> int:
+        """``db restore --file PATH`` / ``--dumps``: replace the app database with a local
+        ``pg_dump -Fc`` archive (``--dumps``: the configured ``paths.fetch_db_dump``)."""
+        from catalpa_tooling.fcos.dbdump import restore_archive
+
+        path = archive or self.config.fetch_db_dump_path
+        if archive is None and self.config.has_metabase_fetch():
+            print(
+                "db restore --dumps: the Metabase dump isn't restored on quadlet envs yet; "
+                "only the app database.",
+                file=sys.stderr,
+            )
+        if dry_run:
+            print(f"dry-run: would replace {self.env_name}'s app database with {path}", file=sys.stderr)
+            return 0
+        if not self._confirm(
+            f"replace {self.env_name}'s app database with {path}. The app stops while it runs; "
+            "the current data is lost.",
+            yes=yes,
+        ):
+            return 1
+        return restore_archive(self, Path(path))
+
     def files_restore(self, snapshot: str, *, yes: bool, dry_run: bool) -> int:
         """Replace the media with a restic snapshot: each backed-up directory ends up exactly as
         in the snapshot (``--delete``), owned as the backup unit's ID range wrote it."""
@@ -342,6 +371,65 @@ class Backend:
         ):
             return 1
         return self._ssh(script, tty=False)
+
+    # --- media ------------------------------------------------------------------------------
+
+    def media_dir(self) -> str:
+        from catalpa_tooling.fcos.fetch import media_path
+
+        try:
+            return media_path(self.config, self)
+        except ValueError as exc:
+            raise Usage(str(exc)) from None
+
+    def media_owner_ns_uid(self) -> int:
+        """The media's owner as ``podman unshare`` sees it: the range start (ns uid N is host
+        uid subuid_start + N - 1, and the range's root is host uid subuid_start + start - 1)."""
+        from catalpa_tooling.restic_files import restic_data_volume_key
+
+        vol = (self.committed.manifest.get("bind_volumes") or {})[restic_data_volume_key(self.config)]
+        return int(self.committed.manifest["id_ranges"][vol["id_range"]]["start"])
+
+    def pull_media(self, target: Path) -> int:
+        """Rsync the media directory to ``target`` (as ``fetch media``)."""
+        from catalpa_tooling.media_rsync import rsync_pull_remote_to_local
+
+        remote = self.media_dir()
+        print(f"pull_media: rsync {self.ssh_target}:{remote}/ → {target}", file=sys.stderr)
+        return rsync_pull_remote_to_local(self.ssh_target, f"{remote}/", target)
+
+    def push_media(self, source: Path, *, dry_run: bool = False) -> int:
+        """Rsync ``source/`` over the media directory (``--delete``), writing as the media's
+        owner: rsync runs under ``podman unshare`` and chowns to the range's root."""
+        from catalpa_tooling.media_rsync import RSYNC_BASE, format_shell_command
+        from catalpa_tooling.run_cmd import run as run_cmd
+
+        uid = self.media_owner_ns_uid()
+        cmd = [
+            *RSYNC_BASE, "--delete", f"--chown={uid}:{uid}",
+            "--rsync-path=podman unshare rsync",
+            *(["--dry-run", "--itemize-changes"] if dry_run else []),
+            f"{source.resolve()}/", f"{self.ssh_target}:{self.media_dir()}/",
+        ]  # fmt: skip
+        print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
+        return run_cmd(cmd, check=False, print_cmd=False).returncode
+
+    def stop_writers(self) -> list[str]:
+        """Stop everything but db (the edge's socket first); returns what to start again."""
+        db = f"{self.config.stack.services.db}.service"
+        user_units, _system = stack_units(self.committed)
+        units = self._proxy_socket() + [u for u in user_units if u != db]
+        if units:
+            print(f"{self.env_name}: systemctl --user stop {' '.join(units)}", file=sys.stderr)
+            self._ssh("systemctl --user stop " + " ".join(shlex.quote(u) for u in units), tty=False)
+        return units
+
+    def start_units(self, units: list[str]) -> int:
+        if not units:
+            return 0
+        ordered = [u for u in units if not u.endswith(".socket")] + [u for u in units if u.endswith(".socket")]
+        print(f"{self.env_name}: systemctl --user start {' '.join(ordered)}", file=sys.stderr)
+        return self._ssh("systemctl --user start " + " ".join(shlex.quote(u) for u in ordered), tty=False)
 
     def units(self, verb: str, argv: list[str]) -> int:
         names = [a for a in argv if not a.startswith("-")]
@@ -438,6 +526,57 @@ REFUSED_HINT = {
 }
 
 
+class EnvError(Exception):
+    pass
+
+
+def open_backend(
+    config: ProjectConfig, env_name: str, info: dict, *, runner=run, register_key: bool = True
+) -> Backend:
+    """The backend for a ``runtime: quadlet`` env: its host (from ``docker_host``) and its
+    committed render. ``register_key``: record the host's SSH key on first contact, as dk does
+    for every deploy host (never replaces one)."""
+    from catalpa_tooling.fcos.host import host_from_docker_host
+    from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
+
+    docker_host = str(info.get("docker_host") or "")
+    try:
+        committed = load_committed(generated_dir(config, env_name))
+        host = host_from_docker_host(docker_host, None)
+        login = parse_docker_host_to_ssh_target(docker_host).split("@", 1)[0]
+    except (HostError, ValueError) as exc:
+        raise EnvError(str(exc)) from None
+    if login != committed.user:
+        raise EnvError(
+            f"docker_host logs in as {login!r}, but the stack runs as {committed.user!r} (fcos.user)"
+        )
+    if register_key:
+        from catalpa_tooling.ssh_known_hosts import ensure_known_host
+
+        if ensure_known_host(host.address, port=host.port, recovery_env_name=env_name) != 0:
+            raise EnvError(f"no SSH host key for {host.address}")
+    host = Host(address=host.address, port=host.port, runner=runner)
+    return Backend(config=config, env_name=env_name, committed=committed, host=host, login=login, info=info)
+
+
+def quadlet_backend(config: ProjectConfig, env_name: str, *, runner=run) -> Backend | None:
+    """``open_backend`` for ``env_name`` when its info.yaml has ``runtime: quadlet``, else None."""
+    import yaml
+
+    from catalpa_tooling.fcos.settings import FcosConfigError, runtime_of
+
+    path = config.deploy_envs_dir / env_name / "info.yaml"
+    if not path.is_file():
+        return None
+    info = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        if runtime_of(info) != "quadlet":
+            return None
+    except FcosConfigError:
+        return None
+    return open_backend(config, env_name, info, runner=runner, register_key=runner is run)
+
+
 def handle(
     ns: argparse.Namespace,
     config: ProjectConfig,
@@ -451,6 +590,8 @@ def handle(
     command = getattr(ns, "env_command", None)
     if command == "manage":
         verb, argv = "manage", []
+    elif command == "pull_media":
+        verb, argv = "pull_media", []
     elif command in ("db", "bkp_db", "files", "bkp_files"):
         verb = command.removeprefix("bkp_")
         argv = []
@@ -474,33 +615,13 @@ def handle(
         )
         return 2
 
-    from catalpa_tooling.fcos.host import host_from_docker_host
-    from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
-
-    docker_host = str(info.get("docker_host") or "")
+    dry_run = bool(getattr(ns, "dry_run", False))
     try:
-        committed = load_committed(generated_dir(config, env_name))
-        host = host_from_docker_host(docker_host, None)
-        login = parse_docker_host_to_ssh_target(docker_host).split("@", 1)[0]
-    except (HostError, ValueError) as exc:
+        b = open_backend(config, env_name, info, runner=_dry_runner if dry_run else runner,
+                         register_key=runner is run and not dry_run)  # fmt: skip
+    except EnvError as exc:
         print(f"dk {env_name} {verb}: {exc}", file=sys.stderr)
         return 1
-    if login != committed.user:
-        print(
-            f"dk {env_name} {verb}: docker_host logs in as {login!r}, but the stack runs as "
-            f"{committed.user!r} (fcos.user)",
-            file=sys.stderr,
-        )
-        return 1
-    dry_run = bool(getattr(ns, "dry_run", False))
-    if runner is run and not dry_run:
-        # As dk does for every deploy host: record its key on first contact (never replaces one).
-        from catalpa_tooling.ssh_known_hosts import ensure_known_host
-
-        if ensure_known_host(host.address, port=host.port, recovery_env_name=env_name) != 0:
-            return 1
-    host = Host(address=host.address, port=host.port, runner=_dry_runner if dry_run else runner)
-    b = Backend(config=config, env_name=env_name, committed=committed, host=host, login=login)
     if tty is None:
         tty = sys.stdin.isatty() and sys.stdout.isatty()
     try:
@@ -513,6 +634,13 @@ def handle(
         if verb == "manage":
             args = [a for a in getattr(ns, "manage_args", []) if a]
             return b.manage(args, user=getattr(ns, "user", None), tty=tty)
+        if verb == "pull_media":
+            raw = Path(getattr(ns, "target", None) or f"{config.paths.backend}/media").expanduser()
+            target = raw if raw.is_absolute() else config.repo_root / raw
+            if dry_run:
+                print(f"dry-run: rsync {b.ssh_target}:{b.media_dir()}/ → {target.resolve()}", file=sys.stderr)
+                return 0
+            return b.pull_media(target.resolve())
         if verb in ("db", "files"):
             sub = getattr(ns, f"{command}_command", None)
             allowed = DB_COMMANDS if verb == "db" else FILES_COMMANDS
@@ -521,8 +649,13 @@ def handle(
                 raise Usage(f"dk {env_name} {verb} {sub}: {hint}")
             yes = bool(getattr(ns, "yes", False))
             if verb == "db" and sub == "restore":
-                if getattr(ns, "restore_from_dumps", False) or getattr(ns, "archive_file", None):
-                    raise Usage(f"dk {env_name} db restore --dumps/--file: not on quadlet envs yet")
+                archive = getattr(ns, "archive_file", None)
+                if archive or getattr(ns, "restore_from_dumps", False):
+                    return b.db_restore_dump(
+                        Path(archive).expanduser() if archive else None,
+                        yes=yes,
+                        dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
+                    )
                 return b.db_restore(
                     list(getattr(ns, "pgbackrest_restore_args", None) or []),
                     yes=yes,

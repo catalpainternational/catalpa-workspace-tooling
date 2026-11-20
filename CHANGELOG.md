@@ -38,7 +38,8 @@
   volume. The backup commands work too: `db info/check/version/backup/pgdump`,
   `db configure stanza-create/verify`, and `files backup/snapshots/check/stats/init`, through
   the units and containers the render installed. `db restore` (pgBackRest, `--delta`) and
-  `files restore` work as well, each after you type the env name.
+  `files restore` work as well, each after you type the env name. So do `db restore --file/--dumps`,
+  `pull_media` (by rsync), and `dk transfer` with a quadlet env at either end.
 
 ### Fixed
 

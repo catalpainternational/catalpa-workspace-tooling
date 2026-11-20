@@ -255,9 +255,17 @@ Both restores ask you to type the env name first, unless you pass dk's `--yes`. 
 `files restore`, the media is restored in place rather than through a staging volume: a restore
 that fails part-way leaves a mix. Run it again to finish.
 
+| `dk <env> db restore --file PATH` / `--dumps` | replaces the app database with a local `pg_dump -Fc` archive (`--dumps`: `paths.fetch_db_dump`): stops the app (not `db`), copies the archive into `db` over SSH and checks its SHA-256, drops and recreates the database and runs `pg_restore` with the compose scripts, starts the app, then runs the `ops.post_db_restore` hooks. Asks for the env name. The Metabase dump isn't restored on quadlet envs yet |
+| `dk <env> pull_media [--target DIR]` | the same rsync as `fetch media` (see #43 on deprecating `pull_media`) |
+
+`dk transfer SRC DST` works when either end is a quadlet env. The steps are the usual ones, each
+end done its own way: a quadlet destination stops everything but `db` (the edge's socket
+first), takes the dump through the restore above, and takes the media by rsync under
+`podman unshare`, chowned to the media's ID range (`--delete`). The media goes through the
+local session directory, by rsync only. A compose end works as before.
+
 Refused, since the render owns them: `db init`, `install-systemd`, `files push`, and
-`db configure` without a mode. Not yet on quadlet envs: `db restore --dumps/--file`,
-`transfer` and `pull_media`.
+`db configure` without a mode.
 
 ## On the host
 
