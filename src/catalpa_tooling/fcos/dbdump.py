@@ -4,7 +4,8 @@ What ``db restore --file/--dumps`` and ``dk transfer`` (into a quadlet env) shar
 same scripts as on compose envs (``drop_create_app_database_script``, the ``pg_restore``
 script, the ``ops.post_db_restore`` hooks), through ``podman exec`` over SSH:
 
-1. stop the stack's other units, so nothing writes while the database is replaced (db stays);
+1. stop the stack's other units and the edge's socket, so nothing writes while the database is
+   replaced (db stays);
 2. copy the archive into ``db`` over SSH stdin and check its SHA-256 there;
 3. replace the app database with an empty one, then ``pg_restore`` the archive;
 4. start the stack again, then run the post-restore hooks (``db_psql``, ``manage.py``).
@@ -19,8 +20,6 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-
-from catalpa_tooling.fcos.host import stack_units
 
 #: (ssh argv, local file) → exit code: stream a file to a remote command's stdin.
 Uploader = Callable[[list[str], Path], int]
@@ -66,14 +65,8 @@ def restore_archive(
     q = shlex.quote
     prefix = config.ops.pgbackrest.restore_temp_prefix
     remote = f"/tmp/{prefix}{os.urandom(8).hex()}.dump"
-    user_units, _system = stack_units(b.committed)
-    app_units = [u for u in user_units if u != f"{db}.service"]
-
-    if stop_app and app_units:
-        print(f"db restore: stopping {', '.join(app_units)} …", file=sys.stderr)
-        rc = b._ssh(f"systemctl --user stop {' '.join(q(u) for u in app_units)}", tty=False)
-        if rc != 0:
-            return rc
+    # Everything but db, the edge's socket first (else the next request starts caddy again).
+    stopped = b.stop_writers() if stop_app else []
     try:
         print(f"db restore: copying {archive} ({archive.stat().st_size} bytes) into {db} …", file=sys.stderr)
         argv = b.host._argv(
@@ -118,10 +111,11 @@ def restore_archive(
             return rc
     finally:
         b._ssh(f"podman exec -u root {q(db)} rm -f {q(remote)}", tty=False)
-        if stop_app and app_units:
-            print(f"db restore: starting {', '.join(app_units)} …", file=sys.stderr)
-            b._ssh(f"systemctl --user start {' '.join(q(u) for u in app_units)}", tty=False)
-    return post_restore_hooks(b, uploader=uploader) if run_hooks else 0
+        b.start_units(stopped)
+    rc = post_restore_hooks(b, uploader=uploader) if run_hooks else 0
+    if rc == 0:
+        print("db restore: done.", file=sys.stderr)
+    return rc
 
 
 def post_restore_hooks(b, *, uploader: Uploader = upload) -> int:

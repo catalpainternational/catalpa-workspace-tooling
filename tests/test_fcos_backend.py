@@ -323,6 +323,9 @@ def test_restore_archive_sequence(swlt, tmp_path) -> None:
     cmds = [c[-1] for c in r.calls]
     assert cmds[0].startswith("systemctl --user stop ") and "db.service" not in cmds[0]
     assert "django.service" in cmds[0]
+    if b._proxy_socket():  # the edge's socket stops first and starts last
+        assert cmds[0].split()[3] == b._proxy_socket()[0]
+        assert cmds[5].endswith(b._proxy_socket()[0])
     (up_argv, up_path), = uploads
     assert up_path == dump and "podman exec -i -u root db sh -c" in up_argv[-1]
     remote = up_argv[-1].split("cat > ")[1].split("'")[0]
