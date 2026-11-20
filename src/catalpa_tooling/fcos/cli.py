@@ -213,6 +213,11 @@ def _host_command(
     target = h.host_from_docker_host(info.get("docker_host"), getattr(ns, "host", None))
     dry_run = bool(getattr(ns, "dry_run", False))
     command = ns.fcos_command
+    if not dry_run and command != "provision":  # provision waits for SSH and does this itself
+        from catalpa_tooling.ssh_known_hosts import ensure_known_host
+
+        if ensure_known_host(target.address, port=target.port, recovery_env_name=env_name) != 0:
+            return 1
 
     if command == "secrets":
         return _secrets_push(ns, config, env_name, c, target, dry_run=dry_run)

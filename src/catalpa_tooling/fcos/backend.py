@@ -265,6 +265,12 @@ def handle(
         )
         return 1
     dry_run = bool(getattr(ns, "dry_run", False))
+    if runner is run and not dry_run:
+        # As dk does for every deploy host: record its key on first contact (never replaces one).
+        from catalpa_tooling.ssh_known_hosts import ensure_known_host
+
+        if ensure_known_host(host.address, port=host.port, recovery_env_name=env_name) != 0:
+            return 1
     host = Host(address=host.address, port=host.port, runner=_dry_runner if dry_run else runner)
     b = Backend(config=config, env_name=env_name, committed=committed, host=host, login=login)
     if tty is None:
