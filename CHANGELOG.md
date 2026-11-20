@@ -74,6 +74,11 @@
 
 ### Fixed
 
+- **`dk <env> files backup` on a quadlet env shows restic's output again.** The restic quadlet
+  logged with `LogDriver=passthrough`, so its output went to the journal as the container's
+  ID-range uid (609823 on catalpa-site), which `deploy`, and so dk, can't read. Now
+  `LogDriver=none`: the output comes through podman's attached stdout, once, as the unit's.
+
 - **Spaces provisioning no longer prints a key's secret.** Creating a bucket ran
   `s3cmd info`/`mb` with `--access_key=… --secret_key=…`, and dk echoes every command it runs,
   so the temporary full-access bootstrap key's secret appeared in the terminal (and in `ps`).
