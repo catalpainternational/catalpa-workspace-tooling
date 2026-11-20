@@ -6,9 +6,9 @@ host needs to run it as rootless Podman quadlets. The files go in
 committed files with a fresh render, so what reaches a host is what was reviewed.
 
 This is #182 ("option B"). A render holds everything a new host needs, including its Butane
-config (`host.bu`), backups and monitoring. Pushing the secrets and applying the files to a host
-come later. The design and the proof of concept are in catalpa-site's
-`docker/envs/fcos-rootless/` (catalpa-site#1006).
+config (`host.bu`), backups and monitoring. `fcos ignition`, `provision`, `secrets push`, `diff`
+and `apply` put it on a host ([On the host](#on-the-host)). The design and the proof of concept
+are in catalpa-site's `docker/envs/fcos-rootless/` (catalpa-site#1006).
 
 ## Principles
 
@@ -169,12 +169,9 @@ the manifest.
 ## The host: host.bu
 
 `host.bu` is built from the install map, so each generated file is placed exactly once.
-Compile it in `generated/fcos/`:
-
-```bash
-podman run --rm -v "$PWD":/work:Z -w /work quay.io/coreos/butane:release \
-  --strict --files-dir . host.bu > host.ign
-```
+`dk <env> fcos ignition -o host.ign` compiles it with Butane (in Docker, `--strict`) and
+refuses a result over DigitalOcean's 64 KiB user-data limit. The manifest itself is installed
+too, as `<config_dir>/fcos-manifest.json`.
 
 Beyond the files, it sets up:
 
@@ -190,3 +187,71 @@ Beyond the files, it sets up:
 
 The `-incr` template runs daily at 02:30, so on Sundays it falls inside the default Zincati
 window (02:00–03:00). `Persistent=true` reruns a backup that a reboot interrupts.
+
+## On the host
+
+Every command below first checks the render, as `fcos check` does, and refuses to touch the
+host if the committed files differ from a fresh render. It then works only from the committed
+`generated/fcos/`. The host's address comes from `docker_host`; `--host ADDRESS` overrides it,
+for example for a new droplet before its DNS record moves. `--dry-run`
+shows what would happen.
+
+Two logins, as on the host itself. `core` (passwordless sudo) reads and installs the files and
+manages the system units, with one `sudo sh` per command and the script on stdin. The account
+(`deploy`) owns the Podman secrets, its own systemd and the registry login.
+
+| Command | What it does |
+|---|---|
+| `fcos ignition -o FILE` | Compile `host.bu` to Ignition, the droplet's user data |
+| `fcos provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, log in to the image registry (asks for the token), start the stack |
+| `fcos secrets push [NAME…] [--restart]` | Stream secrets from `credentials.yaml` into Podman secrets |
+| `fcos diff [--names-only]` | Compare the host with the render: each installed file's content, mode and owner, the data directories, the timers, the secret names |
+| `fcos apply [--no-restart] [-y]` | Install what differs, then reload systemd and restart only the units affected |
+
+**Secrets.** Each value goes from `sops -d` over SSH stdin into
+`podman secret create --replace`. It is never written to disk on either side, never on a
+command line and never printed. The stack's secrets belong to the account, and
+`system_secrets` (Zabbix's PSK) to root. Running containers keep the old value until they
+restart: `secrets push` lists the units that use a pushed secret, and `--restart` restarts them.
+Secrets on the host that the render doesn't list are reported, never removed.
+
+**Diff and apply.**
+
+- Each file is written to a temporary file next to its destination, given its owner and mode,
+  then renamed over the old one, so a unit never reads half a file. The account's directories
+  are created as the account's (Ignition and `install -d` would make them root's).
+- A file the previously applied manifest installed but the render no longer has is removed.
+- A missing data directory is created with its range's owner. An existing one with the wrong
+  owner is reported and left alone: that means the ID range moved, which needs a person.
+- A missing timer link is created and the timer started.
+- A unit restarts only when something it reads changed: its quadlet, its settings file, a file
+  it mounts (`caddy.json`, the pgBackRest config) or, for `secrets push --restart`, a secret.
+  Changing `db`'s files restarts `db`, and Requires= restarts `django` with it. A one-shot that
+  belongs to a long-running unit (`migrate`, `collectstatic`, through `PartOf=`) runs again
+  when that unit restarts. A one-shot a timer starts (restic) is never restarted. A changed
+  timer is restarted, which reschedules it.
+- Podman keeps an existing network or named volume when its `.network`/`.volume` file changes.
+  `apply` says so and leaves it: stop its users, remove it, start them.
+- Anything host.bu sets outside the install map (users, sysctl, sshd, Zincati) needs a new host.
+
+**Provisioning a new host.**
+
+```bash
+dk <env> fcos ignition -o /tmp/<env>.ign
+# Create the volume (first time only) and the droplet with --user-data-file /tmp/<env>.ign
+# (doctl, or `dk <env> host create` once it takes the generated Ignition), then point DNS.
+dk <env> fcos provision --host <ip>
+```
+
+Provisioning is safe to run again. The registry login is kept in the account's home
+(`~/.config/containers/auth.json`, where host.bu points systemd's `REGISTRY_AUTH_FILE`).
+
+**Restoring.** Run `fcos provision --no-start`: on an empty data volume, starting `db` would
+initialise an empty cluster. Restore the database and media, then run `fcos provision`
+again. Creating the pgBackRest stanza and the restic repository on a new, empty repository is
+still manual (catalpa-site `docker/envs/fcos-rootless/README.md`).
+
+**Josh's `host create` for Fedora CoreOS** (`feat/host-create-fcos-firewall`) builds its own
+Ignition, in which `core` runs the stack and has no sudo. For an env with `runtime: quadlet`,
+it should take `fcos.host.compile_ignition(generated_dir)` instead, then run `provision`. Its
+firewall and DNS steps apply unchanged.

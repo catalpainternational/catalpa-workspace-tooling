@@ -14,7 +14,14 @@
   (`host.bu`), the backups (pgBackRest and restic, from the existing `pgbr_s3_write_*`,
   `restic_write_*` and `ops` keys, with every repository setting as a Podman secret) and
   monitoring (an unprivileged Zabbix agent and a read-only Podman API). See `docs/FCOS.md`.
-  Pushing secrets and applying the files to a host come in a later release.
+- **`dk <env> fcos ignition`, `provision`, `secrets push`, `diff` and `apply` (#182).** They
+  put a committed render on its host, and refuse to while the render differs from a fresh one.
+  `ignition` compiles `host.bu` for the droplet's user data. `provision` sets up a host that
+  booted from it: it pushes the secrets, logs in to the registry and starts the stack.
+  `secrets push` streams values from `credentials.yaml` into Podman secrets over SSH, without
+  writing or printing them. `diff` compares the host's files, data directories, timers and
+  secret names with the render. `apply` installs what differs and restarts only the units that
+  read a changed file.
 
 ### Fixed
 

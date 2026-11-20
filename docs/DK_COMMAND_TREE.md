@@ -75,7 +75,12 @@ dk
     │   └── logs
     ├── fcos                         # Fedora CoreOS rootless quadlets (docs/FCOS.md)
     │   ├── render                   # write docker/envs/<env>/generated/fcos/ (commit it)
-    │   └── check                    # committed render == fresh render; secrets required
+    │   ├── check                    # committed render == fresh render; secrets required
+    │   ├── ignition -o FILE         # compile host.bu (Butane) → droplet user data
+    │   ├── provision [--no-start]   # new host: check files, push secrets, registry login, start
+    │   ├── secrets push [NAME…]     # sops → podman secrets over SSH stdin [--restart]
+    │   ├── diff [--names-only]      # host files/dirs/timers/secret names vs the render
+    │   └── apply [--no-restart] [-y] # install what differs; restart only affected units
     ├── ensure_volumes               # utility command 
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
     ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
@@ -128,7 +133,7 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host logging`, `zabbix`, `fcos render` / `fcos check`, `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
+Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host logging`, `zabbix`, `fcos render` / `check` / `ignition` / `provision` / `secrets push` / `diff` / `apply`, `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
 
 `db` / `files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 

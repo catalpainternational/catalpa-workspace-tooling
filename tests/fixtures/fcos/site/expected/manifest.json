@@ -121,6 +121,12 @@
       "mode": "0644"
     },
     {
+      "file": "manifest.json",
+      "dest": "/etc/site/fcos-manifest.json",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
       "file": "quadlets/caddy.container",
       "dest": "/etc/containers/systemd/users/1001/caddy.container",
       "owner": "root",
@@ -177,6 +183,8 @@
   ],
   "hostname": "site-staging",
   "timezone": "UTC",
+  "config_dir": "/etc/site",
+  "proxy": "caddy",
   "system_secrets": {},
   "timers": []
 }

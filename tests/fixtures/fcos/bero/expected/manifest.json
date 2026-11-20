@@ -187,6 +187,12 @@
       "mode": "0644"
     },
     {
+      "file": "manifest.json",
+      "dest": "/etc/bero_shape/fcos-manifest.json",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
       "file": "monitoring/podman-ro-proxy.cfg",
       "dest": "/etc/bero_shape/podman-ro-proxy.cfg",
       "owner": "root",
@@ -339,6 +345,8 @@
   ],
   "hostname": "bero-shape-staging",
   "timezone": "Asia/Dili",
+  "config_dir": "/etc/bero_shape",
+  "proxy": "caddy",
   "system_secrets": {
     "zbx_tlspsk": "ZBX_TLSPSK",
     "zbx_tlspskidentity": "ZBX_TLSPSKIDENTITY"

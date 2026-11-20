@@ -57,6 +57,11 @@ class Render:
     """Credentials the resolved compose file uses."""
 
 
+def host_manifest_path(config_dir: str) -> str:
+    """Where ``apply`` (and ``host.bu``) put the manifest on the host."""
+    return f"{config_dir}/fcos-manifest.json"
+
+
 def generated_dir(config: ProjectConfig, env_name: str) -> Path:
     return config.deploy_envs_dir / env_name / GENERATED_DIR
 
@@ -282,6 +287,11 @@ def render_env(
         tmpfiles = m.tmpfiles
         system_secrets = m.system_secrets
 
+    # The manifest goes on the host too: `fcos diff`/`apply` read the applied one back to find
+    # files a later render no longer has.
+    install.append(
+        {"file": MANIFEST, "dest": host_manifest_path(config_dir), "owner": "root", "mode": "0644"}
+    )
     install = sorted(install, key=lambda i: i["file"])
     timezone = settings.timezone or (
         (config.digitalocean.timezone if config.digitalocean else None) or "UTC"
@@ -307,6 +317,8 @@ def render_env(
         {
             "hostname": hostname,
             "timezone": timezone,
+            "config_dir": config_dir,
+            "proxy": inputs.proxy,
             "secrets": dict(sorted({**manifest["secrets"], **plan.secrets}.items())),
             "system_secrets": dict(sorted(system_secrets.items())),
             "timers": sorted(timers),

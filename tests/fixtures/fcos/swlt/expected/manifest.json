@@ -180,6 +180,12 @@
       "mode": "0644"
     },
     {
+      "file": "manifest.json",
+      "dest": "/etc/swlt_shape/fcos-manifest.json",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
       "file": "quadlets/caddy.container",
       "dest": "/etc/containers/systemd/users/1001/caddy.container",
       "owner": "root",
@@ -266,6 +272,8 @@
   ],
   "hostname": "swlt-shape-staging",
   "timezone": "UTC",
+  "config_dir": "/etc/swlt_shape",
+  "proxy": "caddy",
   "system_secrets": {},
   "timers": [
     "swlt-pgbackrest-backup-diff.timer",

@@ -253,6 +253,10 @@ storage:
       mode: 0644
       contents:
         local: envfiles/django.env
+    - path: /etc/bero_shape/fcos-manifest.json
+      mode: 0644
+      contents:
+        local: manifest.json
     - path: /etc/bero_shape/metabase.env
       mode: 0644
       contents:

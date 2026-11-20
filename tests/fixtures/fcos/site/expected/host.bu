@@ -241,6 +241,10 @@ storage:
       mode: 0644
       contents:
         local: envfiles/django.env
+    - path: /etc/site/fcos-manifest.json
+      mode: 0644
+      contents:
+        local: manifest.json
     - path: /etc/site/migrate.env
       mode: 0644
       contents:
