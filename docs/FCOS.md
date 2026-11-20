@@ -248,8 +248,15 @@ Backups (`files` is the media backup; #43 renames it `media`):
 | `dk <env> files backup` | starts the restic unit, waits, shows its log |
 | `dk <env> files snapshots \| check \| stats \| init` | a one-off restic container built from that unit's quadlet: same image, ID range, secrets and mounts |
 
+| `dk <env> db restore [--dry-run] [pgbackrest args]` | as on compose envs: stops the app and `db`, runs `pgbackrest restore --delta` in a one-off container like `db` (its image, ID range, settings, secrets and mounts), then starts the app again. `db` is healthy only once WAL replay ends, so the app waits for recovery, up to `db`'s start timeout (15 min) |
+| `dk <env> files restore [SNAPSHOT]` | `restic restore SNAPSHOT:/backup/<vol> --target /backup/<vol> --delete` in the backup unit's ID range, so each media directory ends up exactly as in the snapshot, with the right owner. `latest` means the latest from this host (`--host`) |
+
+Both restores ask you to type the env name first, unless you pass dk's `--yes`. Unlike compose's
+`files restore`, the media is restored in place rather than through a staging volume: a restore
+that fails part-way leaves a mix. Run it again to finish.
+
 Refused, since the render owns them: `db init`, `install-systemd`, `files push`, and
-`db configure` without a mode. Not yet on quadlet envs: `db restore`, `files restore`,
+`db configure` without a mode. Not yet on quadlet envs: `db restore --dumps/--file`,
 `transfer` and `pull_media`.
 
 ## On the host

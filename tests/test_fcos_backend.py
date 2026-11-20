@@ -161,7 +161,7 @@ def swlt(tmp_path: Path):
 
 def run_sub(config, command: str, sub: str, **extra) -> tuple[int, Recorder]:
     r = Recorder()
-    ns = argparse.Namespace(env_command=command, dry_run=False, **{f"{command}_command": sub}, **extra)
+    ns = argparse.Namespace(env_command=command, **{"dry_run": False, f"{command}_command": sub, **extra})
     info = {"docker_host": "ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock"}
     return backend.handle(ns, config, "staging", info, runner=r, tty=False), r
 
@@ -203,8 +203,6 @@ def test_files_commands(swlt) -> None:
     [
         ("db", "init", "stanza-create"),
         ("db", "install-systemd", "fcos apply"),
-        ("db", "restore", "README"),
-        ("files", "restore", "README"),
         ("files", "push", "media directory"),
     ],
 )
@@ -230,3 +228,67 @@ def test_podman_run_args_reads_only_the_container_section() -> None:
         "--uidmap", "0:20000:5000", "--secret", "a,type=env,target=A", "-e", "K=V",
         "-v", "/d:/d:ro,z", "docker.io/restic/restic:1",
     ]  # fmt: skip
+
+
+def test_db_restore_plan(swlt, capsys) -> None:
+    rc, r = run_sub(swlt, "db", "restore", pgbackrest_restore_args=["--", "--type=time", "--target=2026-11-19 10:00"], yes=False, dry_run=True)
+    assert rc == 0 and r.calls == []
+    script = capsys.readouterr().err.split(":\n", 1)[1].splitlines()
+    assert script[0] == "set -e"
+    assert script[1] == "systemctl --user stop django.service db.service"
+    run_ = shlex.split(script[2])
+    assert run_[:7] == ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "sh"]
+    # db's own settings, secrets and mounts, with quadlet volume units resolved to their names.
+    assert "--env-file" in run_ and "--uidmap" in run_
+    assert "/var/mnt/data/postgres_data:/var/lib/postgresql:Z" in run_
+    assert run_[-1].endswith("restore --delta --type=time '--target=2026-11-19 10:00'")
+    assert script[4] == "systemctl --user start django.service"
+
+
+def test_db_restore_asks_first(swlt, monkeypatch) -> None:
+    monkeypatch.setattr("catalpa_tooling.cli_confirm.confirm_by_typing_env_name", lambda env: False)
+    rc, r = run_sub(swlt, "db", "restore", pgbackrest_restore_args=[], yes=False)
+    assert rc == 1 and r.calls == []
+    rc, r = run_sub(swlt, "db", "restore", pgbackrest_restore_args=[], yes=True)
+    assert rc == 0 and "pgbackrest --log-level-console=info restore --delta" in r.calls[-1][-1]
+
+
+def test_db_restore_from_dumps_is_not_on_quadlet_envs(swlt, capsys) -> None:
+    rc, r = run_sub(swlt, "db", "restore", restore_from_dumps=True, yes=True)
+    assert rc == 2 and r.calls == []
+    assert "--dumps/--file" in capsys.readouterr().err
+
+
+def test_files_restore(swlt) -> None:
+    rc, r = run_sub(swlt, "files", "restore", snapshot="latest", yes=True)
+    assert rc == 0
+    lines = r.calls[-1][-1].splitlines()
+    cmd = shlex.split(lines[1])
+    assert cmd[:3] == ["podman", "run", "--rm"]
+    i = cmd.index("restore")
+    assert cmd[i:] == [
+        "restore", "latest:/backup/django_media", "--target", "/backup/django_media",
+        "--delete", "--host", "swlt-shape-staging",
+    ]  # fmt: skip
+    # The media mount is writable for the restore (the backup unit mounts it read-only).
+    media = [a for a in cmd if a.endswith(":/backup/django_media") or ":/backup/django_media:" in a]
+    assert media and not any(",ro" in m or ":ro" in m for m in media)
+    rc, r = run_sub(swlt, "files", "restore", snapshot="abc123", yes=True)
+    assert "--host" not in r.calls[-1][-1]
+
+
+def test_read_write_drops_only_ro() -> None:
+    q = "[Container]\nImage=i\nVolume=/a:/b:ro,z\nVolume=/c:/d:ro\nVolume=/e:/f\n"
+    assert backend.podman_run_args(q, read_write=True) == ["-v", "/a:/b:z", "-v", "/c:/d", "-v", "/e:/f", "i"]
+
+
+def test_volume_units_resolve_to_their_podman_names(site) -> None:
+    from catalpa_tooling.fcos.host import load_committed
+    from catalpa_tooling.fcos.render import generated_dir
+
+    names = backend.volume_names(load_committed(generated_dir(site, "staging")))
+    assert names["caddy_config.volume"] == "site_caddy_config"
+    q = "[Container]\nImage=i\nVolume=caddy_config.volume:/config:z\n"
+    assert backend.podman_run_args(q, volumes=names) == ["-v", "site_caddy_config:/config:z", "i"]
+    with pytest.raises(backend.Usage):
+        backend.podman_run_args("[Container]\nImage=i\nVolume=nope.volume:/x\n", volumes=names)

@@ -37,7 +37,8 @@
   `pg_dump` through `podman exec` (no password), and rsync of the media directory on the data
   volume. The backup commands work too: `db info/check/version/backup/pgdump`,
   `db configure stanza-create/verify`, and `files backup/snapshots/check/stats/init`, through
-  the units and containers the render installed. Restoring isn't available on quadlet envs yet.
+  the units and containers the render installed. `db restore` (pgBackRest, `--delta`) and
+  `files restore` work as well, each after you type the env name.
 
 ### Fixed
 
