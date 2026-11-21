@@ -107,6 +107,12 @@
 
 ### Changed
 
+- **doctl lookups run once per dk command.** `host create` asked DigitalOcean for the same
+  projects, droplets and domain records two or three times, one step after another (about 25
+  doctl calls; now about 14). Read-only `list`/`get` results are kept for the command's life;
+  any create, delete or assign empties them, so the next step sees the change. The poll that waits
+  for a new droplet to show in its project asks afresh each try.
+
 - **restic 0.18.1 (was 0.17.3) on every runtime.** 0.18 restores can leave extended attributes
   alone (`--exclude-xattr`), which a quadlet `files restore` needs: restoring a snapshot onto an
   SELinux-labelled volume otherwise fails once per file. Same repository format, so existing

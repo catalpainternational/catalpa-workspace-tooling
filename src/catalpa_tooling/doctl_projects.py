@@ -172,7 +172,10 @@ def wait_for_project_droplet_by_name(
     delay_s: float = 5.0,
 ) -> dict[str, Any] | None:
     """Poll until ``name`` appears in ``project_id`` (DO API lag after assign)."""
+    from catalpa_tooling.doctl_binary import clear_doctl_cache
+
     for attempt in range(max(retries, 1)):
+        clear_doctl_cache()  # each try must ask DigitalOcean again
         droplet = find_project_droplet_by_name(project_id, name, context=context)
         if droplet is not None:
             return droplet
