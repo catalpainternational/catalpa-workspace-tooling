@@ -12,8 +12,12 @@ tool reads (pgBackRest takes any option as ``PGBACKREST_<OPTION>``; restic takes
 ``AWS_*``). The files keep only tuning, which is not secret: no credential is in a file, a
 volume, or ``podman inspect``.
 
-Only write mode is rendered: an FCOS host backs itself up. ``*_read_*`` keys (restoring another
-env's backups) are left out.
+Read mode (``pgbr_s3_read_*`` / ``restic_read_*``, an env with ``restore_from``, #204) gives no
+units: the read keys become Podman secrets for the one-off containers of ``db restore`` and
+``files restore``, described in the manifest's ``restore``. ``db`` never sees them, and with no
+write keys there is no WAL archiving and no timer, so a restored copy can't write into a
+repository. Read and write in one env aren't rendered yet: the restored cluster's system ID
+wouldn't match the env's own stanza.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ from catalpa_tooling.fcos.settings import FcosSettings
 
 PGBR_PREFIX = "PGBR_S3_WRITE_"
 RESTIC_PREFIX = "RESTIC_WRITE_"
+PGBR_READ_PREFIX = "PGBR_S3_READ_"
+RESTIC_READ_PREFIX = "RESTIC_READ_"
 
 #: PGBR_S3_WRITE_<suffix> → the pgBackRest option it sets (same table as compose deploys).
 _PGBR_OPTION = {
@@ -69,12 +75,16 @@ class BackupPlan:
     restic: dict[str, str] = field(default_factory=dict)
     restic_volumes: tuple[str, ...] = ()
     db_lines: tuple[str, ...] = ()
+    pgbackrest_read: dict[str, str] = field(default_factory=dict)
+    """Read credential key → the variable it sets in the one-off restore container."""
+    restic_read: dict[str, str] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
     @property
     def secrets(self) -> dict[str, str]:
         """Podman secret → credential key."""
-        return {secret_name(k): k for k in (*self.pgbackrest, *self.restic)}
+        keys = (*self.pgbackrest, *self.restic, *self.pgbackrest_read, *self.restic_read)
+        return {secret_name(k): k for k in keys}
 
 
 def plan_backups(
@@ -89,9 +99,20 @@ def plan_backups(
     keys = {k.upper() for k in credential_keys}
     pg_keys = sorted(k for k in keys if k.startswith(PGBR_PREFIX))
     restic_keys = sorted(k for k in keys if k.startswith(RESTIC_PREFIX))
-    if (pg_keys or restic_keys) and not config.has_ops:
+    pg_read = sorted(k for k in keys if k.startswith(PGBR_READ_PREFIX))
+    restic_read = sorted(k for k in keys if k.startswith(RESTIC_READ_PREFIX))
+    if (pg_keys or restic_keys or pg_read or restic_read) and not config.has_ops:
         plan.problems.append("backup credentials are set but tooling.yaml has no `ops:`")
         return plan
+    for label, write, read in (("pgBackRest", pg_keys, pg_read), ("restic", restic_keys, restic_read)):
+        if write and read:
+            plan.problems.append(
+                f"{label}: both read and write credentials. A rendered host restores another env's "
+                "backups (read) or backs itself up (write), not both yet (#204): remove one set"
+            )
+    if plan.problems:
+        return plan
+    _plan_read(plan, keys, pg_read, restic_read)
 
     if pg_keys:
         for key in pg_keys:
@@ -142,18 +163,43 @@ def plan_backups(
                 "restic: credentials.yaml lacks "
                 + ", ".join(f"{RESTIC_PREFIX}{s}".lower() for s in missing)
             )
+        if not any(u.endswith("restic-files-backup.timer") for u in config.ops.systemd_units.restic):
+            plan.problems.append(
+                "restic credentials are set but ops.systemd_units.restic lists no "
+                "restic-files-backup.timer"
+            )
+    if plan.restic or plan.restic_read:
         volumes = config.ops.restic.data_volumes
         unknown = [v for v in volumes if v not in declared_volumes]
         plan.problems.extend(
             f"ops.restic.data_volumes: `{v}` is not a volume of the compose file" for v in unknown
         )
         plan.restic_volumes = tuple(v for v in volumes if v in declared_volumes)
-        if not any(u.endswith("restic-files-backup.timer") for u in config.ops.systemd_units.restic):
-            plan.problems.append(
-                "restic credentials are set but ops.systemd_units.restic lists no "
-                "restic-files-backup.timer"
-            )
     return plan
+
+
+def _plan_read(plan: BackupPlan, keys: set[str], pg_read: list[str], restic_read: list[str]) -> None:
+    for key in pg_read:
+        suffix = key[len(PGBR_READ_PREFIX) :]
+        if suffix not in _PGBR_OPTION:
+            plan.problems.append(f"{key}: no pgBackRest option for `{suffix}`")
+            continue
+        plan.pgbackrest_read[key] = pgbackrest_env_var(_PGBR_OPTION[suffix])
+    for key in restic_read:
+        suffix = key[len(RESTIC_READ_PREFIX) :]
+        if suffix not in _RESTIC_VAR:
+            plan.problems.append(f"{key}: no restic variable for `{suffix}`")
+            continue
+        plan.restic_read[key] = _RESTIC_VAR[suffix]
+    for prefix, required, have in (
+        (PGBR_READ_PREFIX, _PGBR_REQUIRED, pg_read),
+        (RESTIC_READ_PREFIX, _RESTIC_REQUIRED, restic_read),
+    ):
+        missing = [s for s in required if have and f"{prefix}{s}" not in keys]
+        if missing:
+            plan.problems.append(
+                "credentials.yaml lacks " + ", ".join(f"{prefix}{s}".lower() for s in missing)
+            )
 
 
 def _timer_kinds(units: tuple[str, ...], stem: str) -> list[str]:
@@ -320,28 +366,9 @@ def backup_files(
 
     if plan.restic:
         volumes = plan.restic_volumes
-        ranges = set()
-        for v in volumes:
-            users = writers.get(v) or []
-            ranges |= {service_ranges[u] for u in users if u in service_ranges}
-        start = min(ranges) if ranges else None
-        if len(ranges) > 1:
-            raise ValueError(
-                "ops.restic.data_volumes are written by services in different ID ranges "
-                f"({', '.join(map(str, sorted(ranges)))}); restic can read only one range's files"
-            )
+        start = _restic_range(volumes, service_ranges, writers)
         name = restic_unit_name(config) or f"{prefix}restic-files-backup"
-        mounts = []
-        paths = []
-        on_data = False
-        for i, v in enumerate(volumes):
-            target = (ops.restic.backup_path if i == 0 and ops.restic.backup_path else f"/backup/{v}")
-            paths.append(target)
-            if v in bind_volumes:
-                mounts.append(f"Volume={settings.data_mount}/{v}:{target}:ro,z")
-                on_data = True
-            else:
-                mounts.append(f"Volume={v}.volume:{target}:ro,z")
+        mounts, paths, on_data = _restic_mounts(volumes, config, settings, bind_volumes)
         secret_lines = [
             f"Secret={secret_name(k)},type=env,target={var}" for k, var in sorted(plan.restic.items())
         ]
@@ -411,6 +438,73 @@ def backup_files(
 
     if monitor_dir:
         _status_files(out, plan, settings, header, prefix, conf_dir, db_service, monitor_dir)
+    return out
+
+
+def _restic_range(volumes, service_ranges: dict[str, int], writers: dict[str, list[str]]) -> int | None:
+    """The ID range of the services that write the backed-up volumes: restic runs in it."""
+    ranges = set()
+    for v in volumes:
+        users = writers.get(v) or []
+        ranges |= {service_ranges[u] for u in users if u in service_ranges}
+    if len(ranges) > 1:
+        raise ValueError(
+            "ops.restic.data_volumes are written by services in different ID ranges "
+            f"({', '.join(map(str, sorted(ranges)))}); restic can read only one range's files"
+        )
+    return min(ranges) if ranges else None
+
+
+def _restic_mounts(volumes, config: ProjectConfig, settings: FcosSettings, bind_volumes) -> tuple[list[str], list[str], bool]:
+    """(Volume= lines, read-only, the paths inside, whether any is on the data volume)."""
+    ops = config.ops
+    mounts, paths, on_data = [], [], False
+    for i, v in enumerate(volumes):
+        target = ops.restic.backup_path if i == 0 and ops.restic.backup_path else f"/backup/{v}"
+        paths.append(target)
+        if v in bind_volumes:
+            mounts.append(f"Volume={settings.data_mount}/{v}:{target}:ro,z")
+            on_data = True
+        else:
+            mounts.append(f"Volume={v}.volume:{target}:ro,z")
+    return mounts, paths, on_data
+
+
+def restore_spec(
+    plan: BackupPlan,
+    config: ProjectConfig,
+    settings: FcosSettings,
+    *,
+    source: str | None,
+    bind_volumes: tuple[str, ...],
+    service_ranges: dict[str, int],
+    writers: dict[str, list[str]],
+) -> dict | None:
+    """The manifest's ``restore``: the one-off containers that restore from read credentials,
+    as ``[Container]`` lines (``podman_run_args`` reads them). None without read credentials."""
+    from catalpa_tooling.fcos.settings import ID_RANGE_SIZE
+    from catalpa_tooling.restic_files import RESTIC_IMAGE
+
+    if not (plan.pgbackrest_read or plan.restic_read):
+        return None
+    out: dict = {"from": source}
+    if plan.pgbackrest_read:
+        pg = config.ops.pgbackrest
+        out["pgbackrest"] = [
+            *(f"Secret={secret_name(k)},type=env,target={var}" for k, var in sorted(plan.pgbackrest_read.items())),
+            # In write mode these come from the mounted pgBackRest drop-in and db's own lines.
+            f"Environment={pgbackrest_env_var('repo1-type')}=s3",
+            f"Environment={pgbackrest_env_var('pg1-path')}={pg.pg1_path}",
+        ]
+    if plan.restic_read:
+        volumes = plan.restic_volumes
+        start = _restic_range(volumes, service_ranges, writers)
+        mounts, _paths, _on_data = _restic_mounts(volumes, config, settings, bind_volumes)
+        lines = [f"Image={qualify_image(RESTIC_IMAGE)}"]
+        if start is not None:
+            lines += [f"UIDMap=0:{start}:{ID_RANGE_SIZE}", f"GIDMap=0:{start}:{ID_RANGE_SIZE}"]
+        lines += [f"Secret={secret_name(k)},type=env,target={var}" for k, var in sorted(plan.restic_read.items())]
+        out["restic"] = lines + mounts
     return out
 
 

@@ -172,8 +172,14 @@ No credential is in a file, a volume or `podman inspect`.
 - **restic** is a one-shot quadlet named after the listed `restic-files-backup` timer. It runs
   in the ID range of the services that write the backed-up volumes, mounts them read-only, and
   uses a fixed `--host`.
-- **Only write mode is rendered.** An FCOS host backs itself up, so the `*_read_*` keys are
-  left out.
+- **Read mode: restoring another env's backups.** An env with `restore_from: <env>` in
+  `info.yaml` and read credentials (`pgbr_s3_read_*` / `restic_read_*`, made by
+  `dk <env> secrets read-key`) gets no backup units, no WAL archiving and no timers. The read keys
+  become Podman secrets for the one-off containers of `db restore`, `db info`, `files restore` and
+  `files snapshots`, listed under `restore` in the manifest; `db` never sees them. `db backup`,
+  `db check`, `files backup` and `files init` are refused. Read and write credentials in one
+  rendered env are refused for now: the restored cluster's system ID wouldn't match the env's own
+  stanza (#204).
 
 ## Monitoring
 
@@ -288,8 +294,8 @@ Backups (`files` is the media backup; #43 renames it `media`):
 | `dk <env> db pgdump [args]` | `pg_dump -Fc` to stdout, as for `fetch db` |
 | `dk <env> files backup` | starts the restic unit, waits, shows its log |
 | `dk <env> files snapshots \| check \| stats \| init` | a one-off restic container built from that unit's quadlet: same image, ID range, secrets and mounts |
-| `dk <env> db restore [--dry-run] [pgbackrest args]` | as on compose envs: stops the app and `db`, runs `pgbackrest restore --delta` in a one-off container like `db` (its image, ID range, settings, secrets and mounts), then starts the app again if it was running (`db` alone if only `db` was). `db` is healthy only once WAL replay ends, so the app waits for recovery, up to `db`'s start timeout (15 min). On a host provisioned with `--no-start` both stay stopped, so the media can be restored before the app serves anything; `host provision` starts them |
-| `dk <env> files restore [SNAPSHOT]` | `restic restore SNAPSHOT:/backup/<vol> --target /backup/<vol> --delete` in the backup unit's ID range, so each media directory ends up exactly as in the snapshot, with the right owner. `latest` means the latest from this host (`--host`) |
+| `dk <env> db restore [--dry-run] [pgbackrest args]` | as on compose envs: stops the app and `db`, runs `pgbackrest restore --delta` in a one-off container like `db` (its image, ID range, settings, secrets and mounts), then starts the app again if it was running (`db` alone if only `db` was). `db` is healthy only once WAL replay ends, so the app waits for recovery, up to `db`'s start timeout (15 min). On a host provisioned with `--no-start` both stay stopped, so the media can be restored before the app serves anything; `host provision` starts them. Then the `ops.post_db_restore` hooks run, as on compose; a stack left stopped prints the commands to run once it's up. **In read mode** (`restore_from`) the one-off has the read key instead, and replays the source's WAL itself (no connections, no archiving), promotes and stops, because `db`'s own pgBackRest can't reach the source's repository; `--type=…` restores get `--target-action=promote` |
+| `dk <env> files restore [SNAPSHOT]` | `restic restore SNAPSHOT:/backup/<vol> --target /backup/<vol> --delete` in the backup unit's ID range, so each media directory ends up exactly as in the snapshot, with the right owner. `latest` means the latest from this host (`--host`); in read mode, the latest of the source's snapshots with that path (`--path`), since compose snapshots carry random hostnames |
 | `dk <env> db restore --file PATH` / `--dumps` | replaces the app database with a local `pg_dump -Fc` archive (`--dumps`: `paths.fetch_db_dump`): stops the app (not `db`), copies the archive into `db` over SSH and checks its SHA-256, drops and recreates the database and runs `pg_restore` with the compose scripts, starts the app, then runs the `ops.post_db_restore` hooks. Asks for the env name. The Metabase dump isn't restored on quadlet envs yet |
 | `dk <env> pull_media [--target DIR]` | the same rsync as `fetch media` (see #43 on deprecating `pull_media`) |
 

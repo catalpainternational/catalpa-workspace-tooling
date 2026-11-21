@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.fcos.backups import backup_files, plan_backups, restic_unit_name
+from catalpa_tooling.fcos.backups import backup_files, plan_backups, restic_unit_name, restore_spec
 from catalpa_tooling.fcos.butane import MASKED_UNITS, host_bu, key_files
 from catalpa_tooling.fcos.caddy_json import CaddyJsonError, caddy_json_text, run_adapt
 from catalpa_tooling.fcos.monitoring import monitor_dir, monitoring_files
@@ -210,6 +210,12 @@ def render_env(
     )
     if plan.problems:
         raise RenderError("backups:\n" + "\n".join(f"  - {p}" for p in plan.problems))
+    from catalpa_tooling.restore_from import RestoreFromError, restore_source
+
+    try:
+        source = restore_source(config, env_name, info)
+    except RestoreFromError as exc:
+        raise RenderError(str(exc)) from exc
     restic_container = (restic_unit_name(config) or "") if plan.restic else ""
     inputs = RenderInputs(
         env_name=env_name,
@@ -221,7 +227,7 @@ def render_env(
         config_dir=config_dir,
         previous_ranges=previous_ranges(gen_dir),
         extra_lines={db_service: plan.db_lines} if plan.db_lines else {},
-        extra_volume_users={v: (restic_container,) for v in plan.restic_volumes},
+        extra_volume_users={v: (restic_container,) for v in plan.restic_volumes} if restic_container else {},
         volume_owners=_volume_owners(config, settings),
     )
     try:
@@ -263,6 +269,10 @@ def render_env(
             monitor_dir=mon_dir,
             env=env,
         )
+        restore = restore_spec(
+            plan, config, settings, source=source, bind_volumes=bind_volumes,
+            service_ranges=q.service_ranges, writers=q.volume_writers,
+        )  # fmt: skip
     except ValueError as exc:
         raise RenderError(f"backups: {exc}") from exc
     files.update(b.files)
@@ -339,6 +349,8 @@ def render_env(
             "install": install,
         }
     )
+    if restore:
+        manifest["restore"] = restore
     files[MANIFEST] = json.dumps(manifest, indent=2) + "\n"
     return Render(files=files, compose_file=compose_file, env=env, secret_keys=used)
 

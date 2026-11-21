@@ -215,8 +215,53 @@ class Backend:
             tty=False,
         )
 
+    # --- read mode (restore_from, #204) ----------------------------------------------------------
+
+    @property
+    def restore(self) -> dict:
+        """The manifest's ``restore``: one-off containers with the read credentials."""
+        return self.committed.manifest.get("restore") or {}
+
+    def _read_only(self, what: str) -> Usage:
+        src = self.restore.get("from") or "another env"
+        return Usage(
+            f"dk {self.env_name} {what}: {self.env_name} restores {src}'s backups with a read key "
+            "and has no repository of its own to write to"
+        )
+
+    def _db_read_args(self) -> list[str]:
+        """``podman run`` options for a one-off like db, with the read credentials instead of
+        db's own pgBackRest settings."""
+        db = self.config.stack.services.db
+        text = self._db_quadlet()
+        kept = "\n".join(
+            ln for ln in text.splitlines()
+            if not (ln.startswith(("Secret=", "Environment=")) and "PGBACKREST_" in ln)
+        )  # fmt: skip
+        if not self.restore.get("pgbackrest"):
+            raise Usage(f"{self.env_name}'s render has no pgBackRest read credentials ({db})")
+        return podman_run_args(
+            kept + "\n[Container]\n" + "\n".join(self.restore["pgbackrest"]),
+            volumes=volume_names(self.committed),
+        )
+
+    def _db_quadlet(self) -> str:
+        db = self.config.stack.services.db
+        quadlets = {f.rsplit("/", 1)[-1]: t for f, t in self.committed.files.items() if f.startswith("quadlets/")}
+        text = quadlets.get(f"{db}.container")
+        if not text:
+            raise Usage(f"{self.env_name}'s render has no {db}.container")
+        return text
+
     def db(self, sub: str, ns: argparse.Namespace) -> int:
         db = self.config.stack.services.db
+        if self.restore.get("pgbackrest"):
+            if sub not in ("info", "version", "pgdump"):
+                raise self._read_only(f"db {sub}")
+            if sub != "pgdump":
+                cmd = ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "pgbackrest",
+                       *self._db_read_args(), "--log-level-console=info", sub]  # fmt: skip
+                return self._ssh(shlex.join(cmd), tty=False)
         self._check_services([db])
         pgbr = ["podman", "exec", "-u", "postgres", db, "pgbackrest"]
         if sub == "version":
@@ -246,7 +291,10 @@ class Backend:
         raise Usage(f"dk {self.env_name} db {sub}: not on a quadlet env")
 
     def _restic_quadlet(self) -> tuple[str, str]:
-        """(unit stem, quadlet text) of the rendered restic container."""
+        """(unit stem, quadlet text) of the rendered restic container; in read mode, ("", the
+        restore container's lines)."""
+        if self.restore.get("restic"):
+            return "", "[Container]\n" + "\n".join(self.restore["restic"])
         for e in self.committed.manifest["install"]:
             f = e["file"]
             text = self.committed.files.get(f, "")
@@ -256,6 +304,8 @@ class Backend:
 
     def files(self, sub: str) -> int:
         stem, text = self._restic_quadlet()
+        if not stem and sub in ("backup", "init"):
+            raise self._read_only(f"files {sub}")
         if sub == "backup":
             return self._start_and_show(f"{stem}.service")
         args = {"snapshots": ["snapshots"], "check": ["check"], "stats": ["stats"], "init": ["init"]}[sub]
@@ -279,17 +329,24 @@ class Backend:
         recovery: it is healthy only once Postgres accepts connections)."""
         db = self.config.stack.services.db
         web = self.config.stack_service("web")
-        quadlets = {f.rsplit("/", 1)[-1]: t for f, t in self.committed.files.items() if f.startswith("quadlets/")}
-        text = quadlets.get(f"{db}.container")
-        if not text or "PGBACKREST_" not in text:
-            raise Usage(f"{self.env_name}'s db has no pgBackRest repository (pgbr_s3_write_* credentials)")
-        run_args = podman_run_args(text, volumes=volume_names(self.committed))
         extra = [a for a in extra if a != "--"]
+        source = self.restore.get("from")
+        if self.restore.get("pgbackrest"):
+            run_args = self._db_read_args()
+            if any(a.startswith("--type=") for a in extra) and not any(a.startswith("--target-action") for a in extra):
+                extra.append("--target-action=promote")  # pgBackRest's default pauses: we wait for the end
+        else:
+            text = self._db_quadlet()
+            if "PGBACKREST_" not in text:
+                raise Usage(f"{self.env_name}'s db has no pgBackRest repository (pgbr_s3_write_* credentials)")
+            run_args = podman_run_args(text, volumes=volume_names(self.committed))
         inner = (
             'mkdir -p -m 700 "$PGBACKREST_PG1_PATH" && '
             "pgbackrest --log-level-console=info restore --delta"
             + "".join(" " + shlex.quote(a) for a in extra)
         )
+        if self.restore.get("pgbackrest"):
+            inner += " && " + _replay_wal_here(source or "the source")
         restore = shlex.join(
             ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "sh", *run_args, "-c", inner]
         )
@@ -322,13 +379,44 @@ class Backend:
         if dry_run:
             print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
             return 0
+        what = f"{source}'s backup" if source else "the backup"
         if not self._confirm(
-            f"pgBackRest restore --delta into {self.env_name}'s database. {web} and {db} stop "
-            "while it runs; what the backup doesn't have is lost.",
+            f"pgBackRest restore --delta of {what} into {self.env_name}'s database. {web} and "
+            f"{db} stop while it runs; what {what} doesn't have is lost."
+            + (_PROD_DATA_NOTE.format(source=source) if source else ""),
             yes=yes,
         ):
             return 1
-        return self._ssh(script, tty=False)
+        rc = self._ssh(script, tty=False)
+        if rc != 0:
+            return rc
+        return self._after_db_restore()
+
+    def _after_db_restore(self) -> int:
+        """``ops.post_db_restore``, as compose runs them, once the app is up again. A stack left
+        stopped can't run them: say which to run after starting it."""
+        from catalpa_tooling.fcos.dbdump import post_restore_hooks
+        from catalpa_tooling.post_db_restore import _expand_commands, post_db_restore_applies
+
+        if not post_db_restore_applies(self.config, self.env_name):
+            return 0
+        web = self.config.stack_service("web")
+        r = self.host.ssh(self.login, f"systemctl --user is-active --quiet {shlex.quote(web)}.service", check=False)
+        if r.returncode == 0:
+            return post_restore_hooks(self)
+        commands = _expand_commands(
+            self.config, self.config.ops.post_db_restore.manage_commands, env_name=self.env_name,
+            env_add={}, hook_label="post_db_restore",
+        ) or []  # fmt: skip
+        if commands or self.config.ops.post_db_restore.db_psql:
+            print(
+                "post_db_restore hooks not run: the stack is stopped. Once it's up, run "
+                + "; ".join(f"`dk {self.env_name} manage {shlex.join(c)}`" for c in commands)
+                + (" and the db_psql hooks" if self.config.ops.post_db_restore.db_psql else "")
+                + ".",
+                file=sys.stderr,
+            )
+        return 0
 
     def db_restore_dump(self, archive: Path | None, *, yes: bool, dry_run: bool) -> int:
         """``db restore --file PATH`` / ``--dumps``: replace the app database with a local
@@ -366,13 +454,16 @@ class Backend:
         if not paths:
             raise Usage("the restic unit mounts nothing under /backup/")
         host_filter = []
-        if snapshot == "latest" and self.committed.manifest.get("hostname"):
+        if snapshot == "latest" and self.restore.get("restic"):
+            pass  # The source's repository: compose snapshots carry random hostnames; by path.
+        elif snapshot == "latest" and self.committed.manifest.get("hostname"):
             host_filter = ["--host", str(self.committed.manifest["hostname"])]
         steps = []
         for i, path in enumerate(paths):
+            path_filter = ["--path", path] if snapshot == "latest" and not host_filter else []
             cmd = shlex.join(
                 ["podman", "run", "--rm", *run_args, "restore", f"{snapshot}:{path}",
-                 "--target", path, "--delete", *host_filter]
+                 "--target", path, "--delete", *host_filter, *path_filter]
             )  # fmt: skip
             # A path added after the snapshot was taken isn't in it: keep that one as it is.
             steps.append(cmd if i == 0 else f"{cmd} || echo 'Snapshot has no {path}: left as it is.' >&2")
@@ -500,6 +591,27 @@ def volume_names(committed: Committed) -> dict[str, str]:
             )
             out[unit] = name
     return out
+
+
+_PROD_DATA_NOTE = (
+    "\n  This env gets {source}'s data, personal data included, and the app may send email from "
+    "it: ops.post_db_restore is where a project deals with that."
+)
+
+
+def _replay_wal_here(source: str) -> str:
+    """Shell, in the one-off restore container: replay the source's WAL to its end with the read
+    key, promote, stop cleanly. db's own pgBackRest can't reach the source's repository, so
+    db's unit must start on a cluster that is already out of recovery."""
+    data = '"$PGBACKREST_PG1_PATH"'
+    return (
+        f"echo 'Replaying {source}'\\''s WAL with the read key (no connections, no archiving)…' >&2 && "
+        f"pg_ctl -D {data} -o \"-c listen_addresses='' -c archive_mode=off\" -w -t 3600 start && "
+        "{ n=0; until [ \"$(psql -X -At -U postgres -d postgres -c 'select pg_is_in_recovery()' 2>/dev/null)\" = f ]; do "
+        "n=$((n+1)); if [ $n -gt 720 ]; then echo 'Still in recovery after an hour: stopping.' >&2; "
+        f"pg_ctl -D {data} -m fast -w stop; exit 1; fi; sleep 5; done; }} && "
+        f"pg_ctl -D {data} -m fast -w stop && echo 'Recovered and promoted.' >&2"
+    )
 
 
 def podman_run_args(

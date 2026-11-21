@@ -226,7 +226,13 @@ def _attach_env_command_parsers(
     p_secrets = cmd_sub.add_parser(
         "secrets", help="Edit credentials.yaml with SOPS (`secrets push`: to a rendered host)."
     )
-    add_secrets_push(p_secrets.add_subparsers(dest="secrets_command", required=False))
+    secrets_sub = p_secrets.add_subparsers(dest="secrets_command", required=False)
+    add_secrets_push(secrets_sub)
+    secrets_sub.add_parser(
+        "read-key",
+        help="For an env with restore_from: create its own Spaces key that can only read the "
+        "source's backups, and write its pgbr_s3_read_* / restic_read_* credentials.",
+    )
 
     p_dc = cmd_sub.add_parser(
         "dc-backup",

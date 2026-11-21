@@ -72,6 +72,25 @@ sops exec-env docker/envs/prod/credentials.yaml -- dk prod …
 
 Use `pgbr_s3_read_*` → `PGBR_S3_READ_*` with the same suffixes. **Do not set WRITE and READ in the same environment** — `dk` rejects both prefixes.
 
+To have dk make them, name the env whose backups this one restores in `info.yaml`, then run
+`dk <env> secrets read-key`:
+
+```yaml
+# docker/envs/staging/info.yaml
+restore_from: prod
+```
+
+It reads the source's settings (bucket, endpoint, region, repo path, stanza; the restic repository
+and password) from the source's `credentials.yaml`, creates a Spaces key `<bucket>-<env>-read`
+that can only read the source's bucket(s), and writes this env's `pgbr_s3_read_*` /
+`restic_read_*` with `sops set`. Each env gets its own key, so its access can be revoked alone
+(`doctl spaces keys delete`). Nothing is printed. A rendered (`runtime: quadlet`) env needs
+`dk <env> render` and a commit afterwards, then `dk <env> secrets push`; see
+[docs/FCOS.md](docs/FCOS.md#backups).
+
+The restored data is the source's, personal data included, and the app may send email from it:
+`ops.post_db_restore` hooks are where a project deals with that.
+
 `stanza-create` and scheduled systemd backups require WRITE mode only.
 
 ## Auto-provision (DigitalOcean Spaces)

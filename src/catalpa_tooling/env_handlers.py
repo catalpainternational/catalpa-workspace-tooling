@@ -430,6 +430,10 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if env_command == "info":
         return _cmd_env_info(info_path, edit=bool(getattr(ns, "edit", False)), dry_run=dry_run)
 
+    if env_command == "secrets" and getattr(ns, "secrets_command", None) == "read-key":
+        from catalpa_tooling.restore_from import cmd_read_key
+
+        return cmd_read_key(config, env_name, dry_run=dry_run, yes=bool(getattr(ns, "yes", False)))
     if env_command == "secrets":
         return _cmd_env_secrets(creds_path, repo_root, dry_run=dry_run)
 

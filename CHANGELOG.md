@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Restore-only envs: `restore_from` and `dk <env> secrets read-key` (#204).** `restore_from: prod`
+  in an env's `info.yaml` names the env whose backups it restores. `dk <env> secrets read-key`
+  creates a Spaces key for that env alone, `<bucket>-<env>-read`, that can only read the source's
+  bucket(s), and writes the env's `pgbr_s3_read_*` / `restic_read_*` from the source's settings
+  with `sops set`, printing nothing. Each env's access can now be revoked alone, instead of every
+  restoring env sharing one hand-made reader key. On a rendered (`runtime: quadlet`) env, read
+  credentials become Podman secrets for one-off restore containers only: no backup units, WAL
+  archiving or timers. `db restore` replays the source's WAL in the one-off, promotes, then starts
+  `db`; `files restore latest` picks the source's latest snapshot by path. `db info` and
+  `files snapshots` read the source's repositories; the backup commands are refused. A quadlet
+  `db restore` (pgBackRest) now runs the `ops.post_db_restore` hooks too, as compose does. Read
+  and write credentials in one rendered env are refused for now.
+
 - **`host create` puts a DigitalOcean cloud firewall on every droplet it makes (Josh Brooks).**
   `dk-<droplet>` lets in SSH, HTTP, HTTPS (and HTTP/3) and ping, and lets out only DNS, HTTP(S),
   NTP, mail, git over SSH and Zabbix (port 10051). The rules are containerwharf's defaults,

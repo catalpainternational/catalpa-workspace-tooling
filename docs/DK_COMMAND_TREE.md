@@ -66,7 +66,9 @@ dk
 └── <env>  [--dry-run] [-y] [--tag TAG]  …
     ├── info [-e]                    # see or edit env info
     ├── secrets                      # edit env encrypted credentials via SOPS
-    │   └── push [NAME…] [--restart] # rendered host: sops → podman secrets over SSH stdin
+    │   ├── push [NAME…] [--restart] # rendered host: sops → podman secrets over SSH stdin
+    │   └── read-key                 # restore_from env: its own Spaces key that only reads the
+    │                                #   source's backups; writes pgbr_s3_read_* / restic_read_*
     ├── dc-backup                    # TLS + Garage/Caddy on dc_backup_docker_host
     ├── host [--write]               # verify and show droplet info
     │   ├── create [--size …] …      # create droplet (rendered host: volume, Ignition, DNS, then provision [--no-start])
