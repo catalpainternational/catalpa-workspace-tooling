@@ -293,14 +293,30 @@ class Backend:
         restore = shlex.join(
             ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "sh", *run_args, "-c", inner]
         )
+        w, d = f"{shlex.quote(web)}.service", f"{shlex.quote(db)}.service"
+        # Leave the stack as it was found: a host provisioned with --no-start stays stopped, so
+        # the media can be restored before the app serves anything.
         script = "\n".join(
             [
                 "set -e",
-                f"systemctl --user stop {shlex.quote(web)}.service {shlex.quote(db)}.service",
+                f"web_was=0; systemctl --user is-active --quiet {w} && web_was=1",
+                f"db_was=0; systemctl --user is-active --quiet {d} && db_was=1",
+                f"systemctl --user stop {w} {d}",
                 restore,
-                f"echo 'Restored. Starting {db} (it replays WAL; healthy once recovery ends), then {web}…' >&2",
-                f"systemctl --user start {shlex.quote(web)}.service",
-                f"systemctl --user --no-pager status {shlex.quote(db)}.service {shlex.quote(web)}.service --lines=0 || true",
+                'if [ "$web_was" = 1 ]; then',
+                f"  echo 'Restored. Starting {db} (it replays WAL; healthy once recovery ends), then {web}…' >&2",
+                f"  systemctl --user start {w}",
+                'elif [ "$db_was" = 1 ]; then',
+                f"  echo 'Restored. Starting {db} (it replays WAL; healthy once recovery ends); {web} was stopped and stays so.' >&2",
+                f"  systemctl --user start {d}",
+                "else",
+                (
+                    f"  echo 'Restored. {db} and {web} were stopped and stay so: restore the media "
+                    f"(dk {self.env_name} files restore), then start them (dk {self.env_name} host provision).' >&2"
+                ),
+                "  exit 0",
+                "fi",
+                f"systemctl --user --no-pager status {d} {w} --lines=0 || true",
             ]
         )
         if dry_run:

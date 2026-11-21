@@ -159,7 +159,9 @@
   `db configure stanza-create/verify`, and `files backup/snapshots/check/stats/init`, through
   the units and containers the render installed. `db restore` (pgBackRest, `--delta`) and
   `files restore` work as well, each after you type the env name. So do `db restore --file/--dumps`,
-  `pull_media` (by rsync), and `dk transfer` with a quadlet env at either end.
+  `pull_media` (by rsync), and `dk transfer` with a quadlet env at either end. `db restore` leaves the stack as it found
+  it: on a host provisioned with `--no-start` the app stays stopped until the media is restored and
+  `host provision` starts it.
 
 ### Fixed
 

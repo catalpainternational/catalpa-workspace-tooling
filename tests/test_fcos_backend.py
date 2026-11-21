@@ -243,14 +243,47 @@ def test_db_restore_plan(swlt, capsys) -> None:
     assert rc == 0 and r.calls == []
     script = capsys.readouterr().err.split(":\n", 1)[1].splitlines()
     assert script[0] == "set -e"
-    assert script[1] == "systemctl --user stop django.service db.service"
-    run_ = shlex.split(script[2])
+    assert script[1] == "web_was=0; systemctl --user is-active --quiet django.service && web_was=1"
+    assert script[3] == "systemctl --user stop django.service db.service"
+    run_ = shlex.split(script[4])
     assert run_[:7] == ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "sh"]
     # db's own settings, secrets and mounts, with quadlet volume units resolved to their names.
     assert "--env-file" in run_ and "--uidmap" in run_
     assert "/var/mnt/data/postgres_data:/var/lib/postgresql:Z" in run_
     assert run_[-1].endswith("restore --delta --type=time '--target=2026-11-19 10:00'")
-    assert script[4] == "systemctl --user start django.service"
+    # Started again only if it was running: a --no-start host stays stopped for files restore.
+    assert script[7] == "  systemctl --user start django.service"
+    assert script[10] == "  systemctl --user start db.service"
+    assert "stay so: restore the media (dk staging files restore)" in script[12]
+
+
+def test_db_restore_leaves_a_stopped_stack_stopped(swlt, tmp_path) -> None:
+    """Run the script's start/stop logic in sh with systemctl and podman faked."""
+    import subprocess
+
+    rc, r = run_sub(swlt, "db", "restore", pgbackrest_restore_args=[], yes=True)
+    assert rc == 0
+    script = r.calls[-1][-1]
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    log = tmp_path / "log"
+    (bin_ / "podman").write_text("#!/bin/sh\necho podman >> \"$LOG\"\n")
+    (bin_ / "systemctl").write_text(
+        '#!/bin/sh\necho "$*" >> "$LOG"\n'
+        'case "$*" in *is-active*django*) [ -n "$WEB_UP" ];; *is-active*db*) [ -n "$DB_UP" ];; esac\n'
+    )
+    for f in bin_.iterdir():
+        f.chmod(0o755)
+
+    def run(**up: str) -> list[str]:
+        log.write_text("")
+        env = {"PATH": f"{bin_}:/usr/bin:/bin", "LOG": str(log), **up}
+        assert subprocess.run(["sh", "-c", script], env=env, capture_output=True, check=False).returncode == 0
+        return [line for line in log.read_text().splitlines() if line.startswith("--user start")]
+
+    assert run() == []
+    assert run(DB_UP="1") == ["--user start db.service"]
+    assert run(WEB_UP="1", DB_UP="1") == ["--user start django.service"]
 
 
 def test_db_restore_asks_first(swlt, monkeypatch) -> None:
