@@ -175,13 +175,15 @@ def test_gone_droplet_is_idempotent_and_an_orphan_is_refused(env, doctl, capsys)
 
 
 @pytest.mark.parametrize("argv,global_dry", [(["--dry-run"], False), ([], True)])
-def test_dry_run_changes_nothing_and_asks_nothing(env, doctl, monkeypatch, argv, global_dry) -> None:
+def test_dry_run_changes_nothing_and_asks_nothing(env, doctl, capsys, argv, global_dry) -> None:
     """Both spellings. The confirm helpers aren't patched: reaching them would hang the test."""
     config, info = env()
     before = info.read_text()
     assert hd.cmd_env_host_destroy(config, "staging", argv, global_dry_run=global_dry) == 0
-    assert doctl[0] and all(dry is True for _n, _a, dry in doctl[0])
+    assert doctl[0] == []
     assert info.read_text() == before
+    err = capsys.readouterr().err
+    assert err.count("dry-run") == 1 and "would run" not in err
 
 
 def test_clear_info_docker_host_keeps_comments(tmp_path) -> None:
@@ -232,8 +234,9 @@ def test_a_leftover_volume_is_deleted_once_the_droplet_is_gone(env, doctl, monke
     before = info.read_text()
 
     assert hd.cmd_env_host_destroy(config, "staging", ["--dry-run"]) == 0
-    assert calls == [("delete_volume", ("vol-1",), True)]
-    assert "fcos-data (10 GiB)  DELETED" in capsys.readouterr().err
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "fcos-data (10 GiB)  DELETED" in err and err.count("dry-run") == 1
 
     calls.clear()
     assert hd.cmd_env_host_destroy(config, "staging", ["--keep-volumes", "--yes"]) == 0

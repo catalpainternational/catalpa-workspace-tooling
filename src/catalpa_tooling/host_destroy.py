@@ -244,7 +244,9 @@ def cmd_env_host_destroy(
 
     _print_plan(env_name, link, plan, ns)
     if dry_run:
-        return _execute(config, env_name, info, info_path, plan, ns, context=context, dry_run=True)
+        # The plan says it all; one line, not a "would run" per doctl command after it.
+        print("dry-run: nothing changed; the plan above is what it would do.", file=sys.stderr)
+        return 0
     if not yes:
         from catalpa_tooling.cli_confirm import confirm_by_typing_env_name, confirm_by_typing_expected
 
@@ -289,7 +291,10 @@ def _leftover_volumes(config, env_name, info, link, ns, *, context, dry_run: boo
     print("  No backup is taken. Backups (Spaces buckets and keys) aren't touched.\n", file=sys.stderr)
     if ns.keep_volumes:
         return 0
-    if not dry_run and not yes:
+    if dry_run:
+        print("dry-run: nothing changed; the plan above is what it would do.", file=sys.stderr)
+        return 0
+    if not yes:
         from catalpa_tooling.cli_confirm import confirm_by_typing_env_name, confirm_by_typing_expected
 
         if not confirm_by_typing_env_name(env_name) or not confirm_by_typing_expected(
@@ -299,9 +304,9 @@ def _leftover_volumes(config, env_name, info, link, ns, *, context, dry_run: boo
             return 1
     rc = 0
     for v in leftover:
-        rc = delete_volume(str(v.get("id")), context=context, dry_run=dry_run) or rc
+        rc = delete_volume(str(v.get("id")), context=context) or rc
     if rc == 0:
-        print("dry-run: nothing changed." if dry_run else f"{env_name}: leftover volumes deleted.", file=sys.stderr)
+        print(f"{env_name}: leftover volumes deleted.", file=sys.stderr)
     return rc
 
 
