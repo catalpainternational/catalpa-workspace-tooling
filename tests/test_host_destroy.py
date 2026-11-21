@@ -47,12 +47,12 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def doctl(monkeypatch: pytest.MonkeyPatch):
     """Records every mutation, in order, with its dry_run flag."""
     calls: list[tuple] = []
-    state = {"droplet": DROPLET, "delete_rc": 0}
+    state = {"droplet": DROPLET, "delete_rc": 0, "volume": dict(VOLUME)}
 
     monkeypatch.setattr("catalpa_tooling.deploy_do_link.find_droplet_for_link", lambda *a, **k: state["droplet"])
     monkeypatch.setattr("catalpa_tooling.deploy_do_link._orphan_droplet_message", lambda *a, **k: state.get("orphan"))
     monkeypatch.setattr("catalpa_tooling.doctl_block_storage.find_volume_by_name",
-                        lambda name, **k: dict(VOLUME) if name == "fcos-data" else None)  # fmt: skip
+                        lambda name, **k: state["volume"] if name == "fcos-data" else None)  # fmt: skip
     target = HostDnsTarget(hostname="staging.example.org", zone="example.org", record_name="staging")
     monkeypatch.setattr("catalpa_tooling.doctl_domains.host_dns_records_at",
                         lambda info, **k: ([(target, {"id": 9, "data": IP})], []))  # fmt: skip
@@ -166,6 +166,7 @@ def test_a_failed_droplet_delete_stops_before_the_volumes(env, doctl) -> None:
 def test_gone_droplet_is_idempotent_and_an_orphan_is_refused(env, doctl, capsys) -> None:
     config, _ = env()
     doctl[1]["droplet"] = None
+    doctl[1]["volume"] = None
     assert hd.cmd_env_host_destroy(config, "staging", ["--yes"]) == 0
     assert doctl[0] == []
     doctl[1]["orphan"] = "Droplet 'x-staging' exists on this account … not in project"
@@ -220,3 +221,41 @@ def test_dk_parses_and_routes_host_destroy(env, monkeypatch) -> None:
     assert seen[0][0] == ["--dry-run"] and seen[1] == ([], {"global_dry_run": True, "global_yes": False})
     with pytest.raises(SystemExit):
         hd._parser("staging").parse_args(["--nope"])
+
+
+def test_a_leftover_volume_is_deleted_once_the_droplet_is_gone(env, doctl, monkeypatch, capsys) -> None:
+    """After `--keep-volumes`, a second destroy finds no droplet but the env's detached volume."""
+    config, info = env()
+    calls, state = doctl
+    state["droplet"] = None
+    state["volume"] = {**VOLUME, "droplet_ids": []}
+    before = info.read_text()
+
+    assert hd.cmd_env_host_destroy(config, "staging", ["--dry-run"]) == 0
+    assert calls == [("delete_volume", ("vol-1",), True)]
+    assert "fcos-data (10 GiB)  DELETED" in capsys.readouterr().err
+
+    calls.clear()
+    assert hd.cmd_env_host_destroy(config, "staging", ["--keep-volumes", "--yes"]) == 0
+    assert calls == []
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("catalpa_tooling.cli_confirm.confirm_by_typing_env_name", lambda e: True)
+    monkeypatch.setattr("catalpa_tooling.cli_confirm.confirm_by_typing_expected", lambda *a, **k: False)
+    assert hd.cmd_env_host_destroy(config, "staging", []) == 1
+    assert calls == []
+
+    assert hd.cmd_env_host_destroy(config, "staging", ["--yes"]) == 0
+    assert calls == [("delete_volume", ("vol-1",), False)]
+    assert "leftover volumes deleted" in capsys.readouterr().err
+    assert info.read_text() == before
+
+
+def test_a_volume_attached_to_another_droplet_is_never_touched(env, doctl, capsys) -> None:
+    config, _ = env()
+    calls, state = doctl
+    state["droplet"] = None
+    state["volume"] = {**VOLUME, "droplet_ids": [99]}
+    assert hd.cmd_env_host_destroy(config, "staging", ["--yes"]) == 1
+    assert calls == []
+    assert "attached to droplet 99" in capsys.readouterr().err

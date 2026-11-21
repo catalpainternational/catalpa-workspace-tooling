@@ -16,6 +16,9 @@ Order matters:
 3. Volumes detached, then the droplet deleted. If the delete fails, stop: the volumes and the
    local state stay, and ``dk <env> host --sync-dns`` puts the DNS records back.
 4. Volumes deleted, local state cleared.
+
+With the droplet already gone (an earlier ``--keep-volumes``), it deletes the env's volumes left
+behind, detached, after the same confirmations. A volume attached to a droplet is never touched.
 """
 
 from __future__ import annotations
@@ -225,8 +228,7 @@ def cmd_env_host_destroy(
         if hint:
             print(f"Refusing: {hint}", file=sys.stderr)
             return 1
-        print(f"No DigitalOcean droplet named {link.droplet_name!r}: nothing to destroy.", file=sys.stderr)
-        return 0
+        return _leftover_volumes(config, env_name, info, link, ns, context=context, dry_run=dry_run, yes=yes)
 
     plan = DestroyPlan(droplet=droplet, ip=public_ipv4(droplet))
     from catalpa_tooling.doctl_block_storage import find_volume_by_name
@@ -255,6 +257,52 @@ def cmd_env_host_destroy(
             print("host destroy: cancelled.", file=sys.stderr)
             return 1
     return _execute(config, env_name, info, info_path, plan, ns, context=context, dry_run=False)
+
+
+def _leftover_volumes(config, env_name, info, link, ns, *, context, dry_run: bool, yes: bool) -> int:
+    """The droplet is gone (an earlier destroy, perhaps with ``--keep-volumes``): delete the env's
+    volumes that are left, detached. One attached to a droplet is never touched: it isn't this
+    env's droplet (that one is gone), so it's in use by something else."""
+    from catalpa_tooling.doctl_block_storage import delete_volume, find_volume_by_name
+
+    print(f"No DigitalOcean droplet named {link.droplet_name!r}.", file=sys.stderr)
+    found = [v for v in (find_volume_by_name(n, context=context) for n in env_volume_names(
+        config, env_name, info, link.droplet_name)) if v]  # fmt: skip
+    attached = [v for v in found if v.get("droplet_ids")]
+    leftover = [v for v in found if not v.get("droplet_ids")]
+    for v in attached:
+        ids = ", ".join(str(x) for x in v["droplet_ids"])
+        print(
+            f"  volume    {v.get('name')} ({_size(v)})  attached to droplet {ids}, not this env's: left alone",
+            file=sys.stderr,
+        )
+    if not leftover:
+        if attached:
+            print("Refusing: nothing detached to delete.", file=sys.stderr)
+            return 1
+        print("Nothing to destroy.", file=sys.stderr)
+        return 0
+    action = "kept (--keep-volumes)" if ns.keep_volumes else "DELETED, with its data"
+    print(f"\nDestroy {env_name}'s leftover volumes (detached):", file=sys.stderr)
+    for v in leftover:
+        print(f"  volume    {v.get('name')} ({_size(v)})  {action}", file=sys.stderr)
+    print("  No backup is taken. Backups (Spaces buckets and keys) aren't touched.\n", file=sys.stderr)
+    if ns.keep_volumes:
+        return 0
+    if not dry_run and not yes:
+        from catalpa_tooling.cli_confirm import confirm_by_typing_env_name, confirm_by_typing_expected
+
+        if not confirm_by_typing_env_name(env_name) or not confirm_by_typing_expected(
+            "delete-volumes", hint="this deletes the volumes' data"
+        ):
+            print("host destroy: cancelled.", file=sys.stderr)
+            return 1
+    rc = 0
+    for v in leftover:
+        rc = delete_volume(str(v.get("id")), context=context, dry_run=dry_run) or rc
+    if rc == 0:
+        print("dry-run: nothing changed." if dry_run else f"{env_name}: leftover volumes deleted.", file=sys.stderr)
+    return rc
 
 
 def _execute(config, env_name, info, info_path, plan: DestroyPlan, ns, *, context, dry_run: bool) -> int:

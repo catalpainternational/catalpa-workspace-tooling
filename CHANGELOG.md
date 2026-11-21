@@ -34,6 +34,10 @@
   backups. `--dry-run` (either position), `--keep-dns`, `--keep-volumes` and
   `--keep-docker-host` are available.
 
+  Once the droplet is gone, for example after `--keep-volumes`, running it again deletes the env's
+  volumes left behind, detached, after the same confirmations. A volume attached to a droplet is
+  never touched: that droplet isn't this env's.
+
 - **A bare `dk <env>` brings a quadlet env up to date (tooling 2.0, M1).** On a compose env it
   runs `up -d`; on a `runtime: quadlet` env it was refused. Now it:
   1. checks the committed render is current;
