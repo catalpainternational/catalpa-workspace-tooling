@@ -222,3 +222,19 @@ def test_a_compose_env_still_gets_cloud_config(minimal_project, monkeypatch) -> 
     monkeypatch.setattr("catalpa_tooling.doctl_projects.resolve_project_id_dry_run", lambda *a, **k: "proj")
     cmd_env_host_create(minimal_project, "prod", ["--dry-run"])
     assert seen == ["compose"]
+
+
+def test_project_and_context_apply_to_every_step(site, do, monkeypatch) -> None:
+    """As for compose (Josh's 1e6c12b): the droplet is looked for where it was made."""
+    config, _ = site
+    seen = []
+    import catalpa_tooling.deploy_do_link as ddl
+
+    orig = ddl.find_droplet_for_link
+    monkeypatch.setattr(
+        ddl, "find_droplet_for_link",
+        lambda config, link, **k: seen.append((config.digitalocean.project_name, config.digitalocean.context))
+        or orig(config, link, **k),
+    )  # fmt: skip
+    assert cmd_env_host_create(config, "staging", ["--", "--project", "Other", "--context", "work"]) == 0
+    assert seen and set(seen) == {("Other", "work")}

@@ -142,6 +142,10 @@ def cmd_quadlet_host_create(
         )
         return 1
 
+    from catalpa_tooling.deploy_do_link import _with_do_overrides
+
+    # --project/--context: every step, before and after the droplet exists, in that account.
+    config = _with_do_overrides(config, project=ns.project, context=ns.context)
     link = resolve_env_do_link(config, env_name, info)
     _print_droplet_name_source(config=config, env_name=env_name, link=link)
     do_config = config.digitalocean
