@@ -1108,17 +1108,10 @@ def cmd_env_host_create(
         )
         return 1
 
-    p = _host_create_parser(env_name)
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
-
-    dry_run = global_dry_run or ns.dry_run
-
     loaded = load_env_info(config, env_name)
     if loaded is None:
         return 1
-    _, info = loaded
+    info_path, info = loaded
 
     if is_digitalocean_host_disabled(info):
         print(
@@ -1127,6 +1120,26 @@ def cmd_env_host_create(
             file=sys.stderr,
         )
         return 1
+
+    from catalpa_tooling.fcos.settings import FcosConfigError, runtime_of
+
+    try:
+        quadlet = runtime_of(info) == "quadlet"
+    except FcosConfigError as exc:
+        print(f"{info_path}: {exc}", file=sys.stderr)
+        return 1
+    if quadlet:
+        # A rendered host: its own volume, the render's Ignition, then `host provision`.
+        from catalpa_tooling.fcos.host_create import cmd_quadlet_host_create
+
+        return cmd_quadlet_host_create(config, env_name, info_path, info, argv, global_dry_run=global_dry_run)
+
+    p = _host_create_parser(env_name)
+    ns, rest = p.parse_known_args(argv)
+    if rest:
+        p.error(f"unrecognized arguments: {' '.join(rest)}")
+
+    dry_run = global_dry_run or ns.dry_run
 
     link = resolve_env_do_link(config, env_name, info)
     _print_droplet_name_source(config=config, env_name=env_name, link=link)

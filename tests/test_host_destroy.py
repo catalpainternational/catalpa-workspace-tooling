@@ -133,9 +133,9 @@ def test_a_quadlet_env_volume_is_its_data_volume(env) -> None:
     config, _ = env()
     info = {"runtime": "quadlet", "fcos": {"hostname": "fcos"}}
     assert hd.env_volume_names(config, "staging", info, "x") == ["fcos-data"]
-    info["fcos"]["block_volume"] = "other-data"
+    info["storage"] = {"data_volume": {"digitalocean": {"name": "other-data", "size_gib": 20}}}
     assert hd.env_volume_names(config, "staging", info, "x") == ["other-data"]
-    info["fcos"]["block_volume"] = False
+    info["storage"] = {"data_volume": {"path": "/var/mnt/data"}}  # no DO volume
     assert hd.env_volume_names(config, "staging", info, "x") == []
 
 

@@ -132,10 +132,10 @@ def host_bu(
         volume = s.block_volume or f"{hostname}-data"
         out += [
             "  # The DO block storage volume, attached when the droplet is created. Formatted on",
-            "  # first boot only: an existing XFS filesystem with this label is kept.",
+            f"  # first boot only: an existing {s.block_volume_filesystem.upper()} filesystem with this label is kept.",
             "  filesystems:",
             f"    - device: /dev/disk/by-id/scsi-0DO_Volume_{volume}",
-            "      format: xfs",
+            f"      format: {s.block_volume_filesystem}",
             "      label: data",
             "      wipe_filesystem: false",
             f"      path: {s.data_mount}",

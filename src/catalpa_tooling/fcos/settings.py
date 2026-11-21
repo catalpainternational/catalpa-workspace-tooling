@@ -3,12 +3,19 @@
 .. code-block:: yaml
 
     runtime: quadlet            # compose (default) | quadlet
+    storage:
+      data_volume:              # shared with compose's storage settings (docs/TOOLING_2.md)
+        path: /var/mnt/data     # the data directory (default /var/mnt/data)
+        digitalocean:           # the DO volume under it; absent: a directory on the root disk
+          name: catalpa-site-prod-data  # default <hostname>-data
+          size_gib: 10          # when `host create` makes it
+          filesystem: xfs       # default xfs
+      # No storage.data_volume at all: /var/mnt/data on a 10 GiB <hostname>-data volume.
     fcos:
       user: deploy              # the unprivileged account the stack runs as (default deploy)
       uid: 1001                 # its uid (default 1001: the first account after core)
-      data_mount: /var/mnt/data # where the block storage volume is mounted
       bind_volumes: [pgdata, django_media, caddy_data]
-                                # compose volumes kept on data_mount (default: the ops
+                                # compose volumes kept in the data directory (default: the ops
                                 # pgbackrest/restic data volumes and caddy_data)
       volume_owners: {pgdata: 999}
                                 # the uid inside the container that owns a bind volume's
@@ -20,7 +27,6 @@
       # The host (host.bu):
       hostname: catalpa-site-prod   # default <project>-<env>
       timezone: Asia/Dili       # default: tooling.yaml digitalocean.timezone, else UTC
-      block_volume: catalpa-site-prod-data  # DO volume name; default <hostname>-data; false: none
       admin_keys: [...]         # public keys for core: admins, root through sudo
       ssh_authorized_keys: [...]  # public keys for the account (dk, CI): no sudo
       update_window: {days: [Sun], start: "02:00", minutes: 60}  # Zincati reboots
@@ -65,6 +71,8 @@ class UpdateWindow:
 class FcosSettings:
     user: str = "deploy"
     uid: int = 1001
+    #: From ``storage.data_volume`` (shared with compose's storage settings): where the data
+    #: directory is, and the DO volume under it (None: ``<hostname>-data``; False: none).
     data_mount: str = "/var/mnt/data"
     bind_volumes: tuple[str, ...] | None = None
     volume_owners: dict[str, int] = field(default_factory=dict)
@@ -75,6 +83,8 @@ class FcosSettings:
     hostname: str | None = None
     timezone: str | None = None
     block_volume: str | bool | None = None
+    block_volume_size: int = 10
+    block_volume_filesystem: str = "xfs"
     ssh_authorized_keys: tuple[str, ...] = ()
     admin_keys: tuple[str, ...] = ()
     update_window: UpdateWindow = UpdateWindow()
@@ -97,7 +107,6 @@ class FcosSettings:
 _KEYS = {
     "user",
     "uid",
-    "data_mount",
     "bind_volumes",
     "volume_owners",
     "id_ranges",
@@ -106,7 +115,6 @@ _KEYS = {
     "caddyfile",
     "hostname",
     "timezone",
-    "block_volume",
     "ssh_authorized_keys",
     "admin_keys",
     "update_window",
@@ -186,9 +194,35 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
     uid = raw.get("uid", 1001)
     if not isinstance(uid, int) or isinstance(uid, bool) or uid < 1000:
         raise FcosConfigError(f"fcos.uid must be an integer >= 1000 (got {uid!r})")
-    data_mount = str(raw.get("data_mount", "/var/mnt/data")).rstrip("/")
-    if not data_mount.startswith("/") or ".." in data_mount.split("/"):
-        raise FcosConfigError(f"fcos.data_mount must be an absolute path (got {data_mount!r})")
+    from catalpa_tooling.storage_config import (
+        DEFAULT_DATA_VOLUME_FILESYSTEM,
+        DEFAULT_DATA_VOLUME_PATH,
+        DEFAULT_DATA_VOLUME_SIZE_GIB,
+        StorageConfigError,
+        parse_data_volume,
+    )
+
+    storage = info.get("storage")
+    if isinstance(storage, dict) and storage.get("volumes"):
+        raise FcosConfigError(
+            "storage.volumes is compose's (a volume per mount); a quadlet env keeps all its data "
+            "in one directory: storage.data_volume"
+        )
+    try:
+        data_volume = parse_data_volume(info)
+    except StorageConfigError as exc:
+        raise FcosConfigError(str(exc)) from exc
+    data_mount = (data_volume.path if data_volume else DEFAULT_DATA_VOLUME_PATH).rstrip("/")
+    if data_volume is None:  # the default: <hostname>-data
+        block_volume: str | bool | None = None
+        block_volume_size, block_volume_filesystem = DEFAULT_DATA_VOLUME_SIZE_GIB, DEFAULT_DATA_VOLUME_FILESYSTEM
+    elif data_volume.digitalocean is None:  # a directory on the root disk
+        block_volume = False
+        block_volume_size, block_volume_filesystem = 0, DEFAULT_DATA_VOLUME_FILESYSTEM
+    else:
+        block_volume = data_volume.digitalocean.name
+        block_volume_size = data_volume.digitalocean.size_gib
+        block_volume_filesystem = data_volume.digitalocean.filesystem
 
     bind_raw = raw.get("bind_volumes")
     bind_volumes = None if bind_raw is None else _str_list(bind_raw, "bind_volumes")
@@ -211,10 +245,6 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
     hostname = raw.get("hostname")
     if hostname is not None and not _HOSTNAME.fullmatch(str(hostname)):
         raise FcosConfigError(f"fcos.hostname must be a host name label (got {hostname!r})")
-    block_volume = raw.get("block_volume")
-    if block_volume is not None and block_volume is not False:
-        if not isinstance(block_volume, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", block_volume):
-            raise FcosConfigError("fcos.block_volume must be a DO volume name, or false for none")
     keys = _public_keys(raw, "ssh_authorized_keys")
     admin_keys = _public_keys(raw, "admin_keys")
 
@@ -231,6 +261,8 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
         hostname=str(hostname) if hostname is not None else None,
         timezone=str(raw["timezone"]) if raw.get("timezone") else None,
         block_volume=block_volume,
+        block_volume_size=block_volume_size,
+        block_volume_filesystem=block_volume_filesystem,
         ssh_authorized_keys=keys,
         admin_keys=admin_keys,
         update_window=_update_window(raw.get("update_window")),

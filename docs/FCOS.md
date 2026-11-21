@@ -33,10 +33,22 @@ are in catalpa-site's `docker/envs/fcos-rootless/` (catalpa-site#1006).
 ```yaml
 image_tag: v1.2.3              # required: the host pulls, it never builds
 runtime: quadlet               # compose (default) | quadlet
+digitalocean:                  # for `host create` / `host destroy`
+  droplet_name: catalpa-site-prod
+  image: "243427036"           # the account's Fedora CoreOS custom image ID
+  size: s-2vcpu-4gb
+  region: sgp1
+  allow_destroy: false         # true only for a disposable env
+storage:                       # shared with compose envs' storage settings
+  data_volume:                 # omitted: /var/mnt/data on a 10 GiB <hostname>-data volume
+    path: /var/mnt/data        # the data directory; each kept volume is a subdirectory
+    digitalocean:              # omitted: the directory is on the root disk
+      name: catalpa-site-prod-data   # default <hostname>-data
+      size_gib: 10             # when `host create` makes it
+      filesystem: xfs          # default xfs
 fcos:                          # every key is optional
   user: deploy                 # the unprivileged account that runs the stack
   uid: 1001
-  data_mount: /var/mnt/data    # where the block storage volume is mounted
   bind_volumes: [pgdata, django_media, caddy_data]
   id_ranges: {db: 10000}       # pin a group's ID range, by any service in the group
   auto_update: false           # podman auto-update (staging/test sites; prod deploys explicitly)
@@ -52,8 +64,6 @@ fcos:                          # every key is optional
     - ssh-ed25519 AAAA… ci-deploy
   hostname: catalpa-site-prod  # default <project>-<env>
   timezone: Asia/Dili          # default tooling.yaml digitalocean.timezone, else UTC
-  block_volume: catalpa-site-prod-data  # DO volume to format and mount; default <hostname>-data;
-                               # false: data stays on the root disk
   update_window: {days: [Sun], start: "02:00", minutes: 60}   # when Zincati may reboot
   zabbix_image: docker.io/zabbix/zabbix-agent2:alpine-7.0-latest
 ```
@@ -351,11 +361,27 @@ Secrets on the host that the render doesn't list are reported, never removed.
 **Provisioning a new host.**
 
 ```bash
-dk <env> host ignition -o /tmp/<env>.ign
-# Create the volume (first time only) and the droplet with --user-data-file /tmp/<env>.ign
-# (doctl, or `dk <env> host create` once it takes the generated Ignition), then point DNS.
-dk <env> host provision --host <ip>
+dk <env> host create --dry-run   # the plan: volume (new, or the one kept), droplet, DNS
+dk <env> host create             # then provisions it; --no-start for a restore
 ```
+
+`host create` (tooling 2.0 M6), in order:
+
+1. checks the committed render is current, and that its Ignition fits DigitalOcean's 64 KiB of
+   user data;
+2. refuses if the droplet exists: Ignition runs only on first boot (`host provision` finishes
+   one that exists; `host destroy --keep-volumes` makes room for a new one);
+3. the data volume: the env's detached one is reused with its data (a rebuild after
+   `host destroy --keep-volumes`), one attached to a droplet is refused, and otherwise a new one
+   is created in the project;
+4. creates the droplet from `digitalocean.image` with the volume attached (so Ignition formats
+   or mounts it) and the Ignition as its user data, without DigitalOcean's metrics agent;
+5. points the env's DNS A records at it, and `docker_host` too when it names an IP (a hostname
+   stays);
+6. runs `host provision` against the new IP. `--no-start` passes on (restore first, then
+   `host provision` starts it); `--no-provision` stops before it.
+
+`host ignition -o FILE` still compiles the Ignition on its own, for another provider.
 
 Provisioning is safe to run again. The registry login is kept in the account's home
 (`~/.config/containers/auth.json`, where host.bu points systemd's `REGISTRY_AUTH_FILE`).

@@ -4,6 +4,24 @@
 
 ### Added
 
+- **`dk <env> host create` creates a rendered host (`runtime: quadlet`) on DigitalOcean (tooling
+  2.0, M6).** It replaces the `doctl` steps a person ran:
+  1. checks the committed render is current and its Ignition fits in 64 KiB;
+  2. reuses the env's detached data volume (after `host destroy --keep-volumes`) or creates one;
+  3. creates the droplet from `digitalocean.image` with the volume attached and the Ignition as
+     user data;
+  4. points the DNS records at it;
+  5. runs `host provision` (`--no-start` for a restore, `--no-provision` to stop before it).
+
+  It refuses when the droplet exists (Ignition runs only on first boot) or the volume is attached
+  elsewhere. Before, `host create` on a quadlet env built an Ubuntu droplet with cloud-config.
+- **`storage.data_volume`: one data directory, optionally on one DigitalOcean volume, in the
+  `storage` block compose envs already use.** A quadlet env reads its path and volume (`name`,
+  `size_gib`, `filesystem`) from there; omitted, it's `/var/mnt/data` on a 10 GiB
+  `<hostname>-data` volume, as before. It replaces `fcos.data_mount` and `fcos.block_volume`,
+  which are now refused. Compose envs keep `storage.volumes`; `data_volume` comes to them with
+  M7.
+
 - **A project-level `credentials.yaml`, and the registry login kept in it (tooling 2.0, M3c).**
   `docker/credentials.yaml` (beside `envs/`) holds what every env shares; `dk secrets` edits it
   with sops. It needs its own `.sops.yaml` creation rule, which can name fewer people than the

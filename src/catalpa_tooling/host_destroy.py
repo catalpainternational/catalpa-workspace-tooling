@@ -70,7 +70,8 @@ def _parser(env_name: str) -> argparse.ArgumentParser:
 
 def env_volume_names(config: ProjectConfig, env_name: str, info: dict[str, Any], droplet_name: str) -> list[str]:
     """The DigitalOcean volumes that belong to the env: a rendered host's data volume
-    (``fcos.block_volume``, default ``<hostname>-data``), or compose storage's DO volumes."""
+    (``storage.data_volume.digitalocean``, default ``<hostname>-data``), or compose storage's DO
+    volumes."""
     from catalpa_tooling.fcos.settings import FcosConfigError, parse_fcos_settings, runtime_of
 
     try:

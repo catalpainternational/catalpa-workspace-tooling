@@ -7,8 +7,10 @@ image_tag: v0.16.1
 env:
   CADDY_SITE_AUTH: "true"
 runtime: quadlet
+storage:
+  data_volume:
+    path: /var/mnt/data  # no digitalocean: a directory on the root disk
 fcos:
-  block_volume: false
   update_window: {days: [Sat, Sun], start: "01:00", minutes: 90}
   admin_keys:
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
