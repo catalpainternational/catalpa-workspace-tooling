@@ -63,9 +63,14 @@
   backups. `--dry-run` (either position), `--keep-dns`, `--keep-volumes` and
   `--keep-docker-host` are available.
 
-  Once the droplet is gone, for example after `--keep-volumes`, running it again deletes the env's
-  volumes left behind, detached, after the same confirmations. A volume attached to a droplet is
-  never touched: that droplet isn't this env's.
+  The droplet's cloud firewall `dk-<droplet>` (which `host create` makes) goes after the
+  droplet, unless another droplet is in it or `--keep-firewall`. A token that can't list
+  firewalls leaves it, with a note, rather than failing the destroy.
+
+  Once the droplet is gone, for example after `--keep-volumes`, running it again deletes what the
+  env left behind: its detached volumes and its empty firewall, after the same confirmations. A
+  volume attached to a droplet, or a firewall another droplet is in, is never touched: that
+  droplet isn't this env's.
 
 - **A bare `dk <env>` brings a quadlet env up to date (tooling 2.0, M1).** On a compose env it
   runs `up -d`; on a `runtime: quadlet` env it was refused. Now it:

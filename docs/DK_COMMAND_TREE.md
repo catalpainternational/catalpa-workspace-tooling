@@ -70,7 +70,7 @@ dk
     ├── dc-backup                    # TLS + Garage/Caddy on dc_backup_docker_host
     ├── host [--write]               # verify and show droplet info
     │   ├── create [--size …] …      # create droplet (rendered host: volume, Ignition, DNS, then provision [--no-start])
-    │   ├── destroy [--dry-run] [--keep-dns|--keep-volumes|--keep-docker-host]  # DNS, droplet (clean shutdown), volumes; digitalocean.allow_destroy only
+    │   ├── destroy [--dry-run] [--keep-dns|--keep-volumes|--keep-firewall|--keep-docker-host]  # DNS, droplet (clean shutdown), volumes, firewall; digitalocean.allow_destroy only
     │   ├── logging [--apply] [--target app|backup]  # Docker log rotation in daemon.json
     │   ├── ignition -o FILE         # rendered host: compile host.bu (Butane) → droplet user data
     │   ├── provision [--no-start]   # rendered host: check files, push secrets, registry login, start

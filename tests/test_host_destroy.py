@@ -47,7 +47,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def doctl(monkeypatch: pytest.MonkeyPatch):
     """Records every mutation, in order, with its dry_run flag."""
     calls: list[tuple] = []
-    state = {"droplet": DROPLET, "delete_rc": 0, "volume": dict(VOLUME)}
+    state = {"droplet": DROPLET, "delete_rc": 0, "volume": dict(VOLUME), "firewall": None}
 
     monkeypatch.setattr("catalpa_tooling.deploy_do_link.find_droplet_for_link", lambda *a, **k: state["droplet"])
     monkeypatch.setattr("catalpa_tooling.deploy_do_link._orphan_droplet_message", lambda *a, **k: state.get("orphan"))
@@ -70,6 +70,16 @@ def doctl(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("catalpa_tooling.doctl_block_storage.detach_volume_from_droplet", rec("detach"))
     monkeypatch.setattr("catalpa_tooling.doctl_block_storage.delete_volume", rec("delete_volume"))
     monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.remove_known_host", rec("known_hosts"))
+
+    def find_firewall(name, **k):
+        if state["firewall"] == "forbidden":
+            from catalpa_tooling.doctl_binary import DoctlCommandError
+
+            raise DoctlCommandError("403", returncode=1)
+        return state["firewall"]
+
+    monkeypatch.setattr("catalpa_tooling.doctl_firewall.find_firewall", find_firewall)
+    monkeypatch.setattr("catalpa_tooling.doctl_firewall.delete_firewall", rec("delete_firewall"))
     return calls, state
 
 
@@ -250,7 +260,7 @@ def test_a_leftover_volume_is_deleted_once_the_droplet_is_gone(env, doctl, monke
 
     assert hd.cmd_env_host_destroy(config, "staging", ["--yes"]) == 0
     assert calls == [("delete_volume", ("vol-1",), False)]
-    assert "leftover volumes deleted" in capsys.readouterr().err
+    assert "what was left is deleted" in capsys.readouterr().err
     assert info.read_text() == before
 
 
@@ -262,3 +272,53 @@ def test_a_volume_attached_to_another_droplet_is_never_touched(env, doctl, capsy
     assert hd.cmd_env_host_destroy(config, "staging", ["--yes"]) == 1
     assert calls == []
     assert "attached to droplet 99" in capsys.readouterr().err
+
+
+FIREWALL = {"id": "fw-1", "name": "dk-x-staging", "droplet_ids": [42]}
+
+
+def test_the_droplets_firewall_goes_after_it(env, doctl, capsys) -> None:
+    config, _ = env()
+    calls, state = doctl
+    state["firewall"] = dict(FIREWALL)
+    assert hd.cmd_env_host_destroy(config, "staging", ["--dry-run"]) == 0
+    assert "firewall  dk-x-staging  deleted" in capsys.readouterr().err and calls == []
+    assert hd.cmd_env_host_destroy(config, "staging", ["--yes"]) == 0
+    order = names(calls)
+    assert order.index("delete_firewall") > order.index("delete_droplet")
+    assert ("delete_firewall", ("fw-1",), False) in calls
+
+
+@pytest.mark.parametrize(
+    "firewall,flag,note",
+    [
+        ({**FIREWALL, "droplet_ids": [42, 77]}, [], "droplet 77 is in it too; left alone"),
+        ("forbidden", [], "lacks firewall:read); left alone"),
+        (dict(FIREWALL), ["--keep-firewall"], "kept (--keep-firewall)"),
+    ],
+)
+def test_a_firewall_is_left_when_it_isnt_only_this_droplets(env, doctl, capsys, firewall, flag, note) -> None:
+    config, _ = env()
+    calls, state = doctl
+    state["firewall"] = firewall
+    assert hd.cmd_env_host_destroy(config, "staging", ["--yes", *flag]) == 0
+    assert "delete_firewall" not in names(calls) and "delete_droplet" in names(calls)
+    assert note in capsys.readouterr().err
+
+
+def test_a_leftover_firewall_goes_once_the_droplet_is_gone(env, doctl, monkeypatch, capsys) -> None:
+    """Destroyed before firewalls were removed (or --keep-firewall): a later destroy finds it."""
+    config, _ = env()
+    calls, state = doctl
+    state.update(droplet=None, volume=None, firewall={**FIREWALL, "droplet_ids": []})
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("catalpa_tooling.cli_confirm.confirm_by_typing_env_name", lambda e: True)
+    monkeypatch.setattr(  # no volumes, so no delete-volumes question
+        "catalpa_tooling.cli_confirm.confirm_by_typing_expected", lambda *a, **k: pytest.fail("asked")
+    )
+    assert hd.cmd_env_host_destroy(config, "staging", []) == 0
+    assert calls == [("delete_firewall", ("fw-1",), False)]
+    state["firewall"] = None
+    calls.clear()
+    assert hd.cmd_env_host_destroy(config, "staging", []) == 0
+    assert calls == [] and "Nothing to destroy." in capsys.readouterr().err

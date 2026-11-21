@@ -102,3 +102,29 @@ def ensure_droplet_firewall(
         return e.returncode or 1
     print(f"Made firewall {name}: SSH, web and ping in; deploy traffic out.", file=sys.stderr)
     return 0
+
+
+def find_firewall(droplet_name: str, *, context: str | None) -> dict[str, Any] | None:
+    """The ``dk-<droplet>`` firewall, or None. Raises ``DoctlCommandError`` when the token can't
+    list firewalls (it lacks ``firewall:read``)."""
+    from catalpa_tooling.doctl_binary import run_doctl_json
+
+    name = firewall_name(droplet_name)
+    data = run_doctl_json(["compute", "firewall", "list"], context=context)
+    for fw in data if isinstance(data, list) else []:
+        if isinstance(fw, dict) and fw.get("name") == name:
+            return fw
+    return None
+
+
+def delete_firewall(firewall_id: str, *, context: str | None = None, dry_run: bool = False) -> int:
+    from catalpa_tooling.doctl_binary import format_doctl_failure, run_doctl
+
+    args = ["compute", "firewall", "delete", firewall_id, "--force"]
+    if dry_run:
+        print(f"dry-run: would run doctl {' '.join(args)}", file=sys.stderr)
+        return 0
+    r = run_doctl(args, context=context, capture_output=True, check=False)
+    if r.returncode != 0:
+        print(f"Deleting firewall {firewall_id} failed: {format_doctl_failure(r)}", file=sys.stderr)
+    return r.returncode
