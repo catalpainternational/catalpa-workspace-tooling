@@ -16,7 +16,7 @@ fi
 
 # --no-cache: listing snapshots is cheap, and the cache volume is restic's own range.
 if podman run --rm --secret restic_write_password,type=env,target=RESTIC_PASSWORD --secret restic_write_repository,type=env,target=RESTIC_REPOSITORY --secret restic_write_s3_access_key_id,type=env,target=AWS_ACCESS_KEY_ID --secret restic_write_s3_default_region,type=env,target=AWS_DEFAULT_REGION --secret restic_write_s3_secret_access_key,type=env,target=AWS_SECRET_ACCESS_KEY \
-    docker.io/restic/restic:0.17.3 --no-cache --json snapshots > "$D/.restic-snapshots.json"; then
+    docker.io/restic/restic:0.18.1 --no-cache --json snapshots > "$D/.restic-snapshots.json"; then
   mv "$D/.restic-snapshots.json" "$D/restic-snapshots.json"
 else
   echo "backup-status: restic snapshots failed" >&2

@@ -177,4 +177,4 @@ For private-CA S3 endpoints, issue/install via [README_DC_BACKUP.md](README_DC_B
 | `no snapshot found` on `files restore` | Snapshot `Paths` are a host prefix (Ansible); restore filters `/backup/<volume>`. Seed with `dk fetch media` + `files push`. |
 | `lchown … no such file` then empty media volume | Restore extracted to staging then discarded on Fatal. Same: do not `files restore` host-path snapshots. |
 
-Default image: `restic/restic:0.17.3` (override with `RESTIC_IMAGE` in the env file).
+Default image: `restic/restic:0.18.1` (override with `RESTIC_IMAGE` in the env file).

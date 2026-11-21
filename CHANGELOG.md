@@ -107,6 +107,11 @@
 
 ### Changed
 
+- **restic 0.18.1 (was 0.17.3) on every runtime.** 0.18 restores can leave extended attributes
+  alone (`--exclude-xattr`), which a quadlet `files restore` needs: restoring a snapshot onto an
+  SELinux-labelled volume otherwise fails once per file. Same repository format, so existing
+  repositories and snapshots work as before; compose hosts pull the new image on their next backup.
+
 - **`dk <env> up -d`, `dk <env> config`, `dk <env> down` … no longer reach docker compose on a
   compose env (tooling 2.0, M3).** They're refused with a hint: `dk <env> compose <verb> …` runs
   compose itself. A bare `dk <env>` is still `up -d`, and the running app's verbs stay

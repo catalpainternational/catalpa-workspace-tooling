@@ -7,7 +7,7 @@ RequiresMountsFor=/var/mnt/data
 
 [Container]
 ContainerName=bero_shape-restic-files-backup
-Image=docker.io/restic/restic:0.17.3
+Image=docker.io/restic/restic:0.18.1
 UIDMap=0:10000:5000
 GIDMap=0:10000:5000
 Secret=restic_write_password,type=env,target=RESTIC_PASSWORD
