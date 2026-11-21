@@ -250,3 +250,72 @@ def test_firewall_false_makes_none(site, do) -> None:
     info.write_text(info.read_text() + "  firewall: false\n")  # under digitalocean: (DO is last)
     assert cmd_env_host_create(config, "staging", []) == 0
     assert "firewall" not in names(do["calls"])
+
+
+# --- restoring onto a new data volume -------------------------------------------------------
+
+
+@pytest.fixture
+def restoring(do, monkeypatch):
+    """The committed render restores prod's backups; the Backend's host side is recorded."""
+    from catalpa_tooling.fcos import backend as be
+    from catalpa_tooling.fcos import host as h
+
+    real = h.load_committed
+
+    def committed(gen_dir):
+        c = real(gen_dir)
+        c.manifest["restore"] = {"from": "prod", "pgbackrest": ["Secret=x"], "restic": ["Image=r"]}
+        return c
+
+    monkeypatch.setattr(h, "load_committed", committed)
+    state = {"found": {"db": True, "files": True}}
+    calls = do["calls"]
+    monkeypatch.setattr(be.Backend, "restorable", lambda self: dict(state["found"]))
+    monkeypatch.setattr(
+        be.Backend, "restore_all",
+        lambda self, extra, snap, **k: calls.append(("restore", k["kinds"], k["then_start"])) or 0,
+    )  # fmt: skip
+    monkeypatch.setattr(be.Backend, "_after_db_restore", lambda self: calls.append(("hooks",)) or 0)
+    return state
+
+
+def test_a_new_volume_is_restored_before_the_stack_starts(site, do, restoring) -> None:
+    config, _ = site
+    assert cmd_env_host_create(config, "staging", []) == 0
+    tail = do["calls"][-4:]
+    assert tail == [("provision", IP, True), ("restore", ("db", "files"), True), ("provision", IP, False), ("hooks",)]
+
+
+def test_a_repository_with_nothing_yet_is_skipped(site, do, restoring, capsys) -> None:
+    config, _ = site
+    restoring["found"] = {"db": True, "files": False}
+    assert cmd_env_host_create(config, "staging", []) == 0
+    assert ("restore", ("db",), True) in do["calls"]
+    assert "No media snapshot to restore yet" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("why", ["reused", "empty"])
+def test_no_restore_on_a_reused_volume_or_with_empty(site, do, restoring, why) -> None:
+    config, _ = site
+    argv = []
+    if why == "reused":
+        do["volume"] = {"id": "vol-kept", "name": "site-staging-data", "size_gigabytes": 10,
+                        "droplet_ids": [], "region": {"slug": "sgp1"}}  # fmt: skip
+    else:
+        argv = ["--empty"]
+    assert cmd_env_host_create(config, "staging", argv) == 0
+    assert not any(c[0] in ("restore", "hooks") for c in do["calls"])
+    assert do["calls"][-1] == ("provision", IP, False)
+
+
+def test_no_start_restores_but_leaves_it_stopped(site, do, restoring) -> None:
+    config, _ = site
+    assert cmd_env_host_create(config, "staging", ["--no-start"]) == 0
+    assert do["calls"][-2:] == [("provision", IP, True), ("restore", ("db", "files"), True)]
+
+
+def test_dry_run_says_it_would_restore(site, do, restoring, capsys) -> None:
+    config, _ = site
+    assert cmd_env_host_create(config, "staging", ["--dry-run"]) == 0
+    assert "Then restore the database and media from prod's backups" in capsys.readouterr().err

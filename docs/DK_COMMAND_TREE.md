@@ -96,6 +96,7 @@ dk
     ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
     ├── manage [--user U] <django …> # ./manage.py as stack.manage_user (or U)
     ├── pull_media                   # volume → host dir (tar)
+    ├── restore [--snapshot S] [-- pgBackRest args]  # db restore + files restore, one confirmation
     ├── wipe                         # alias: compose down -v
     │
     ├── files                        # restic backups + host media → volume (alias: bkp_files)
@@ -146,7 +147,7 @@ dk
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host destroy` / `host logging`, `zabbix`, `render` / `check` / `diff` / `apply` / `host ignition` / `host provision` / `host login` / `secrets push` (rendered hosts; `fcos …` is the deprecated spelling), `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
+Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host destroy` / `host logging`, `zabbix`, `render` / `check` / `diff` / `apply` / `host ignition` / `host provision` / `host login` / `secrets push` (rendered hosts; `fcos …` is the deprecated spelling), `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `restore`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
 
 `db` / `files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 

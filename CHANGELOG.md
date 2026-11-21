@@ -4,6 +4,15 @@
 
 ### Added
 
+- **`dk <env> restore`, and `host create` restores onto a new data volume.** `dk <env> restore`
+  restores the database and the media together, with one confirmation: on a rendered env, the
+  app stopped throughout, started again as found, then the `ops.post_db_restore` hooks; on
+  compose, `db restore` then `files restore`. `dk <env> host create` for a rendered env now
+  restores before starting when its data volume is new, from `restore_from`'s backups or the
+  env's own, whatever exists, by IP (no DNS needed yet) and without asking (the volume is empty).
+  A rebuilt prod thereby continues its backup chain. A reused volume keeps its data; `--empty`
+  starts with none; `--no-start` restores and stops there.
+
 - **Restore-only envs: `restore_from` and `dk <env> secrets read-key` (#204).** `restore_from: prod`
   in an env's `info.yaml` names the env whose backups it restores. `dk <env> secrets read-key`
   creates a Spaces key for that env alone, `<bucket>-<env>-read`, that can only read the source's

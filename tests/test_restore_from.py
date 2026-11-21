@@ -325,3 +325,59 @@ def test_post_db_restore_hooks_run_once_the_app_is_up(read_env, monkeypatch, cap
         assert ran == ["staging"]
     else:
         assert ran == [] and "`dk staging manage sync_wagtail_sites --profile staging`" in capsys.readouterr().err
+
+
+def test_restore_does_both_with_the_app_stopped_throughout(read_env, capsys) -> None:
+    rc, r = sub_restore(read_env, dry_run=True)
+    assert rc == 0 and r.calls == []
+    script = capsys.readouterr().err.split(":\n", 1)[1].splitlines()
+    stop = script.index("systemctl --user stop django.service db.service")
+    db_line = next(i for i, ln in enumerate(script) if "pgbackrest --log-level-console=info restore" in ln)
+    files_line = next(i for i, ln in enumerate(script) if " restore latest:/backup/" in ln)
+    start = next(i for i, ln in enumerate(script) if ln.startswith('if [ "$web_was" = 1 ]'))
+    assert stop < db_line < files_line < start
+
+
+def sub_restore(config, *, dry_run: bool, yes: bool = False, runner=None):
+    from catalpa_tooling.fcos import backend
+
+    r = runner or Recorder()
+    ns = argparse.Namespace(env_command="restore", pgbackrest_restore_args=[], snapshot="latest", yes=yes, dry_run=dry_run)
+    info = {"docker_host": "ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock"}
+    return backend.handle(ns, config, "staging", info, runner=r, tty=False), r
+
+
+def test_restorable_asks_the_repositories(read_env) -> None:
+    from catalpa_tooling.fcos import backend
+    from catalpa_tooling.fcos.host import Host
+
+    def runner(argv, *, input=None, tty=False):
+        cmd = argv[-1]
+        if "pgbackrest" in cmd and "info" in cmd:
+            out = b'[{"name": "main", "backup": [{"label": "x"}]}]'
+        else:
+            out = b"[]"  # no restic snapshot yet
+        return subprocess.CompletedProcess(argv, 0, out, b"")
+
+    b = backend.open_backend(read_env, "staging", {"docker_host": "ssh://deploy@h.example/run/user/1001/podman/podman.sock"},
+                             runner=runner, register_key=False)  # fmt: skip
+    b.host = Host(address="h.example", runner=runner)
+    assert b.restorable() == {"db": True, "files": False}
+
+
+def test_compose_restore_runs_db_then_files_and_a_dry_run_never_restores_media(monkeypatch, capsys) -> None:
+    from catalpa_tooling import env_handlers
+    from catalpa_tooling.backup_settings import BackupSettings
+
+    ran = []
+    monkeypatch.setattr(env_handlers, "_handle_bkp_db", lambda ns, *a, **k: ran.append(("db", ns.yes)) or 0)
+    monkeypatch.setattr(env_handlers, "_handle_bkp_files", lambda ns, *a, **k: ran.append(("files", ns.snapshot)) or 0)
+    roles = BackupSettings(env="staging", backups=frozenset(), restore_from="prod", restores=frozenset({"db", "files"}))
+    ns = argparse.Namespace(yes=True, pgbackrest_restore_args=[], snapshot="latest")
+    args = (None, "staging", {}, None, "c.yml", "", False, {}, {}, roles)
+    assert env_handlers._restore_all_compose(ns, *args, use_prepulled_registry=False) == 0
+    assert ran == [("db", True), ("files", "latest")]
+    ran.clear()
+    dry = (None, "staging", {}, None, "c.yml", "", True, {}, {}, roles)
+    assert env_handlers._restore_all_compose(ns, *dry, use_prepulled_registry=False) == 0
+    assert ran == [("db", True)] and "would then restore the media" in capsys.readouterr().err

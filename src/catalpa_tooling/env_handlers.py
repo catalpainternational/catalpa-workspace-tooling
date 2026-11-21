@@ -724,6 +724,12 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             compose_file=compose_file,
         )
 
+    if env_command == "restore":
+        return _restore_all_compose(
+            ns, config, env_name, env_add, creds_path, compose_file, docker_host, dry_run, info,
+            ctx.storage_volumes, roles, use_prepulled_registry=use_prepulled_registry,
+        )  # fmt: skip
+
     if env_command in ("files", "bkp_files"):
         if env_command == "bkp_files":
             warn_deprecated("bkp_files", "files", context=f"dk {env_name}")
@@ -763,6 +769,55 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         storage_volumes=ctx.storage_volumes,
         stack_images_already_built=stack_images_already_built,
     )
+
+
+def _restore_all_compose(
+    ns, config, env_name, env_add, creds_path, compose_file, docker_host, dry_run, info,
+    storage_volumes, roles, *, use_prepulled_registry: bool,
+) -> int:
+    """``dk <env> restore`` on compose: ``db restore`` then ``files restore``, for the kinds this
+    env backs up or restores, after one confirmation."""
+    kinds = [k for k in ("db", "files") if roles.writes(k) or roles.reads(k)]
+    if not kinds:
+        print(
+            f"{env_name} has nothing to restore from: set backups: or restore_from: in its info.yaml.",
+            file=sys.stderr,
+        )
+        return 1
+    yes = bool(getattr(ns, "yes", False))
+    if not dry_run and not yes:
+        from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
+
+        src = f"{roles.restore_from}'s" if roles.restore_from else f"{env_name}'s own"
+        print(
+            f"WARNING: replace {env_name}'s {' and '.join({'db': 'database', 'files': 'media'}[k] for k in kinds)} "
+            f"with {src} backups; what they don't have is lost.",
+            file=sys.stderr,
+        )
+        if not sys.stdin.isatty() or not confirm_by_typing_env_name(env_name):
+            print("restore: cancelled.", file=sys.stderr)
+            return 1
+    if "db" in kinds:
+        db_ns = argparse.Namespace(
+            db_command="restore", yes=True, restore_from_dumps=False, archive_file=None,
+            restore_dry_run=False, pgbackrest_restore_args=list(getattr(ns, "pgbackrest_restore_args", None) or []),
+        )  # fmt: skip
+        rc = _handle_bkp_db(
+            db_ns, config, env_name, env_add, creds_path, compose_file, docker_host, dry_run,
+            use_prepulled_registry=use_prepulled_registry,
+        )  # fmt: skip
+        if rc != 0:
+            return rc
+    if "files" in kinds:
+        if dry_run:  # compose's files restore has no dry run of its own: never reach it here
+            snap = getattr(ns, "snapshot", "latest")
+            print(f"dry-run: would then restore the media from restic snapshot {snap!r} (dk {env_name} files restore)", file=sys.stderr)
+            return 0
+        files_ns = argparse.Namespace(files_command="restore", yes=True, snapshot=getattr(ns, "snapshot", "latest"))
+        return _handle_bkp_files(
+            files_ns, config, env_name, env_add, creds_path, docker_host, dry_run, info, storage_volumes
+        )
+    return 0
 
 
 def _handle_bkp_files(

@@ -300,6 +300,7 @@ Backups (`files` is the media backup; #43 renames it `media`):
 | `dk <env> files backup` | starts the restic unit, waits, shows its log |
 | `dk <env> files snapshots \| check \| stats \| init` | a one-off restic container built from that unit's quadlet: same image, ID range, secrets and mounts |
 | `dk <env> db restore [--dry-run] [pgbackrest args]` | as on compose envs: stops the app and `db`, runs `pgbackrest restore --delta` in a one-off container like `db` (its image, ID range, settings, secrets and mounts), then starts the app again if it was running (`db` alone if only `db` was). `db` is healthy only once WAL replay ends, so the app waits for recovery, up to `db`'s start timeout (15 min). On a host provisioned with `--no-start` both stay stopped, so the media can be restored before the app serves anything; `host provision` starts them. Then the `ops.post_db_restore` hooks run, as on compose; a stack left stopped prints the commands to run once it's up. **In read mode** (`restore_from`) the one-off has the read key instead, and replays the source's WAL itself (no connections, no archiving), promotes and stops, because `db`'s own pgBackRest can't reach the source's repository; `--type=…` restores get `--target-action=promote` |
+| `dk <env> restore [--snapshot S] [-- pgBackRest args]` | both of the below in one go: stops the app and `db`, restores the database, then the media, starts them again as found, then runs the `ops.post_db_restore` hooks. One confirmation. Restores what the env backs up or restores (`backups:` / `restore_from`) |
 | `dk <env> files restore [SNAPSHOT]` | `restic restore SNAPSHOT:/backup/<vol> --target /backup/<vol> --delete` in the backup unit's ID range, so each media directory ends up exactly as in the snapshot, with the right owner. `latest` means the latest from this host (`--host`); in read mode, the latest of the source's snapshots with that path (`--path`), since compose snapshots carry random hostnames. A restored volume the edge also mounts (the media, for Caddy in its own ID range) then gets `chmod -R o+rX`, as this host's app writes its own files: prod on compose writes `2750`/`640`, readable there only because its Caddy is root |
 | `dk <env> db restore --file PATH` / `--dumps` | replaces the app database with a local `pg_dump -Fc` archive (`--dumps`: `paths.fetch_db_dump`): stops the app (not `db`), copies the archive into `db` over SSH and checks its SHA-256, drops and recreates the database and runs `pg_restore` with the compose scripts, starts the app, then runs the `ops.post_db_restore` hooks. Asks for the env name. The Metabase dump isn't restored on quadlet envs yet |
 | `dk <env> pull_media [--target DIR]` | the same rsync as `fetch media` (see #43 on deprecating `pull_media`) |
@@ -373,7 +374,7 @@ Secrets on the host that the render doesn't list are reported, never removed.
 
 ```bash
 dk <env> host create --dry-run   # the plan: volume (new, or the one kept), droplet, DNS
-dk <env> host create             # then provisions it; --no-start for a restore
+dk <env> host create             # then provisions it; on a new volume, restores first
 ```
 
 `host create` (tooling 2.0 M6), in order:
@@ -392,8 +393,15 @@ dk <env> host create             # then provisions it; --no-start for a restore
    host's agent makes). `digitalocean.firewall: false` for none, `{out_tcp: [5432]}` for more;
 5. points the env's DNS A records at it, and `docker_host` too when it names an IP (a hostname
    stays);
-6. runs `host provision` against the new IP. `--no-start` passes on (restore first, then
-   `host provision` starts it); `--no-provision` stops before it.
+6. runs `host provision` against the new IP; `--no-provision` stops before it.
+7. **on a new data volume, restores before starting**: from `restore_from`'s backups, or the
+   env's own (`backups:`), whatever the repositories hold (a repository with no backup yet is
+   skipped, and that part starts empty). It provisions without starting, runs `dk <env> restore`
+   by IP (no confirmation: the volume is empty), then starts the stack and runs the
+   `ops.post_db_restore` hooks. A rebuilt prod thereby continues its backup chain; starting
+   empty would make a cluster its own repository refuses. A reused volume keeps its data and
+   gets no restore; `--empty` starts with no data on purpose; `--no-start` restores and stops
+   there.
 
 `host ignition -o FILE` still compiles the Ignition on its own, for another provider.
 

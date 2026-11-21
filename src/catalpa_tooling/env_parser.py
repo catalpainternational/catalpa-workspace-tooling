@@ -480,6 +480,19 @@ def _attach_env_command_parsers(
     p_pull.add_argument("--target", "-t", default=None, metavar="DIR")
     p_pull.add_argument("--image", default="alpine:3.21")
 
+    p_restore_all = cmd_sub.add_parser(
+        "restore",
+        help="Restore the database and the media together (db restore + files restore), from "
+        "this env's own backups or restore_from's, with one confirmation.",
+    )
+    p_restore_all.add_argument(
+        "--snapshot", default="latest", help="restic snapshot for the media (default: latest)."
+    )
+    p_restore_all.add_argument(
+        "pgbackrest_restore_args", nargs=argparse.REMAINDER,
+        help="After --: pgBackRest restore options (e.g. -- --type=time '--target=…').",
+    )  # fmt: skip
+
     cmd_sub.add_parser("wipe", help="Alias: docker compose down -v (with confirmation).")
 
     _attach_files_commands(cmd_sub, env_name)

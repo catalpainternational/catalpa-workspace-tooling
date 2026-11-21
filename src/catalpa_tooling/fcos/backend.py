@@ -34,7 +34,7 @@ from catalpa_tooling.fcos.host import Committed, Host, HostError, load_committed
 from catalpa_tooling.fcos.render import generated_dir
 
 UNIT_VERBS = ("restart", "stop", "start")
-SUPPORTED = ("logs", "ps", "exec", "manage", *UNIT_VERBS, "db", "files", "pull_media")
+SUPPORTED = ("logs", "ps", "exec", "manage", *UNIT_VERBS, "db", "files", "restore", "pull_media")
 DB_COMMANDS = ("info", "check", "version", "backup", "pgdump", "configure", "restore")
 FILES_COMMANDS = ("backup", "snapshots", "check", "stats", "init", "restore")
 #: What the render owns on a quadlet env, and what to use instead.
@@ -329,12 +329,9 @@ class Backend:
         print("Cancelled.", file=sys.stderr)
         return False
 
-    def db_restore(self, extra: list[str], *, yes: bool, dry_run: bool) -> int:
-        """pgBackRest restore --delta into the data directory, as compose envs do: stop the app
-        and db, restore in a one-off container like db, start again (db's unit waits for
-        recovery: it is healthy only once Postgres accepts connections)."""
-        db = self.config.stack.services.db
-        web = self.config.stack_service("web")
+    def _db_restore_line(self, extra: list[str]) -> str:
+        """The one-off that restores the database: pgBackRest restore --delta in a container
+        like db (in read mode, with the read key, then the source's WAL replayed in it)."""
         extra = [a for a in extra if a != "--"]
         source = self.restore.get("from")
         if self.restore.get("pgbackrest"):
@@ -344,7 +341,7 @@ class Backend:
         else:
             text = self._db_quadlet()
             if "PGBACKREST_" not in text:
-                raise Usage(f"{self.env_name}'s db has no pgBackRest repository (pgbr_s3_write_* credentials)")
+                raise Usage(f"{self.env_name}'s db has no pgBackRest repository (backups: [db] in info.yaml)")
             run_args = podman_run_args(text, volumes=volume_names(self.committed))
         inner = (
             'mkdir -p -m 700 "$PGBACKREST_PG1_PATH" && '
@@ -353,19 +350,23 @@ class Backend:
         )
         if self.restore.get("pgbackrest"):
             inner += " && " + _replay_wal_here(source or "the source")
-        restore = shlex.join(
+        return shlex.join(
             ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "sh", *run_args, "-c", inner]
         )
+
+    def _stop_then_start_as_found(self, body: list[str], *, stopped_hint: str) -> str:
+        """``body`` between stopping the app and db and starting them again as they were found:
+        a host provisioned with --no-start stays stopped."""
+        db = self.config.stack.services.db
+        web = self.config.stack_service("web")
         w, d = f"{shlex.quote(web)}.service", f"{shlex.quote(db)}.service"
-        # Leave the stack as it was found: a host provisioned with --no-start stays stopped, so
-        # the media can be restored before the app serves anything.
-        script = "\n".join(
+        return "\n".join(
             [
                 "set -e",
                 f"web_was=0; systemctl --user is-active --quiet {w} && web_was=1",
                 f"db_was=0; systemctl --user is-active --quiet {d} && db_was=1",
                 f"systemctl --user stop {w} {d}",
-                restore,
+                *body,
                 'if [ "$web_was" = 1 ]; then',
                 f"  echo 'Restored. Starting {db} (it replays WAL; healthy once recovery ends), then {web}…' >&2",
                 f"  systemctl --user start {w}",
@@ -373,14 +374,23 @@ class Backend:
                 f"  echo 'Restored. Starting {db} (it replays WAL; healthy once recovery ends); {web} was stopped and stays so.' >&2",
                 f"  systemctl --user start {d}",
                 "else",
-                (
-                    f"  echo 'Restored. {db} and {web} were stopped and stay so: restore the media "
-                    f"(dk {self.env_name} files restore), then start them (dk {self.env_name} host provision).' >&2"
-                ),
+                f"  echo {shlex.quote(f'Restored. {db} and {web} were stopped and stay so: {stopped_hint}')} >&2",
                 "  exit 0",
                 "fi",
                 f"systemctl --user --no-pager status {d} {w} --lines=0 || true",
             ]
+        )
+
+    def db_restore(self, extra: list[str], *, yes: bool, dry_run: bool) -> int:
+        """pgBackRest restore --delta into the data directory, as compose envs do: stop the app
+        and db, restore in a one-off container like db, start again (db's unit waits for
+        recovery: it is healthy only once Postgres accepts connections)."""
+        db = self.config.stack.services.db
+        web = self.config.stack_service("web")
+        source = self.restore.get("from")
+        script = self._stop_then_start_as_found(
+            [self._db_restore_line(extra)],
+            stopped_hint=f"restore the media (dk {self.env_name} files restore), then start them (dk {self.env_name} host provision).",
         )
         if dry_run:
             print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
@@ -397,6 +407,97 @@ class Backend:
         if rc != 0:
             return rc
         return self._after_db_restore()
+
+    def restore_all(
+        self, extra: list[str], snapshot: str, *, yes: bool, dry_run: bool, kinds: tuple[str, ...] | None = None,
+        then_start: bool = False,
+    ) -> int:
+        """``dk <env> restore``: the database and the media together, with the app stopped
+        throughout and one confirmation, then the post_db_restore hooks. ``kinds``: which of
+        ("db", "files") (default: each this env can restore)."""
+        kinds = kinds if kinds is not None else self.restore_kinds()
+        if not kinds:
+            raise Usage(f"{self.env_name} has nothing to restore from (backups: or restore_from: in info.yaml)")
+        body: list[str] = []
+        paths: list[str] = []
+        if "db" in kinds:
+            body.append(self._db_restore_line(extra))
+        if "files" in kinds:
+            steps, paths = self._files_restore_steps(snapshot)
+            body += steps
+        script = self._stop_then_start_as_found(
+            body,
+            stopped_hint=(
+                "starting them next." if then_start else f"start them with `dk {self.env_name} host provision`."
+            ),
+        )
+        if dry_run:
+            print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
+            return 0
+        source = self.restore.get("from")
+        what = " and ".join(
+            x for x in (
+                "the database" if "db" in kinds else "",
+                (", ".join(p.removeprefix("/backup/") for p in paths) + f" (snapshot {snapshot!r})") if paths else "",
+            ) if x
+        )  # fmt: skip
+        owner = f"{source}'s" if source else f"{self.env_name}'s own"
+        if not self._confirm(
+            f"replace {what} with {owner} backups. The app stops while it runs; what the "
+            "backups don't have is lost."
+            + (_PROD_DATA_NOTE.format(source=source) if source else ""),
+            yes=yes,
+        ):
+            return 1
+        rc = self._ssh(script, tty=False)
+        if rc != 0:
+            return rc
+        # The caller starts the stack and runs the hooks then (host create).
+        return self._after_db_restore() if "db" in kinds and not then_start else 0
+
+    def restore_kinds(self) -> tuple[str, ...]:
+        """Which of db and files this env restores: from restore_from's source in read mode,
+        else from its own backups."""
+        out = []
+        if self.restore.get("pgbackrest") or "PGBACKREST_" in self._db_quadlet():
+            out.append("db")
+        try:
+            self._restic_quadlet()
+            out.append("files")
+        except Usage:
+            pass
+        return tuple(out)
+
+    def restorable(self) -> dict[str, bool]:
+        """Whether the repositories hold anything to restore yet: {"db": a pgBackRest backup
+        exists, "files": a restic snapshot with the first backed-up path exists}. A new env's
+        own repositories are empty until its first backup."""
+        import json
+
+        out: dict[str, bool] = {}
+        for kind in self.restore_kinds():
+            if kind == "db":
+                args = self._db_read_args() if self.restore.get("pgbackrest") else podman_run_args(
+                    self._db_quadlet(), volumes=volume_names(self.committed)
+                )
+                cmd = ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "pgbackrest", *args,
+                       "--output=json", "info"]  # fmt: skip
+            else:
+                _stem, text = self._restic_quadlet()
+                args = podman_run_args(text, volumes=volume_names(self.committed))
+                path = next((m.split(":", 2)[1] for m in (x.strip()[len("Volume="):] for x in text.splitlines()
+                             if x.strip().startswith("Volume=")) if m.split(":", 2)[1].startswith("/backup/")), "")  # fmt: skip
+                cmd = ["podman", "run", "--rm", *args, *self._restic_lock_flag(), "snapshots", "--json", "--path", path]
+            r = self.host.ssh(self.login, shlex.join(cmd), check=False)
+            try:
+                data = json.loads((r.stdout or b"").decode() or "null") if r.returncode == 0 else None
+            except json.JSONDecodeError:
+                data = None
+            if kind == "db":
+                out[kind] = bool(data) and any(st.get("backup") for st in data if isinstance(st, dict))
+            else:
+                out[kind] = bool(data)
+        return out
 
     def _after_db_restore(self) -> int:
         """``ops.post_db_restore``, as compose runs them, once the app is up again. A stack left
@@ -447,9 +548,9 @@ class Backend:
             return 1
         return restore_archive(self, Path(path))
 
-    def files_restore(self, snapshot: str, *, yes: bool, dry_run: bool) -> int:
-        """Replace the media with a restic snapshot: each backed-up directory ends up exactly as
-        in the snapshot (``--delete``), owned as the backup unit's ID range wrote it."""
+    def _files_restore_steps(self, snapshot: str) -> tuple[list[str], list[str]]:
+        """(shell steps, the paths restored): restic restore of each backed-up directory, exactly
+        as in the snapshot (``--delete``), then read access for the edge where it mounts one."""
         _stem, text = self._restic_quadlet()
         run_args = podman_run_args(text, volumes=volume_names(self.committed), read_write=True)
         mounts = [x.strip()[len("Volume="):].split(":", 2) for x in text.splitlines() if x.strip().startswith("Volume=")]
@@ -485,6 +586,12 @@ class Backend:
                     f"echo 'Making {path.removeprefix('/backup/')} readable to {self.committed.manifest.get('proxy') or 'the edge'} (o+rX)…' >&2"
                 )
                 steps.append(shlex.join(["podman", "run", "--rm", *chmod]))
+        return steps, paths
+
+    def files_restore(self, snapshot: str, *, yes: bool, dry_run: bool) -> int:
+        """Replace the media with a restic snapshot: each backed-up directory ends up exactly as
+        in the snapshot (``--delete``), owned as the backup unit's ID range wrote it."""
+        steps, paths = self._files_restore_steps(snapshot)
         script = "set -e\n" + "\n".join(steps)
         if dry_run:
             print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
@@ -817,6 +924,12 @@ def handle(
         if verb == "manage":
             args = [a for a in getattr(ns, "manage_args", []) if a]
             return b.manage(args, user=getattr(ns, "user", None), tty=tty)
+        if verb == "restore":
+            return b.restore_all(
+                list(getattr(ns, "pgbackrest_restore_args", None) or []),
+                getattr(ns, "snapshot", None) or "latest",
+                yes=bool(getattr(ns, "yes", False)), dry_run=dry_run,
+            )  # fmt: skip
         if verb == "pull_media":
             raw = Path(getattr(ns, "target", None) or f"{config.paths.backend}/media").expanduser()
             target = raw if raw.is_absolute() else config.repo_root / raw

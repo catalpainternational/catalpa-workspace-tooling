@@ -14,7 +14,13 @@ The steps a person ran with ``doctl`` (tooling 2.0, M6), in one command:
 5. DNS: the env's A records point at the new IP. ``docker_host`` is updated only when it names an
    IP; a hostname stays right.
 6. ``host provision`` against the new IP: it waits for SSH, checks the files, pushes the
-   secrets, logs in to the registry and starts the stack (``--no-start`` for a restore).
+   secrets, logs in to the registry and starts the stack.
+7. On a **new** data volume, before the stack starts: restore the database and the media from
+   whatever there is to restore, ``restore_from``'s backups or the env's own (a rebuilt prod
+   continues its backup chain; starting empty would make a cluster its repository refuses).
+   Nothing is lost, since the volume is empty, so nothing is asked. A reused volume keeps its
+   data; ``--empty`` starts with none; a repository with no backup yet is skipped. Everything
+   runs by IP, so a stale DNS answer on this machine can't get in the way.
 """
 
 from __future__ import annotations
@@ -59,6 +65,11 @@ def _parser(env_name: str) -> argparse.ArgumentParser:
         "`host provision` starts it.",
     )
     p.add_argument("--no-provision", action="store_true", help="Stop once the droplet and DNS exist.")
+    p.add_argument(
+        "--empty",
+        action="store_true",
+        help="Start with no data even on a new volume: don't restore backups (a new env, a clean test).",
+    )
     return p
 
 
@@ -194,9 +205,10 @@ def cmd_quadlet_host_create(
     # 3. The data volume.
     volume_ids: tuple[str, ...] = ()
     names = env_volume_names(config, env_name, info, link.droplet_name)
+    fresh_data = True  # the root disk of a new droplet is empty too
     if names:
         name = names[0]
-        rc, vol_id = _data_volume(
+        rc, vol_id, fresh_data = _data_volume(
             name, parse_fcos_settings(info).block_volume_size, region, project_id,
             context=context, dry_run=dry_run, label=label,
         )  # fmt: skip
@@ -223,11 +235,12 @@ def cmd_quadlet_host_create(
         return int(exc.code or 1)
     if rc != 0:
         return rc
+    restore_note = _restore_plan(c, fresh_data=fresh_data, empty=ns.empty)
     if dry_run:
         fw_note = "" if env_firewall_settings_dry(info) else " (no cloud firewall: digitalocean.firewall: false)"
         print(
             f"dry-run: then put the cloud firewall dk-{link.droplet_name} on it{fw_note}, point the DNS "
-            "records at the new IP and run `host provision` on it.",
+            f"records at the new IP and run `host provision` on it. {restore_note}",
             file=sys.stderr,
         )
         print("dry-run: nothing changed; the plan above is what it would do.", file=sys.stderr)
@@ -265,13 +278,73 @@ def cmd_quadlet_host_create(
     # 6. Provision.
     from catalpa_tooling.fcos.cli import _provision
 
-    pns = argparse.Namespace(host=ip, no_start=ns.no_start)
+    restore = restore_note.startswith("Then restore")
+    pns = argparse.Namespace(host=ip, no_start=ns.no_start or restore)
     try:
-        return _provision(pns, config, env_name, c, h.Host(ip), dry_run=False)
+        rc = _provision(pns, config, env_name, c, h.Host(ip), dry_run=False)
+        if rc != 0 or not restore:
+            return rc
+        return _restore_then_start(config, env_name, c, info, ip, no_start=ns.no_start, label=label)
     except h.HostError as exc:
         print(f"{label}: {exc}", file=sys.stderr)
         print(f"The droplet exists; `dk {env_name} host provision --host {ip}` finishes it.", file=sys.stderr)
         return 1
+
+
+def _restore_plan(c, *, fresh_data: bool, empty: bool) -> str:
+    """What happens to the data after provisioning, in a sentence ("Then restore …" when it
+    restores)."""
+    restore = c.manifest.get("restore") or {}
+    own = any(k.upper().startswith(("PGBR_S3_WRITE_", "RESTIC_WRITE_")) for k in (c.manifest.get("secrets") or {}).values())
+    if not (restore or own):
+        return "Nothing to restore from (no backups: or restore_from:): the stack starts empty."
+    if not fresh_data:
+        return "The data volume is reused, so its data stays: no restore."
+    if empty:
+        return "--empty: no restore; the stack starts with no data."
+    src = f"{restore['from']}'s backups" if restore.get("from") else "this env's own backups"
+    return f"Then restore the database and media from {src} (what exists) before starting, as the data volume is new."
+
+
+def _restore_then_start(config, env_name: str, c, info: dict, ip: str, *, no_start: bool, label: str) -> int:
+    """After a --no-start provision on a new data volume: restore what the repositories hold,
+    then start (unless --no-start) and run the post_db_restore hooks."""
+    import argparse as _argparse
+
+    from catalpa_tooling.fcos import host as h
+    from catalpa_tooling.fcos.backend import Backend, Usage
+    from catalpa_tooling.fcos.cli import _provision
+
+    b = Backend(config=config, env_name=env_name, committed=c, host=h.Host(ip), login=c.user, info=info)
+    try:
+        found = b.restorable()
+    except Usage as exc:
+        print(f"{label}: {exc}", file=sys.stderr)
+        return 1
+    kinds = tuple(k for k in ("db", "files") if found.get(k))
+    for k in ("db", "files"):
+        if k in found and not found[k]:
+            what = {"db": "database backup", "files": "media snapshot"}[k]
+            print(f"No {what} to restore yet: {k} starts empty.", file=sys.stderr)
+    if kinds:
+        src = c.manifest.get("restore", {}).get("from")
+        owner = f"{src}'s" if src else "its own"
+        what = " and ".join({"db": "the database", "files": "the media"}[k] for k in kinds)
+        print(
+            f"Restoring {what} from {owner} backups onto the new volume …",
+            file=sys.stderr,
+        )
+        rc = b.restore_all([], "latest", yes=True, dry_run=False, kinds=kinds, then_start=True)
+        if rc != 0:
+            print(f"{label}: the restore failed; the host is made and not started. Fix it, then `dk {env_name} restore` and `dk {env_name} host provision`.", file=sys.stderr)
+            return rc
+    if no_start:
+        print(f"Not started (--no-start): `dk {env_name} host provision` starts it.", file=sys.stderr)
+        return 0
+    rc = _provision(_argparse.Namespace(host=ip, no_start=False), config, env_name, c, h.Host(ip), dry_run=False)
+    if rc == 0 and "db" in kinds:
+        rc = b._after_db_restore()
+    return rc
 
 
 def env_firewall_settings_dry(info: dict):
@@ -282,8 +355,8 @@ def env_firewall_settings_dry(info: dict):
 
 def _data_volume(
     name: str, size_gib: int, region: str, project_id: str, *, context, dry_run: bool, label: str
-) -> tuple[int, str]:
-    """(rc, the volume's ID): the env's detached volume, or a new one."""
+) -> tuple[int, str, bool]:
+    """(rc, the volume's ID, whether it's new): the env's detached volume, or a new one."""
     from catalpa_tooling.doctl_binary import DoctlCommandError
     from catalpa_tooling.doctl_block_storage import create_volume, find_volume_by_name
 
@@ -293,7 +366,7 @@ def _data_volume(
         if found.get("droplet_ids"):
             ids = ", ".join(str(x) for x in found["droplet_ids"])
             print(f"{label}: volume {name!r} is attached to droplet {ids}: refusing.", file=sys.stderr)
-            return 1, ""
+            return 1, "", False
         vregion = (found.get("region") or {}).get("slug") if isinstance(found.get("region"), dict) else None
         if vregion and vregion != region:
             print(
@@ -301,20 +374,20 @@ def _data_volume(
                 "volume attaches only in its own region.",
                 file=sys.stderr,
             )
-            return 1, ""
+            return 1, "", False
         print(
             f"Volume {name} ({found.get('size_gigabytes')} GiB, id {vid}) exists, detached: "
             "reusing it, with its data.",
             file=sys.stderr,
         )
-        return 0, vid
+        return 0, vid, False
     if dry_run:
         print(f"dry-run: would create volume {name} ({size_gib} GiB, {region}) in the project", file=sys.stderr)
-        return 0, "<new-volume-id>"
+        return 0, "<new-volume-id>", True
     print(f"Creating volume {name} ({size_gib} GiB, {region}) …", file=sys.stderr)
     try:
         vol = create_volume(name, size_gib, region, context=context)
     except DoctlCommandError as exc:
-        return exc.returncode or 1, ""
+        return exc.returncode or 1, "", True
     vid = str(vol.get("id"))
-    return _assign_volume_to_project(vid, project_id, context=context, dry_run=False), vid
+    return _assign_volume_to_project(vid, project_id, context=context, dry_run=False), vid, True

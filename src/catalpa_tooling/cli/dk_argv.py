@@ -16,6 +16,7 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "trust-caddy-cert",
         "manage",
         "pull_media",
+        "restore",
         "wipe",
         "files",
         "bkp_files",
