@@ -290,6 +290,9 @@ def test_files_restore_from_the_source_filters_by_path_not_host(read_env, capsys
     # The read key can't write restic's lock: --no-lock, between the image and the command.
     assert "--no-lock restore latest:/backup/" in script
     assert "--exclude-xattr security.selinux" in script
+    # The edge (Caddy, its own range) mounts the media read-only: it must be able to read it.
+    chmod = next(ln for ln in script.splitlines() if "--entrypoint chmod" in ln)
+    assert chmod.endswith("-R o+rX /backup/django_media") and "--uidmap 0:" in chmod
 
 
 @pytest.mark.parametrize("web_up", [True, False])

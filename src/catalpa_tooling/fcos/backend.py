@@ -452,11 +452,9 @@ class Backend:
         in the snapshot (``--delete``), owned as the backup unit's ID range wrote it."""
         _stem, text = self._restic_quadlet()
         run_args = podman_run_args(text, volumes=volume_names(self.committed), read_write=True)
-        paths = [
-            ln.split(":", 2)[1]
-            for ln in (x.strip()[len("Volume="):] for x in text.splitlines() if x.strip().startswith("Volume="))
-            if ln.split(":", 2)[1].startswith("/backup/")
-        ]
+        mounts = [x.strip()[len("Volume="):].split(":", 2) for x in text.splitlines() if x.strip().startswith("Volume=")]
+        source_of = {m[1]: m[0] for m in mounts if len(m) > 1 and m[1].startswith("/backup/")}
+        paths = list(source_of)
         if not paths:
             raise Usage("the restic unit mounts nothing under /backup/")
         host_filter = []
@@ -476,6 +474,17 @@ class Backend:
             )  # fmt: skip
             # A path added after the snapshot was taken isn't in it: keep that one as it is.
             steps.append(cmd if i == 0 else f"{cmd} || echo 'Snapshot has no {path}: left as it is.' >&2")
+        # The edge serves some of these read-only from its own ID range, so to it they are
+        # "other": a snapshot from a host whose app wrote 2750/640 (prod on compose, where Caddy
+        # is root) would be unreadable. Give them the read access this host's app gives its own.
+        edge = self._edge_sources()
+        for path in paths:
+            if source_of[path] in edge:
+                chmod = [*run_args[:-1], "--entrypoint", "chmod", run_args[-1], "-R", "o+rX", path]
+                steps.append(
+                    f"echo 'Making {path.removeprefix('/backup/')} readable to {self.committed.manifest.get('proxy') or 'the edge'} (o+rX)…' >&2"
+                )
+                steps.append(shlex.join(["podman", "run", "--rm", *chmod]))
         script = "set -e\n" + "\n".join(steps)
         if dry_run:
             print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
@@ -487,6 +496,16 @@ class Backend:
         ):
             return 1
         return self._ssh(script, tty=False)
+
+    def _edge_sources(self) -> set[str]:
+        """The host paths and ``X.volume`` units the edge (proxy) container mounts."""
+        proxy = self.committed.manifest.get("proxy")
+        text = self.committed.files.get(f"quadlets/{proxy}.container", "") if proxy else ""
+        return {
+            ln.strip()[len("Volume="):].split(":", 1)[0]
+            for ln in text.splitlines()
+            if ln.strip().startswith("Volume=")
+        }
 
     # --- media ------------------------------------------------------------------------------
 

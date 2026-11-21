@@ -13,7 +13,7 @@
   credentials become Podman secrets for one-off restore containers only: no backup units, WAL
   archiving or timers. `db restore` replays the source's WAL in the one-off, promotes, then starts
   `db`; `files restore latest` picks the source's latest snapshot by path. `db info` and
-  `files snapshots` read the source's repositories; the backup commands are refused. A quadlet
+  `files snapshots` read the source's repositories; the backup commands are refused. `files restore` then makes the volumes the edge mounts readable to it (`o+rX`), since a compose host's media can be `2750`/`640` and Caddy runs in its own ID range. A quadlet
   `db restore` (pgBackRest) now runs the `ops.post_db_restore` hooks too, as compose does. Read
   and write credentials in one rendered env are refused for now.
 
