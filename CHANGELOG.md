@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what to change.
+
 ### Added
 
 - **`dk <env> restore`, and `host create` restores onto a new data volume.** `dk <env> restore`

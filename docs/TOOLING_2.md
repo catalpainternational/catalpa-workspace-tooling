@@ -84,6 +84,9 @@ same reviewable, diffable desired state as quadlet hosts. It's the biggest chang
 
 ## Test projects
 
+Each test branch follows [UPGRADING_2.md](UPGRADING_2.md), which is also what every other
+project does when it moves to 2.0.
+
 Before `dev-2.0` merges, each of these gets a branch pinned to it and is run through its
 checklist:
 
