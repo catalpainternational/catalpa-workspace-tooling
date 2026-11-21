@@ -302,6 +302,11 @@ class Backend:
                 return f.rsplit("/", 1)[-1][: -len(".container")], text
         raise Usage(f"{self.env_name}'s render has no restic backup (restic_write_* credentials)")
 
+    def _restic_lock_flag(self) -> list[str]:
+        """A read key can't write restic's lock object: read mode runs without one, as compose's
+        READ mode does. Nothing else writes the source's repository from here."""
+        return ["--no-lock"] if self.restore.get("restic") else []
+
     def files(self, sub: str) -> int:
         stem, text = self._restic_quadlet()
         if not stem and sub in ("backup", "init"):
@@ -309,6 +314,7 @@ class Backend:
         if sub == "backup":
             return self._start_and_show(f"{stem}.service")
         args = {"snapshots": ["snapshots"], "check": ["check"], "stats": ["stats"], "init": ["init"]}[sub]
+        args = self._restic_lock_flag() + args
         cmd = ["podman", "run", "--rm", "-i", *podman_run_args(text, volumes=volume_names(self.committed)), *args]
         return self._ssh(shlex.join(cmd), tty=False)
 
@@ -462,7 +468,7 @@ class Backend:
         for i, path in enumerate(paths):
             path_filter = ["--path", path] if snapshot == "latest" and not host_filter else []
             cmd = shlex.join(
-                ["podman", "run", "--rm", *run_args, "restore", f"{snapshot}:{path}",
+                ["podman", "run", "--rm", *run_args, *self._restic_lock_flag(), "restore", f"{snapshot}:{path}",
                  "--target", path, "--delete", *host_filter, *path_filter]
             )  # fmt: skip
             # A path added after the snapshot was taken isn't in it: keep that one as it is.

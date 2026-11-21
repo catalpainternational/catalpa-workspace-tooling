@@ -277,7 +277,9 @@ def test_read_mode_refuses_writes_and_reads_the_source(read_env, capsys) -> None
     assert cmd[:7] == ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "pgbackrest"]
     assert cmd[-1] == "info" and "pgbr_s3_read_secret,type=env,target=PGBACKREST_REPO1_S3_KEY_SECRET" in cmd
     rc, r = sub(read_env, "files", "snapshots")
-    assert "restic_read_password,type=env,target=RESTIC_PASSWORD" in shlex.split(r.calls[-1][-1])
+    cmd = shlex.split(r.calls[-1][-1])
+    assert "restic_read_password,type=env,target=RESTIC_PASSWORD" in cmd
+    assert cmd[-2:] == ["--no-lock", "snapshots"]
 
 
 def test_files_restore_from_the_source_filters_by_path_not_host(read_env, capsys) -> None:
@@ -285,6 +287,8 @@ def test_files_restore_from_the_source_filters_by_path_not_host(read_env, capsys
     assert rc == 0
     script = capsys.readouterr().err
     assert "--path /backup/" in script and "--host" not in script
+    # The read key can't write restic's lock: --no-lock, between the image and the command.
+    assert "--no-lock restore latest:/backup/" in script
 
 
 @pytest.mark.parametrize("web_up", [True, False])
