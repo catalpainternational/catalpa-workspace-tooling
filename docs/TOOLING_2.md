@@ -102,14 +102,17 @@ Checklist per project: bare `dk <env>` and `dk <env> ps`/`logs`/`exec`/`manage` 
 db`/`fetch media`; `transfer staging dev`; `db info`/`backup`/`restore --dry-run`; `files
 snapshots`; `worktree create` and `dk dev` locally; every refused command gives a useful hint.
 
-## Open questions
+## Decided
 
-- **What switches a rendered env's backups on.** Today it's which `pgbr_s3_write_*` /
-  `restic_write_*` names `credentials.yaml` has (a render reads names, never values). So a new env
-  needs credentials before its render has backup units, and removing stale credentials changes
-  the render. Keying it on configuration (`ops.pgbackrest`/`ops.restic`, or an env setting)
-  instead would let `render` → `provision` → `db configure stanza-create` run in one order on
-  every env.
+- **What switches an env's backups on: `info.yaml`, not the credentials.** `backups: [db, files]`
+  (this env backs itself up) and `restore_from: <env>` (this env restores that env's backups),
+  on both runtimes. Credentials keep their read/write names and must match the settings:
+  credentials without their setting stop dk, so an upgraded prod env can't quietly stop backing
+  up. A render no longer depends on which credentials exist, so `render` → `host provision` →
+  `db configure stanza-create` runs in one order on every env. Every project's 2.0 branch adds
+  `backups:` to its backed-up envs and `restore_from` to the envs with read credentials.
+
+## Open questions
 
 - **Restored media and the edge's access to it.** After `files restore`, a quadlet env runs
   `chmod -R o+rX` on every restored volume the edge (Caddy) also mounts. Caddy runs in its own ID

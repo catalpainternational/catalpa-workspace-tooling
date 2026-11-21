@@ -9,6 +9,25 @@ Database backups and WAL archiving via [pgBackRest](https://pgbackrest.org) with
 - [README_DC_BACKUP.md](README_DC_BACKUP.md) — private CA mount, `DOCKER_ADD_HOST`, `dk dc-backup`
 - [README.md](README.md) — main tooling overview
 
+## Which envs back up, and which restore
+
+`info.yaml` decides, not which credentials exist (tooling 2.0):
+
+```yaml
+# docker/envs/prod/info.yaml
+backups: [db, files]   # this env backs itself up: db = pgBackRest, files = restic
+
+# docker/envs/staging/info.yaml (and dev, full …)
+restore_from: prod     # this env restores prod's backups
+```
+
+`backups` needs WRITE credentials for each kind it lists, `restore_from` READ credentials for the
+kinds the source lists. Absent means off: an env without `backups` takes no backups, and the
+commands that would (`db backup`, `db configure stanza-create`, `install-systemd`, `files init`,
+`files backup`) say so instead of offering to create a bucket. Credentials without their setting
+stop every `dk <env>` command with a hint, so an env upgraded without `backups:` can't quietly
+stop backing up. `dk <env> secrets read-key` makes an env's READ credentials from its source.
+
 ## Credentials per environment
 
 Edit `docker/envs/<env>/credentials.yaml` (SOPS-encrypted in production). Use **lowercase** keys; `dk` uppercases them when loading env ([`env_yaml.py`](src/catalpa_tooling/env_yaml.py)).

@@ -183,7 +183,10 @@ def _read_mode_swlt(tmp_path: Path, *, both: bool = False) -> Path:
     creds.write_text("\n".join(keep + [f"{k}: ENC[x]" for k in READ_NAMES]) + "\n")
     (env / "info.yaml").write_text((env / "info.yaml").read_text() + "restore_from: prod\n")
     (root / "docker" / "envs" / "prod").mkdir(exist_ok=True)
-    (root / "docker" / "envs" / "prod" / "info.yaml").write_text("name: prod\n")
+    (root / "docker" / "envs" / "prod" / "info.yaml").write_text("name: prod\nbackups: [db, files]\n")
+    if not both:
+        info = env / "info.yaml"
+        info.write_text(info.read_text().replace("backups: [db, files]\n", ""))
     return root
 
 
@@ -214,7 +217,7 @@ def test_read_and_write_in_one_rendered_env_is_refused(tmp_path) -> None:
     from catalpa_tooling.fcos.render import RenderError, render_env
 
     config = load_project_config(_read_mode_swlt(tmp_path, both=True))
-    with pytest.raises(RenderError, match="both read and write credentials"):
+    with pytest.raises(RenderError, match="backed up here and restored from prod"):
         render_env(config, "staging", adapter=_fake_adapter(["/entrypoint.sh"]))
 
 
@@ -271,7 +274,8 @@ def test_read_mode_refuses_writes_and_reads_the_source(read_env, capsys) -> None
                                    ("files", "backup", {}), ("files", "init", {})):  # fmt: skip
         rc, r = sub(read_env, command, subcmd, **extra)
         assert rc == 2 and r.calls == []
-        assert "restores prod's backups with a read key" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "restores prod's backups" in err or "It restores prod's backups instead" in err
     rc, r = sub(read_env, "db", "info")
     cmd = shlex.split(r.calls[-1][-1])
     assert cmd[:7] == ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "pgbackrest"]

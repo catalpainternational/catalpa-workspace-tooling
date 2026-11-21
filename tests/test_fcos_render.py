@@ -426,13 +426,17 @@ def test_zabbix_template_keys_match_the_rendered_aliases() -> None:
 
 
 @needs_compose
-def test_backup_credentials_without_required_keys_or_timers_are_refused(tmp_path: Path) -> None:
+def test_backups_follow_info_yaml_and_timers_are_required(tmp_path: Path) -> None:
+    """A required credential not set yet is still rendered (as a secret provisioning will ask
+    for): the render follows `backups:`, not which credentials exist."""
+    import json
+
     root = tmp_path / "bero"
     shutil.copytree(FIXTURES / "bero", root, ignore=shutil.ignore_patterns("expected"))
     creds = root / "docker" / "envs" / "staging" / "credentials.yaml"
     creds.write_text(creds.read_text().replace("pgbr_s3_write_stanza:", "ignored_stanza:"))
-    with pytest.raises(RenderError, match="pgbr_s3_write_stanza"):
-        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+    render = render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+    assert "PGBR_S3_WRITE_STANZA" in json.loads(render.files["manifest.json"])["secrets"].values()
     tooling = root / "tooling.yaml"
     tooling.write_text(tooling.read_text().replace("      - bero_shape-restic-files-backup.timer\n", ""))
     with pytest.raises(RenderError, match="restic-files-backup.timer"):
@@ -485,3 +489,26 @@ def test_host_settings_validation() -> None:
         parse_fcos_settings({"fcos": {"admin_keys": ["hunter2"]}})
     with pytest.raises(FcosConfigError, match="host name"):
         parse_fcos_settings({"fcos": {"hostname": "Bad_Name"}})
+
+
+@needs_compose
+def test_credentials_without_their_setting_stop_the_render(tmp_path: Path) -> None:
+    """A prod env upgraded without `backups:` must not quietly lose its backups."""
+    root = tmp_path / "bero"
+    shutil.copytree(FIXTURES / "bero", root, ignore=shutil.ignore_patterns("expected"))
+    info = root / "docker" / "envs" / "staging" / "info.yaml"
+    info.write_text(info.read_text().replace("backups: [db, files]\n", "backups: [db]\n"))
+    with pytest.raises(RenderError, match=r"restic write credentials .* add `backups: \[db, files\]`"):
+        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+
+
+@needs_compose
+def test_no_backups_setting_no_backup_units(tmp_path: Path) -> None:
+    root = tmp_path / "bero"
+    shutil.copytree(FIXTURES / "bero", root, ignore=shutil.ignore_patterns("expected"))
+    info = root / "docker" / "envs" / "staging" / "info.yaml"
+    info.write_text(info.read_text().replace("backups: [db, files]\n", ""))
+    creds = root / "docker" / "envs" / "staging" / "credentials.yaml"
+    creds.write_text("\n".join(ln for ln in creds.read_text().splitlines() if not ln.startswith(("pgbr_s3", "restic"))) + "\n")
+    render = render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+    assert not any("pgbackrest" in f or "restic" in f for f in render.files if f != "manifest.json")

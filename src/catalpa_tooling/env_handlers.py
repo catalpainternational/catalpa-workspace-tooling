@@ -127,6 +127,45 @@ def _cmd_env_info(info_path: Path, *, edit: bool, dry_run: bool) -> int:
     return 0
 
 
+def _backup_roles(config: ProjectConfig, env_name: str, info: dict, env_add: dict[str, str]):
+    """The env's ``backups`` / ``restore_from``, checked against its credentials: credentials
+    without their setting stop every command, so an env upgraded without ``backups:`` can't
+    quietly stop backing up. None (after printing why) when they don't match."""
+    from catalpa_tooling.backup_settings import (
+        BackupSettingsError,
+        backup_settings,
+        credential_problems,
+    )
+
+    try:
+        roles = backup_settings(config, env_name, info)
+    except BackupSettingsError as exc:
+        print(str(exc), file=sys.stderr)
+        return None
+    problems = credential_problems(roles, env_add)
+    for p in problems:
+        print(p, file=sys.stderr)
+    return None if problems else roles
+
+
+def _refused_write(config: ProjectConfig, env_name: str, kind: str, what: str) -> bool:
+    """Print why and return True when ``what`` would back up a kind this env doesn't."""
+    from catalpa_tooling.backup_settings import (
+        BackupSettingsError,
+        backup_settings,
+        load_info,
+        refuse_write,
+    )
+
+    try:
+        why = refuse_write(backup_settings(config, env_name, load_info(config, env_name)), kind, what)
+    except BackupSettingsError as exc:
+        why = str(exc)
+    if why:
+        print(why, file=sys.stderr)
+    return bool(why)
+
+
 def _cmd_env_secrets(creds_path: Path, repo_root: Path, *, dry_run: bool) -> int:
     try:
         creds_rel = str(creds_path.resolve().relative_to(repo_root.resolve()))
@@ -528,6 +567,9 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     # Use post-overlay info for proxy hostnames, LAN URLs, and compose helpers.
     info = ctx.info
     env_add = ctx.env_add
+    roles = _backup_roles(config, env_name, info, env_add)
+    if roles is None:
+        return 1
     docker_host = ctx.docker_host
     site_origin = ctx.site_origin
     use_prepulled_registry = ctx.use_prepulled_registry
@@ -775,6 +817,8 @@ def _handle_bkp_files(
             config=config,
         )
 
+    if sub and needs_restic_write(sub) and _refused_write(config, env_name, "files", f"dk {env_name} files {sub}"):
+        return 1
     if sub and needs_restic_write(sub) and not restic_write_configured(env_add):
         rc = ensure_spaces_backup_credentials(
             config,
@@ -849,8 +893,13 @@ def _handle_bkp_db(
     use_prepulled_registry: bool,
 ) -> int:
     sub = getattr(ns, "db_command", None) or getattr(ns, "bkp_db_command", None)
-    bkp_tail: list[str] = []
+    # `configure stanza-create` writes to the repository: it needs (and may provision) WRITE
+    # credentials, as README_PGBACKREST says. This list was left empty by an old refactor.
+    mode = getattr(ns, "configure_mode", None) if sub == "configure" else None
+    bkp_tail: list[str] = [mode] if mode else []
 
+    if sub and needs_pgbr_write(sub, bkp_tail) and _refused_write(config, env_name, "db", f"dk {env_name} db {sub}"):
+        return 1
     if sub and needs_pgbr_write(sub, bkp_tail) and not pgbr_write_configured(env_add):
         rc = ensure_spaces_backup_credentials(
             config,

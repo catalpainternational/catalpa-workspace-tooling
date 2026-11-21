@@ -18,3 +18,5 @@ fcos:
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
     - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey ci-deploy
   drop_ports: [mailpit]
+# Backs itself up: pgBackRest (db) and restic (files).
+backups: [db, files]

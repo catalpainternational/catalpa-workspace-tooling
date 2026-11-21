@@ -201,21 +201,23 @@ def render_env(
     compose_rel = os.path.relpath(compose_file, config.repo_root)
     hostname = settings.hostname or _default_hostname(project, env_name)
     db_service = config.stack.services.db
+    from catalpa_tooling.backup_settings import BackupSettingsError, backup_settings
+
+    try:
+        roles = backup_settings(config, env_name, info)
+    except BackupSettingsError as exc:
+        raise RenderError(str(exc)) from exc
+    source = roles.restore_from
     plan = plan_backups(
         config,
         settings,
         keys,
         project=project,
         declared_volumes=set(resolved.get("volumes") or {}),
+        roles=roles,
     )
     if plan.problems:
         raise RenderError("backups:\n" + "\n".join(f"  - {p}" for p in plan.problems))
-    from catalpa_tooling.restore_from import RestoreFromError, restore_source
-
-    try:
-        source = restore_source(config, env_name, info)
-    except RestoreFromError as exc:
-        raise RenderError(str(exc)) from exc
     restic_container = (restic_unit_name(config) or "") if plan.restic else ""
     inputs = RenderInputs(
         env_name=env_name,

@@ -107,6 +107,18 @@
 
 ### Changed
 
+- **Breaking: `info.yaml` says which envs back up and which restore, not the credentials.**
+  `backups: [db, files]` switches an env's backups on (pgBackRest, restic), `restore_from: <env>`
+  its restores from that env's backups. Without `backups:` an env takes no backups: on compose,
+  `db backup`, `db configure stanza-create`, `install-systemd`, `files init` and `files backup`
+  refuse with a hint instead of offering to create a bucket; on a rendered env there are no
+  backup units. Credentials without their setting stop every `dk <env>` command, so **add
+  `backups: [db, files]` to each env that backs up (prod) and `restore_from: prod` to each env
+  with read credentials (staging, full, dev) when moving to 2.0**. A rendered env's render no
+  longer changes with the credentials, so a new env runs `render` → `host provision` →
+  `db configure stanza-create` in that order. Also fixed: compose `db configure stanza-create`
+  offers to create missing credentials again, as documented.
+
 - **doctl lookups run once per dk command.** `host create` asked DigitalOcean for the same
   projects, droplets and domain records two or three times, one step after another (about 25
   doctl calls; now about 14). Read-only `list`/`get` results are kept for the command's life;

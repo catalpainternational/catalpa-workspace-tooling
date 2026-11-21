@@ -134,7 +134,12 @@ edge image. Pulling an amd64 image on Apple Silicon takes a minute or two the fi
 
 ## Backups
 
-These use the same keys as compose deploys:
+`backups: [db, files]` in `info.yaml` switches them on, kind by kind, as on compose envs; without
+it the render has no backup units, archiving or timers, whatever credentials exist. The render
+lists the required credentials as secrets even before they're set, so `render` → `host
+provision` → `db configure stanza-create` runs in that order on a new env (`host provision`
+names the missing ones and the command that makes them). They use the same keys as compose
+deploys:
 
 - `pgbr_s3_write_*` and `restic_write_*` in the env's `credentials.yaml`. When they're missing,
   `db configure stanza-create`, `db backup`, `files init` and `files backup` offer to create the
@@ -173,7 +178,7 @@ No credential is in a file, a volume or `podman inspect`.
   in the ID range of the services that write the backed-up volumes, mounts them read-only, and
   uses a fixed `--host`.
 - **Read mode: restoring another env's backups.** An env with `restore_from: <env>` in
-  `info.yaml` and read credentials (`pgbr_s3_read_*` / `restic_read_*`, made by
+  `info.yaml` (for the kinds the source lists under `backups`) and read credentials (`pgbr_s3_read_*` / `restic_read_*`, made by
   `dk <env> secrets read-key`) gets no backup units, no WAL archiving and no timers. The read keys
   become Podman secrets for the one-off containers of `db restore`, `db info`, `files restore` and
   `files snapshots`, listed under `restore` in the manifest; `db` never sees them. `db backup`,

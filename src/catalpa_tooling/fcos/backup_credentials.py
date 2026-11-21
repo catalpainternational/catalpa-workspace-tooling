@@ -75,11 +75,10 @@ def ensure_backup_credentials(
     names = sorted(n for n, key in (c.manifest.get("secrets") or {}).items() if key.upper() in changed)
     rendered = {key.upper() for key in (c.manifest.get("secrets") or {}).values()}
     if changed - rendered:
-        # The committed render predates these credentials, so it has no backup units for
-        # them: the render switches backups on by which credentials exist.
+        # The committed render predates `backups:` (or these optional keys): render again.
         print(
-            f"{label}: the credentials are created, but the committed render has no backups for "
-            f"them yet. Run `dk {b.env_name} render`, commit, `dk {b.env_name} secrets "
+            f"{label}: the credentials are created, but the committed render doesn't use them "
+            f"all yet. Run `dk {b.env_name} render`, commit, `dk {b.env_name} secrets "
             f"push`, then a bare `dk {b.env_name}` to apply it, and run this again.",
             file=sys.stderr,
         )

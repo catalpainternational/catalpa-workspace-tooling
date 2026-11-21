@@ -615,12 +615,28 @@ def secret_values(
     for name, key, system in wanted:
         value = by_key.get(key.upper())
         if value is None or isinstance(value, dict | list):
-            problems.append(f"{name}: credentials.yaml has no {key.lower()}")
+            problems.append(f"{name}: credentials.yaml has no {key.lower()}{_makes(key)}")
         elif str(value) == "":
             problems.append(f"{name}: {key.lower()} is empty (Podman refuses an empty secret)")
         else:
             out.append((name, str(value), system))
     return out, problems
+
+
+#: Credentials dk makes itself: which command, by prefix.
+_MADE_BY = {
+    "PGBR_S3_WRITE_": "backups: [db]; `db configure stanza-create` makes them",
+    "RESTIC_WRITE_": "backups: [files]; `files init` makes them",
+    "PGBR_S3_READ_": "restore_from; `secrets read-key` makes them",
+    "RESTIC_READ_": "restore_from; `secrets read-key` makes them",
+}
+
+
+def _makes(key: str) -> str:
+    for prefix, how in _MADE_BY.items():
+        if key.upper().startswith(prefix):
+            return f" ({how})"
+    return ""
 
 
 def push_secrets(host: Host, c: Committed, values: list[tuple[str, str, bool]]) -> None:

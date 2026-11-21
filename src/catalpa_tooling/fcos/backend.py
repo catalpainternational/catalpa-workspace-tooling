@@ -835,6 +835,21 @@ def handle(
 
             target = needs_write(verb, sub, ns)
             if target:
+                from catalpa_tooling.backup_settings import (
+                    BackupSettingsError,
+                    backup_settings,
+                    refuse_write,
+                )
+
+                from catalpa_tooling.backup_settings import load_info
+
+                try:
+                    roles = backup_settings(config, env_name, load_info(config, env_name))
+                except BackupSettingsError as exc:
+                    raise Usage(str(exc)) from None
+                why = refuse_write(roles, "db" if target == "pgbackrest" else "files", f"dk {env_name} {verb} {sub}")
+                if why:
+                    raise Usage(why)
                 rc = ensure_backup_credentials(
                     b, target, yes=yes, dry_run=dry_run, label=f"dk {env_name} {verb} {sub}"
                 )

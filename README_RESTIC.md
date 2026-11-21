@@ -62,6 +62,10 @@ Deduplication still applies, so the repository grows only by the new volumes' co
 
 ## Credentials per environment
 
+Which envs back up and which restore is set in `info.yaml` (`backups: [files]`, `restore_from`),
+not by which credentials exist: see [README_PGBACKREST.md](README_PGBACKREST.md#which-envs-back-up-and-which-restore).
+
+
 Use **one** credential style per environment (mutually exclusive). Keys in `credentials.yaml` are uppercased by `dk` like other deploy secrets.
 
 ### WRITE mode (scheduled backup hosts)

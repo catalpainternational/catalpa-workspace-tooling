@@ -12,8 +12,12 @@ tool reads (pgBackRest takes any option as ``PGBACKREST_<OPTION>``; restic takes
 ``AWS_*``). The files keep only tuning, which is not secret: no credential is in a file, a
 volume, or ``podman inspect``.
 
-Read mode (``pgbr_s3_read_*`` / ``restic_read_*``, an env with ``restore_from``, #204) gives no
-units: the read keys become Podman secrets for the one-off containers of ``db restore`` and
+What is rendered follows ``info.yaml``, not which credentials exist (``backup_settings``):
+``backups: [db, files]`` renders the backup units, ``restore_from`` the restore containers. The
+credentials must match: required ones are rendered as secrets whether or not they're set yet,
+and credentials without their setting stop the render.
+
+Read mode (``restore_from``, #204) gives no units: the read keys become Podman secrets for the one-off containers of ``db restore`` and
 ``files restore``, described in the manifest's ``restore``. ``db`` never sees them, and with no
 write keys there is no WAL archiving and no timer, so a restored copy can't write into a
 repository. Read and write in one env aren't rendered yet: the restored cluster's system ID
@@ -87,6 +91,13 @@ class BackupPlan:
         return {secret_name(k): k for k in keys}
 
 
+def _role_keys(prefix: str, required: tuple[str, ...], keys: set[str]) -> list[str]:
+    """The credential keys a role uses: the required ones whether or not credentials.yaml has
+    them yet (the render follows the settings, not the credentials), and any optional ones it
+    has."""
+    return sorted({f"{prefix}{s}" for s in required} | {k for k in keys if k.startswith(prefix)})
+
+
 def plan_backups(
     config: ProjectConfig,
     settings: FcosSettings,
@@ -94,24 +105,29 @@ def plan_backups(
     *,
     project: str,
     declared_volumes: set[str],
+    roles=None,
 ) -> BackupPlan:
+    """``roles``: the env's ``BackupSettings`` (``backups`` / ``restore_from``), which decide
+    what is rendered; the credentials only have to match them."""
+    from catalpa_tooling.backup_settings import BackupSettings, credential_problems
+
     plan = BackupPlan()
+    roles = roles or BackupSettings(env="?", backups=frozenset())
     keys = {k.upper() for k in credential_keys}
-    pg_keys = sorted(k for k in keys if k.startswith(PGBR_PREFIX))
-    restic_keys = sorted(k for k in keys if k.startswith(RESTIC_PREFIX))
-    pg_read = sorted(k for k in keys if k.startswith(PGBR_READ_PREFIX))
-    restic_read = sorted(k for k in keys if k.startswith(RESTIC_READ_PREFIX))
-    if (pg_keys or restic_keys or pg_read or restic_read) and not config.has_ops:
-        plan.problems.append("backup credentials are set but tooling.yaml has no `ops:`")
-        return plan
-    for label, write, read in (("pgBackRest", pg_keys, pg_read), ("restic", restic_keys, restic_read)):
-        if write and read:
-            plan.problems.append(
-                f"{label}: both read and write credentials. A rendered host restores another env's "
-                "backups (read) or backs itself up (write), not both yet (#204): remove one set"
-            )
+    plan.problems.extend(credential_problems(roles, keys))
+    for kind in sorted(roles.backups & roles.restores):
+        plan.problems.append(
+            f"{kind}: backed up here and restored from {roles.restore_from}. A rendered host "
+            "restores another env's backups or backs itself up, not both yet (#204)"
+        )
+    if (roles.backups or roles.restores) and not config.has_ops:
+        plan.problems.append("backups: / restore_from: are set but tooling.yaml has no `ops:`")
     if plan.problems:
         return plan
+    pg_keys = _role_keys(PGBR_PREFIX, _PGBR_REQUIRED, keys) if roles.writes("db") else []
+    restic_keys = _role_keys(RESTIC_PREFIX, _RESTIC_REQUIRED, keys) if roles.writes("files") else []
+    pg_read = _role_keys(PGBR_READ_PREFIX, _PGBR_REQUIRED, keys) if roles.reads("db") else []
+    restic_read = _role_keys(RESTIC_READ_PREFIX, _RESTIC_REQUIRED, keys) if roles.reads("files") else []
     _plan_read(plan, keys, pg_read, restic_read)
 
     if pg_keys:
@@ -121,12 +137,6 @@ def plan_backups(
                 plan.problems.append(f"{key}: no pgBackRest option for `{suffix}`")
                 continue
             plan.pgbackrest[key] = pgbackrest_env_var(_PGBR_OPTION[suffix])
-        missing = [s for s in _PGBR_REQUIRED if f"{PGBR_PREFIX}{s}" not in keys]
-        if missing:
-            plan.problems.append(
-                "pgBackRest: credentials.yaml lacks "
-                + ", ".join(f"{PGBR_PREFIX}{s}".lower() for s in missing)
-            )
         pg = config.ops.pgbackrest
         conf_dir = f"{settings.home}/.config/{project}"
         plan.db_lines = (
@@ -146,7 +156,7 @@ def plan_backups(
         )
         if not _timer_kinds(config.ops.systemd_units.pgbackrest, "pgbackrest-backup-"):
             plan.problems.append(
-                "pgBackRest credentials are set but ops.systemd_units.pgbackrest lists no "
+                "backups: [db] but ops.systemd_units.pgbackrest lists no "
                 "pgbackrest-backup-{full,incr,diff}.timer"
             )
 
@@ -157,16 +167,9 @@ def plan_backups(
                 plan.problems.append(f"{key}: no restic variable for `{suffix}`")
                 continue
             plan.restic[key] = _RESTIC_VAR[suffix]
-        missing = [s for s in _RESTIC_REQUIRED if f"{RESTIC_PREFIX}{s}" not in keys]
-        if missing:
-            plan.problems.append(
-                "restic: credentials.yaml lacks "
-                + ", ".join(f"{RESTIC_PREFIX}{s}".lower() for s in missing)
-            )
         if not any(u.endswith("restic-files-backup.timer") for u in config.ops.systemd_units.restic):
             plan.problems.append(
-                "restic credentials are set but ops.systemd_units.restic lists no "
-                "restic-files-backup.timer"
+                "backups: [files] but ops.systemd_units.restic lists no restic-files-backup.timer"
             )
     if plan.restic or plan.restic_read:
         volumes = config.ops.restic.data_volumes
@@ -191,15 +194,6 @@ def _plan_read(plan: BackupPlan, keys: set[str], pg_read: list[str], restic_read
             plan.problems.append(f"{key}: no restic variable for `{suffix}`")
             continue
         plan.restic_read[key] = _RESTIC_VAR[suffix]
-    for prefix, required, have in (
-        (PGBR_READ_PREFIX, _PGBR_REQUIRED, pg_read),
-        (RESTIC_READ_PREFIX, _RESTIC_REQUIRED, restic_read),
-    ):
-        missing = [s for s in required if have and f"{prefix}{s}" not in keys]
-        if missing:
-            plan.problems.append(
-                "credentials.yaml lacks " + ", ".join(f"{prefix}{s}".lower() for s in missing)
-            )
 
 
 def _timer_kinds(units: tuple[str, ...], stem: str) -> list[str]:
