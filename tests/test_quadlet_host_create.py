@@ -123,6 +123,10 @@ def do(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("catalpa_tooling.doctl_droplets.create_droplet", create_droplet)
     monkeypatch.setattr(
+        "catalpa_tooling.doctl_firewall.ensure_droplet_firewall",
+        lambda name, droplet_id, settings, **k: calls.append(("firewall", name, droplet_id)) or 0,
+    )
+    monkeypatch.setattr(
         "catalpa_tooling.doctl_domains.sync_host_dns",
         lambda config, info, droplet_ip, **k: calls.append(("dns", droplet_ip)) or 0,
     )
@@ -141,13 +145,14 @@ def test_a_new_host_gets_a_new_volume_the_ignition_dns_and_provisioning(site, do
     config, _info = site
     assert cmd_env_host_create(config, "staging", []) == 0
     calls = do["calls"]
-    assert names(calls) == ["create_volume", "assign", "create_droplet", "dns", "provision"]
+    assert names(calls) == ["create_volume", "assign", "create_droplet", "firewall", "dns", "provision"]
+    assert calls[3] == ("firewall", "site-staging", 7)
     assert calls[0][1:] == ("site-staging-data", 10, "sgp1")
     _n, droplet, k = calls[2]
     assert droplet == "site-staging"
     assert k["user_data"] == '{"ignition":{}}' and k["volume_ids"] == ("vol-new",)
     assert k["image"] == "123456" and k["enable_monitoring"] is False and k["reuse_existing"] is False
-    assert calls[4] == ("provision", IP, False)
+    assert calls[-1] == ("provision", IP, False)
 
 
 def test_a_kept_volume_is_reused_and_no_start_is_passed_on(site, do, capsys) -> None:
@@ -238,3 +243,10 @@ def test_project_and_context_apply_to_every_step(site, do, monkeypatch) -> None:
     )  # fmt: skip
     assert cmd_env_host_create(config, "staging", ["--", "--project", "Other", "--context", "work"]) == 0
     assert seen and set(seen) == {("Other", "work")}
+
+
+def test_firewall_false_makes_none(site, do) -> None:
+    config, info = site
+    info.write_text(info.read_text() + "  firewall: false\n")  # under digitalocean: (DO is last)
+    assert cmd_env_host_create(config, "staging", []) == 0
+    assert "firewall" not in names(do["calls"])

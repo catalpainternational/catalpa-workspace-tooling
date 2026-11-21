@@ -376,6 +376,9 @@ dk <env> host create             # then provisions it; --no-start for a restore
    is created in the project;
 4. creates the droplet from `digitalocean.image` with the volume attached (so Ignition formats
    or mounts it) and the Ignition as its user data, without DigitalOcean's metrics agent;
+   then puts it behind a cloud firewall, `dk-<droplet>`: SSH, HTTP, HTTPS, HTTP/3 and ping in;
+   out, only DNS, HTTP(S), NTP, mail, git over SSH and Zabbix (active checks, all a rendered
+   host's agent makes). `digitalocean.firewall: false` for none, `{out_tcp: [5432]}` for more;
 5. points the env's DNS A records at it, and `docker_host` too when it names an IP (a hostname
    stays);
 6. runs `host provision` against the new IP. `--no-start` passes on (restore first, then

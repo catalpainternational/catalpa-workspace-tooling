@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`host create` puts a DigitalOcean cloud firewall on every droplet it makes (Josh Brooks).**
+  `dk-<droplet>` lets in SSH, HTTP, HTTPS (and HTTP/3) and ping, and lets out only DNS, HTTP(S),
+  NTP, mail, git over SSH and Zabbix (port 10051). The rules are containerwharf's defaults,
+  adopted after a compromised staging server ran a miner and a tunnel. It filters before the
+  droplet, where Docker-published ports get around ufw. `digitalocean.firewall: false` makes none;
+  `{out_tcp: [...], out_udp: [...]}` adds outbound ports, `{out_open: true}` opens outbound. A
+  droplet that already existed keeps the firewall it has. A compose host whose Zabbix agent takes
+  passive checks (inbound 10050) doesn't get that port: add the rule or use active checks.
+  `host create` also takes its own flags after `--`, as QUICKSTART says, and with `--project` or
+  `--context` it finishes (`docker_host`, DNS) in that project and account.
+
 - **`dk <env> host create` creates a rendered host (`runtime: quadlet`) on DigitalOcean (tooling
   2.0, M6).** It replaces the `doctl` steps a person ran:
   1. checks the committed render is current and its Ignition fits in 64 KiB;

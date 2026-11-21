@@ -9,7 +9,8 @@ The steps a person ran with ``doctl`` (tooling 2.0, M6), in one command:
    env's detached one is reused, data and all (a rebuild after ``host destroy --keep-volumes``);
    one attached to a droplet is refused; otherwise it's created (``size_gib``) in the project.
 4. The droplet, with the volume attached at creation (so Ignition finds and mounts it), the
-   Ignition as user data, and the image, size and region from ``digitalocean.*``.
+   Ignition as user data, and the image, size and region from ``digitalocean.*``; then its cloud
+   firewall ``dk-<droplet>`` (``doctl_firewall``; ``digitalocean.firewall: false`` for none).
 5. DNS: the env's A records point at the new IP. ``docker_host`` is updated only when it names an
    IP; a hostname stays right.
 6. ``host provision`` against the new IP: it waits for SSH, checks the files, pushes the
@@ -223,7 +224,12 @@ def cmd_quadlet_host_create(
     if rc != 0:
         return rc
     if dry_run:
-        print("dry-run: then point the DNS records at the new IP and run `host provision` on it.", file=sys.stderr)
+        fw_note = "" if env_firewall_settings_dry(info) else " (no cloud firewall: digitalocean.firewall: false)"
+        print(
+            f"dry-run: then put the cloud firewall dk-{link.droplet_name} on it{fw_note}, point the DNS "
+            "records at the new IP and run `host provision` on it.",
+            file=sys.stderr,
+        )
         print("dry-run: nothing changed; the plan above is what it would do.", file=sys.stderr)
         return 0
 
@@ -231,6 +237,18 @@ def cmd_quadlet_host_create(
     ip = public_ipv4(droplet or {})
     if not ip:
         print(f"{label}: the droplet has no public IPv4 yet: `dk {env_name} host` shows it.", file=sys.stderr)
+        return 1
+
+    # The cloud firewall every new droplet gets (doctl_firewall): SSH, web, HTTP/3 and ping in;
+    # deploy traffic out. A rendered host's Zabbix agent makes active checks only, so nothing
+    # else comes in.
+    from catalpa_tooling.doctl_firewall import ensure_droplet_firewall, env_firewall_settings
+
+    fw = env_firewall_settings(info)
+    if fw is None:
+        print("No cloud firewall (digitalocean.firewall: false).", file=sys.stderr)
+    elif ensure_droplet_firewall(link.droplet_name, droplet["id"], fw, context=context) != 0:
+        print(f"{label}: the cloud firewall failed; the host is made, but unfiltered.", file=sys.stderr)
         return 1
 
     # 5. DNS and docker_host.
@@ -254,6 +272,12 @@ def cmd_quadlet_host_create(
         print(f"{label}: {exc}", file=sys.stderr)
         print(f"The droplet exists; `dk {env_name} host provision --host {ip}` finishes it.", file=sys.stderr)
         return 1
+
+
+def env_firewall_settings_dry(info: dict):
+    from catalpa_tooling.doctl_firewall import env_firewall_settings
+
+    return env_firewall_settings(info) is not None
 
 
 def _data_volume(
