@@ -469,7 +469,10 @@ class Backend:
             path_filter = ["--path", path] if snapshot == "latest" and not host_filter else []
             cmd = shlex.join(
                 ["podman", "run", "--rm", *run_args, *self._restic_lock_flag(), "restore", f"{snapshot}:{path}",
-                 "--target", path, "--delete", *host_filter, *path_filter]
+                 "--target", path, "--delete", *host_filter, *path_filter,
+                 # The :z mount labels the files; a snapshot's labels (or an Ubuntu host's lack
+                 # of them) mustn't be written back, which SELinux refuses inside the container.
+                 "--exclude-xattr", "security.selinux"]
             )  # fmt: skip
             # A path added after the snapshot was taken isn't in it: keep that one as it is.
             steps.append(cmd if i == 0 else f"{cmd} || echo 'Snapshot has no {path}: left as it is.' >&2")

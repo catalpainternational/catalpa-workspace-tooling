@@ -315,7 +315,7 @@ def test_files_restore(swlt) -> None:
     i = cmd.index("restore")
     assert cmd[i:] == [
         "restore", "latest:/backup/django_media", "--target", "/backup/django_media",
-        "--delete", "--host", "swlt-shape-staging",
+        "--delete", "--host", "swlt-shape-staging", "--exclude-xattr", "security.selinux",
     ]  # fmt: skip
     # The media mount is writable for the restore (the backup unit mounts it read-only).
     media = [a for a in cmd if a.endswith(":/backup/django_media") or ":/backup/django_media:" in a]

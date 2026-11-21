@@ -289,6 +289,7 @@ def test_files_restore_from_the_source_filters_by_path_not_host(read_env, capsys
     assert "--path /backup/" in script and "--host" not in script
     # The read key can't write restic's lock: --no-lock, between the image and the command.
     assert "--no-lock restore latest:/backup/" in script
+    assert "--exclude-xattr security.selinux" in script
 
 
 @pytest.mark.parametrize("web_up", [True, False])
