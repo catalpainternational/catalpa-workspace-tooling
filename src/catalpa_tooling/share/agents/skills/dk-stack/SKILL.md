@@ -64,11 +64,11 @@ only the first origin).
 ## Start, wait, stop
 
 ```bash
-uv run dk dev up -d                      # main checkout
-uv run dk --worktree <slug> dev up -d    # a worktree, from the main checkout or inside it
+uv run dk dev                      # main checkout
+uv run dk --worktree <slug> dev    # a worktree, from the main checkout or inside it
 uv run dk dev ps
 uv run dk dev logs -f <service>
-uv run dk dev down                       # keeps volumes
+uv run dk dev compose down                       # keeps volumes
 ```
 
 Everything after `dk <env>` that is a compose verb is passed to

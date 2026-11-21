@@ -145,7 +145,7 @@ Every key under `ops:` is optional. A project that uses `ops:` only for local da
 | `ops.systemd_units.*`                 | only for install-systemd        | empty lists (nothing invented)               | `db`/`files install-systemd`; with no units listed it stops and names `ops.systemd_units.<kind>` |
 | `ops.default_db_container`            | no                              | unset                                        | `install-systemd --dry-run` fallback when the db container can't be discovered                  |
 | `ops.zabbix.unit_name` / `userparams_file` | only for `dk <env> zabbix` | section unset                                | Zabbix agent commands, which stop and name `ops.zabbix` when it is missing                      |
-| `ops.pgbackrest.postgres_conf`        | no                              | `30-{name}-pgbackrest-archive.conf`          | `dk <env> up`, `db init`/`configure`/`restore`: Postgres archive drop-in in `/etc/postgresql/conf.d` |
+| `ops.pgbackrest.postgres_conf`        | no                              | `30-{name}-pgbackrest-archive.conf`          | `dk <env>`, `db init`/`configure`/`restore`: Postgres archive drop-in in `/etc/postgresql/conf.d` |
 | `ops.pgbackrest.pgbackrest_conf`      | no                              | `50-{name}-managed.conf`                     | same: managed drop-in in `/etc/pgbackrest/conf.d`                                               |
 | `ops.pgbackrest.default_registry`     | no                              | the `docker/images.yaml` registry            | naming the db image when `Postgres_IMAGE` and `STACK_IMAGE_REGISTRY` are unset                  |
 | `ops.pgbackrest.data_volume`          | no                              | `postgres_data`                              | Compose **volume key** for PGDATA (ambulancia uses `pgdata`)                                    |
@@ -348,7 +348,7 @@ storage:
       path: /mnt/myapp-media
 ```
 
-`dk <env> up` / `storage ensure` pre-creates those named volumes. You do **not** need `external: true` in Compose for binds to work.
+`dk <env>` / `storage ensure` pre-creates those named volumes. You do **not** need `external: true` in Compose for binds to work.
 
 ### Caddy and origins
 
@@ -381,19 +381,19 @@ Host `native` uses `paths.env_local` and a different default (`localhost:5432`).
 
 ```bash
 # Validate merge (no remote, no secret dump needed for structure)
-uv run dk dev config --services
+uv run dk dev compose config --services
 
 uv run dk proxy up          # once per machine; then trust CA
 uv run dk proxy trust
 
-uv run dk dev up -d
+uv run dk dev
 uv run dk dev ps
 # Site: https://<project>-dev.localdev.temp.build
 ```
 
-If Compose is invalid, fix service names / interpolations locally. Do not debug by running `dk staging config` (that decrypts remote secrets into the process env).
+If Compose is invalid, fix service names / interpolations locally. Do not debug by running `dk staging compose config` (that decrypts remote secrets into the process env).
 
-Host workflow (optional, Postgres on the machine or `dk dev up -d db`):
+Host workflow (optional, Postgres on the machine or `dk dev compose up -d db`):
 
 ```bash
 uv run native manage migrate
@@ -463,7 +463,7 @@ gh auth refresh -s read:packages,delete:packages,write:packages
 12. Pin `image_tag` in `info.yaml` (or pass `--tag`) **and** keep `image_registry` set so the remote host pulls `Django_IMAGE` / `Caddy_IMAGE` / `Postgres_IMAGE`. Then:
 
 ```bash
-uv run dk staging up -d
+uv run dk staging
 uv run dk staging ps
 # first boot, if the app needs it:
 uv run dk staging manage migrate
@@ -499,7 +499,7 @@ When something fails, use [TROUBLESHOOTING.md](TROUBLESHOOTING.md) (precedence o
 
 | Goal                            | Command                                                        |
 | ------------------------------- | -------------------------------------------------------------- |
-| Start local stack               | `dk dev up -d`                                                 |
+| Start local stack               | `dk dev`                                                 |
 | Logs / exec                     | `dk dev compose logs -f`, `dk dev compose exec <svc> sh`       |
 | Django in Compose               | `dk dev manage migrate`                                        |
 | Django on host                  | `native manage …` / `native runserver`                         |

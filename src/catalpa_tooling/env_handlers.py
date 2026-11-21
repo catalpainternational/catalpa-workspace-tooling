@@ -84,6 +84,7 @@ from catalpa_tooling.restic_files import (
     run_stats,
     split_restic_cli_verbose,
 )
+from catalpa_tooling.cli.dk_argv import RUNNING_APP_VERBS, implicit_compose_refused_message
 from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 from catalpa_tooling.systemd_remote_install import (
     cmd_install_systemd_backups,
@@ -414,6 +415,9 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
 
     if env_command is None:
         compose_args = list(getattr(ns, "implicit_compose_argv", None) or [])
+        if compose_args and compose_args[0] not in RUNNING_APP_VERBS:
+            print(implicit_compose_refused_message(env_name, compose_args), file=sys.stderr)
+            return 2
         if not compose_args:
             compose_args = ["up", "-d"]
     elif env_command == "compose":

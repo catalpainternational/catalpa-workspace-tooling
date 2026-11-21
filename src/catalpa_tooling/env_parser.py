@@ -172,11 +172,16 @@ def _attach_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> N
         for sub_name in ("info", "check", "version"):
             sub.add_parser(sub_name, help=f"pgBackRest {sub_name}.")
 
-        p_backup = sub.add_parser("backup", help="Online pgBackRest backup.")
+        p_backup = sub.add_parser("backup", help="Online pgBackRest backup (default: incr).")
         backup_type = p_backup.add_argument(
             "backup_type",
+            nargs="?",
+            default="incr",
             choices=("full", "incr", "diff"),
-            help="Backup type.",
+            help=(
+                "Backup type (default: incr, as pgBackRest's own default; it takes a full one "
+                "when the repository has none)."
+            ),
         )
         attach_choices_completer(backup_type, ("full", "incr", "diff"))
 

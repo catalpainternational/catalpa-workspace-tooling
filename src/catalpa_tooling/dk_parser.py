@@ -36,8 +36,8 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
         epilog=(
             f"Examples:\n"
             f"  dk build db\n"
-            f"  dk full up -d\n"
-            f"  dk --worktree onboarding dev up -d\n"
+            f"  dk full\n"
+            f"  dk --worktree onboarding dev\n"
             f"  dk full compose logs {svc_web}\n"
             f"  dk prod db pgdump\n"
             f"  dk full info -e\n"

@@ -1,6 +1,6 @@
 # `dk cut-release` / `dk next-branch`
 
-Guided helpers for app repos that use `dev-X.Y[.Z]` lines and `v*` image tags. Default is **dry-run** (print the plan only). Pass `--execute` to mutate git/GitHub. Never runs remote `dk <env> up`.
+Guided helpers for app repos that use `dev-X.Y[.Z]` lines and `v*` image tags. Default is **dry-run** (print the plan only). Pass `--execute` to mutate git/GitHub. Never runs remote `dk <env>`.
 
 This is separate from [releasing catalpa-workspace-tooling itself](RELEASING.md).
 

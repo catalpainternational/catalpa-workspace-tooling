@@ -181,7 +181,7 @@ native:
 
 ## `start`
 
-Runs Django and the frontend dev server together via [Honcho](https://github.com/nickstenning/honcho) (dependency of `catalpa-workspace-tooling`). Postgres must already be reachable (host Postgres or `uv run dk dev up -d db`).
+Runs Django and the frontend dev server together via [Honcho](https://github.com/nickstenning/honcho) (dependency of `catalpa-workspace-tooling`). Postgres must already be reachable (host Postgres or `uv run dk dev compose up -d db`).
 
 **Procfile resolution:**
 

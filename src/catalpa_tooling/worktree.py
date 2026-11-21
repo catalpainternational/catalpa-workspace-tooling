@@ -776,8 +776,8 @@ def _run_worktree_env_compose(
 
     ns = argparse.Namespace(
         env_name=overlay.base_env,
-        env_command=None,
-        implicit_compose_argv=list(compose_args),
+        env_command="compose",
+        compose_argv=list(compose_args),
         dry_run=dry_run,
         yes=True,
         tag=None,

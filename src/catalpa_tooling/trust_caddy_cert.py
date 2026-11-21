@@ -120,7 +120,7 @@ def trust_caddy_ca_from_container(
     if not container_id:
         print(
             f"Error: no running Caddy container found ({LOCAL_PROXY_CONTAINER} or stack proxy). "
-            "Start the local proxy (`dk proxy up`) or the stack (`dk <env> up -d`).",
+            "Start the local proxy (`dk proxy up`) or the stack (`dk <env>`).",
             file=sys.stderr,
         )
         return 1
@@ -196,14 +196,14 @@ def trust_caddy_local_ca(
         if info and local_proxy_enabled(info):
             print(
                 f"Error: {LOCAL_PROXY_CONTAINER!r} is not running. "
-                "Start it with `dk proxy up` or `dk <env> up -d`.",
+                "Start it with `dk proxy up` or `dk <env>`.",
                 file=sys.stderr,
             )
         else:
             proxy_service = config.stack.services.proxy
             print(
                 f"Error: {proxy_service!r} container not running for compose file {compose_file!r}. "
-                "Start the stack (e.g. `uv run dk <env> up -d`).",
+                "Start the stack (e.g. `uv run dk <env>`).",
                 file=sys.stderr,
             )
         return 1

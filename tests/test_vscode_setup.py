@@ -104,8 +104,8 @@ def test_plan_setup_docker_tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     plan = plan_setup()
     assert plan.workflow == WorkflowKind.DOCKER
     assert plan.write_tasks
-    assert "uv run dk dev up -d" in plan.tasks_content
-    assert "uv run dk full up -d" in plan.tasks_content
+    assert "uv run dk dev &&" in plan.tasks_content
+    assert "uv run dk full &&" in plan.tasks_content
     assert "native fetch" not in plan.tasks_content
     assert "native start" not in plan.tasks_content
     assert "uv run dk dev -y db restore" in plan.tasks_content
@@ -139,8 +139,8 @@ def test_plan_setup_dev_only_when_no_full_env(
     monkeypatch.chdir(tmp_path)
 
     plan = plan_setup()
-    assert "uv run dk dev up -d" in plan.tasks_content
-    assert "uv run dk full up -d" not in plan.tasks_content
+    assert "uv run dk dev &&" in plan.tasks_content
+    assert "uv run dk full &&" not in plan.tasks_content
 
 
 def test_apply_setup_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,7 +193,7 @@ def test_tasks_json_has_managed_marker(tmp_path: Path, monkeypatch: pytest.Monke
 
     apply_setup(plan_setup())
     data = json.loads((tmp_path / ".vscode/tasks.json").read_text(encoding="utf-8"))
-    assert data[MANAGED_MARKER_KEY] == "8"
+    assert data[MANAGED_MARKER_KEY] == "9"
     labels = [t["label"] for t in data["tasks"]]
     assert "Dev: Show LAN URLs" in labels
     assert "Dev: Open site on LAN" in labels

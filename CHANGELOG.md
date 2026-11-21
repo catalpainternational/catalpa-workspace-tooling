@@ -59,6 +59,17 @@
 
 ### Changed
 
+- **`dk <env> up -d`, `dk <env> config`, `dk <env> down` … no longer reach docker compose on a
+  compose env (tooling 2.0, M3).** They're refused with a hint: `dk <env> compose <verb> …` runs
+  compose itself. A bare `dk <env>` is still `up -d`, and the running app's verbs stay
+  `dk <env> ps|logs|exec|start|stop|restart`, as on a quadlet env. That frees `dk <env> <verb>`
+  for dk's own verbs. The VS Code tasks (`setup-vscode`, generator version 9), the dk-stack
+  skill, the agent rules and the docs use the new forms: `dk dev` to start, `dk dev compose
+  down` to stop.
+- **`dk <env> db backup` defaults to `incr` (tooling 2.0, M3b).** As pgBackRest's own default,
+  it takes a full backup when the repository has none. `full`, `incr` and `diff` are still
+  accepted, on compose and quadlet envs.
+
 - **Rendered-host commands are plain env verbs (tooling 2.0, M2).** `dk <env> fcos render`,
   `check`, `diff` and `apply` are now `dk <env> render`, `check`, `diff` and `apply`.
   `fcos ignition` and `fcos provision` are now `dk <env> host ignition` and `host provision`, and

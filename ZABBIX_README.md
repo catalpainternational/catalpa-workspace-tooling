@@ -117,7 +117,7 @@ Optional env overrides:
 
 ## Prerequisites
 
-1. Deploy host with Docker and SSH access from your workstation (same as `dk prod up`).
+1. Deploy host with Docker and SSH access from your workstation (same as `dk prod`).
 2. For **pgbackrest.info:** running `db` container and working pgBackRest config ([README_PGBACKREST.md](README_PGBACKREST.md)).
 3. For **restic.snapshots:** `restic-files-backup.env` on the host (from `bkp_files install-systemd` or manual copy).
 4. For **`--target backup`:** `dc_backup_docker_host`, Garage container named `garage`, and (for the timer item) offsite units from `dc-backup offsite install`.

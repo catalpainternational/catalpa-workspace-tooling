@@ -113,13 +113,16 @@ dk
     │   ├── info
     │   ├── check
     │   ├── version
-    │   ├── backup full|incr|diff
+    │   ├── backup [full|incr|diff]   # default incr
     │   ├── pgdump
     │   └── restore [--dumps] [--file PATH] [--dry-run] [pgBackRest args…]
     │
     ├── compose …                  # explicit passthrough (tab completion); e.g. compose up -d
     ├── docker …                   # passthrough to docker CLI (same DOCKER_HOST/env); e.g. docker volume ls
-    └── …                          # implicit compose passthrough (legacy); e.g. up -d
+    ├── ps | logs | exec | start | stop | restart  # the running app, on every runtime (compose: passed to compose)
+    └── (bare)                     # bring the env up to date: compose `up -d`; quadlet: render, pull, restart
+                                   # other compose verbs (`up -d`, `config`, `down` …) are refused:
+                                   # use `compose …` (tooling 2.0 M3)
 ```
 
 ## Top-level (no `<env>`)

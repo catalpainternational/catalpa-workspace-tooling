@@ -65,14 +65,18 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 | M1 | A bare `dk <env>` on quadlet: check render → apply → pull → restart changed units | done |
 | M2 | `render`/`check`/`diff`/`apply` as env verbs; `host ignition`/`host provision`; `secrets push`; `fcos …` deprecated alias | done |
 | M2b | `host destroy` (#69): the exact inverse of creating a host. DNS records pointing at it, the droplet, its volumes, `docker_host` and the known_hosts entry, guarded by `allow_destroy` in `info.yaml` | done |
-| M3 | Implicit compose passthrough refused with a hint; `compose …` explicit | small |
-| M3b | `db backup` defaults to `incr`, as pgBackRest does (it takes a full one when the repository has none); `full`/`incr`/`diff` still accepted. Both runtimes share the parser, so compose envs get it too | small |
+| M3 | Implicit compose passthrough refused with a hint; `compose …` explicit | done |
+| M3b | `db backup` defaults to `incr`, as pgBackRest does (it takes a full one when the repository has none); `full`/`incr`/`diff` still accepted. Both runtimes share the parser, so compose envs get it too | done |
 | M3c | Project-level `docker/credentials.yaml` (`dk secrets`; an env's file overrides it), and the registry bot's login kept there: `host provision` logs in from it, `host login` after rotating the token | done |
+| M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work). For a quadlet env, `dk <env> host create` replaces the raw `doctl` steps of a rendered host's provisioning: compile the Ignition, create the data volume (or reuse the one `host destroy --keep-volumes` kept) in the project from `tooling.yaml`, create the droplet with the volume attached and the Ignition as user data, point the DNS records, then `host provision` (with `--no-start` for a restore). After M6, creating, rebuilding and destroying a host need no `doctl` by hand; `doctl` stays for looking around | medium; next |
 | M4 | Test branches in catalpa-site, swlt_ws2, catalpa_bero and partisipa pinned to `dev-2.0`, each with a checklist | ongoing from here |
 | M5 | Backend primitives: `ComposeBackend` extracted, operations rewritten once (restore, transfer, fetch, hooks) | large |
 | M5b | Restore-only envs (#204): `restore_from:` in `info.yaml`, per-env read keys created by dk, read and write as two roles, quadlet read mode | medium |
-| M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work). For a quadlet env, `dk <env> host create` replaces the raw `doctl` steps of a rendered host's provisioning: compile the Ignition, create the data volume (or reuse the one `host destroy --keep-volumes` kept) in the project from `tooling.yaml`, create the droplet with the volume attached and the Ignition as user data, point the DNS records, then `host provision` (with `--no-start` for a restore). After M6, creating, rebuilding and destroying a host need no `doctl` by hand; `doctl` stays for looking around | medium |
 | M7 | Compose hosts rendered too: env files, timers and monitoring config as committed files, applied by `apply`, replacing `db init`, `install-systemd`, `zabbix install`, `storage ensure` | large; may follow 2.0 |
+
+M6 comes straight after M3, ahead of its number: every test host is still created with raw
+`doctl` (the catalpa-site fcos walkthroughs), and `host create` removes that before the other
+projects' test branches (M4) need hosts of their own.
 
 M1–M3 are what users notice. M5 is what makes a third runtime cheap. M7 gives Ubuntu hosts the
 same reviewable, diffable desired state as quadlet hosts. It's the biggest change and can follow

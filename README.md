@@ -139,7 +139,7 @@ Notes:
 - Do **not** use `compdef -p` to check registration — in zsh, `-p` means pattern mode, not print.
 - `_python_argcomplete` may already exist from gcloud; check `_comps[dk]` instead.
 - `watch_file` in `.envrc` only helps when paired with `uv sync` on reload; PATH_add alone does not need it.
-- For docker compose operations, use `dk <env> compose up -d` for tab completion; implicit `dk <env> up -d` still works but completes only special verbs.
+- A bare `dk <env>` runs `up -d`. Any other compose verb is `dk <env> compose …` (`dk <env> up -d`, `config`, `down` … are refused with that hint); `ps`, `logs`, `exec`, `start`, `stop` and `restart` stay `dk <env> <verb>`, as on every runtime.
 
 Completion is built at runtime from the repo you are in: deploy environment names (`docker/envs/*/info.yaml` plus `paths.deploy.env_aliases`), `native`/`scripts` extensions, and subcommands are discovered automatically.
 
@@ -355,7 +355,7 @@ storage:
         size_gib: 200
 ```
 
-Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, `dk <env> up`, and `ops.post_db_restore` hooks after DB restore (ensure volumes before starting the web service).
+Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, `dk <env>`, and `ops.post_db_restore` hooks after DB restore (ensure volumes before starting the web service).
 
 When tooling pre-creates named volumes for non-`external` compose definitions, it applies Docker Compose metadata labels (`com.docker.compose.project`, `com.docker.compose.volume`) so Compose does not warn that the volume “was not created by Docker Compose”. Volumes created before this behavior (or by plain `docker volume create`) may still warn until removed and recreated (e.g. via `dk <env> wipe`).
 

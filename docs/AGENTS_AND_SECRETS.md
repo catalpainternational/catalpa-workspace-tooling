@@ -128,16 +128,16 @@ test -f docker/envs/staging/credentials.yaml
 sops -d docker/envs/staging/credentials.yaml >/dev/null && echo "SOPS OK"
 
 # Compose valid locally (not on staging)
-uv run dk dev config --services
+uv run dk dev compose config --services
 ```
 
-Do **not** use `sops -d … | head`, `gopass show`, or `dk staging config` to “inspect” secrets or expanded remote env in an agent session.
+Do **not** use `sops -d … | head`, `gopass show`, or `dk staging compose config` to “inspect” secrets or expanded remote env in an agent session.
 
 ## Remote commands that need user confirmation
 
 Examples (non-exhaustive):
 
-- `uv run dk staging up -d`, `uv run dk prod down`
+- `uv run dk staging`, `uv run dk prod compose down`
 - `uv run dk push`, `uv run dk transfer`
 - `uv run dk clean-images --apply` (deletes GHCR package versions; dry-run without `--apply` is read-only but still needs a GitHub token with `read:packages`)
 - `uv run native fetch db`, `uv run native fetch media`

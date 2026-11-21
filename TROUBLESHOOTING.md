@@ -146,7 +146,7 @@ See [README_RESTIC.md](README_RESTIC.md#ansible--host-path-snapshots).
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `Missing …/credentials.yaml` or `sops decrypt failed`   | File present? `.sops.yaml` rules? Local age key?                                       |
 | Wrong or empty stack on remote                          | `DOCKER_HOST`, `COMPOSE_PROJECT_NAME` / `PROJECT_NAME`, `compose_file`                 |
-| ``service `db` is not running`` / ``starting `db```     | Service name is expected; fix project env or `dk <env> up -d db`                       |
+| ``service `db` is not running`` / ``starting `db```     | Service name is expected; fix project env or `dk <env> compose up -d db`                       |
 | `No such container: db`                                 | Something used a **container** name; should be `{project}-db-1` or `PGBR_DB_CONTAINER` |
 | `PGDATA still missing after starting \`db\``            | `ops.pgbackrest.pg1_path` vs real `PGDATA` (see §3.E)                                  |
 | `[031]: option 'pg1-path' cannot be set multiple times` | Image `pgbackrest.conf` also sets `pg1-path` (see §3.E)                                |
@@ -220,7 +220,7 @@ Droplets made by `dk <env> host create` (or `dk digoc droplets create`) get `/et
 | Check | `dk <env> host logging` (exit 1 if the daemon or any container is uncapped), or `dk <env> host --check-remote` (advisory) |
 | Preview | `dk <env> --dry-run host logging --apply` |
 | Apply | `dk <env> host logging --apply` (`--target backup` for `dc_backup_docker_host`) |
-| Recreate containers once | `dk <env> up -d --force-recreate` |
+| Recreate containers once | `dk <env> compose up -d --force-recreate` |
 
 `--apply` keeps any other keys already in `daemon.json`, replaces `log-driver` / `log-opts`, checks the new file with `dockerd --validate` before installing it, and backs up the old file next to it (`daemon.json.bak-<timestamp>`). It then runs `systemctl restart docker`, which **restarts every container on the host** (brief outage), so it asks you to type the env name (or pass `-y`). `daemon.json` only applies to containers *created* after that restart; the check names the containers that still log without a cap until they are recreated.
 
