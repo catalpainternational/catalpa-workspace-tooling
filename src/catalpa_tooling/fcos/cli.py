@@ -552,13 +552,22 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
 
     if ns.no_start:
         print(
-            "Not started (--no-start). Restore the database and media, then "
-            f"`dk {env_name} host provision` again to start the stack.",
+            getattr(ns, "no_start_note", None)
+            or (
+                "Not started (--no-start). Restore the database and media, then "
+                f"`dk {env_name} host provision` again to start the stack."
+            ),
             file=sys.stderr,
         )
         return 0
+    return start_stack(c, target)
 
-    # 4. Start. The units tried at boot, before the secrets: clear their failures first.
+
+def start_stack(c, target) -> int:
+    """``host provision``'s last step: start the stack and show each unit's state."""
+    from catalpa_tooling.fcos import host as h
+
+    # The units tried at boot, before the secrets: clear their failures first.
     user_units, system_units = h.stack_units(c)
     if system_units:
         target.ssh(

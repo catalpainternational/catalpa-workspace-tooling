@@ -279,7 +279,10 @@ def cmd_quadlet_host_create(
     from catalpa_tooling.fcos.cli import _provision
 
     restore = restore_note.startswith("Then restore")
-    pns = argparse.Namespace(host=ip, no_start=ns.no_start or restore)
+    pns = argparse.Namespace(
+        host=ip, no_start=ns.no_start or restore,
+        no_start_note="Provisioned; the stack starts once the restore below is done." if restore else None,
+    )  # fmt: skip
     try:
         rc = _provision(pns, config, env_name, c, h.Host(ip), dry_run=False)
         if rc != 0 or not restore:
@@ -309,11 +312,8 @@ def _restore_plan(c, *, fresh_data: bool, empty: bool) -> str:
 def _restore_then_start(config, env_name: str, c, info: dict, ip: str, *, no_start: bool, label: str) -> int:
     """After a --no-start provision on a new data volume: restore what the repositories hold,
     then start (unless --no-start) and run the post_db_restore hooks."""
-    import argparse as _argparse
-
     from catalpa_tooling.fcos import host as h
     from catalpa_tooling.fcos.backend import Backend, Usage
-    from catalpa_tooling.fcos.cli import _provision
 
     b = Backend(config=config, env_name=env_name, committed=c, host=h.Host(ip), login=c.user, info=info)
     try:
@@ -341,7 +341,10 @@ def _restore_then_start(config, env_name: str, c, info: dict, ip: str, *, no_sta
     if no_start:
         print(f"Not started (--no-start): `dk {env_name} host provision` starts it.", file=sys.stderr)
         return 0
-    rc = _provision(_argparse.Namespace(host=ip, no_start=False), config, env_name, c, h.Host(ip), dry_run=False)
+    # Provisioning is done (files, secrets, registry login): only the start is left.
+    from catalpa_tooling.fcos.cli import start_stack
+
+    rc = start_stack(c, h.Host(ip))
     if rc == 0 and "db" in kinds:
         rc = b._after_db_restore()
     return rc

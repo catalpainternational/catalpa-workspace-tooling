@@ -134,6 +134,9 @@ def do(monkeypatch: pytest.MonkeyPatch):
         "catalpa_tooling.fcos.cli._provision",
         lambda ns, config, env, c, target, **k: calls.append(("provision", target.address, ns.no_start)) or 0,
     )
+    monkeypatch.setattr(
+        "catalpa_tooling.fcos.cli.start_stack", lambda c, target: calls.append(("start", target.address)) or 0
+    )
     return state
 
 
@@ -284,7 +287,9 @@ def test_a_new_volume_is_restored_before_the_stack_starts(site, do, restoring) -
     config, _ = site
     assert cmd_env_host_create(config, "staging", []) == 0
     tail = do["calls"][-4:]
-    assert tail == [("provision", IP, True), ("restore", ("db", "files"), True), ("provision", IP, False), ("hooks",)]
+    # Provisioned once (secrets pushed once), restored, then only started.
+    assert tail == [("provision", IP, True), ("restore", ("db", "files"), True), ("start", IP), ("hooks",)]
+    assert [c[0] for c in do["calls"]].count("provision") == 1
 
 
 def test_a_repository_with_nothing_yet_is_skipped(site, do, restoring, capsys) -> None:

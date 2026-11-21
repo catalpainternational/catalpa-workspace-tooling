@@ -739,13 +739,16 @@ def _replay_wal_here(source: str) -> str:
     key, promote, stop cleanly. db's own pgBackRest can't reach the source's repository, so
     db's unit must start on a cluster that is already out of recovery."""
     data = '"$PGBACKREST_PG1_PATH"'
+    src = source.replace("'", "")
     return (
-        f"echo 'Replaying {source}'\\''s WAL with the read key (no connections, no archiving)…' >&2 && "
-        f"pg_ctl -D {data} -o \"-c listen_addresses='' -c archive_mode=off\" -w -t 3600 start && "
+        f"echo 'Database: starting a temporary Postgres to replay {src}'\\''s WAL up to its latest "
+        "transaction (read key; no connections, no archiving)…' >&2 && "
+        f"pg_ctl -s -D {data} -o \"-c listen_addresses='' -c archive_mode=off\" -w -t 3600 start && "
         "{ n=0; until [ \"$(psql -X -At -U postgres -d postgres -c 'select pg_is_in_recovery()' 2>/dev/null)\" = f ]; do "
         "n=$((n+1)); if [ $n -gt 720 ]; then echo 'Still in recovery after an hour: stopping.' >&2; "
         f"pg_ctl -D {data} -m fast -w stop; exit 1; fi; sleep 5; done; }} && "
-        f"pg_ctl -D {data} -m fast -w stop && echo 'Recovered and promoted.' >&2"
+        f"pg_ctl -s -D {data} -m fast -w stop && "
+        f"echo 'Database: restored to {src}'\\''s latest transaction and opened for writes; the temporary Postgres is stopped.' >&2"
     )
 
 
