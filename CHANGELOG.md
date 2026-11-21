@@ -58,7 +58,8 @@
   4. forgets it locally: `docker_host` when it named the droplet's IP (a hostname is kept, since
      it stays right for the next host), and the known_hosts entries.
 
-  It shows the plan, then asks for the env name, and for `delete-volumes` when volumes go. If the
+  It shows the plan, then asks for the env name, and, when volumes go, for `delete-volumes` or
+  `keep` (which carries on as `--keep-volumes` would). If the
   droplet delete fails, it stops before the volumes. It takes no backup and never touches the
   backups. `--dry-run` (either position), `--keep-dns`, `--keep-volumes` and
   `--keep-docker-host` are available.

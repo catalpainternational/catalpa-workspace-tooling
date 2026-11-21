@@ -135,7 +135,11 @@ def _print_plan(env_name: str, link, plan: DestroyPlan, ns) -> None:
     for note in plan.dns_notes:
         print(f"  DNS       {note}", file=sys.stderr)
     for v in plan.volumes:
-        action = "kept (--keep-volumes)" if ns.keep_volumes else "detached and DELETED, with its data"
+        action = (
+            "kept (--keep-volumes)"
+            if ns.keep_volumes
+            else "detached and DELETED, with its data (--keep-volumes, or 'keep' below, keeps it)"
+        )
         print(f"  volume    {v.get('name')} ({_size(v)})  {action}", file=sys.stderr)
     for name in plan.missing_volumes:
         print(f"  volume    {name}  not found (nothing to delete)", file=sys.stderr)
@@ -255,17 +259,42 @@ def cmd_env_host_destroy(
         print("dry-run: nothing changed; the plan above is what it would do.", file=sys.stderr)
         return 0
     if not yes:
-        from catalpa_tooling.cli_confirm import confirm_by_typing_env_name, confirm_by_typing_expected
+        from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 
         if not confirm_by_typing_env_name(env_name):
             print("host destroy: cancelled.", file=sys.stderr)
             return 1
-        if plan.volumes and not ns.keep_volumes and not confirm_by_typing_expected(
-            "delete-volumes", hint="this deletes the volumes' data"
-        ):
-            print("host destroy: cancelled.", file=sys.stderr)
-            return 1
+        if plan.volumes and not ns.keep_volumes:
+            answer = ask_delete_or_keep_volumes()
+            if answer is None:
+                print("host destroy: cancelled.", file=sys.stderr)
+                return 1
+            if answer == "keep":
+                ns.keep_volumes = True
+                names_ = ", ".join(str(v.get("name")) for v in plan.volumes)
+                reuse = (
+                    f": `dk {env_name} host create` attaches it to the next host, data and all"
+                    if info.get("runtime") == "quadlet"
+                    else ""
+                )
+                print(f"Keeping {names_}{reuse}.", file=sys.stderr)
     return _execute(config, env_name, info, info_path, plan, ns, context=context, dry_run=False)
+
+
+def ask_delete_or_keep_volumes() -> str | None:
+    """The second question when the droplet goes: ``"delete"``, ``"keep"`` (as
+    ``--keep-volumes``), or None to cancel the whole destroy. Keeping needn't mean starting again."""
+    print(
+        "\nType 'delete-volumes' to delete them with their data, 'keep' to keep them, "
+        "or press Enter to cancel: ",
+        file=sys.stderr,
+        end="",
+    )
+    try:
+        line = input().strip()
+    except EOFError:
+        return None
+    return {"delete-volumes": "delete", "keep": "keep"}.get(line)
 
 
 def _firewall_plan(plan: DestroyPlan, droplet_name: str, droplet_id: str | None, *, context) -> None:

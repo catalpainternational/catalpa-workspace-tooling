@@ -322,3 +322,29 @@ def test_a_leftover_firewall_goes_once_the_droplet_is_gone(env, doctl, monkeypat
     calls.clear()
     assert hd.cmd_env_host_destroy(config, "staging", []) == 0
     assert calls == [] and "Nothing to destroy." in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "answer,rc,volume_steps",
+    [("keep", 0, set()), ("delete-volumes", 0, {"detach", "delete_volume"}), ("", 1, None), ("yes", 1, None)],
+)
+def test_the_volume_question_can_keep_them_without_starting_again(
+    env, doctl, monkeypatch, capsys, answer, rc, volume_steps
+) -> None:
+    """Typing the env name, then 'keep', goes on as --keep-volumes; anything else but
+    'delete-volumes' cancels the whole destroy."""
+    config, _ = env()
+    calls, _state = doctl
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("catalpa_tooling.cli_confirm.confirm_by_typing_env_name", lambda e: True)
+    monkeypatch.setattr("builtins.input", lambda: answer)
+    assert hd.cmd_env_host_destroy(config, "staging", []) == rc
+    err = capsys.readouterr().err
+    assert "'keep' below, keeps it" in err and "'keep' to keep them" in err
+    if volume_steps is None:
+        assert calls == [] and "cancelled" in err
+    else:
+        assert "delete_droplet" in names(calls)
+        assert {"detach", "delete_volume"} & set(names(calls)) == volume_steps
+    if answer == "keep":
+        assert "Keeping fcos-data" in err
