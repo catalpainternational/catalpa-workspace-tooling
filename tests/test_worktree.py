@@ -1965,6 +1965,73 @@ def test_worktree_create_records_base_ref_and_commit(
     assert rel.base_commit == _rev_parse(tmp_path, "release-x")
 
 
+def _plain_git_worktree(main: Path, name: str, branch: str) -> Path:
+    """A checkout under ``.worktrees/`` made with plain git (no dk overlay), e.g. an agent's."""
+    path = main / ".worktrees" / name
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", branch, str(path)], cwd=main, check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "on branch"], cwd=path, check=True
+    )
+    return path
+
+
+def test_worktree_create_from_a_plain_git_worktree_lands_under_main(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    agent = _plain_git_worktree(tmp_path, "agent", "chore/agent")
+    config = load_project_config(agent)
+
+    assert worktree_create(config, slug="s", dry_run=False, seed=False) == 0
+
+    assert not (agent / ".worktrees" / "s").exists()  # not nested
+    overlay = load_worktree_overlay(tmp_path / ".worktrees" / "s")
+    assert overlay is not None
+    assert overlay.base_ref == "chore/agent"  # the branch the agent checkout is on
+    assert overlay.base_commit == _rev_parse(agent, "HEAD")
+
+    from catalpa_tooling.worktree import worktree_remove
+
+    assert worktree_remove(config, slug="s", yes=True) == 0
+    assert not (tmp_path / ".worktrees" / "s").exists()
+
+
+def test_worktree_remove_finds_one_nested_by_an_older_create(
+    tmp_path: Path, isolated_tooling: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.worktree._compose",
+        lambda *a, **k: subprocess.CompletedProcess(list(a), 0),
+    )
+    write_minimal_tooling_tree(tmp_path)
+    write_dev_env(tmp_path)
+    git_init_commit(tmp_path)
+    agent = _plain_git_worktree(tmp_path, "agent", "chore/agent")
+    config = load_project_config(agent)
+    import catalpa_tooling.worktree as wt_mod
+
+    real_parent = wt_mod.resolve_parent_repo_root
+    # Before 2.0, create used the current checkout as the parent.
+    monkeypatch.setattr(wt_mod, "resolve_parent_repo_root", lambda c: c.repo_root.resolve())
+    assert worktree_create(config, slug="old", dry_run=False, seed=False) == 0
+    nested = agent / ".worktrees" / "old"
+    assert nested.is_dir()
+    monkeypatch.setattr(wt_mod, "resolve_parent_repo_root", real_parent)
+
+    from catalpa_tooling.worktree import worktree_remove
+
+    assert worktree_remove(config, slug="old", yes=True) == 0
+    assert not nested.exists()
+
+
 def test_worktree_create_detached_base_records_commit_only(
     tmp_path: Path, isolated_tooling: None
 ) -> None:

@@ -213,6 +213,11 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Fixed
 
+- **`dk worktree create` run in another checkout under `.worktrees/` no longer nests.** Run in
+  a plain git worktree (an agent's, say), it put the new one inside that checkout, where
+  `dk worktree list` and `remove` didn't look ("unknown worktree"). It now goes under the main
+  checkout's `.worktrees/` like any other, still cut from the branch the current checkout is on.
+  `remove` and `info` also find one an older dk nested.
 - **A change to comments only no longer restarts a quadlet env's stack.** `dk <env> apply` and
   a bare `dk <env>` restarted every unit a changed file touched, even when only a comment
   changed. That happens to every file at once when a newer dk rewords the render's header. Those
