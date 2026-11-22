@@ -3,6 +3,10 @@
 What a project's maintainer changes when moving a project from tooling 1.x to 2.0. Work through it on
 a branch (the M4 test branches do exactly this), run the checks at the end, then merge.
 
+Cut the branch from the one **prod deploys from**, since the deploy config (`docker/envs/`) on it
+is what's live. That isn't always the newest or busiest branch: a long-running next-release branch
+can have envs prod's branch doesn't. Then carry the change forward to the release branches.
+
 Most of 2.0 is new commands that change nothing until you use them (rendered hosts, `host create`,
 `restore`). The parts below are the ones that **stop or change something you already do**.
 
