@@ -21,11 +21,19 @@ Drop any `==1.x` version on the dependency itself, then `uv lock --upgrade-packa
 catalpa-workspace-tooling` and `uv sync`. Commit `uv.lock`.
 
 **From a pin older than 1.7** (catalpa_bero, jid, ncd and tvi are on 1.3.3): read the `### Changed`
-sections of [CHANGELOG.md](../CHANGELOG.md) from your version up to 1.7.0 as well. Most of 1.4–1.7
-is fixes. The ones you might notice: the agent files moved into the package, so
-`uv run setup-agents` installs them (1.6.1); a `--yes` after `--` now goes to the program, not to
-dk (`db restore -- --type=immediate --yes`: put `--yes` before `--`; 1.6.2); and every `ops:` key
-is optional (1.7.0).
+and `### Removed` sections of [CHANGELOG.md](../CHANGELOG.md) from your version up to 1.7.0 as
+well. Most of 1.4–1.7 is fixes. The ones you might notice:
+
+- **`db pgrestore` is gone (1.5.0).** `dk <env> db pgrestore` becomes `dk <env> db restore --dumps`
+  (the configured dumps, as before), and `db pgrestore --file X` becomes `db restore --file X`.
+  `git grep -n pgrestore` finds them, typically in the README's quick start.
+- **The agent files moved into the package** (1.6.1): `uv run setup-agents` installs them (section
+  4). A project that copied them by hand before has them without the managed marker, so
+  `setup-agents --status` says "owned by the project". If they're plain copies, `uv run
+  setup-agents --force` takes them over; keep any the project changed and update those by hand.
+- **A `--yes` after `--` now goes to the program, not to dk** (1.6.2):
+  `db restore -- --type=immediate --yes` → put `--yes` before `--`.
+- **Every `ops:` key is optional** (1.7.0).
 
 ## 2. Say which envs back up and which restore (breaking)
 
