@@ -81,7 +81,7 @@ docker compose; they're refused with a hint. What stays:
 Find what to change:
 
 ```bash
-git grep -nE 'dk [a-z_-]+ (up|down|config|build|pull|run|create|rm|kill|pause|top|images|port|cp)([^a-z_-]|$)' \
+git grep -nE 'dk [a-z_<>${}-]+ (up|down|config|build|pull|run|create|rm|kill|pause|top|images|port|cp)([^a-z_-]|$)' \
   -- ':!uv.lock' ':!CHANGELOG*' | grep -vE 'dk (worktree|proxy) '
 ```
 
