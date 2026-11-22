@@ -120,7 +120,7 @@ snapshots`; `worktree create` and `dk dev` locally; every refused command gives 
   a host, and no project needs either, so they'd be settings nobody sets. dk refuses both keys
   rather than ignoring them, refuses an `fcos:` block without `runtime: quadlet`, and quadlet
   `host create` refuses an image slug (tooling.yaml's `digitalocean.image` is Ubuntu's, for compose
-  envs). Split them when a second provider or bootstrap arrives.
+  envs). Split them when a second provider or bootstrap arrives: the options are in #206.
 
 ## Open questions
 
