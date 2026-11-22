@@ -512,3 +512,16 @@ def test_no_backups_setting_no_backup_units(tmp_path: Path) -> None:
     creds.write_text("\n".join(ln for ln in creds.read_text().splitlines() if not ln.startswith(("pgbr_s3", "restic"))) + "\n")
     render = render_env(load_project_config(root), "staging", adapter=_fake_adapter())
     assert not any("pgbackrest" in f or "restic" in f for f in render.files if f != "manifest.json")
+
+
+def test_runtime_decides_how_a_host_is_set_up() -> None:
+    """M6: no bootstrap:/provider: settings, and an fcos: block needs runtime: quadlet."""
+    from catalpa_tooling.fcos.settings import runtime_of
+
+    assert runtime_of({}) == "compose"
+    assert runtime_of({"runtime": "quadlet", "fcos": {"user": "deploy"}}) == "quadlet"
+    for key in ("bootstrap", "provider"):
+        with pytest.raises(FcosConfigError, match=f"{key}: isn't a setting"):
+            runtime_of({"runtime": "quadlet", key: "x"})
+    with pytest.raises(FcosConfigError, match="add `runtime: quadlet`"):
+        runtime_of({"fcos": {"user": "deploy"}})

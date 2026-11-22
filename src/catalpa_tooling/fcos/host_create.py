@@ -170,6 +170,18 @@ def cmd_quadlet_host_create(
             file=sys.stderr,
         )
         return 1
+    if not str(image).strip().isdigit():
+        # Fedora CoreOS on DigitalOcean is a custom image, whose ID is a number. A slug is a
+        # distribution image, often tooling.yaml's for compose envs (ubuntu-24-04-x64): the droplet
+        # would boot it and ignore the Ignition.
+        print(
+            f"{label}: the image is {image!r}, a DigitalOcean distribution slug, not the "
+            "account's Fedora CoreOS custom image (a number: `doctl compute image list-user`). "
+            f"Set digitalocean.image in {info_path.name} (tooling.yaml's is for compose envs), "
+            "or pass --image.",
+            file=sys.stderr,
+        )
+        return 1
     region = ns.region or link.region or (do_config.region if do_config else None)
     if not region:
         print(f"{label}: no region: set digitalocean.region in {info_path.name}, or pass --region.", file=sys.stderr)

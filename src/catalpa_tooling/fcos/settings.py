@@ -125,11 +125,29 @@ _HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
+#: Not settings (M6, docs/TOOLING_2.md): ``runtime`` decides how a host is set up and the
+#: provider is DigitalOcean. Refused rather than ignored, so nobody sets one expecting it to work.
+_NOT_SETTINGS = ("bootstrap", "provider")
+
+
 def runtime_of(info: dict) -> str:
+    """``compose`` (Ubuntu, cloud-init) or ``quadlet`` (Fedora CoreOS, Ignition)."""
     raw = info.get("runtime", "compose")
     runtime = str(raw).strip() if raw is not None else "compose"
     if runtime not in RUNTIMES:
         raise FcosConfigError(f"runtime must be one of {', '.join(RUNTIMES)} (got {raw!r})")
+    for key in _NOT_SETTINGS:
+        if key in info:
+            raise FcosConfigError(
+                f"{key}: isn't a setting. runtime decides how a host is set up (compose: Ubuntu "
+                "with cloud-init; quadlet: Fedora CoreOS with Ignition) and hosts are on "
+                f"DigitalOcean. Remove {key}: (docs/TOOLING_2.md, M6)"
+            )
+    if runtime == "compose" and info.get("fcos") is not None:
+        raise FcosConfigError(
+            "an fcos: block, but runtime is compose (the default): add `runtime: quadlet` for a "
+            "Fedora CoreOS host, or remove the fcos: block"
+        )
     return runtime
 
 

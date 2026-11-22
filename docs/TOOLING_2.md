@@ -68,15 +68,15 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 | M3 | Implicit compose passthrough refused with a hint; `compose …` explicit | done |
 | M3b | `db backup` defaults to `incr`, as pgBackRest does (it takes a full one when the repository has none); `full`/`incr`/`diff` still accepted. Both runtimes share the parser, so compose envs get it too | done |
 | M3c | Project-level `docker/credentials.yaml` (`dk secrets`; an env's file overrides it), and the registry bot's login kept there: `host provision` logs in from it, `host login` after rotating the token | done |
-| M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work). For a quadlet env, `dk <env> host create` replaces the raw `doctl` steps of a rendered host's provisioning: compile the Ignition, create the data volume (or reuse the one `host destroy --keep-volumes` kept) in the project from `tooling.yaml`, create the droplet with the volume attached and the Ignition as user data, point the DNS records, then `host provision` (with `--no-start` for a restore). After M6, creating, rebuilding and destroying a host need no `doctl` by hand; `doctl` stays for looking around | `host create`: done. The config split: `storage.data_volume` done (shared with compose); runtime/bootstrap/provider still to do |
+| M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work). For a quadlet env, `dk <env> host create` replaces the raw `doctl` steps of a rendered host's provisioning: compile the Ignition, create the data volume (or reuse the one `host destroy --keep-volumes` kept) in the project from `tooling.yaml`, create the droplet with the volume attached and the Ignition as user data, point the DNS records, then `host provision` (with `--no-start` for a restore). After M6, creating, rebuilding and destroying a host need no `doctl` by hand; `doctl` stays for looking around | done. `host create` and `storage.data_volume` (shared with compose). The bootstrap/provider split: decided against for now (see Decided) |
 | M4 | Test branches in catalpa-site, swlt_ws2, catalpa_bero and partisipa pinned to `dev-2.0`, each with a checklist | ongoing from here |
 | M5 | Backend primitives: `ComposeBackend` extracted, operations rewritten once (restore, transfer, fetch, hooks) | large |
 | M5b | Restore-only envs (#204): `restore_from:` in `info.yaml`, per-env read keys created by dk, read and write as two roles, quadlet read mode | `restore_from`, `secrets read-key` and quadlet read mode: done, ahead of M4 (a test host from prod's backups helps test the other projects). Still to do, when a project asks for it: read and write in one env, for a staging that restores prod and also backs itself up (staging content usually isn't backed up; the restored cluster would need a fresh stanza of its own); and on compose, with M5 |
 | M7 | Compose hosts rendered too: env files, timers and monitoring config as committed files, applied by `apply`, replacing `db init`, `install-systemd`, `zabbix install`, `storage ensure` | large; may follow 2.0 |
 
-M6 comes straight after M3, ahead of its number: every test host is still created with raw
-`doctl` (the catalpa-site fcos walkthroughs), and `host create` removes that before the other
-projects' test branches (M4) need hosts of their own.
+M6 came straight after M3, ahead of its number, so that `host create` replaced the raw `doctl`
+steps of the catalpa-site fcos walkthroughs before the other projects' test branches (M4) needed
+hosts of their own.
 
 M1–M3 are what users notice. M5 is what makes a third runtime cheap. M7 gives Ubuntu hosts the
 same reviewable, diffable desired state as quadlet hosts. It's the biggest change and can follow
@@ -114,6 +114,13 @@ snapshots`; `worktree create` and `dk dev` locally; every refused command gives 
   up. A render no longer depends on which credentials exist, so `render` → `host provision` →
   `db configure stanza-create` runs in one order on every env. Every project's 2.0 branch adds
   `backups:` to its backed-up envs and `restore_from` to the envs with read credentials.
+- **`runtime` decides how a host is set up; no `bootstrap:` or `provider:` settings (M6).**
+  `quadlet` is Fedora CoreOS with Ignition, `compose` is Ubuntu with cloud-init, and every host is
+  on DigitalOcean. Separate keys would only matter with a second provider or a second way to set up
+  a host, and no project needs either, so they'd be settings nobody sets. dk refuses both keys
+  rather than ignoring them, refuses an `fcos:` block without `runtime: quadlet`, and quadlet
+  `host create` refuses an image slug (tooling.yaml's `digitalocean.image` is Ubuntu's, for compose
+  envs). Split them when a second provider or bootstrap arrives.
 
 ## Open questions
 

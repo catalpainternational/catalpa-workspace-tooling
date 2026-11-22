@@ -68,8 +68,16 @@ fcos:                          # every key is optional
   zabbix_image: docker.io/zabbix/zabbix-agent2:alpine-7.0-latest
 ```
 
-With `runtime: quadlet`, `dk <env>` accepts only `info`, `secrets`, `host`, `docker` and
-`fcos`. The compose commands would find no stack on that host, or would start a second one.
+`runtime` decides how a host is set up as well as how the stack runs. `quadlet` is Fedora CoreOS
+with Ignition and `compose` (the default) is Ubuntu with cloud-init, and hosts are on
+DigitalOcean. There are no `bootstrap:` or `provider:` settings, and dk refuses them, as it refuses
+an `fcos:` block without `runtime: quadlet`. `host create` also refuses an image that isn't a
+number: `digitalocean.image` in `tooling.yaml` is usually Ubuntu's slug, for compose envs, so a
+quadlet env sets its own.
+
+With `runtime: quadlet`, the compose commands are refused: they would find no stack on that host,
+or would start a second one. The commands that do work are in
+[dk's stack commands on a quadlet env](#dks-stack-commands-on-a-quadlet-env).
 
 Images, settings, origins and credentials come from the keys `dk` already reads for compose
 deploys. The `bind_volumes` default comes from `ops`: `ops.pgbackrest.data_volume`,

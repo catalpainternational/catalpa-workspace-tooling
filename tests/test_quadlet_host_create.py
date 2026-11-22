@@ -324,3 +324,13 @@ def test_dry_run_says_it_would_restore(site, do, restoring, capsys) -> None:
     config, _ = site
     assert cmd_env_host_create(config, "staging", ["--dry-run"]) == 0
     assert "Then restore the database and media from prod's backups" in capsys.readouterr().err
+
+
+def test_a_distribution_slug_is_refused(site, do, capsys) -> None:
+    """tooling.yaml's image is usually Ubuntu's slug, for compose envs: the droplet would
+    boot it and ignore the Ignition."""
+    config, info = site
+    info.write_text(info.read_text().replace("image: '123456'", "image: ubuntu-24-04-x64"))
+    assert cmd_env_host_create(config, "staging", []) == 1
+    err = capsys.readouterr().err
+    assert "distribution slug" in err and do["calls"] == []

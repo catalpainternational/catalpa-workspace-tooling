@@ -118,6 +118,12 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Changed
 
+- **`runtime` decides how a host is set up; contradicting settings stop dk.** `quadlet` is Fedora
+  CoreOS with Ignition, `compose` Ubuntu with cloud-init, on DigitalOcean. A `bootstrap:` or
+  `provider:` key in `info.yaml` is refused rather than ignored, as is an `fcos:` block without
+  `runtime: quadlet` (which would otherwise get an Ubuntu host from `host create`). Quadlet
+  `host create` refuses an image slug: `tooling.yaml`'s `digitalocean.image` is usually Ubuntu's,
+  for compose envs, so the droplet would boot it and ignore the Ignition.
 - **Breaking: `info.yaml` says which envs back up and which restore, not the credentials.**
   `backups: [db, files]` switches an env's backups on (pgBackRest, restic), `restore_from: <env>`
   its restores from that env's backups. Without `backups:` an env takes no backups: on compose,
