@@ -243,6 +243,16 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Fixed
 
+- **A rendered host's port 80 is plain HTTP again, and redirects to HTTPS, when the Caddyfile has
+  an `http://` site.** On the passed socket (`fd/3`) Caddy couldn't tell the server was port 80's,
+  so it served TLS there (plain HTTP got "Client sent an HTTP request to an HTTPS server") and
+  kept asking Let's Encrypt for certificates for the `http://` site's names (e.g. a placeholder
+  like `redirect.unused`). That server now gets `automatic_https.disable`, and after its own
+  routes a 308 to HTTPS for the rest. Checked with the edge image's Caddy.
+- **A quadlet env restores the media from a compose host's snapshots.** They keep the media at
+  `ops.restic.backup_path` (e.g. `/mnt/btrfs-data/<project>-media`), where the restore unit mounts
+  it, but the restore and its "is there a snapshot" check looked only under `/backup/`: the check
+  asked restic for an empty path, found nothing, and the new host started with no media.
 - **A quadlet env's pgBackRest restore runs `ops.post_metabase_db_restore` too (#209).** After
   `db restore`, `restore` and `host create`'s restore, the quadlet backend ran only
   `ops.post_db_restore`, so a project's Metabase follow-ups and its `restart_services` were left

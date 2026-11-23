@@ -30,8 +30,25 @@ def _port_of(addr: str) -> str:
     return addr.rsplit(":", 1)[-1]
 
 
+def _redirect_route() -> dict:
+    """308 to the same host and path over HTTPS (Caddy's own redirect, which binds :80 itself)."""
+    return {
+        "handle": [
+            {
+                "handler": "static_response",
+                "status_code": 308,
+                "headers": {"Location": ["https://{http.request.host}{http.request.uri}"]},
+            }
+        ]
+    }
+
+
 def rewrite_listeners(config: dict) -> dict:
-    """Point every server of an adapted config at the systemd-passed sockets."""
+    """Point every server of an adapted config at the systemd-passed sockets.
+
+    On ``fd/3`` Caddy can't see that a server is port 80's, so it would treat an ``http://`` site
+    as HTTPS: serve TLS there and ask for certificates for its names. Such a server gets
+    ``automatic_https.disable``, and a last route redirecting what it doesn't match to HTTPS."""
     servers = config.setdefault("apps", {}).setdefault("http", {}).setdefault("servers", {})
     has_http = False
     for name, srv in servers.items():
@@ -47,6 +64,8 @@ def rewrite_listeners(config: dict) -> dict:
         elif ports == {"80"}:
             srv["listen"] = [HTTP_FD]
             srv["listen_protocols"] = [["h1"]]
+            srv["automatic_https"] = {"disable": True}
+            srv.setdefault("routes", []).append(_redirect_route())
             has_http = True
         else:
             raise CaddyJsonError(f"Caddy server {name} mixes ports {sorted(ports)}")
@@ -56,19 +75,7 @@ def rewrite_listeners(config: dict) -> dict:
         servers[REDIRECT_SERVER] = {
             "listen": [HTTP_FD],
             "listen_protocols": [["h1"]],
-            "routes": [
-                {
-                    "handle": [
-                        {
-                            "handler": "static_response",
-                            "status_code": 308,
-                            "headers": {
-                                "Location": ["https://{http.request.host}{http.request.uri}"]
-                            },
-                        }
-                    ]
-                }
-            ],
+            "routes": [_redirect_route()],
         }
     return config
 

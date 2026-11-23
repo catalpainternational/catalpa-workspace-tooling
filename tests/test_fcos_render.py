@@ -317,13 +317,22 @@ def test_https_only_config_gets_the_redirect_server() -> None:
     assert servers["fd_http_redirect"]["listen"] == ["fd/3"]
 
 
-def test_explicit_http_server_uses_fd3_and_no_redirect_is_added() -> None:
+def test_explicit_http_server_uses_fd3_stays_plain_http_and_redirects_the_rest() -> None:
+    """On fd/3 Caddy can't tell the server is port 80's: without automatic_https.disable it served
+    TLS there (plain HTTP got "Client sent an HTTP request to an HTTPS server") and asked for
+    certificates for the http:// site's names. Its own routes stay first; then the redirect."""
+    own = {"match": [{"host": ["old.example"]}], "handle": [{"handler": "static_response", "status_code": 301}]}
     cfg = rewrite_listeners(
-        {"apps": {"http": {"servers": {"a": {"listen": [":443"]}, "b": {"listen": [":80"]}}}}}
+        {"apps": {"http": {"servers": {"a": {"listen": [":443"]}, "b": {"listen": [":80"], "routes": [own]}}}}}
     )
     servers = cfg["apps"]["http"]["servers"]
     assert servers["b"]["listen"] == ["fd/3"]
+    assert servers["b"]["automatic_https"] == {"disable": True}
+    assert servers["b"]["routes"][0] == own
+    last = servers["b"]["routes"][-1]
+    assert "match" not in last and last["handle"][0]["status_code"] == 308
     assert "fd_http_redirect" not in servers
+    assert servers["a"]["automatic_https"] == {"disable_redirects": True}
 
 
 def test_other_ports_cannot_be_socket_activated() -> None:

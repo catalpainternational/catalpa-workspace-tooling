@@ -302,6 +302,20 @@ class Backend:
                 return f.rsplit("/", 1)[-1][: -len(".container")], text
         raise Usage(f"{self.env_name}'s render has no restic backup (restic_write_* credentials)")
 
+    def _restic_mounts(self, text: str) -> dict[str, str]:
+        """The restic unit's backed-up directories: mount target (the path in the snapshots) →
+        host source. ``/backup/<volume>``, or ``ops.restic.backup_path`` for the first volume,
+        which is where a compose host's snapshots keep it (e.g. /mnt/btrfs-data/<x>-media)."""
+        backup_path = self.config.ops.restic.backup_path if self.config.has_ops else None
+        out: dict[str, str] = {}
+        for line in text.splitlines():
+            if not line.strip().startswith("Volume="):
+                continue
+            parts = line.strip()[len("Volume="):].split(":", 2)
+            if len(parts) > 1 and (parts[1].startswith("/backup/") or (backup_path and parts[1] == backup_path)):
+                out[parts[1]] = parts[0]
+        return out
+
     def _restic_lock_flag(self) -> list[str]:
         """A read key can't write restic's lock object: read mode runs without one, as compose's
         READ mode does. Nothing else writes the source's repository from here."""
@@ -485,8 +499,9 @@ class Backend:
             else:
                 _stem, text = self._restic_quadlet()
                 args = podman_run_args(text, volumes=volume_names(self.committed))
-                path = next((m.split(":", 2)[1] for m in (x.strip()[len("Volume="):] for x in text.splitlines()
-                             if x.strip().startswith("Volume=")) if m.split(":", 2)[1].startswith("/backup/")), "")  # fmt: skip
+                path = next(iter(self._restic_mounts(text)), "")
+                if not path:
+                    raise Usage("the restic unit mounts no backed-up directory")
                 cmd = ["podman", "run", "--rm", *args, *self._restic_lock_flag(), "snapshots", "--json", "--path", path]
             r = self.host.ssh(self.login, shlex.join(cmd), check=False)
             try:
@@ -571,11 +586,10 @@ class Backend:
         as in the snapshot (``--delete``), then read access for the edge where it mounts one."""
         _stem, text = self._restic_quadlet()
         run_args = podman_run_args(text, volumes=volume_names(self.committed), read_write=True)
-        mounts = [x.strip()[len("Volume="):].split(":", 2) for x in text.splitlines() if x.strip().startswith("Volume=")]
-        source_of = {m[1]: m[0] for m in mounts if len(m) > 1 and m[1].startswith("/backup/")}
+        source_of = self._restic_mounts(text)
         paths = list(source_of)
         if not paths:
-            raise Usage("the restic unit mounts nothing under /backup/")
+            raise Usage("the restic unit mounts no backed-up directory")
         host_filter = []
         if snapshot == "latest" and self.restore.get("restic"):
             pass  # The source's repository: compose snapshots carry random hostnames; by path.

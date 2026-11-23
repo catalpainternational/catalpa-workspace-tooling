@@ -554,3 +554,25 @@ def test_dump_restore_runs_only_the_app_hooks(swlt, tmp_path) -> None:
     assert restore_archive(_backend(_with_hooks(swlt), r), dump, uploader=lambda argv, path: 0) == 0
     cmds = " ".join(c[-1] for c in r.calls)
     assert "app-followups" in cmds and "mb-followups" not in cmds and "restart metabase" not in cmds
+
+
+def test_restic_paths_include_ops_backup_path(swlt) -> None:
+    """A compose host's snapshots keep the media at ops.restic.backup_path (bero:
+    /mnt/btrfs-data/bero-media): the restore and the media check must use that path, not only
+    /backup/<volume> (the media check queried an empty --path and reported no snapshot)."""
+    from dataclasses import replace
+
+    ops = replace(swlt.ops, restic=replace(swlt.ops.restic, backup_path="/mnt/btrfs-data/x-media"))
+    b = _backend(replace(swlt, ops_optional=ops), Recorder())
+    text = (
+        "[Container]\nImage=docker.io/restic/restic:0.18.1\n"
+        "Volume=/var/mnt/data/django_media:/mnt/btrfs-data/x-media:ro,z\n"
+        "Volume=/var/mnt/data/other:/backup/other:ro,z\n"
+        "Volume=/etc/x/conf:/etc/conf:ro\n"
+    )
+    assert b._restic_mounts(text) == {
+        "/mnt/btrfs-data/x-media": "/var/mnt/data/django_media",
+        "/backup/other": "/var/mnt/data/other",
+    }
+    # Without backup_path, only /backup/… counts.
+    assert list(_backend(swlt, Recorder())._restic_mounts(text)) == ["/backup/other"]
