@@ -515,6 +515,24 @@ def test_no_backups_setting_no_backup_units(tmp_path: Path) -> None:
 
 
 @needs_compose
+def test_project_name_from_the_shell_renders_as_a_compose_deploy_would(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#208: a root `name: ${PROJECT_NAME}` that direnv fills: the render, which ignores the shell,
+    names the project as a compose deploy to a remote host does (compose_project_default)."""
+    root = tmp_path / "bero"
+    shutil.copytree(FIXTURES / "bero", root, ignore=shutil.ignore_patterns("expected"))
+    compose = root / "compose.yaml"
+    assert compose.read_text().startswith("name: bero_shape\n")
+    compose.write_text(compose.read_text().replace("name: bero_shape\n", "name: ${PROJECT_NAME}\n", 1))
+    info = root / "docker" / "envs" / "staging" / "info.yaml"
+    info.write_text(info.read_text().replace("  compose_project_name: bero_shape\n", ""))
+    monkeypatch.setenv("PROJECT_NAME", "from_the_shell")  # ignored, as everything in the shell is
+    render = render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+    assert compare_render(FIXTURES / "bero" / "expected", render.files) == []
+
+
+@needs_compose
 def test_monitoring_is_per_env_and_off_by_default(tmp_path: Path) -> None:
     """ops.zabbix alone doesn't put an agent on every host: the env opts in."""
     root = tmp_path / "bero"

@@ -152,6 +152,12 @@ def compose_env(
     if ctx is None:
         raise RenderError(f"could not build {env_name}'s settings (the message is above)")
     env = {k: v for k, v in ctx.env_add.items() if k != "DOCKER_HOST"}
+    if not (env.get("COMPOSE_PROJECT_NAME") or "").strip():
+        # The project name a compose deploy to a remote host gets (resolve_env_with_compose_project),
+        # so a root `name: ${PROJECT_NAME}` that a shell (direnv) fills doesn't stop the render.
+        from catalpa_tooling.restic_files import _default_compose_project
+
+        env["COMPOSE_PROJECT_NAME"] = _default_compose_project(config)
     # Build-time stamps for SPA bundles: they change on every call and mean nothing at runtime.
     for key in ("VITE_BUILD_TIME", "VITE_GIT_SHA"):
         if key in env:

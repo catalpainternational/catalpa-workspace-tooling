@@ -226,6 +226,11 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Fixed
 
+- **`dk <env> render` works for a compose file named from the shell (#208).** A root
+  `name: ${PROJECT_NAME}` that direnv fills stopped the render ("project name must not be
+  empty"), which ignores the operator's shell. The render now gives compose the project name a
+  compose deploy to a remote host gets (`env.compose_project_name`, else
+  `stack.compose_project_default`), so it doesn't depend on who runs it.
 - **`dk worktree create` run in another checkout under `.worktrees/` no longer nests.** Run in
   a plain git worktree (an agent's, say), it put the new one inside that checkout, where
   `dk worktree list` and `remove` didn't look ("unknown worktree"). It now goes under the main
