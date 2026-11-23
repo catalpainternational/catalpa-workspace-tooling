@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -252,7 +253,18 @@ def render_env(
     files["caddy/caddy.json"] = caddy_json
     manifest = dict(q.manifest)
 
-    monitoring_on = config.has_ops and config.ops.zabbix is not None
+    from catalpa_tooling.monitoring_setting import MonitoringSettingError, monitoring_of
+
+    try:
+        monitoring = monitoring_of(info)
+    except MonitoringSettingError as exc:
+        raise RenderError(f"{env_name}: {exc}") from exc
+    monitoring_on = monitoring == "zabbix"
+    if monitoring_on and not (config.has_ops and config.ops.zabbix is not None):
+        raise RenderError(
+            f"{env_name}: monitoring: zabbix, but tooling.yaml has no ops.zabbix (the agent's unit "
+            "and userparams file names)"
+        )
     backups_on = bool(plan.pgbackrest or plan.restic)
     mon_dir = monitor_dir(project) if (monitoring_on and backups_on) else None
     try:
@@ -287,6 +299,12 @@ def render_env(
         from catalpa_tooling.zabbix_systemd import hostname_from_site_origin
 
         zbx_env = _zabbix_env_defaults(info, env)
+        if not (zbx_env.get("ZBX_TLSPSK") and zbx_env.get("ZBX_TLSPSKIDENTITY")):
+            print(
+                f"warning: {env_name}: monitoring: zabbix without zbx_tlspsk / zbx_tlspskidentity "
+                "in credentials: the agent talks to the server unencrypted",
+                file=sys.stderr,
+            )
         site_host = hostname_from_site_origin(env.get("SITE_ORIGIN"))
         try:
             m = monitoring_files(

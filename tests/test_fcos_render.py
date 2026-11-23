@@ -514,6 +514,41 @@ def test_no_backups_setting_no_backup_units(tmp_path: Path) -> None:
     assert not any("pgbackrest" in f or "restic" in f for f in render.files if f != "manifest.json")
 
 
+@needs_compose
+def test_monitoring_is_per_env_and_off_by_default(tmp_path: Path) -> None:
+    """ops.zabbix alone doesn't put an agent on every host: the env opts in."""
+    root = tmp_path / "bero"
+    shutil.copytree(FIXTURES / "bero", root, ignore=shutil.ignore_patterns("expected"))
+    info = root / "docker" / "envs" / "staging" / "info.yaml"
+    on = info.read_text()
+    assert "monitoring: zabbix\n" in on
+
+    info.write_text(on.replace("monitoring: zabbix\n", ""))
+    render = render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+    assert not any(f.startswith("monitoring/") or "zabbix" in f for f in render.files)
+    assert "podman-ro-proxy" not in "".join(render.files)
+    import json
+
+    assert json.loads(render.files["manifest.json"])["system_secrets"] == {}
+    assert "zabbix" not in render.files["host.bu"]
+
+    info.write_text(on.replace("monitoring: zabbix\n", "monitoring: false\n"))
+    render = render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+    assert "quadlets/zabbix-agent2.container" not in render.files
+
+    info.write_text(on.replace("monitoring: zabbix\n", "monitoring: nagios\n"))
+    with pytest.raises(RenderError, match="use `monitoring: zabbix`"):
+        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+
+    info.write_text(on)
+    tooling = root / "tooling.yaml"
+    zabbix = "  zabbix:\n    unit_name: bero_shape-zabbix-agent2.service\n    userparams_file: 99-bero_shape-userparams.conf\n"
+    assert zabbix in tooling.read_text()
+    tooling.write_text(tooling.read_text().replace(zabbix, ""))
+    with pytest.raises(RenderError, match="no ops.zabbix"):
+        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+
+
 def test_runtime_decides_how_a_host_is_set_up() -> None:
     """M6: no bootstrap:/provider: settings, and an fcos: block needs runtime: quadlet."""
     from catalpa_tooling.fcos.settings import runtime_of

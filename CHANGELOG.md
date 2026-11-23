@@ -118,6 +118,13 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Changed
 
+- **Monitoring on a rendered host is per env, and off by default.** `ops.zabbix` in
+  `tooling.yaml` used to put the Zabbix agent, `podman-ro-proxy` and the backup status files on
+  every `runtime: quadlet` env of the project. Now an env opts in with `monitoring: zabbix` in its
+  `info.yaml`, as compose hosts are monitored only once someone runs `dk <env> zabbix install`.
+  The render refuses `monitoring: zabbix` without `ops.zabbix`, and warns when the env has no
+  `zbx_tlspsk` / `zbx_tlspskidentity` (the agent would talk to the server unencrypted). A rendered
+  env that should stay monitored adds `monitoring: zabbix` and renders again.
 - **`runtime` decides how a host is set up; contradicting settings stop dk.** `quadlet` is Fedora
   CoreOS with Ignition, `compose` Ubuntu with cloud-init, on DigitalOcean. A `bootstrap:` or
   `provider:` key in `info.yaml` is refused rather than ignored, as is an `fcos:` block without

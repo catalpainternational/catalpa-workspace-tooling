@@ -9,6 +9,7 @@ env:
   compose_project_name: bero_shape
 runtime: quadlet
 zbx_hostname: bero-staging.example
+monitoring: zabbix
 fcos:
   admin_keys:
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a

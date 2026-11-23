@@ -33,6 +33,7 @@ are in catalpa-site's `docker/envs/fcos-rootless/` (catalpa-site#1006).
 ```yaml
 image_tag: v1.2.3              # required: the host pulls, it never builds
 runtime: quadlet               # compose (default) | quadlet
+monitoring: zabbix             # omitted or false (default): not monitored (see Monitoring)
 digitalocean:                  # for `host create` / `host destroy`
   droplet_name: catalpa-site-prod
   image: "243427036"           # the account's Fedora CoreOS custom image ID
@@ -196,7 +197,18 @@ No credential is in a file, a volume or `podman inspect`.
 
 ## Monitoring
 
-When tooling.yaml has `ops.zabbix`, the render adds three parts:
+Monitoring is per env and off by default, as on compose hosts (where nothing is monitored until
+someone runs `dk <env> zabbix install`). An env opts in in its `info.yaml`:
+
+```yaml
+monitoring: zabbix   # omitted or false: no agent, no podman-ro-proxy, no status files
+```
+
+It needs `ops.zabbix` in tooling.yaml (the project's unit and userparams file names); the render
+refuses `monitoring: zabbix` without it. Without `zbx_tlspsk` / `zbx_tlspskidentity` in the
+env's credentials the render warns: the agent would talk to the server unencrypted.
+
+With `monitoring: zabbix`, the render adds these parts:
 
 - **The agent.** Zabbix Agent 2 is a root-owned system quadlet, so the account can't stop it.
   It runs as the image's unprivileged user, with no capabilities and active checks only.
