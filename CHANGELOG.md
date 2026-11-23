@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.0.0b1
+
+The first beta of 2.0, tagged on `dev-2.0`. Compose hosts are tested on swlt_ws2 (staging
+deploys, a qad host's backups), rendered Fedora CoreOS hosts on catalpa_bero staging (`host
+create` restoring prod's database and media) and catalpa-site. M5 and M7 continue on `dev-2.0`
+as later betas; pin the tag, not the branch.
+
 Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what to change.
 
 ### Added
@@ -117,6 +124,12 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
     example `bucket:`), so a test env's key can't reach prod's backups.
 
 ### Changed
+
+- **Releasing: pre-releases.** `scripts/release.sh` and `finalize-changelog.sh` take PEP 440
+  versions (`2.0.0b1`, `2.0.0rc1`) and refuse `2.0.0-rc.1`, whose wheel version (`2.0.0rc1`) the
+  release workflow would reject. A pre-release is tagged on the branch it's cut from; a release
+  still on `main`. The workflow publishes a pre-release as such, not as "Latest"
+  ([RELEASING.md](docs/RELEASING.md)).
 
 - **dk's SSH calls to a rendered host share one connection.** OpenSSH's `ControlMaster` (sockets
   in `~/.ssh/dk-control/`, 0700), kept for a minute after the last call, so the next dk command

@@ -47,7 +47,19 @@ git tag v0.9-lp
 git push origin v0.9-lp
 ```
 
-Pre-release semver tags (`v0.10.0-rc.1`) work with hatch-vcs and uv.
+**Pre-releases** of a release line (a beta of 2.0 while it's still on `dev-2.0`) are tagged on
+that branch, with the PEP 440 spelling: `v2.0.0a1`, `v2.0.0b1`, `v2.0.0rc1`. hatch-vcs turns
+`v2.0.0-rc.1` into `2.0.0rc1`, and the release workflow refuses a wheel whose version differs from
+the tag, so `scripts/release.sh` refuses that spelling.
+
+```bash
+git switch dev-2.0            # pushed, clean
+scripts/finalize-changelog.sh 2.0.0b1 --write   # Unreleased → ## 2.0.0b1; commit, push
+scripts/release.sh 2.0.0b1    # on the pre-release's branch; a release is tagged on main
+```
+
+CI publishes it as a GitHub pre-release (not "Latest"). Consumers pin the tag
+(`tag = "v2.0.0b1"`), so later work on the branch doesn't reach them until they move the pin.
 
 ## Local development without a release tag
 

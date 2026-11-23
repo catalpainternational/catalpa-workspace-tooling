@@ -54,8 +54,17 @@ jobs:
             printf '%s\n' "$notes"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          # A PEP 440 pre-release (2.0.0a1, 2.0.0b1, 2.0.0rc1) is published as a pre-release,
+          # so it doesn't become the repository's "Latest" release.
+          if [[ "$version" =~ (a|b|rc)[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body: ${{ steps.notes.outputs.body }}
+          prerelease: ${{ steps.notes.outputs.prerelease }}
+          make_latest: ${{ steps.notes.outputs.prerelease == 'true' && 'false' || 'true' }}

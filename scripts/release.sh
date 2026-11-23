@@ -2,7 +2,7 @@
 # Tag the current commit and push; CI creates the GitHub release.
 #
 # Prerequisites:
-#   - On main, clean tree, commits pushed to origin/main
+#   - On main (a pre-release such as 2.0.0b1: the branch it's cut from), clean tree, pushed
 #   - CHANGELOG.md has a "## X.Y.Z" section (move items out of Unreleased first)
 #   - gh CLI authenticated (optional; only needed for local release notes preview)
 #
@@ -48,13 +48,23 @@ fi
 version="${1#v}"
 tag="v${version}"
 
-if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?$ ]]; then
-  echo "Invalid version: $1" >&2
+# PEP 440: 2.0.0, or a pre-release 2.0.0a1 / 2.0.0b1 / 2.0.0rc1. hatch-vcs normalises a tag like
+# v2.0.0-rc.1 to 2.0.0rc1, and the release workflow then refuses it (the wheel's version must
+# equal the tag's), so that spelling is refused here.
+if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?$ ]]; then
+  echo "Invalid version: $1 (use PEP 440: 2.0.0, or 2.0.0b1 / 2.0.0rc1 for a pre-release)" >&2
   exit 1
 fi
 
-if [[ "$(git branch --show-current)" != "main" ]]; then
-  echo "Release tags must be created on main (current: $(git branch --show-current))." >&2
+# A release is tagged on main; a pre-release on the branch it's cut from (e.g. dev-2.0), pushed.
+branch="$(git branch --show-current)"
+if [[ "$version" =~ (a|b|rc)[0-9]+$ ]]; then
+  prerelease=true
+else
+  prerelease=false
+fi
+if [[ "$prerelease" != true && "$branch" != "main" ]]; then
+  echo "Release tags must be created on main (current: ${branch}); only a pre-release (2.0.0b1) may be tagged on another branch." >&2
   exit 1
 fi
 
@@ -64,14 +74,14 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 if ! git rev-parse "@{u}" >/dev/null 2>&1; then
-  echo "main has no upstream. Push main to origin first." >&2
+  echo "${branch} has no upstream. Push it to origin first." >&2
   exit 1
 fi
 
 upstream="$(git rev-parse @{u})"
 head="$(git rev-parse HEAD)"
 if [[ "$head" != "$upstream" ]]; then
-  echo "HEAD is not pushed to $(git rev-parse --abbrev-ref @{u}). Push main first." >&2
+  echo "HEAD is not pushed to $(git rev-parse --abbrev-ref @{u}). Push ${branch} first." >&2
   exit 1
 fi
 

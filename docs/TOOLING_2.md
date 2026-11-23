@@ -69,7 +69,7 @@ Each one lands on `dev-2.0` with tests, and the project test branches move with 
 | M3b | `db backup` defaults to `incr`, as pgBackRest does (it takes a full one when the repository has none); `full`/`incr`/`diff` still accepted. Both runtimes share the parser, so compose envs get it too | done |
 | M3c | Project-level `docker/credentials.yaml` (`dk secrets`; an env's file overrides it), and the registry bot's login kept there (stored on the host only for `auto_update` envs; the others log in for each pull): `host provision` logs in from it, `host login` after rotating the token | done |
 | M6 | `runtime` / bootstrap / provider split in `info.yaml`; `host create` by bootstrap × provider (with Josh's `host create` work). For a quadlet env, `dk <env> host create` replaces the raw `doctl` steps of a rendered host's provisioning: compile the Ignition, create the data volume (or reuse the one `host destroy --keep-volumes` kept) in the project from `tooling.yaml`, create the droplet with the volume attached and the Ignition as user data, point the DNS records, then `host provision` (with `--no-start` for a restore). After M6, creating, rebuilding and destroying a host need no `doctl` by hand; `doctl` stays for looking around | done. `host create` and `storage.data_volume` (shared with compose). The bootstrap/provider split: decided against for now (see Decided) |
-| M4 | Test branches in catalpa-site, swlt_ws2, catalpa_bero and partisipa pinned to `dev-2.0`, each with a checklist | ongoing from here |
+| M4 | Test branches in catalpa-site, swlt_ws2, catalpa_bero and partisipa pinned to `dev-2.0`, each with a checklist | swlt (compose) and catalpa_bero staging (rendered) verified on live hosts; catalpa-site and partisipa to go. First beta `v2.0.0b1` (2026-11) |
 | M5 | Backend primitives: `ComposeBackend` extracted, operations rewritten once (restore, transfer, fetch, hooks) | large |
 | M5b | Restore-only envs (#204): `restore_from:` in `info.yaml`, per-env read keys created by dk, read and write as two roles, quadlet read mode | `restore_from`, `secrets read-key` and quadlet read mode: done, ahead of M4 (a test host from prod's backups helps test the other projects). Still to do, when a project asks for it: read and write in one env, for a staging that restores prod and also backs itself up (staging content usually isn't backed up; the restored cluster would need a fresh stanza of its own); and on compose, with M5 |
 | M7 | Compose hosts rendered too: env files, timers and monitoring config as committed files, applied by `apply`, replacing `db init`, `install-systemd`, `zabbix install`, `storage ensure` | large; may follow 2.0 |
@@ -90,12 +90,12 @@ project does when it moves to 2.0.
 Before `dev-2.0` merges, each of these gets a branch pinned to it and is run through its
 checklist:
 
-| Project | Why | Current pin |
-|---|---|---|
-| catalpa-site | Compose prod on DigitalOcean and the `fcos` quadlet env in one repo | `dev-2.0` (#1010) |
-| swlt_ws2 | Newest pin, extra env names (`content`, `qad`); a fixture in the tests | v1.7.0 |
-| catalpa_bero | Oldest common pin (as jid, ncd and tvi): the upgrade path from far behind | v1.3.3 |
-| partisipa | Branch `develop`. Its only dk envs are `dev` and `full`, with no deployed env yet: the local commands, then a first deployed env set up from scratch (a candidate for a rendered host) | v1.7.0 |
+| Project | Why | Branch, pin | State (2026-11-23) |
+|---|---|---|---|
+| swlt_ws2 | Newest pin, extra env names (`content`, `qad`); a fixture in the tests. The reference for old compose hosts | `chore/tooling-2.0` (PR #1825, draft, into `dev-0.18`); `dev-2.0` | Local checks, a staging deploy of a beta app tag, qad deployed with `backups: [db, files]`: passed |
+| catalpa_bero | Oldest common pin (as jid, ncd and tvi): the upgrade path from far behind. First prod on Fedora CoreOS | `chore/tooling-2.0` from `main`, `feat/staging-fcos` on it; `dev-2.0` | Staging rebuilt as a rendered host: `host create` restored prod's database and media, HTTPS on three origins, HTTP→HTTPS. Prod: 2.0 on Ubuntu, then the bucket consolidation (`docs/DEPLOYMENT.md`), then a cutover runbook and rehearsal |
+| catalpa-site | Compose prod on DigitalOcean and the `fcos` quadlet env in one repo | `feat/fcos`; `dev-2.0` at `8aad5b7` | `fcos` env ran a rendered host (OS update window passed). Next: staging becomes a rendered host, the `fcos` env is removed |
+| partisipa | Branch `develop`. Its only dk envs are `dev` and `full`, with no deployed env yet: the local commands, then a first deployed env set up from scratch (a candidate for a rendered host) | `develop` at v1.7.0 | Not started (handed to Josh). A rendered host needs the database passwords out of `DATABASE_URL` / `MB_DB_CONNECTION_URI` first |
 
 `host destroy` (#69) is M2b, ahead of the larger milestones, because these test hosts get
 destroyed and rebuilt repeatedly, and by hand that leaves DNS records, volumes and known_hosts
