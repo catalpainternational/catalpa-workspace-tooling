@@ -118,6 +118,11 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Changed
 
+- **Secrets go to a rendered host in one SSH connection, not one each.** `host provision`,
+  `secrets push` and the backup-credential pushes send every secret of the account in one call
+  (and the system's in another, as root): one `<name> <base64 value>` line each on stdin, made
+  into Podman secrets on the host, the values never on a command line. The host confirms each;
+  one it didn't fails the push and says which.
 - **A rendered host keeps a registry login only with `fcos.auto_update`.** Every other env
   (always prod) logs in for each pull and keeps nothing: dk sends a token over SSH's stdin, the
   host logs in to an auth file under `/run/user/<uid>`, pulls, and removes it when the pull ends.

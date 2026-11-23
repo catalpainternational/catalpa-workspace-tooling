@@ -200,15 +200,55 @@ class FakeRunner:
 
 
 def test_secret_values_go_over_stdin_only() -> None:
+    """One SSH connection for the account's secrets and one for the system's, whatever their
+    number; the values only on stdin."""
+    import base64
+
     c = committed("site")
-    runner = FakeRunner()
+
+    class Runner(FakeRunner):
+        def __call__(self, argv, *, input=None, tty=False):
+            self.calls.append((argv, input))
+            names = [line.split()[0] for line in (input or b"").decode().splitlines()]
+            return subprocess.CompletedProcess(argv, 0, "".join(f"pushed {n}\n" for n in names).encode(), b"")
+
+    runner = Runner()
     host = h.Host("203.0.113.9", runner=runner)
-    h.push_secrets(host, c, [("postgres_password", "s3cr3t", False), ("zbx", "psk", True)])
+    h.push_secrets(host, c, [("postgres_password", "s3cr3t", False), ("multi", "a\nb c", False), ("zbx", "psk", True)])
     (argv1, in1), (argv2, in2) = runner.calls
-    assert argv1[-2:] == ["deploy@203.0.113.9", "podman secret create --replace postgres_password -"]
-    assert argv2[-2:] == ["core@203.0.113.9", "sudo podman secret create --replace zbx -"]
-    assert (in1, in2) == (b"s3cr3t", b"psk")
-    assert not any("s3cr3t" in a for a in argv1 + argv2)
+    assert argv1[-2] == "deploy@203.0.113.9" and argv1[-1].startswith("sh -c ")
+    assert argv2[-2] == "core@203.0.113.9" and argv2[-1].startswith("sudo sh -c ")
+    b64 = lambda v: base64.b64encode(v.encode()).decode()  # noqa: E731
+    assert in1 == f"postgres_password {b64('s3cr3t')}\nmulti {b64('a' + chr(10) + 'b c')}\n".encode()
+    assert in2 == f"zbx {b64('psk')}\n".encode()
+    assert not any("s3cr3t" in a or "psk" in a for a in argv1 + argv2)
+
+
+def test_a_secret_the_host_didnt_confirm_fails() -> None:
+    c = committed("site")
+    host = h.Host("203.0.113.9", runner=FakeRunner())  # answers nothing
+    with pytest.raises(h.HostError, match="not pushed: postgres_password"):
+        h.push_secrets(host, c, [("postgres_password", "x", False)])
+
+
+def test_the_push_script_makes_each_secret(tmp_path) -> None:
+    """The real script, by sh, against a fake podman that records what each secret got."""
+    import base64
+
+    bin_dir, seen = tmp_path / "bin", tmp_path / "seen"
+    bin_dir.mkdir(), seen.mkdir()
+    podman = bin_dir / "podman"
+    podman.write_text('#!/bin/sh\n[ "$1 $2 $3" = "secret create --replace" ] && cat > "$SEEN/$4"\n')
+    podman.chmod(0o755)
+    values = {"one": "plain", "two": "line1\nline2 with spaces\n", "three": "x'\"$y`z"}
+    stdin = "".join(f"{k} {base64.b64encode(v.encode()).decode()}\n" for k, v in values.items())
+    r = subprocess.run(
+        ["sh", "-c", h.PUSH_SECRETS_SCRIPT], input=stdin, text=True, capture_output=True, check=False,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "SEEN": str(seen)},
+    )  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["pushed", "one", "pushed", "two", "pushed", "three"]
+    assert {f.name: f.read_text() for f in seen.iterdir()} == values
 
 
 def test_host_address_from_docker_host() -> None:

@@ -639,14 +639,38 @@ def _makes(key: str) -> str:
     return ""
 
 
+#: Reads ``<name> <base64 value>`` lines on stdin and makes each a Podman secret. The values reach
+#: ``podman secret create`` through a pipe from ``printf`` (a shell builtin): never on a command
+#: line. Prints ``pushed <name>`` for each, so a failure says how far it got.
+PUSH_SECRETS_SCRIPT = (
+    "set -e\n"
+    "while IFS=' ' read -r name value; do\n"
+    '  [ -n "$name" ] || continue\n'
+    '  printf %s "$value" | base64 -d | podman secret create --replace "$name" - >/dev/null\n'
+    '  echo "pushed $name"\n'
+    "done\n"
+)
+
+
 def push_secrets(host: Host, c: Committed, values: list[tuple[str, str, bool]]) -> None:
-    for name, value, system in values:
-        cmd = f"podman secret create --replace {shlex.quote(name)} -"
-        if system:
-            host.ssh("core", f"sudo {cmd}", input=value.encode())
-        else:
-            host.ssh(c.user, cmd, input=value.encode())
-        print(f"  {'system ' if system else ''}secret {name}: pushed", file=sys.stderr)
+    """Create or replace each secret: one SSH connection for the account's, one for the system's
+    (as root), the values on stdin, base64-encoded one per line."""
+    for system in (False, True):
+        batch = [(n, v) for n, v, s in values if s is system]
+        if not batch:
+            continue
+        for name, _v in batch:
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                raise HostError(f"secret name {name!r}: only letters, digits, _ . -")
+        stdin = "".join(f"{n} {base64.b64encode(v.encode()).decode()}\n" for n, v in batch).encode()
+        cmd = "sh -c " + shlex.quote(PUSH_SECRETS_SCRIPT)
+        r = host.ssh("core", f"sudo {cmd}", input=stdin) if system else host.ssh(c.user, cmd, input=stdin)
+        done = {line[len("pushed "):] for line in r.stdout.decode().splitlines() if line.startswith("pushed ")}
+        for name, _v in batch:
+            print(f"  {'system ' if system else ''}secret {name}: {'pushed' if name in done else 'NOT pushed'}", file=sys.stderr)
+        missing = [n for n, _v in batch if n not in done]
+        if missing:
+            raise HostError(f"secrets not pushed: {', '.join(missing)}")
 
 
 # --- Ignition -------------------------------------------------------------------------------

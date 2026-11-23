@@ -43,7 +43,10 @@ class Runner:
 
     def __call__(self, argv, *, input=None, tty=False):
         self.calls.append((argv[-1], input))
-        return subprocess.CompletedProcess(argv, 0, b"", b"")
+        out = b""
+        if "secret create" in argv[-1] and input:  # the push script confirms each secret
+            out = b"".join(b"pushed " + line.split()[0] + b"\n" for line in input.splitlines())
+        return subprocess.CompletedProcess(argv, 0, out, b"")
 
 
 def test_which_commands_need_write_credentials() -> None:
@@ -82,9 +85,13 @@ def test_new_credentials_are_pushed_and_db_restarted(swlt, monkeypatch) -> None:
     assert bc.ensure_backup_credentials(b, "pgbackrest", yes=True, dry_run=False, label="x",
                                         read_credentials=lambda: dict(store)) == 0  # fmt: skip
     assert seen == {"env": "staging", "target": "pgbackrest", "yes": True}
-    pushed = [cmd.split()[-2] for cmd, _ in r.calls if "secret create" in cmd]
-    assert pushed == sorted(PGBR)  # the changed ones only: not django_secret_key
-    assert {inp for cmd, inp in r.calls if "pgbr_s3_write_key" in cmd} == {b"AK"}
+    import base64
+
+    pushes = [inp.decode() for cmd, inp in r.calls if "secret create" in cmd]
+    assert len(pushes) == 1  # one connection for them all
+    lines = dict(line.split(" ", 1) for line in pushes[0].splitlines())
+    assert sorted(lines) == sorted(PGBR)  # the changed ones only: not django_secret_key
+    assert base64.b64decode(lines["pgbr_s3_write_key"]) == b"AK"
     assert not any("AK" in cmd or "SK" in cmd for cmd, _ in r.calls)  # values only on stdin
     assert r.calls[-1][0] == "systemctl --user restart db.service"
 
