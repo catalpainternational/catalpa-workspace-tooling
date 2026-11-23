@@ -123,7 +123,9 @@ class Host:
     runner: Runner = run
 
     def _argv(self, login: str, command: str, *, tty: bool = False) -> list[str]:
-        argv = ["ssh", "-o", "BatchMode=yes"]
+        from catalpa_tooling.ssh_reuse import reuse_options
+
+        argv = ["ssh", "-o", "BatchMode=yes", *reuse_options()]
         if tty:
             argv.append("-t")
         if self.port != 22:

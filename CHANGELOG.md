@@ -118,6 +118,10 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Changed
 
+- **dk's SSH calls to a rendered host share one connection.** OpenSSH's `ControlMaster` (sockets
+  in `~/.ssh/dk-control/`, 0700), kept for a minute after the last call, so the next dk command
+  reuses it too. About 0.7 s a call instead of 3.4 s from Dili to sgp1; `dk staging ps` 1.5 s
+  instead of 5.8 s. `DK_SSH_REUSE=0` turns it off. Compose hosts' calls are unchanged.
 - **Secrets go to a rendered host in one SSH connection, not one each.** `host provision`,
   `secrets push` and the backup-credential pushes send every secret of the account in one call
   (and the system's in another, as root): one `<name> <base64 value>` line each on stdin, made

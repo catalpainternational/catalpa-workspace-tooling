@@ -119,3 +119,9 @@ def _no_real_registry_login(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(registry.TOKEN_ENV, raising=False)
     monkeypatch.delenv(registry.USER_ENV, raising=False)
     monkeypatch.delenv("GITHUB_ACTOR", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_ssh_connection_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests see dk's plain ssh argv and never make ~/.ssh/dk-control (test_ssh_reuse turns it on)."""
+    monkeypatch.setenv("DK_SSH_REUSE", "0")

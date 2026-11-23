@@ -267,6 +267,11 @@ its own unit in the account's systemd. So with `runtime: quadlet`, dk's everyday
 commands go to the host over SSH, as the account in `docker_host`. They read only `docker_host`
 and the committed `generated/fcos/manifest.json`, so there's no SOPS decrypt and no compose.
 
+The many short `ssh` calls a command makes share one connection per host and login (OpenSSH's
+`ControlMaster`, sockets in `~/.ssh/dk-control/`), kept for a minute after the last so the next
+command reuses it too: about 0.7 s a call instead of 3.4 s from Dili to sgp1. `DK_SSH_REUSE=0`
+turns it off.
+
 | Command | On the host |
 |---|---|
 | `dk <env> logs [-f] [--tail N] [--since T] [svc…]` | `journalctl --user -u <svc>.service`: container output and the unit's start, stop and failure messages in one stream. `--tail` counts lines of that merged stream, not per service |
