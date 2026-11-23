@@ -500,29 +500,47 @@ class Backend:
         return out
 
     def _after_db_restore(self) -> int:
-        """``ops.post_db_restore``, as compose runs them, once the app is up again. A stack left
-        stopped can't run them: say which to run after starting it."""
-        from catalpa_tooling.fcos.dbdump import post_restore_hooks
+        """After a pgBackRest restore (the whole cluster, Metabase's database too):
+        ``ops.post_db_restore`` then ``ops.post_metabase_db_restore``, as compose runs them, once
+        the app is up again. A stack left stopped can't run them: say what to run after starting it."""
+        from catalpa_tooling.fcos.dbdump import (
+            metabase_hooks_apply,
+            post_metabase_restore_hooks,
+            post_restore_hooks,
+        )
         from catalpa_tooling.post_db_restore import _expand_commands, post_db_restore_applies
 
-        if not post_db_restore_applies(self.config, self.env_name):
+        sets = [
+            (label, hooks)
+            for label, hooks, applies in (
+                ("post_db_restore", self.config.ops.post_db_restore,
+                 post_db_restore_applies(self.config, self.env_name)),
+                ("post_metabase_db_restore", self.config.ops.post_metabase_db_restore,
+                 metabase_hooks_apply(self.config, self.env_name)),
+            )
+            if applies
+        ]  # fmt: skip
+        if not sets:
             return 0
         web = self.config.stack_service("web")
         r = self.host.ssh(self.login, f"systemctl --user is-active --quiet {shlex.quote(web)}.service", check=False)
         if r.returncode == 0:
-            return post_restore_hooks(self)
-        commands = _expand_commands(
-            self.config, self.config.ops.post_db_restore.manage_commands, env_name=self.env_name,
-            env_add={}, hook_label="post_db_restore",
-        ) or []  # fmt: skip
-        if commands or self.config.ops.post_db_restore.db_psql:
-            print(
-                "post_db_restore hooks not run: the stack is stopped. Once it's up, run "
-                + "; ".join(f"`dk {self.env_name} manage {shlex.join(c)}`" for c in commands)
-                + (" and the db_psql hooks" if self.config.ops.post_db_restore.db_psql else "")
-                + ".",
-                file=sys.stderr,
-            )
+            rc = post_restore_hooks(self)
+            return rc if rc != 0 else post_metabase_restore_hooks(self)
+        for label, hooks in sets:
+            commands = _expand_commands(
+                self.config, hooks.manage_commands, env_name=self.env_name, env_add={}, hook_label=label,
+            ) or []  # fmt: skip
+            todo = [f"`dk {self.env_name} manage {shlex.join(c)}`" for c in commands]
+            if hooks.db_psql:
+                todo.append("the db_psql hooks")
+            todo += [f"`dk {self.env_name} restart {s}`" for s in getattr(hooks, "restart_services", ())]
+            if todo:
+                print(
+                    f"{label} hooks not run: the stack is stopped. Once it's up, run "
+                    + "; ".join(todo) + ".",
+                    file=sys.stderr,
+                )
         return 0
 
     def db_restore_dump(self, archive: Path | None, *, yes: bool, dry_run: bool) -> int:

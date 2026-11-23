@@ -226,6 +226,12 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Fixed
 
+- **A quadlet env's pgBackRest restore runs `ops.post_metabase_db_restore` too (#209).** After
+  `db restore`, `restore` and `host create`'s restore, the quadlet backend ran only
+  `ops.post_db_restore`, so a project's Metabase follow-ups and its `restart_services` were left
+  to do by hand. It now runs them after the app's hooks, as compose does (the restore brings back
+  the whole cluster, Metabase's database too); a stopped stack prints both sets to run. A dump
+  restore (`--file` / `--dumps`) still runs only the app's: it replaces only the app database.
 - **`dk <env> render` works for a compose file named from the shell (#208).** A root
   `name: ${PROJECT_NAME}` that direnv fills stopped the render ("project name must not be
   empty"), which ignores the operator's shell. The render now gives compose the project name a

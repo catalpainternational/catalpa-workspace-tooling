@@ -482,3 +482,75 @@ def test_push_media_chowns_even_when_rsync_is_interrupted(swlt, tmp_path, monkey
     with pytest.raises(KeyboardInterrupt):
         b.push_media(tmp_path)
     assert r.calls[-1][-1].startswith("podman unshare chown -R ")
+
+
+# --- restore hooks (#209) -------------------------------------------------------------------
+
+
+def _with_hooks(config, *, envs=None):
+    from dataclasses import replace
+
+    ops = replace(
+        config.ops,
+        post_db_restore=replace(
+            config.ops.post_db_restore, envs=envs, db_psql=(), manage_commands=(("app-followups",),)
+        ),
+        post_metabase_db_restore=replace(
+            config.ops.post_metabase_db_restore, envs=envs, db_psql=(),
+            manage_commands=(("mb-followups", "--quiet"),), restart_services=("metabase",),
+        ),
+    )  # fmt: skip
+    return replace(config, ops_optional=ops)
+
+
+class _StackRecorder(Recorder):
+    def __init__(self, active: bool) -> None:
+        super().__init__()
+        self.active = active
+
+    def __call__(self, argv, *, input=None, tty=False):
+        self.calls.append(argv)
+        rc = 0 if self.active or "is-active" not in argv[-1] else 3
+        return subprocess.CompletedProcess(argv, rc, b"", b"")
+
+
+def test_pgbackrest_restore_runs_the_metabase_hooks_after_the_app_ones(swlt) -> None:
+    """As compose does after a pgBackRest restore: post_db_restore, then post_metabase_db_restore
+    (manage commands, then restart_services)."""
+    r = _StackRecorder(active=True)
+    b = _backend(_with_hooks(swlt), r)
+    assert b._after_db_restore() == 0
+    cmds = [c[-1] for c in r.calls]
+    app = next(i for i, c in enumerate(cmds) if "app-followups" in c)
+    mb = next(i for i, c in enumerate(cmds) if "mb-followups --quiet" in c)
+    restart = cmds.index("systemctl --user restart metabase.service")
+    assert app < mb < restart
+
+
+def test_stopped_stack_lists_both_hook_sets(swlt, capsys) -> None:
+    r = _StackRecorder(active=False)
+    b = _backend(_with_hooks(swlt), r)
+    assert b._after_db_restore() == 0
+    assert not any("followups" in c[-1] for c in r.calls)
+    err = capsys.readouterr().err
+    assert "post_db_restore hooks not run" in err and "`dk staging manage app-followups`" in err
+    assert "post_metabase_db_restore hooks not run" in err
+    assert "`dk staging manage mb-followups --quiet`" in err and "`dk staging restart metabase`" in err
+
+
+def test_hooks_for_other_envs_do_nothing(swlt) -> None:
+    r = _StackRecorder(active=True)
+    assert _backend(_with_hooks(swlt, envs=("prod",)), r)._after_db_restore() == 0
+    assert r.calls == []
+
+
+def test_dump_restore_runs_only_the_app_hooks(swlt, tmp_path) -> None:
+    """A dump restore replaces only the app database: the Metabase hooks don't apply."""
+    from catalpa_tooling.fcos.dbdump import restore_archive
+
+    dump = tmp_path / "app.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 100)
+    r = _StackRecorder(active=True)
+    assert restore_archive(_backend(_with_hooks(swlt), r), dump, uploader=lambda argv, path: 0) == 0
+    cmds = " ".join(c[-1] for c in r.calls)
+    assert "app-followups" in cmds and "mb-followups" not in cmds and "restart metabase" not in cmds

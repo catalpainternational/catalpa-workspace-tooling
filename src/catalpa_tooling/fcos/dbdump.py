@@ -121,18 +121,45 @@ def restore_archive(
 def post_restore_hooks(b, *, uploader: Uploader = upload) -> int:
     """``ops.post_db_restore`` for a quadlet env: ``db_psql`` SQL piped to psql in ``db``,
     then ``manage.py`` commands in the web container."""
+    from catalpa_tooling.post_db_restore import post_db_restore_applies
+
+    if not post_db_restore_applies(b.config, b.env_name):
+        return 0
+    return _run_hooks(b, b.config.ops.post_db_restore, "post_db_restore", uploader)
+
+
+def metabase_hooks_apply(config, env_name: str) -> bool:
+    hooks = config.ops.post_metabase_db_restore
+    return bool(hooks.manage_commands or hooks.db_psql or hooks.restart_services) and hooks.applies_to_env(env_name)
+
+
+def post_metabase_restore_hooks(b, *, uploader: Uploader = upload) -> int:
+    """``ops.post_metabase_db_restore`` for a quadlet env, as compose runs it after a restore that
+    brought back Metabase's database (pgBackRest restores the whole cluster): ``db_psql``, then
+    ``manage.py`` commands, then restart ``restart_services``."""
+    if not metabase_hooks_apply(b.config, b.env_name):
+        return 0
+    hooks = b.config.ops.post_metabase_db_restore
+    rc = _run_hooks(b, hooks, "post_metabase_db_restore", uploader)
+    if rc != 0:
+        return rc
+    for svc in hooks.restart_services:
+        print(f"post_metabase_db_restore: restart {svc}", file=sys.stderr)
+        rc = b._ssh(f"systemctl --user restart {shlex.quote(svc)}.service", tty=False)
+        if rc != 0:
+            return rc
+    return 0
+
+
+def _run_hooks(b, hooks, label: str, uploader: Uploader) -> int:
     from catalpa_tooling.pgbackrest_db import _db_shell_vars
-    from catalpa_tooling.post_db_restore import _expand_commands, post_db_restore_applies
+    from catalpa_tooling.post_db_restore import _expand_commands
     from catalpa_tooling.site_origin import primary_site_origin_from_info
 
     config = b.config
-    if not post_db_restore_applies(config, b.env_name):
-        return 0
-    hooks = config.ops.post_db_restore
     env_add = {"SITE_ORIGIN": primary_site_origin_from_info(b.info)} if b.info else {}
     commands = _expand_commands(
-        config, hooks.manage_commands, env_name=b.env_name, env_add=env_add,
-        hook_label="post_db_restore",
+        config, hooks.manage_commands, env_name=b.env_name, env_add=env_add, hook_label=label,
     )  # fmt: skip
     if commands is None:
         return 1
@@ -141,20 +168,20 @@ def post_restore_hooks(b, *, uploader: Uploader = upload) -> int:
     for entry in hooks.db_psql:
         vars_ = _db_shell_vars(entry.target)  # type: ignore[arg-type]
         psql = 'export PGPASSWORD="$POSTGRES_PASSWORD"; psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 -f '
-        print(f"post_db_restore: db_psql target={entry.target} file={entry.file} …", file=sys.stderr)
+        print(f"{label}: db_psql target={entry.target} file={entry.file} …", file=sys.stderr)
         if entry.file.startswith("/"):  # a path inside the db image
             rc = b._ssh(f"podman exec {q(db)} sh -c {q(vars_ + psql + q(entry.file))}", tty=False)
         else:
             path = (config.repo_root / entry.file).resolve()
             if not path.is_file():
-                print(f"post_db_restore: db_psql file not found: {path}", file=sys.stderr)
+                print(f"{label}: db_psql file not found: {path}", file=sys.stderr)
                 return 1
             argv = b.host._argv(b.login, f"podman exec -i {q(db)} sh -c {q(vars_ + psql + '-')}")
             rc = uploader(argv, path)
         if rc != 0:
             return rc
     for argv in commands:
-        print(f"post_db_restore: manage.py {' '.join(argv)}", file=sys.stderr)
+        print(f"{label}: manage.py {' '.join(argv)}", file=sys.stderr)
         rc = b.manage(list(argv), user=None, tty=False)
         if rc != 0:
             return rc
