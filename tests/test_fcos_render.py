@@ -514,6 +514,19 @@ def test_no_backups_setting_no_backup_units(tmp_path: Path) -> None:
     assert not any("pgbackrest" in f or "restic" in f for f in render.files if f != "manifest.json")
 
 
+def test_a_render_needs_an_ssh_docker_host(tmp_path: Path) -> None:
+    """Without one the env's settings are a local env's (http://, localhost) and no dk command
+    could reach the host."""
+    import re
+
+    root = tmp_path / "bero"
+    shutil.copytree(FIXTURES / "bero", root, ignore=shutil.ignore_patterns("expected"))
+    info = root / "docker" / "envs" / "staging" / "info.yaml"
+    info.write_text(re.sub(r"(?m)^docker_host:.*\n", "", info.read_text()))
+    with pytest.raises(RenderError, match="needs an ssh:// docker_host"):
+        render_env(load_project_config(root), "staging", adapter=_fake_adapter())
+
+
 @needs_compose
 def test_project_name_from_the_shell_renders_as_a_compose_deploy_would(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -126,8 +126,10 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
   `DK_REGISTRY_USER` (CI), `registry_user` / `registry_token` in sops, `gh auth token` with
   `read:packages` (dk warns when its scopes are wider), or a prompt. So a registry bot is needed
   only where `podman auto-update` pulls with nobody there; `host login` is for those envs.
-- **`host create` refuses a quadlet env without an `ssh://` `docker_host`**, which every dk
-  command after it uses to reach the host; the dry run now says so instead of a later command.
+- **A quadlet env needs an `ssh://` `docker_host`: `render` and `host create` refuse one
+  without.** Every dk command after `host create` reaches the host through it, and without it the
+  render took the env's settings as a local env's: Caddy got `http://` site addresses and
+  `localhost`, so the host served plain HTTP.
 - **Monitoring on a rendered host is per env, and off by default.** `ops.zabbix` in
   `tooling.yaml` used to put the Zabbix agent, `podman-ro-proxy` and the backup status files on
   every `runtime: quadlet` env of the project. Now an env opts in with `monitoring: zabbix` in its

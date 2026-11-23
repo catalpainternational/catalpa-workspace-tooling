@@ -177,6 +177,15 @@ def render_env(
         settings = parse_fcos_settings(info)
     except FcosConfigError as exc:
         raise RenderError(str(exc)) from exc
+    from catalpa_tooling.ssh_known_hosts import ssh_host_from_docker_host
+
+    if not ssh_host_from_docker_host(str(info.get("docker_host") or "")):
+        # Without it the env's settings are a local one's (http:// site addresses, localhost).
+        raise RenderError(
+            f"{env_name}: a rendered host is remote, so info.yaml needs an ssh:// docker_host "
+            f"(dk reaches the host through it, and the settings follow it), e.g. "
+            f"docker_host: ssh://deploy@<host>"
+        )
 
     from catalpa_tooling.project_credentials import (
         env_credentials_path,
