@@ -130,6 +130,20 @@ def cmd_quadlet_host_create(
     dry_run = global_dry_run or ns.dry_run
     label = f"dk {env_name} host create"
 
+    # 0. Every dk command after this one reaches the host through docker_host.
+    from catalpa_tooling.ssh_known_hosts import ssh_host_from_docker_host
+
+    if not ssh_host_from_docker_host(str(info.get("docker_host") or "")):
+        origin = info.get("site_origin")
+        first = origin[0] if isinstance(origin, list) and origin else origin
+        host = str(first or "<host>").split("://")[-1].split("/")[0]
+        print(
+            f"{label}: info.yaml has no ssh:// docker_host, and dk's commands for this env reach "
+            f"the host through it. Add, e.g.:\n  docker_host: ssh://deploy@{host}",
+            file=sys.stderr,
+        )
+        return 1
+
     # 1. The render, and its Ignition.
     try:
         render = render_env(config, env_name)

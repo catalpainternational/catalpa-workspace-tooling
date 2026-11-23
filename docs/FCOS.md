@@ -353,8 +353,8 @@ manages the system units, with one `sudo sh` per command and the script on stdin
 | Command | What it does |
 |---|---|
 | `host ignition -o FILE` | Compile `host.bu` to Ignition, the droplet's user data |
-| `host provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, log in to the image registry (from `registry_user`/`registry_token` in sops, or asks for the token), start the stack |
-| `host login` | Log the account in to the image registry again from sops, and show who it's logged in as: after rotating the bot's token |
+| `host provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, pull every image (logging in for the pull only; an `auto_update` env from its stored login; see Registry login below), start the stack |
+| `host login` | An `auto_update` env: log the account in to the image registry again from sops, and show who it's logged in as, after rotating the bot's token. Other envs keep no login |
 | `secrets push [NAME…] [--restart]` | Stream secrets from `credentials.yaml` into Podman secrets |
 | `diff [--names-only]` | Compare the host with the render: each installed file's content, mode and owner, the data directories, the timers, the secret names |
 | `apply [--no-restart] [-y] [--force]` | Install what differs, then reload systemd and restart only the units affected |
@@ -425,22 +425,41 @@ dk <env> host create             # then provisions it; on a new volume, restores
 
 `host ignition -o FILE` still compiles the Ignition on its own, for another provider.
 
-Provisioning is safe to run again. The registry login is kept in the account's home
-(`~/.config/containers/auth.json`, where host.bu points systemd's `REGISTRY_AUTH_FILE`).
+Provisioning is safe to run again.
 
-**Registry login.** The host pulls private images with nobody connected, so the account keeps
-its own login. Keep the bot's in the project's `credentials.yaml` (`dk secrets`, which edits
-`docker/credentials.yaml` with sops):
+**Registry login.** A host pulls when dk tells it to: `host provision` pulls every image before
+anything starts or is restored, and a bare `dk <env>` pulls on each deploy. The units use
+`Pull=missing`, so a reboot or an OS update pulls nothing. Only `fcos.auto_update` pulls with
+nobody there, so:
 
-```yaml
-registry_user: <the bot's GitHub login>
-registry_token: <a classic PAT with only read:packages, with an expiry date>
-```
+- **Without `auto_update` (the default, and always prod), the host keeps no registry login.**
+  For each pull dk sends a token over SSH's stdin; the host logs in to an auth file under
+  `/run/user/<uid>` (memory), pulls, and removes the file when the pull ends, also when it
+  fails. `host provision` removes a login an older dk stored. The token comes, in order, from:
+  1. `DK_REGISTRY_TOKEN` and `DK_REGISTRY_USER` (or `GITHUB_ACTOR`): CI, e.g. a workflow's
+     `GITHUB_TOKEN` with `packages: read`;
+  2. `registry_user` / `registry_token` in sops, when the project keeps one (used for the pull,
+     not stored on the host);
+  3. `gh auth token`, for ghcr.io, when its scopes include `read:packages`
+     (`gh auth refresh -s read:packages`). dk warns when they're wider (`repo` …): the token is
+     on the host for the pull. A classic token with only `read:packages` in `DK_REGISTRY_TOKEN`
+     avoids that;
+  4. a prompt, on a terminal.
+- **With `auto_update: true`, the account keeps its own login** (`~/.config/containers/auth.json`,
+  where host.bu points systemd's `REGISTRY_AUTH_FILE`): a bot's, kept in the project's
+  `credentials.yaml` (`dk secrets`, which edits `docker/credentials.yaml` with sops):
 
-`host provision` then logs in without asking, the token going over SSH's stdin to
-`podman login --password-stdin`: never on a command line, never printed. Without the two keys
-it asks, as before. A provisioned host keeps its login, so after rotating the token run
-`sops`/`dk secrets`, then `dk <env> host login`.
+  ```yaml
+  registry_user: <the bot's GitHub login>
+  registry_token: <a classic PAT with only read:packages, with an expiry date>
+  ```
+
+  `host provision` logs in from it without asking, the token going over SSH's stdin to
+  `podman login --password-stdin`: never on a command line, never printed. Without the two keys
+  it asks. After rotating the token: `sops`/`dk secrets`, then `dk <env> host login`.
+
+ghcr.io takes only classic tokens, so a token can't be limited to one repository's packages:
+it reads what its account can.
 
 **The project's `credentials.yaml`** holds what every env shares. It needs its own creation rule
 in `.sops.yaml` (`path_regex: ^docker/credentials\.yaml$`), which can name fewer people than the

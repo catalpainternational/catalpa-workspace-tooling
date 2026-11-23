@@ -203,6 +203,17 @@ def test_dry_run_creates_nothing(site, do, capsys) -> None:
     assert "would create volume site-staging-data (10 GiB, sgp1)" in capsys.readouterr().err
 
 
+def test_no_docker_host_is_refused_before_anything(site, do, capsys) -> None:
+    """Every dk command after host create reaches the host through docker_host."""
+    import re
+
+    config, info = site
+    info.write_text(re.sub(r"(?m)^docker_host:.*\n", "", info.read_text()))
+    assert cmd_env_host_create(config, "staging", ["--dry-run"]) == 1
+    assert do["calls"] == []
+    assert "docker_host: ssh://deploy@staging.site.example" in capsys.readouterr().err
+
+
 def test_no_provision_stops_after_dns(site, do) -> None:
     config, _ = site
     assert cmd_env_host_create(config, "staging", ["--", "--no-provision"]) == 0

@@ -40,6 +40,13 @@ def rendered(monkeypatch):
     return state
 
 
+@pytest.fixture(autouse=True)
+def pull_token(monkeypatch):
+    """The site fixture's images are on ghcr.io: each pull gets a token (CI's way)."""
+    monkeypatch.setenv("DK_REGISTRY_TOKEN", "tok-123")
+    monkeypatch.setenv("DK_REGISTRY_USER", "ci-bot")
+
+
 @pytest.fixture
 def committed(site) -> h.Committed:
     return h.load_committed(site.deploy_envs_dir / "staging" / "generated" / "fcos")
@@ -57,7 +64,10 @@ class FakeHost:
         cmd = argv[-1]
         self.calls.append((cmd, input))
         out = b""
-        if cmd == "sh -s" and input and b"podman pull" in input:
+        pulling = (cmd == "sh -s" and input and b"podman pull" in input) or (
+            cmd.startswith("sh -c ") and "podman pull" in cmd
+        )
+        if pulling:
             out = "".join(f"{d.CHANGED}{i}\n" for i in self.changed).encode()
         elif "is-active" in cmd:
             out = "\n".join(self.states for _ in cmd.split()[3:]).encode()

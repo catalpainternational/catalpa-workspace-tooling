@@ -118,6 +118,16 @@ Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what t
 
 ### Changed
 
+- **A rendered host keeps a registry login only with `fcos.auto_update`.** Every other env
+  (always prod) logs in for each pull and keeps nothing: dk sends a token over SSH's stdin, the
+  host logs in to an auth file under `/run/user/<uid>`, pulls, and removes it when the pull ends.
+  `host provision` now pulls every image itself (before starting, and before a restore's
+  one-offs), and removes a login an older dk stored. The token comes from `DK_REGISTRY_TOKEN` /
+  `DK_REGISTRY_USER` (CI), `registry_user` / `registry_token` in sops, `gh auth token` with
+  `read:packages` (dk warns when its scopes are wider), or a prompt. So a registry bot is needed
+  only where `podman auto-update` pulls with nobody there; `host login` is for those envs.
+- **`host create` refuses a quadlet env without an `ssh://` `docker_host`**, which every dk
+  command after it uses to reach the host; the dry run now says so instead of a later command.
 - **Monitoring on a rendered host is per env, and off by default.** `ops.zabbix` in
   `tooling.yaml` used to put the Zabbix agent, `podman-ro-proxy` and the backup status files on
   every `runtime: quadlet` env of the project. Now an env opts in with `monitoring: zabbix` in its

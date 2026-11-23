@@ -107,3 +107,15 @@ def minimal_project(tmp_path: Path, isolated_tooling: None) -> ProjectConfig:
     """Copy minimal_project fixture tree into ``tmp_path`` and load ``ProjectConfig``."""
     write_minimal_tooling_tree(tmp_path)
     return load_project_config(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_registry_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dk asks gh, the environment or a terminal for a pull's registry token: tests never reach
+    the real gh or the developer's environment."""
+    from catalpa_tooling.fcos import registry
+
+    monkeypatch.setattr(registry, "_gh", lambda *a: None)
+    monkeypatch.delenv(registry.TOKEN_ENV, raising=False)
+    monkeypatch.delenv(registry.USER_ENV, raising=False)
+    monkeypatch.delenv("GITHUB_ACTOR", raising=False)

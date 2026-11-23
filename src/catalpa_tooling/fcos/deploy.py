@@ -35,13 +35,20 @@ def account_images(c: h.Committed) -> dict[str, list[str]]:
     return out
 
 
-def pull_script(c: h.Committed, images: list[str]) -> str:
-    """Pull each image as the account; print ``CHANGED <image>`` when its ID moved."""
-    auth = shlex.quote(h.auth_file(c))
-    lines = [
-        "set -e",
-        f'AUTH=; [ -f {auth} ] && AUTH="--authfile {auth}"',
-    ]
+def pull_script(c: h.Committed, images: list[str], *, login_user: str | None = None) -> str:
+    """Pull each image as the account; print ``CHANGED <image>`` when its ID moved.
+
+    ``login_user``: first log in to a temporary auth file with the token on the script's stdin
+    (``registry.login_lines``), removed when the script ends. Without it, the stored login (an
+    ``auto_update`` env), if there is one."""
+    from catalpa_tooling.fcos.registry import login_lines
+
+    lines = ["set -e"]
+    if login_user is not None:
+        lines += login_lines(login_user, h.private_registries(c))
+    else:
+        auth = shlex.quote(h.auth_file(c))
+        lines.append(f'AUTH=; [ -f {auth} ] && AUTH="--authfile {auth}"')
     for image in images:
         i = shlex.quote(image)
         lines += [
@@ -51,6 +58,25 @@ def pull_script(c: h.Committed, images: list[str]) -> str:
             f'[ "$before" = "$after" ] || echo {shlex.quote(CHANGED + image)}',
         ]
     return "\n".join(lines) + "\n"
+
+
+def pull(target: h.Host, c: h.Committed, images: list[str], creds, *, env_name: str) -> list[str]:
+    """Pull ``images`` on the host as the account; returns those whose ID changed.
+
+    An ``auto_update`` env pulls with its stored login. Any other logs in for this pull only:
+    the token goes over SSH's stdin, the script (no secret in it) runs with ``sh -c``, and the
+    temporary auth file is removed when it ends. Raises ``RegistryLoginError`` without a token."""
+    from catalpa_tooling.fcos.registry import keeps_login, pull_login
+
+    login = None if keeps_login(c) else pull_login(h.private_registries(c), creds, env_name=env_name)
+    if login is None:
+        out = target.ssh(c.user, "sh -s", input=pull_script(c, images).encode())
+    else:
+        print(f"  logging in for this pull only ({login.source}, as {login.user})", file=sys.stderr)
+        script = pull_script(c, images, login_user=login.user)
+        out = target.ssh(c.user, "sh -c " + shlex.quote(script), input=(login.token + "\n").encode())
+    text = out.stdout.decode()
+    return [line[len(CHANGED):] for line in text.splitlines() if line.startswith(CHANGED)]
 
 
 def units_for_images(c: h.Committed, changed: list[str]) -> list[str]:
@@ -162,9 +188,15 @@ def deploy(
             print("dry-run: and restart the units whose image changed.", file=sys.stderr)
             print("dry-run: nothing changed.", file=sys.stderr)
             return 0
+        from catalpa_tooling.fcos.cli import _credentials
+        from catalpa_tooling.fcos.registry import RegistryLoginError
+
         print(f"{target.address}: pulling {len(images)} images …", file=sys.stderr)
-        out = target.ssh(c.user, "sh -s", input=pull_script(c, images).encode()).stdout.decode()
-        changed = [line[len(CHANGED):] for line in out.splitlines() if line.startswith(CHANGED)]
+        try:
+            changed = pull(target, c, images, lambda: _credentials(config, env_name), env_name=env_name)
+        except RegistryLoginError as exc:
+            print(f"dk {env_name}: {exc}", file=sys.stderr)
+            return 1
         units = [u for u in units_for_images(c, changed) if u not in restarted]
         if changed:
             print(f"New images: {', '.join(changed)}", file=sys.stderr)

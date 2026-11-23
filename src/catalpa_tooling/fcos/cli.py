@@ -92,8 +92,8 @@ def add_host_verbs(sub: argparse._SubParsersAction) -> None:
     pv = sub.add_parser(
         "provision",
         help=(
-            "After a droplet booted from the Ignition: check its files, push the secrets, log in "
-            "to the registry, start the stack."
+            "After a droplet booted from the Ignition: check its files, push the secrets, pull "
+            "the images (logging in for the pull only, unless fcos.auto_update), start the stack."
         ),
     )
     _host_arg(pv)
@@ -105,8 +105,8 @@ def add_host_verbs(sub: argparse._SubParsersAction) -> None:
     lg = sub.add_parser(
         "login",
         help=(
-            "Log the account in to the image registry again, from registry_user/registry_token "
-            "in sops (`dk secrets`): after rotating the bot's token."
+            "An fcos.auto_update env: log the account in to the image registry again, from "
+            "registry_user/registry_token in sops (`dk secrets`), after rotating the bot's token."
         ),
     )
     _host_arg(lg)
@@ -445,13 +445,54 @@ def _registry_login(c, target, creds: dict, *, force: bool, label: str) -> int:
     return 0
 
 
-def _login(ns, config, env_name: str, c, target, *, dry_run: bool) -> int:
-    """``dk <env> host login``: log in again from sops (after rotating the bot's token)."""
+def _pull_images(c, target, creds: dict, *, env_name: str, label: str) -> int:
+    """``host provision``'s pull of every account image, with the env's kind of login."""
+    from catalpa_tooling.fcos import deploy
     from catalpa_tooling.fcos import host as h
+    from catalpa_tooling.fcos.registry import RegistryLoginError, keeps_login
+
+    if keeps_login(c):
+        rc = _registry_login(c, target, creds, force=False, label=label)
+        if rc != 0:
+            return rc
+    else:
+        stored = shlex.quote(h.auth_file(c))
+        r = target.ssh(c.user, f"[ -f {stored} ] && rm -f {stored} && echo removed || true", check=False)
+        if b"removed" in (r.stdout or b""):
+            print(
+                f"  removed the stored registry login ({h.auth_file(c)}): {env_name} has no "
+                "fcos.auto_update, so dk logs in for each pull and the host keeps none.",
+                file=sys.stderr,
+            )
+    images = sorted(deploy.account_images(c))
+    print(f"Pulling {len(images)} images …", file=sys.stderr)
+    try:
+        deploy.pull(target, c, images, creds, env_name=env_name)
+    except RegistryLoginError as exc:
+        print(f"{label}: {exc}", file=sys.stderr)
+        return 1
+    except h.HostError as exc:
+        print(f"{label}: pulling the images failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _login(ns, config, env_name: str, c, target, *, dry_run: bool) -> int:
+    """``dk <env> host login``: log in again from sops (after rotating the bot's token). Only an
+    ``auto_update`` env keeps a login."""
+    from catalpa_tooling.fcos import host as h
+    from catalpa_tooling.fcos.registry import keeps_login
 
     registries = h.private_registries(c)
     if not registries:
         print(f"dk {env_name} host login: every image is public; no login needed.", file=sys.stderr)
+        return 0
+    if not keeps_login(c):
+        print(
+            f"dk {env_name} host login: {env_name} keeps no registry login (no fcos.auto_update): "
+            f"dk logs in for each pull (`host provision`, a bare `dk {env_name}`). Nothing to do.",
+            file=sys.stderr,
+        )
         return 0
     if dry_run:
         print(f"dry-run: would log {c.user} in to {', '.join(registries)}", file=sys.stderr)
@@ -512,8 +553,12 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
         print(
             f"dry-run: on {target.address}: check the files match, push "
             f"{len(c.manifest.get('secrets') or {})} secrets and "
-            f"{len(c.manifest.get('system_secrets') or {})} system secrets, log in to "
-            f"{', '.join(h.private_registries(c)) or 'no registry'}"
+            f"{len(c.manifest.get('system_secrets') or {})} system secrets, pull the images"
+            + (
+                f" ({'stored login' if c.manifest.get('auto_update') else 'a login for this pull only'}: "
+                f"{', '.join(h.private_registries(c))})"
+                if h.private_registries(c) else ""
+            )
             + ("" if ns.no_start else f", start {', '.join(user_units + system_units)}"),
             file=sys.stderr,
         )
@@ -545,8 +590,10 @@ def _provision(ns, config, env_name, c, target, *, dry_run: bool) -> int:
     print(f"Pushing {len(values)} secrets to {target.address}:", file=sys.stderr)
     h.push_secrets(target, c, values)
 
-    # 3. Registry login, kept in the account's home (host.bu points REGISTRY_AUTH_FILE there).
-    rc = _registry_login(c, target, creds, force=False, label=f"dk {env_name} host provision")
+    # 3. The images, before anything starts or is restored (the restore's one-offs run the db
+    #    image). An auto_update env keeps a registry login in the account's home (host.bu points
+    #    REGISTRY_AUTH_FILE there); any other logs in for this pull only and keeps none.
+    rc = _pull_images(c, target, creds, env_name=env_name, label=f"dk {env_name} host provision")
     if rc != 0:
         return rc
 

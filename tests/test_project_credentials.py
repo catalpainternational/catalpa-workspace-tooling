@@ -144,6 +144,10 @@ def test_without_stored_login_it_asks_or_explains(committed, monkeypatch, capsys
 
 
 def test_host_login_logs_in_again_and_shows_who(committed, monkeypatch, capsys) -> None:
+    """An auto_update env keeps a login (the others log in for each pull: test_fcos_registry)."""
+    from catalpa_tooling.fcos import host as h
+
+    committed = h.Committed(manifest={**committed.manifest, "auto_update": True}, files=committed.files)
     monkeypatch.setattr(cli, "_credentials", lambda config, env: CREDS)
     target = LoginHost(logged_in=True)
     assert cli._login(None, None, "staging", committed, target, dry_run=False) == 0
