@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`host create` gives `docker_host`'s name the new droplet's SSH host key.** It records the
+  droplet's keys under its IP, then replaces any entry for the name, so dk's next command doesn't
+  fail with "REMOTE HOST IDENTIFICATION HAS CHANGED" when an earlier host behind the name wasn't
+  destroyed through dk. The keys are copied from the IP's entry, so it doesn't wait for DNS.
+
 ## 2.0.0b1
 
 The first beta of 2.0, tagged on `dev-2.0`. Compose hosts are tested on swlt_ws2 (staging

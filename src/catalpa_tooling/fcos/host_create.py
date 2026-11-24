@@ -301,8 +301,22 @@ def cmd_quadlet_host_create(
         print(f"Next: dk {env_name} host provision --host {ip}", file=sys.stderr)
         return 0
 
-    # 6. Provision.
+    # 6. Provision. The new droplet's keys go in known_hosts under its IP, then under docker_host's
+    # name too, replacing an earlier host's: every later dk command connects by the name.
     from catalpa_tooling.fcos.cli import _provision
+    from catalpa_tooling.ssh_known_hosts import alias_known_host, ensure_known_host
+
+    target = h.Host(ip)
+    if ensure_known_host(ip, port=target.port, recovery_env_name=env_name) != 0:
+        print(f"The droplet exists; `dk {env_name} host provision --host {ip}` finishes it.", file=sys.stderr)
+        return 1
+    name = ssh_host_from_docker_host(str(info.get("docker_host") or ""))
+    if alias_known_host(name, ip, port=target.port) != 0:
+        print(
+            f"{label}: couldn't copy {ip}'s host key to {name!r}; if ssh to {name} reports a changed "
+            f"key, check it's {ip}'s and run `ssh-keygen -R {name}`.",
+            file=sys.stderr,
+        )
 
     restore = restore_note.startswith("Then restore")
     pns = argparse.Namespace(
@@ -310,7 +324,7 @@ def cmd_quadlet_host_create(
         no_start_note="Provisioned; the stack starts once the restore below is done." if restore else None,
     )  # fmt: skip
     try:
-        rc = _provision(pns, config, env_name, c, h.Host(ip), dry_run=False)
+        rc = _provision(pns, config, env_name, c, target, dry_run=False)
         if rc != 0 or not restore:
             return rc
         return _restore_then_start(config, env_name, c, info, ip, no_start=ns.no_start, label=label)

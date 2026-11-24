@@ -131,6 +131,14 @@ def do(monkeypatch: pytest.MonkeyPatch):
         lambda config, info, droplet_ip, **k: calls.append(("dns", droplet_ip)) or 0,
     )
     monkeypatch.setattr(
+        "catalpa_tooling.ssh_known_hosts.ensure_known_host",
+        lambda host, **k: calls.append(("known_host", host)) or 0,
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.ssh_known_hosts.alias_known_host",
+        lambda name, ip, **k: calls.append(("alias", name, ip)) or 0,
+    )
+    monkeypatch.setattr(
         "catalpa_tooling.fcos.cli._provision",
         lambda ns, config, env, c, target, **k: calls.append(("provision", target.address, ns.no_start)) or 0,
     )
@@ -148,8 +156,12 @@ def test_a_new_host_gets_a_new_volume_the_ignition_dns_and_provisioning(site, do
     config, _info = site
     assert cmd_env_host_create(config, "staging", []) == 0
     calls = do["calls"]
-    assert names(calls) == ["create_volume", "assign", "create_droplet", "firewall", "dns", "provision"]
+    assert names(calls) == [
+        "create_volume", "assign", "create_droplet", "firewall", "dns", "known_host", "alias", "provision",
+    ]  # fmt: skip
     assert calls[3] == ("firewall", "site-staging", 7)
+    # Later dk commands connect by docker_host's name: it gets the new droplet's keys.
+    assert calls[5] == ("known_host", IP) and calls[6] == ("alias", "staging.site.example", IP)
     assert calls[0][1:] == ("site-staging-data", 10, "sgp1")
     _n, droplet, k = calls[2]
     assert droplet == "site-staging"

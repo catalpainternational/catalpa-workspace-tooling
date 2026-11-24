@@ -116,6 +116,43 @@ def remove_known_host(host: str, path: Path | None = None, *, dry_run: bool = Fa
     return r.returncode
 
 
+def _known_hosts_name(host: str, port: int) -> str:
+    return host if port == 22 else f"[{host}]:{port}"
+
+
+def alias_known_host(name: str, ip: str, *, port: int = 22, path: Path | None = None) -> int:
+    """Give ``name`` the keys known_hosts has for ``ip``, replacing what ``name`` had.
+
+    For a new droplet: dk records its keys under the IP it connects to, but later commands reach it
+    by ``docker_host``'s name, whose entry may still hold an earlier host's keys (one not destroyed
+    through dk). Copying the IP's keys, rather than scanning the name, doesn't depend on DNS having
+    caught up. Returns 1 when the IP has no keys to copy."""
+    n, a = (name or "").strip(), (ip or "").strip()
+    if not n or not a or n == a:
+        return 0
+    kh = path or known_hosts_path()
+    r = run_cmd(
+        ["ssh-keygen", "-F", _known_hosts_name(a, port), "-f", str(kh)],
+        check=False, capture_output=True, text=True, print_cmd=False,
+    )  # fmt: skip
+    keys = [
+        " ".join(parts[1:3])
+        for ln in (r.stdout or "").splitlines()
+        if ln.strip() and not ln.startswith("#") and len(parts := ln.split()) >= 3
+    ]
+    if r.returncode != 0 or not keys:
+        return 1
+    alias = _known_hosts_name(n, port)
+    if host_in_known_hosts(alias, kh):
+        run_cmd(["ssh-keygen", "-R", alias, "-f", str(kh)], check=False, capture_output=True, print_cmd=False)
+        print(f"Replaced the host key for {n!r} in {kh} with {a}'s (the new host)", file=sys.stderr)
+    else:
+        print(f"Registered {a}'s host key for {n!r} in {kh}", file=sys.stderr)
+    with open(kh, "a", encoding="utf-8") as f:
+        f.writelines(f"{alias} {k}\n" for k in dict.fromkeys(keys))
+    return 0
+
+
 def _ssh_port_open(host: str, port: int, *, timeout: float = 2.0) -> bool:
     """True if TCP connect to ``(host, port)`` succeeds."""
     try:
