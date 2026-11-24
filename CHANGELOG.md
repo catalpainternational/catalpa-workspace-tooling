@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.0.0b2
+
 - **`monitoring: zabbix` can be turned on for a running host with `apply`.** The `tmpfiles.d`
   file that makes the read-only Podman socket's directory (and the backup status directory) was
   written into Ignition only, so a host booted without monitoring never got it and the agent and
