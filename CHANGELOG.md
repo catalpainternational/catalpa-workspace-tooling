@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.0.0b3
+
 - **`fcos.auto_update` pulls every image before it restarts anything, and `fcos.auto_update_at`
   sets when it runs** (#213). `podman auto-update` pulls and restarts one unit at a time, so a
   dependency's restart took the app down while the app's image downloaded (1 min 37 s on a test
