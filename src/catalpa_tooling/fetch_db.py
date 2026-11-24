@@ -223,7 +223,14 @@ def run_fetch_database(
     elif entry.via == "dk" and (q := _quadlet(config, dk_env)) is not None:
         from catalpa_tooling.fcos.fetch import fetch_db as fetch_quadlet_db
 
-        fetch_quadlet_db(config, q, dest=dest, pg_dump_args=pg_dump_args)
+        # As _fetch_via_dk: the app entry dumps $APP_DB, any other (metabase) its db_name.
+        fetch_quadlet_db(
+            config,
+            q,
+            dest=dest,
+            pg_dump_args=pg_dump_args,
+            database=None if key == "app" else entry.db_name,
+        )
     elif entry.via == "dk":
         _fetch_via_dk(
             config,

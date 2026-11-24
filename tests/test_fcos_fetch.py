@@ -93,3 +93,24 @@ def test_fetch_media_rsyncs_the_host_directory(site, tmp_path, monkeypatch) -> N
         legacy_path=False, legacy_remote=None, compose_project=None,
     )  # fmt: skip
     assert calls == [("deploy@staging.site.example", "/var/mnt/data/django_media/", (tmp_path / "m").resolve())]
+
+
+def test_pg_dump_command_names_a_database_other_than_the_apps() -> None:
+    inner = shlex.split(fetch.pg_dump_command("db", database="metabase db"))[-1]
+    assert inner == "exec pg_dump -U postgres -d 'metabase db' -Fc"
+    assert "APP_DB" not in inner
+
+
+@pytest.mark.parametrize("key,expected", [("app", None), ("metabase", "metabase_db")])
+def test_a_quadlet_fetch_dumps_the_entrys_database(site, tmp_path, monkeypatch, key, expected) -> None:
+    """The app entry dumps $APP_DB, any other its db_name, as on compose (it used to dump the app
+    database into every entry's file, so `fetch db --only metabase` wrote the wrong one)."""
+    from catalpa_tooling import fetch_db as fdb
+    from catalpa_tooling.config import FetchDatabaseEntry
+
+    seen = {}
+    monkeypatch.setattr(fdb, "_quadlet", lambda config, env: object())
+    monkeypatch.setattr(fetch, "fetch_db", lambda config, q, **kw: seen.update(kw))
+    entry = FetchDatabaseEntry(db_name="metabase_db" if key == "metabase" else "catalpa_db", via="dk")
+    fdb.run_fetch_database(site, key, entry, dest=tmp_path / f"{key}.dump", default_dk_env="staging")
+    assert seen["database"] == expected
