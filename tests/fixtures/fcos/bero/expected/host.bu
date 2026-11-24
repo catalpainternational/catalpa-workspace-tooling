@@ -97,6 +97,12 @@ storage:
         name: deploy
       group:
         name: deploy
+    - path: /var/home/deploy/.config/systemd/user/podman-auto-update.service.d
+      mode: 0755
+      user:
+        name: deploy
+      group:
+        name: deploy
     - path: /var/home/deploy/.config/systemd/user/sockets.target.wants
       mode: 0755
       user:
@@ -462,6 +468,14 @@ storage:
         name: deploy
       contents:
         local: systemd/caddy.socket
+    - path: /var/home/deploy/.config/systemd/user/podman-auto-update.service.d/10-dk-pull-first.conf
+      mode: 0644
+      user:
+        name: deploy
+      group:
+        name: deploy
+      contents:
+        local: systemd/podman-auto-update.service.d/10-dk-pull-first.conf
     - path: /var/home/deploy/.ssh/authorized_keys.d/dk
       mode: 0600
       user:

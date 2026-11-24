@@ -53,6 +53,7 @@ fcos:                          # every key is optional
   bind_volumes: [pgdata, django_media, caddy_data]
   id_ranges: {db: 10000}       # pin a group's ID range, by any service in the group
   auto_update: false           # podman auto-update (staging/test sites; prod deploys explicitly)
+  auto_update_at: "13:00"      # with auto_update: daily at this time, host time zone (default: midnight)
   drop_ports: [mailpit]        # services whose published ports are dropped, not refused
   caddyfile: /etc/caddy/Caddyfile   # the Caddyfile's path inside the edge image
   volume_owners: {pgdata: 999} # uid inside its range that owns a bind volume (default 0;
@@ -453,6 +454,15 @@ nobody there, so:
      on the host for the pull. A classic token with only `read:packages` in `DK_REGISTRY_TOKEN`
      avoids that;
   4. a prompt, on a terminal.
+**When auto-update runs.** With `auto_update: true` the account's `podman-auto-update.timer` is on:
+daily at midnight host time (Podman's default, up to 15 minutes late), or at `fcos.auto_update_at`
+(`"HH:MM"`, the host's time zone, on time) through a rendered timer drop-in. A rendered drop-in for
+the service pulls every image an account quadlet marked `AutoUpdate=registry` runs before
+auto-update starts: auto-update works one unit at a time, pull then restart, so without it a unit
+another depends on (`db`) took the app down while the app's own image downloaded. A failed pull
+fails the run before anything restarts. `apply` installs both; a new time restarts the timer, not
+the stack.
+
 - **With `auto_update: true`, the account keeps its own login** (`~/.config/containers/auth.json`,
   where host.bu points systemd's `REGISTRY_AUTH_FILE`): a bot's, kept in the project's
   `credentials.yaml` (`dk secrets`, which edits `docker/credentials.yaml` with sops):

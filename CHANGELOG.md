@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`fcos.auto_update` pulls every image before it restarts anything, and `fcos.auto_update_at`
+  sets when it runs** (#213). `podman auto-update` pulls and restarts one unit at a time, so a
+  dependency's restart took the app down while the app's image downloaded (1 min 37 s on a test
+  host). A rendered drop-in for the account's `podman-auto-update.service` now pulls them all
+  first (`ExecStartPre`). `auto_update_at: "HH:MM"` moves the run from Podman's midnight to that
+  time in the host's time zone, on time; `apply` restarts the timer for it.
+
 ## 2.0.0b2
 
 - **`monitoring: zabbix` can be turned on for a running host with `apply`.** The `tmpfiles.d`

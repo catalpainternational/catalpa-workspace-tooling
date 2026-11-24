@@ -470,6 +470,14 @@ def restarts_for(c: Committed, dests: list[str], *, secrets: list[str] = ()) -> 
             )
         elif base.endswith(".timer"):
             (r.user_timers if base in timers else r.notes).append(base)
+        elif posixpath.dirname(dest).endswith(".timer.d") and c.user_scope(dest):
+            # A drop-in that moves a timer (fcos.auto_update_at): restart that timer, so the next
+            # run follows the new schedule. Added or removed alike.
+            timer = posixpath.basename(posixpath.dirname(dest))[: -len(".d")]
+            if timer not in r.user_timers:
+                r.user_timers.append(timer)
+        elif posixpath.dirname(dest).endswith(".service.d"):
+            pass  # applies the next time the unit starts; never restart a run for it
         elif base.endswith(".socket"):
             r.sockets.append(base[: -len(".socket")])
         elif file == MANIFEST or file == "host.bu":

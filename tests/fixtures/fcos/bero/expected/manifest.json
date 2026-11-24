@@ -359,6 +359,12 @@
       "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
       "owner": "deploy",
       "mode": "0644"
+    },
+    {
+      "file": "systemd/podman-auto-update.service.d/10-dk-pull-first.conf",
+      "dest": "/var/home/deploy/.config/systemd/user/podman-auto-update.service.d/10-dk-pull-first.conf",
+      "owner": "deploy",
+      "mode": "0644"
     }
   ],
   "hostname": "bero-shape-staging",
