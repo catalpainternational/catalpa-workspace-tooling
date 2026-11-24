@@ -337,6 +337,13 @@ def render_env(
         install += m.install
         system_secrets = m.system_secrets
 
+    # After monitoring, so its proxy's image is pulled first too.
+    from catalpa_tooling.fcos.auto_update import auto_update_files
+
+    au_files, au_install = auto_update_files(settings, q.header, files, install)
+    files.update(au_files)
+    install += au_install
+
     try:
         key_text, key_install = key_files(settings, q.header)
     except ValueError as exc:

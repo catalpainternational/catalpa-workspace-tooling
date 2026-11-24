@@ -22,6 +22,8 @@
                                 # directory (default 0; the pgBackRest data volume 999)
       id_ranges: {db: 10000}    # pin a group's container ID range (keyed by any of its services)
       auto_update: false        # podman auto-update from the registry (staging/test sites only)
+      auto_update_at: "13:00"   # with auto_update: run it daily at this time (host time zone);
+                                # default: Podman's timer, daily at midnight
       drop_ports: []            # services whose compose `ports` are dropped rather than refused
       caddyfile: /etc/caddy/Caddyfile  # the Caddyfile's path inside the edge image
       # The host (host.bu):
@@ -78,6 +80,8 @@ class FcosSettings:
     volume_owners: dict[str, int] = field(default_factory=dict)
     id_ranges: dict[str, int] = field(default_factory=dict)
     auto_update: bool = False
+    #: "HH:MM" in the host's time zone; None: Podman's own timer (daily, midnight).
+    auto_update_at: str | None = None
     drop_ports: tuple[str, ...] = ()
     caddyfile: str = "/etc/caddy/Caddyfile"
     hostname: str | None = None
@@ -111,6 +115,7 @@ _KEYS = {
     "volume_owners",
     "id_ranges",
     "auto_update",
+    "auto_update_at",
     "drop_ports",
     "caddyfile",
     "hostname",
@@ -121,6 +126,7 @@ _KEYS = {
     "zabbix_image",
 }
 _NAME = re.compile(r"^[a-z_][a-z0-9_-]*$")
+_HHMM = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 _HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 _DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -256,6 +262,13 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
     auto_update = raw.get("auto_update", False)
     if not isinstance(auto_update, bool):
         raise FcosConfigError("fcos.auto_update must be true or false")
+    auto_update_at = raw.get("auto_update_at")
+    if auto_update_at is not None:
+        auto_update_at = str(auto_update_at).strip()
+        if not _HHMM.fullmatch(auto_update_at):
+            raise FcosConfigError(f'fcos.auto_update_at must be "HH:MM", 24-hour (got {auto_update_at!r})')
+        if not auto_update:
+            raise FcosConfigError("fcos.auto_update_at needs fcos.auto_update: true")
     caddyfile = str(raw.get("caddyfile", "/etc/caddy/Caddyfile"))
     if not caddyfile.startswith("/"):
         raise FcosConfigError("fcos.caddyfile must be an absolute path inside the edge image")
@@ -274,6 +287,7 @@ def parse_fcos_settings(info: dict) -> FcosSettings:
         volume_owners=_int_map(raw.get("volume_owners"), "volume_owners", low=0, high=4999),
         id_ranges=id_ranges,
         auto_update=auto_update,
+        auto_update_at=auto_update_at,
         drop_ports=_str_list(raw.get("drop_ports"), "drop_ports"),
         caddyfile=caddyfile,
         hostname=str(hostname) if hostname is not None else None,
