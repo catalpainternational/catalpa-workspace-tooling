@@ -253,12 +253,6 @@ storage:
           [Resolve]
           LLMNR=no
           MulticastDNS=no
-    # /run is emptied at boot: recreate the read-only Podman socket's directory.
-    - path: /etc/tmpfiles.d/bero_shape.conf
-      mode: 0644
-      contents:
-        inline: |
-          d /run/bero_shape-podman-ro 0750 deploy 1995 -
     # Generated files (manifest.json's install map).
     - path: /etc/bero_shape/caddy.env
       mode: 0644
@@ -368,6 +362,10 @@ storage:
       mode: 0644
       contents:
         local: quadlets/zabbix-agent2.container
+    - path: /etc/tmpfiles.d/bero_shape.conf
+      mode: 0644
+      contents:
+        local: monitoring/tmpfiles.conf
     - path: /var/home/core/.ssh/authorized_keys.d/dk
       mode: 0600
       user:

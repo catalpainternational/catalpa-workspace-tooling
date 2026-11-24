@@ -205,7 +205,10 @@ monitoring: zabbix   # omitted or false: no agent, no podman-ro-proxy, no status
 ```
 
 It needs `ops.zabbix` in tooling.yaml (the project's unit and userparams file names); the render
-refuses `monitoring: zabbix` without it. Without `zbx_tlspsk` / `zbx_tlspskidentity` in the
+refuses `monitoring: zabbix` without it. Turning it on or off for a running host is a render, a
+commit and `dk <env> apply`: the agent, the proxy and the `tmpfiles.d` file for their
+directories are installed files like the others, and `apply` runs `systemd-tmpfiles --create`
+on that file when it's new or changed, so the directories exist before the units start. Without `zbx_tlspsk` / `zbx_tlspskidentity` in the
 env's credentials the render warns: the agent would talk to the server unencrypted.
 
 With `monitoring: zabbix`, the render adds these parts:

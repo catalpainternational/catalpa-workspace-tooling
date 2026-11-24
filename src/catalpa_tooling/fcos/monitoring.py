@@ -18,6 +18,7 @@ become secrets of the system (root's) Podman.
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass, field
 
 from catalpa_tooling.fcos.quadlets import has_secret, secret_name
@@ -35,7 +36,6 @@ class MonitoringFiles:
     files: dict[str, str] = field(default_factory=dict)
     install: list[dict] = field(default_factory=list)
     system_secrets: dict[str, str] = field(default_factory=dict)
-    tmpfiles: list[str] = field(default_factory=list)
 
 
 def monitor_dir(project: str) -> str:
@@ -227,5 +227,20 @@ def monitoring_files(
             "\n".join(lines) + "\n",
             f"{config_dir}/zabbix-userparams.conf",
         )
-    out.tmpfiles.append(f"d {ro_dir} 0750 {settings.user} {ZABBIX_GID} -")
+    # /run is emptied at boot, so the read-only socket's directory comes from tmpfiles.d (and the
+    # status files' directory too, so turning monitoring on for a running host needs only
+    # `apply`, which runs systemd-tmpfiles on it). An installed file, not Ignition-only.
+    tmp_lines = ["# Directories the Zabbix agent and podman-ro-proxy share; group: the agent's."]
+    tmp_lines.append(f"d {ro_dir} 0750 {settings.user} {ZABBIX_GID} -")
+    if backups:
+        tmp_lines.append(f"d {monitor_dir(project)} 0750 {settings.user} {ZABBIX_GID} -")
+    add(
+        "monitoring/tmpfiles.conf",
+        "\n".join(tmp_lines) + "\n",
+        tmpfiles_dest(config_dir),
+    )
     return out
+
+
+def tmpfiles_dest(config_dir: str) -> str:
+    return f"/etc/tmpfiles.d/{posixpath.basename(config_dir)}.conf"

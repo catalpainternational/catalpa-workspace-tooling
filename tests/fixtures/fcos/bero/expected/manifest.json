@@ -199,6 +199,12 @@
       "mode": "0644"
     },
     {
+      "file": "monitoring/tmpfiles.conf",
+      "dest": "/etc/tmpfiles.d/bero_shape.conf",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
       "file": "monitoring/zabbix-docker.conf",
       "dest": "/etc/bero_shape/zabbix-docker.conf",
       "owner": "root",

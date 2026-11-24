@@ -443,3 +443,36 @@ def test_local_public_keys(tmp_path: Path) -> None:
     (tmp_path / ".ssh" / "id_ed25519.pub").write_text("ssh-ed25519 AAAAfile me@here\n")
     runner = FakeRunner({"": b"ssh-ed25519 AAAAagent agent-key\n"})
     assert h.local_public_keys(runner=runner, home=tmp_path) == {"AAAAfile", "AAAAagent"}
+
+
+def test_monitoring_turned_on_for_a_running_host_needs_only_apply() -> None:
+    """A host booted without monitoring: apply installs the agent, the proxy and the tmpfiles.d
+    file, and makes the directories it names now, before the units start (#182)."""
+    c = committed("bero")
+    state = in_sync_state(c)
+    monitoring = [
+        e["dest"]
+        for e in c.manifest["install"]
+        if e["file"].startswith("monitoring/") or "zabbix" in e["file"] or "podman-ro-proxy" in e["file"]
+    ]
+    tmpfiles = "/etc/tmpfiles.d/bero_shape.conf"
+    assert tmpfiles in monitoring
+    for dest in monitoring:
+        del state.files[dest]
+    plan = h.make_plan(c, state)
+    assert {ch.dest for ch in plan.changes} >= set(monitoring)
+    script = h.apply_script(c, plan)
+    create = f"systemd-tmpfiles --create {tmpfiles}"
+    assert create in script
+    assert script.index(f"mv -f \"$t\" {tmpfiles}") < script.index(create)
+    restarts = h.restarts_for(c, [ch.dest for ch in plan.changes])
+    root, user = h.restart_commands(c, plan, restarts, restart=True)
+    assert "systemctl daemon-reload" in root and "zabbix-agent2.service" in root
+    assert "podman-ro-proxy.service" in user
+
+
+def test_an_unchanged_tmpfiles_file_isnt_run_again() -> None:
+    c = committed("bero")
+    state = in_sync_state(c)
+    state.files.pop(next(e["dest"] for e in c.manifest["install"] if e["file"] == "quadlets/zabbix-agent2.container"))
+    assert "systemd-tmpfiles" not in h.apply_script(c, h.make_plan(c, state))

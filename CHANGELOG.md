@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`monitoring: zabbix` can be turned on for a running host with `apply`.** The `tmpfiles.d`
+  file that makes the read-only Podman socket's directory (and the backup status directory) was
+  written into Ignition only, so a host booted without monitoring never got it and the agent and
+  `podman-ro-proxy` failed to start. It's now an installed file (`monitoring/tmpfiles.conf`), and
+  `apply` runs `systemd-tmpfiles --create` on a new or changed one before restarting units.
+
 - **`host create` gives `docker_host`'s name the new droplet's SSH host key.** It records the
   droplet's keys under its IP, then replaces any entry for the name, so dk's next command doesn't
   fail with "REMOTE HOST IDENTIFICATION HAS CHANGED" when an earlier host behind the name wasn't

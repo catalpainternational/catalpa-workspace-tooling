@@ -102,7 +102,6 @@ def host_bu(
     bind_volumes: dict[str, dict],
     proxy: str,
     timers: list[str],
-    tmpfiles: list[str],
     monitor_dir: str | None,
     config_dir: str,
 ) -> str:
@@ -273,14 +272,6 @@ def host_bu(
             "[Resolve]\nLLMNR=no\nMulticastDNS=no\n",
         ),
     ]
-    if tmpfiles:
-        host_files.append(
-            (
-                "# /run is emptied at boot: recreate the read-only Podman socket's directory.",
-                f"/etc/tmpfiles.d/{posixpath.basename(config_dir)}.conf",
-                "\n".join(tmpfiles) + "\n",
-            )
-        )
     for comment, path, text in host_files:
         if comment:
             out += [f"    {line}" for line in comment.split("\n")]

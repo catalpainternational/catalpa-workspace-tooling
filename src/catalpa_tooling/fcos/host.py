@@ -542,6 +542,11 @@ def apply_script(c: Committed, p: Plan) -> str:
             f'mv -f "$t" {q(ch.dest)}',
             f"restorecon {q(ch.dest)} 2>/dev/null || true",
         ]
+    # A tmpfiles.d file makes its directories at boot; a running host needs them now (the
+    # read-only Podman socket's, when monitoring is turned on).
+    for ch in p.changes:
+        if ch.dest.startswith("/etc/tmpfiles.d/") and ch.dest.endswith(".conf"):
+            lines.append(f"systemd-tmpfiles --create {q(ch.dest)}")
     for dest in p.remove + p.stray_keys:
         lines.append(f"rm -f {q(dest)}")
     for unit in p.masks:

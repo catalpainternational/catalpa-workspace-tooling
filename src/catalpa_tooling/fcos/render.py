@@ -307,7 +307,6 @@ def render_env(
     files.update(b.files)
     install = list(q.install) + b.install
     timers = list(b.timers)
-    tmpfiles: list[str] = []
     system_secrets: dict[str, str] = {}
     if monitoring_on:
         from catalpa_tooling.remote_deploy import _zabbix_env_defaults
@@ -336,7 +335,6 @@ def render_env(
             raise RenderError(f"zabbix: {exc}") from exc
         files.update(m.files)
         install += m.install
-        tmpfiles = m.tmpfiles
         system_secrets = m.system_secrets
 
     try:
@@ -364,7 +362,6 @@ def render_env(
             bind_volumes=manifest["bind_volumes"],
             proxy=inputs.proxy,
             timers=timers,
-            tmpfiles=tmpfiles,
             monitor_dir=mon_dir,
             config_dir=config_dir,
         )
