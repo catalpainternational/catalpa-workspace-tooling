@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`dk fetch db --only metabase` from a rendered host dumps the Metabase database.** The quadlet
+  path always dumped the app database (`$APP_DB`), so every `via: dk` entry's file got the app's.
+  It now follows compose: the `app` entry dumps `$APP_DB`, any other entry its `db_name`.
+
 ## 2.0.0b3
 
 - **`fcos.auto_update` pulls every image before it restarts anything, and `fcos.auto_update_at`

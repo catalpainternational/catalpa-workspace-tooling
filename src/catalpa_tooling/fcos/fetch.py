@@ -70,11 +70,15 @@ def quadlet_env(config: ProjectConfig, env_name: str) -> QuadletEnv | None:
     return QuadletEnv(env_name=env_name, committed=committed, host=host, login=login)
 
 
-def pg_dump_command(db_service: str, extra_args: Sequence[str] = ()) -> str:
-    """The remote command that writes the app database as a ``-Fc`` archive to stdout."""
+def pg_dump_command(db_service: str, extra_args: Sequence[str] = (), *, database: str | None = None) -> str:
+    """The remote command that writes a database as a ``-Fc`` archive to stdout: ``database``, or
+    the app database as the container resolves it (``$APP_DB``) when None, as compose does."""
     from catalpa_tooling.pgbackrest_db import _DJANGO_APP_SHELL_VARS
 
-    inner = _DJANGO_APP_SHELL_VARS + 'exec pg_dump -U postgres -d "$APP_DB" -Fc'
+    if database is None:
+        inner = _DJANGO_APP_SHELL_VARS + 'exec pg_dump -U postgres -d "$APP_DB" -Fc'
+    else:
+        inner = "exec pg_dump -U postgres -d " + shlex.quote(database) + " -Fc"
     if extra_args:
         inner += " " + " ".join(shlex.quote(a) for a in extra_args)
     return shlex.join(["podman", "exec", "-i", "-u", "postgres", db_service, "sh", "-c", inner])
@@ -86,6 +90,7 @@ def fetch_db(
     *,
     dest: Path,
     pg_dump_args: Sequence[str] | None = None,
+    database: str | None = None,
     popen=subprocess.Popen,
 ) -> None:
     from catalpa_tooling.fetch_db import _atomic_write_from_stream
@@ -93,8 +98,9 @@ def fetch_db(
     db = config.stack.services.db
     if db not in (q.committed.manifest.get("images") or {}):
         raise _fail(f"fetch db: {q.env_name}'s render has no {db!r} service")
-    command = pg_dump_command(db, pg_dump_args or ())
-    print(f"Fetching the app database via ssh {q.ssh_target} (podman exec {db} pg_dump -Fc) → {dest}", file=sys.stderr)
+    command = pg_dump_command(db, pg_dump_args or (), database=database)
+    label = "the app database" if database is None else database
+    print(f"Fetching {label} via ssh {q.ssh_target} (podman exec {db} pg_dump -Fc) → {dest}", file=sys.stderr)
     argv = q.host._argv(q.login, command)
     proc = popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
