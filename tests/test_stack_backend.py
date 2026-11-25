@@ -198,3 +198,100 @@ def test_backend_for_a_compose_env_without_context(site, monkeypatch) -> None:
     monkeypatch.setattr(managed_deploy_env, "load_managed_deploy_context", lambda config, name: None)
     with pytest.raises(BackendError):
         backend_for(site, "nope")
+
+
+# --- dump_db and dk fetch db (step 2) -------------------------------------------------------
+
+
+def test_quadlet_dump_db_returns_the_fetchs_exit_code(site, tmp_path, monkeypatch) -> None:
+    from catalpa_tooling.fcos import fetch
+
+    b, _ = quadlet(site)
+    seen = {}
+
+    def ok(config, q, *, dest, pg_dump_args, database):
+        seen.update(q=q, dest=dest, args=pg_dump_args, database=database)
+
+    monkeypatch.setattr(fetch, "fetch_db", ok)
+    assert b.dump_db(tmp_path / "x.dump", ["-x"], database="metabase") == 0
+    assert seen == {"q": b, "dest": tmp_path / "x.dump", "args": ["-x"], "database": "metabase"}
+
+    def fails(config, q, **kw):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(fetch, "fetch_db", fails)
+    assert b.dump_db(tmp_path / "x.dump") == 1
+
+
+def test_compose_dump_db_rejects_a_dump_too_small(site, tmp_path, monkeypatch) -> None:
+    dest = tmp_path / "app.dump"
+    seen = {}
+
+    def fake(compose_file, env, d, extra, *, database=None):
+        seen.update(extra=extra, database=database)
+        d.write_bytes(b"PGDMP" + b"\0" * size)
+        return 0
+
+    monkeypatch.setattr(pgbackrest_db, "run_pg_dump_to_file", fake)
+    c = ComposeBackend(compose_ctx(site))
+    size = 200_000
+    assert c.dump_db(dest) == 0
+    assert seen == {"extra": None, "database": None}
+    size = 10
+    assert c.dump_db(dest, ["-x"], database="metabase") == 1
+    assert seen == {"extra": ["-x"], "database": "metabase"}
+
+
+def _fetch_dk(config, tmp_path, key: str = "app") -> None:
+    from catalpa_tooling.config import FetchDatabaseEntry
+    from catalpa_tooling.fetch_db import run_fetch_database
+
+    entry = FetchDatabaseEntry(db_name="catalpa_db", via="dk")
+    run_fetch_database(config, key, entry, dest=tmp_path / "app.dump", default_dk_env="staging")
+
+
+def test_fetch_db_via_dk_starts_db_then_dumps(site, tmp_path, monkeypatch) -> None:
+    from catalpa_tooling import stack_backend
+
+    calls = []
+
+    class Fake:
+        def ensure_db_running(self):
+            calls.append("ensure")
+            return 0
+
+        def dump_db(self, dest, args, *, database):
+            calls.append(("dump", database))
+            return 0
+
+    monkeypatch.setattr(stack_backend, "backend_for", lambda config, env: Fake())
+    _fetch_dk(site, tmp_path)
+    assert calls == ["ensure", ("dump", None)]
+
+
+def test_fetch_db_via_dk_stops_when_db_wont_start(site, tmp_path, monkeypatch) -> None:
+    from catalpa_tooling import stack_backend
+
+    class Fake:
+        def ensure_db_running(self):
+            return 4
+
+        def dump_db(self, *a, **k):
+            pytest.fail("dumped without a db")
+
+    monkeypatch.setattr(stack_backend, "backend_for", lambda config, env: Fake())
+    with pytest.raises(SystemExit) as exc:
+        _fetch_dk(site, tmp_path)
+    assert exc.value.code == 4
+
+
+def test_fetch_db_via_dk_reports_an_env_it_cant_load(site, tmp_path, monkeypatch, capsys) -> None:
+    from catalpa_tooling import stack_backend
+
+    def fails(config, env):
+        raise stack_backend.BackendError("staging: no deploy context")
+
+    monkeypatch.setattr(stack_backend, "backend_for", fails)
+    with pytest.raises(SystemExit):
+        _fetch_dk(site, tmp_path)
+    assert "fetch db: staging: no deploy context" in capsys.readouterr().err

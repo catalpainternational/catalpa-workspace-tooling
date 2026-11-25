@@ -5,6 +5,9 @@
 - **`dk fetch db --only metabase` from a rendered host dumps the Metabase database.** The quadlet
   path always dumped the app database (`$APP_DB`), so every `via: dk` entry's file got the app's.
   It now follows compose: the `app` entry dumps `$APP_DB`, any other entry its `db_name`.
+- **`dk fetch db` from a rendered host starts db first when it's stopped**, as it already did on
+  compose (`systemctl --user start` on db's unit, which waits until Postgres answers). Both
+  runtimes now go through one code path (M5).
 
 ## 2.0.0b3
 

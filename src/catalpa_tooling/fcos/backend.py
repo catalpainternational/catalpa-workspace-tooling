@@ -78,6 +78,16 @@ class Backend:
         db = f"{self.config.stack.services.db}.service"
         return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
 
+    def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None) -> int:
+        """``podman exec … pg_dump -Fc`` streamed to ``dest`` (``fcos.fetch.fetch_db``)."""
+        from catalpa_tooling.fcos.fetch import fetch_db
+
+        try:
+            fetch_db(self.config, self, dest=dest, pg_dump_args=list(pg_dump_args), database=database)
+        except SystemExit as exc:  # it has printed why
+            return int(exc.code or 1)
+        return 0
+
     @property
     def services(self) -> list[str]:
         """The compose services the render made containers for."""

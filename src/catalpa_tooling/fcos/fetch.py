@@ -18,15 +18,13 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
-
-import yaml
+from typing import TYPE_CHECKING
 
 from catalpa_tooling.config import ProjectConfig
-from catalpa_tooling.fcos.host import Committed, Host, load_committed
-from catalpa_tooling.fcos.render import generated_dir
-from catalpa_tooling.fcos.settings import FcosConfigError, runtime_of
+
+if TYPE_CHECKING:
+    from catalpa_tooling.fcos.backend import Backend
 
 
 def _fail(message: str) -> SystemExit:
@@ -34,40 +32,15 @@ def _fail(message: str) -> SystemExit:
     return SystemExit(1)
 
 
-@dataclass(frozen=True)
-class QuadletEnv:
-    env_name: str
-    committed: Committed
-    host: Host
-    login: str
+def quadlet_env(config: ProjectConfig, env_name: str) -> Backend | None:
+    """The env's quadlet ``Backend`` when it has ``runtime: quadlet``, else None. Raises
+    ``ValueError`` when the env's render or host can't be loaded."""
+    from catalpa_tooling.fcos.backend import EnvError, quadlet_backend
 
-    @property
-    def ssh_target(self) -> str:
-        return f"{self.login}@{self.host.address}"
-
-
-def quadlet_env(config: ProjectConfig, env_name: str) -> QuadletEnv | None:
-    """The env's host and committed render when it has ``runtime: quadlet``, else None."""
-    from catalpa_tooling.fcos.host import host_from_docker_host
-    from catalpa_tooling.ssh_known_hosts import ensure_known_host
-    from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
-
-    info_path = config.deploy_envs_dir / env_name / "info.yaml"
-    if not info_path.is_file():
-        return None
-    info = yaml.safe_load(info_path.read_text(encoding="utf-8")) or {}
     try:
-        if runtime_of(info) != "quadlet":
-            return None
-    except FcosConfigError:
-        return None
-    docker_host = str(info.get("docker_host") or "")
-    committed = load_committed(generated_dir(config, env_name))
-    host = host_from_docker_host(docker_host, None)
-    login = parse_docker_host_to_ssh_target(docker_host).split("@", 1)[0]
-    if ensure_known_host(host.address, port=host.port, recovery_env_name=env_name) != 0:
-        raise SystemExit(1)
-    return QuadletEnv(env_name=env_name, committed=committed, host=host, login=login)
+        return quadlet_backend(config, env_name)
+    except EnvError as exc:
+        raise ValueError(f"{env_name}: {exc}") from None
 
 
 def pg_dump_command(db_service: str, extra_args: Sequence[str] = (), *, database: str | None = None) -> str:
@@ -86,7 +59,7 @@ def pg_dump_command(db_service: str, extra_args: Sequence[str] = (), *, database
 
 def fetch_db(
     config: ProjectConfig,
-    q: QuadletEnv,
+    q: Backend,
     *,
     dest: Path,
     pg_dump_args: Sequence[str] | None = None,
@@ -119,7 +92,7 @@ def fetch_db(
         raise _fail(f"fetch db: pg_dump on {q.ssh_target} exited {rc}: {err}")
 
 
-def media_path(config: ProjectConfig, q: QuadletEnv) -> str:
+def media_path(config: ProjectConfig, q: Backend) -> str:
     """The media volume's directory on the host."""
     from catalpa_tooling.restic_files import restic_data_volume_key
 

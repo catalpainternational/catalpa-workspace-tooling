@@ -6,15 +6,16 @@ A ``runtime: compose`` env runs its stack with ``docker compose`` (local, or on 
 once per runtime. ``StackBackend`` is the set of primitives they need, so each can be written
 once over it.
 
-The protocol grows as operations move onto it. This first step adds the interface and
-``ComposeBackend``, which only delegates to the functions compose callers use today; no call
-site uses it yet, so nothing changes. Behaviour that really differs between the runtimes
-(pgBackRest restore, restic restore, backup units) stays per backend.
+The protocol grows as operations move onto it; ``ComposeBackend`` delegates to the functions
+compose callers already used. Moved so far: ``dk fetch db`` (``via: dk``). Behaviour that
+really differs between the runtimes (pgBackRest restore, restic restore, backup units) stays
+per backend.
 """
 
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
@@ -39,6 +40,12 @@ class StackBackend(Protocol):
 
     def ensure_db_running(self) -> int:
         """Start the db service if it isn't running; 0 once it answers."""
+        ...
+
+    def dump_db(self, dest: Path, pg_dump_args: Sequence[str] = (), *, database: str | None = None) -> int:
+        """``pg_dump -Fc`` of ``database`` to the local file ``dest``; None is the app database
+        as the db container resolves it (``$APP_DB``). db must be running. A dump too small to
+        be a real one fails, and a failure leaves no partial ``dest``."""
         ...
 
     def stop_writers(self) -> object:
@@ -84,6 +91,27 @@ class ComposeBackend:
         return pgbackrest_db.ensure_db_service_running(
             self.ctx.compose_file, self.ctx.env_add, config=self.config, dk_env_name=self.env_name
         )
+
+    def dump_db(self, dest: Path, pg_dump_args: Sequence[str] = (), *, database: str | None = None) -> int:
+        from catalpa_tooling import pgbackrest_db
+        from catalpa_tooling.fetch_db import _MIN_CUSTOM_DUMP_BYTES
+
+        label = "the app database" if database is None else database
+        print(f"Fetching {label} via dk {self.env_name} db pgdump → {dest}", file=sys.stderr)
+        rc = pgbackrest_db.run_pg_dump_to_file(
+            self.ctx.compose_file, self.ctx.env_add, dest, list(pg_dump_args) or None, database=database
+        )
+        if rc != 0:
+            return rc
+        size = dest.stat().st_size
+        if size < _MIN_CUSTOM_DUMP_BYTES:
+            print(
+                f"fetch db: dump at {dest} is only {size} bytes "
+                f"(expected at least {_MIN_CUSTOM_DUMP_BYTES}).",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
 
     def stop_writers(self) -> object:
         from catalpa_tooling import dk_transfer

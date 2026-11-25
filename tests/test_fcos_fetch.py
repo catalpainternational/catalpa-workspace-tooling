@@ -107,9 +107,10 @@ def test_a_quadlet_fetch_dumps_the_entrys_database(site, tmp_path, monkeypatch, 
     database into every entry's file, so `fetch db --only metabase` wrote the wrong one)."""
     from catalpa_tooling import fetch_db as fdb
     from catalpa_tooling.config import FetchDatabaseEntry
+    from catalpa_tooling.fcos import backend
 
     seen = {}
-    monkeypatch.setattr(fdb, "_quadlet", lambda config, env: object())
+    monkeypatch.setattr(backend.Backend, "ensure_db_running", lambda self: 0)
     monkeypatch.setattr(fetch, "fetch_db", lambda config, q, **kw: seen.update(kw))
     entry = FetchDatabaseEntry(db_name="metabase_db" if key == "metabase" else "catalpa_db", via="dk")
     fdb.run_fetch_database(site, key, entry, dest=tmp_path / f"{key}.dump", default_dk_env="staging")
