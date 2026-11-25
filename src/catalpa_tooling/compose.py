@@ -119,6 +119,25 @@ def manage_exec_args(
     return args
 
 
+def manage_run_args(
+    config: ProjectConfig,
+    manage_argv: Sequence[str],
+    *,
+    user: str | None = None,
+) -> list[str]:
+    """``docker compose`` args for a one-shot ``run --rm --no-deps <web> ./manage.py …``.
+
+    A throwaway container from the web service's image, env and volumes: it needs the db
+    running but not the web service, so it works while web is stopped or unhealthy.
+    """
+    run_user = user or config.stack.manage_user
+    args = ["run", "--rm", "--no-deps", "-T"]
+    if run_user:
+        args.extend(["--user", run_user])
+    args.extend([config.stack_service("web"), "./manage.py", *manage_argv])
+    return args
+
+
 def _healthcheck_host_header(
     env_add: dict[str, str] | None,
     *,

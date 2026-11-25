@@ -64,6 +64,7 @@
         "caddy",
         "collectstatic",
         "django",
+        "django-task",
         "migrate",
         "rq_worker"
       ],
@@ -249,6 +250,12 @@
     {
       "file": "quadlets/db.container",
       "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django-task.container",
+      "dest": "/etc/containers/systemd/users/1001/django-task.container",
       "owner": "root",
       "mode": "0644"
     },

@@ -214,6 +214,53 @@ class Backend:
             tty=tty,
         )
 
+    def run_manage_once(self, manage_args: list[str], *, user: str | None = None) -> int:
+        """``./manage.py …`` in a throwaway container of the web service: the rendered
+        ``<web>-task`` one-shot unit, started with a per-run drop-in that sets its command.
+
+        It needs db running, not web. The drop-in lives in the account's runtime directory (the
+        unit itself is root's), is removed afterwards, and a lock keeps two runs apart. Output
+        is the unit's journal, as for the backup units. Exit status is 0 or 1: systemd keeps
+        the command's own."""
+        from catalpa_tooling.fcos.quadlets import _exec_escape, _exec_words, task_unit_name
+
+        web = self.config.stack_service("web")
+        unit = task_unit_name(web)
+        if f"quadlets/{unit}.container" not in self.committed.files:
+            raise Usage(
+                f"{self.env_name}'s render has no {unit}.container; `dk {self.env_name} render` "
+                "and deploy it first"
+            )
+        if any(a == "" or "\n" in a for a in manage_args):
+            # systemd drops an empty word and everything after it; a line break ends the line.
+            raise Usage("a one-shot manage command can't take an empty or multi-line argument")
+        lines = ["[Container]", f"Exec={_exec_words(['./manage.py', *manage_args])}"]
+        run_user = user or self.config.stack.manage_user
+        if run_user:
+            lines.append(f"User={_exec_escape(run_user)}")
+        q = shlex.quote
+        base = f'/run/user/$(id -u)/containers/systemd/{unit}.container.d'
+        script = "; ".join(
+            [
+                "set -u",
+                f"d={base}",
+                f"systemctl --user cat {q(unit + '.service')} >/dev/null 2>&1 || "
+                f"{{ echo {q(unit + ' is not installed on this host: deploy the render first')} >&2; exit 127; }}",
+                'mkdir -p "$d"',
+                'exec 9>"$d.lock"; flock 9',
+                f'printf %s {q(chr(10).join(lines) + chr(10))} > "$d/10-run.conf"',
+                "trap 'rm -rf \"$d\"; systemctl --user daemon-reload' EXIT",
+                "systemctl --user daemon-reload",
+                "t=$(date +%s)",
+                f"systemctl --user start {q(unit + '.service')}; rc=$?",
+                f'journalctl --user -u {q(unit + ".service")} --since "@$t" --no-pager -o cat '
+                # Podman's own event records land in the unit's log (see _start_and_show).
+                "| grep -vE ' m=\\+[0-9.]+ (container|image|pod|volume|network) '",
+                "exit $rc",
+            ]
+        )
+        return self._ssh(script, tty=False)
+
     # --- backups ------------------------------------------------------------------------------
 
     def _installed(self, prefix: str, suffix: str) -> str | None:
@@ -558,8 +605,9 @@ class Backend:
         ]  # fmt: skip
         if not sets:
             return 0
-        web = self.config.stack_service("web")
-        r = self.host.ssh(self.login, f"systemctl --user is-active --quiet {shlex.quote(web)}.service", check=False)
+        # The hooks run in one-shot containers, so they need db, not web.
+        db = self.config.stack.services.db
+        r = self.host.ssh(self.login, f"systemctl --user is-active --quiet {shlex.quote(db)}.service", check=False)
         if r.returncode == 0:
             rc = post_restore_hooks(self)
             return rc if rc != 0 else post_metabase_restore_hooks(self)
@@ -573,7 +621,7 @@ class Backend:
             todo += [f"`dk {self.env_name} restart {s}`" for s in getattr(hooks, "restart_services", ())]
             if todo:
                 print(
-                    f"{label} hooks not run: the stack is stopped. Once it's up, run "
+                    f"{label} hooks not run: the database is stopped. Once it's up, run "
                     + "; ".join(todo) + ".",
                     file=sys.stderr,
                 )

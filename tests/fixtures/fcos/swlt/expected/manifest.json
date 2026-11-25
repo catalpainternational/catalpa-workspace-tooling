@@ -68,6 +68,7 @@
       "services": [
         "caddy",
         "django",
+        "django-task",
         "swlt-restic-files-backup"
       ],
       "id_range": "django",
@@ -78,6 +79,7 @@
       "path": "/var/mnt/data/django_private_uploads",
       "services": [
         "django",
+        "django-task",
         "swlt-restic-files-backup"
       ],
       "id_range": "django",
@@ -194,6 +196,12 @@
     {
       "file": "quadlets/db.container",
       "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django-task.container",
+      "dest": "/etc/containers/systemd/users/1001/django-task.container",
       "owner": "root",
       "mode": "0644"
     },

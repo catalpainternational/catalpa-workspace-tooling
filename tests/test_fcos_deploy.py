@@ -85,7 +85,7 @@ def run_deploy(site, fake: FakeHost, **kw) -> int:
 
 def test_images_and_their_units(committed) -> None:
     images = d.account_images(committed)
-    assert images[DJANGO] == ["collectstatic", "django", "migrate"]
+    assert images[DJANGO] == ["collectstatic", "django", "django-task", "migrate"]
     # migrate and collectstatic re-run with django (PartOf=), so django is the one restart.
     assert d.units_for_images(committed, [DJANGO]) == ["django.service"]
     assert d.units_for_images(committed, []) == []

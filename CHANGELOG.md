@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`post_db_restore` manage commands run in one-shot containers, on both runtimes** (M5).
+  They used to `exec` into the web service, which compose had to start (`up -d web --wait`) and
+  which had to be healthy against the restored database. Compose now runs each command with
+  `docker compose run --rm --no-deps`; a rendered host gets a `<web>-task` unit (`Type=oneshot`,
+  web's image, env, secrets and volumes) that dk starts with a per-run drop-in setting the
+  command. Both need db running, not the app. **A rendered host needs `render` and `deploy`
+  once** to install the task unit; its volumes now take the shared SELinux label. An empty
+  argument in a hook command is refused on a rendered host (systemd would drop it and what
+  follows). `post_metabase_db_restore` is unchanged on compose, and uses the task unit on a
+  rendered host.
 - **`dk fetch db --only metabase` from a rendered host dumps the Metabase database.** The quadlet
   path always dumped the app database (`$APP_DB`), so every `via: dk` entry's file got the app's.
   It now follows compose: the `app` entry dumps `$APP_DB`, any other entry its `db_name`.

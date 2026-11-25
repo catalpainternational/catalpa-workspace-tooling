@@ -6,10 +6,10 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from catalpa_tooling.compose import _compose, manage_exec_args
+from catalpa_tooling.compose import _compose, manage_exec_args, manage_run_args
 from catalpa_tooling.config import DbPsqlRestoreEntry, ProjectConfig
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
@@ -282,6 +282,60 @@ def run_db_psql_hooks(
     return 0
 
 
+def run_hook_set(
+    config: ProjectConfig,
+    hooks: Any,
+    *,
+    env_name: str,
+    env_add: dict[str, str],
+    hook_label: str,
+    run_psql: Callable[[DbPsqlRestoreEntry], int],
+    run_manage: Callable[[list[str]], int],
+    prepare: Callable[[], int] | None = None,
+    describe_manage: Callable[[Sequence[str]], str] | None = None,
+    dry_run: bool = False,
+) -> int:
+    """Run one hook set (``post_db_restore`` or ``post_metabase_db_restore``) on any runtime.
+
+    The order and the stopping rules live here: placeholders are expanded first (a hook that
+    can't be filled stops everything), ``db_psql`` entries run in order, then each
+    ``manage_commands`` entry as a one-shot ``manage.py`` (``run_manage``), and the first
+    failure's exit code is returned. The runtime supplies how to run one ``db_psql`` entry and
+    one command, and an optional ``prepare`` for what its one-shot needs first (compose: the
+    stack's volumes). With ``dry_run`` the manage commands are only described.
+    """
+    commands = _expand_commands(config, hooks.manage_commands, env_name=env_name, env_add=env_add, hook_label=hook_label)
+    if commands is None:
+        return 1
+    for entry in hooks.db_psql:
+        rc = run_psql(entry)
+        if rc != 0:
+            return rc
+    if not commands:
+        if not dry_run and hooks.db_psql:
+            print(f"{hook_label}: done.", file=sys.stderr)
+        return 0
+    if prepare is not None:
+        rc = prepare()
+        if rc != 0:
+            print(f"{hook_label}: preparing the one-shot container failed (exit {rc}).", file=sys.stderr)
+            return rc
+    if dry_run:
+        for argv in commands:
+            print(f"dry-run: would {describe_manage(argv) if describe_manage else 'manage.py ' + ' '.join(argv)}", file=sys.stderr)
+        return 0
+    print(f"{hook_label}: running {len(commands)} management command(s), each in a one-shot container…", file=sys.stderr)
+    for argv in commands:
+        label = " ".join(argv)
+        print(f"{hook_label}: manage.py {label}", file=sys.stderr)
+        rc = run_manage(list(argv))
+        if rc != 0:
+            print(f"{hook_label}: `manage.py {label}` failed (exit {rc}).", file=sys.stderr)
+            return rc
+    print(f"{hook_label}: done.", file=sys.stderr)
+    return 0
+
+
 def run_post_db_restore_manage_commands(
     config: ProjectConfig,
     *,
@@ -293,100 +347,36 @@ def run_post_db_restore_manage_commands(
     """Run ``ops.post_db_restore`` hooks when configured for ``env_name``.
 
     ``db_psql`` runs first (Postgres superuser SQL in the ``db`` container), then
-    ``manage_commands`` via ``docker compose exec <web> ./manage.py …``.
-    Returns 0 when there is nothing to run.
+    ``manage_commands`` each as a one-shot ``docker compose run --rm --no-deps <web> ./manage.py …``
+    (the web service need not be up). Returns 0 when there is nothing to run.
     """
     hooks = config.ops.post_db_restore
     if not post_db_restore_applies(config, env_name):
         return 0
 
-    commands = _expand_commands(
+    def run_psql(entry: DbPsqlRestoreEntry) -> int:
+        return run_db_psql_hooks(
+            config, [entry], compose_file=compose_file, env_add=env_add,
+            hook_label="post_db_restore", dry_run=dry_run,
+        )  # fmt: skip
+
+    def run_manage(argv: list[str]) -> int:
+        return _compose(
+            compose_file, *manage_run_args(config, argv), env_add=env_add, check=False
+        ).returncode  # fmt: skip
+
+    return run_hook_set(
         config,
-        hooks.manage_commands,
+        hooks,
         env_name=env_name,
         env_add=env_add,
         hook_label="post_db_restore",
-    )
-    if commands is None:
-        return 1
-
-    rc = run_db_psql_hooks(
-        config,
-        hooks.db_psql,
-        compose_file=compose_file,
-        env_add=env_add,
-        hook_label="post_db_restore",
+        run_psql=run_psql,
+        run_manage=run_manage,
+        prepare=lambda: _ensure_stack_volumes(config, env_name, env_add, dry_run=dry_run),
+        describe_manage=lambda argv: f"docker compose -f {compose_file} {' '.join(manage_run_args(config, argv))}",
         dry_run=dry_run,
     )
-    if rc != 0:
-        return rc
-
-    if not hooks.manage_commands:
-        if not dry_run and hooks.db_psql:
-            print("post_db_restore: done.", file=sys.stderr)
-        return 0
-
-    web_svc = config.stack_service("web")
-
-    rc = _ensure_stack_volumes(config, env_name, env_add, dry_run=dry_run)
-    if rc != 0:
-        print(
-            f"post_db_restore: ensuring stack volumes failed (exit {rc}).",
-            file=sys.stderr,
-        )
-        return rc
-
-    if dry_run:
-        print(
-            f"dry-run: would docker compose -f {compose_file} up -d {web_svc} --wait",
-            file=sys.stderr,
-        )
-        for argv in commands:
-            print(
-                f"dry-run: would docker compose -f {compose_file} "
-                f"{' '.join(manage_exec_args(config, argv, tty=False))}",
-                file=sys.stderr,
-            )
-        return 0
-
-    print(
-        f"post_db_restore: starting `{web_svc}` and running {len(commands)} management command(s)…",
-        file=sys.stderr,
-    )
-    r = _compose(
-        compose_file,
-        "up",
-        "-d",
-        web_svc,
-        "--wait",
-        env_add=env_add,
-        check=False,
-    )
-    if r.returncode != 0:
-        print(
-            f"post_db_restore: `docker compose up -d {web_svc} --wait` failed (exit {r.returncode}).",
-            file=sys.stderr,
-        )
-        return r.returncode
-
-    for argv in commands:
-        label = " ".join(argv)
-        print(f"post_db_restore: manage.py {label}", file=sys.stderr)
-        r = _compose(
-            compose_file,
-            *manage_exec_args(config, argv, tty=False),
-            env_add=env_add,
-            check=False,
-        )
-        if r.returncode != 0:
-            print(
-                f"post_db_restore: `manage.py {label}` failed (exit {r.returncode}).",
-                file=sys.stderr,
-            )
-            return r.returncode
-
-    print("post_db_restore: done.", file=sys.stderr)
-    return 0
 
 
 def run_post_metabase_db_restore_manage_commands(

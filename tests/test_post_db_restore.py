@@ -83,10 +83,11 @@ def test_runs_commands_in_order(minimal_project) -> None:
         )
 
     ensure_volumes.assert_called_once()
-    assert calls[0] == ["up", "-d", "web", "--wait"]
-    assert calls[1][:4] == ["exec", "-T", "web", "./manage.py"]
-    assert calls[1][4:] == ["sync_wagtail_sites", "--profile", "dev"]
-    assert calls[2][4:] == ["migrate", "--noinput"]
+    # One-shot containers: nothing starts the web service first.
+    assert all(c[0] == "run" for c in calls) and len(calls) == 2
+    assert calls[0][:6] == ["run", "--rm", "--no-deps", "-T", "web", "./manage.py"]
+    assert calls[0][6:] == ["sync_wagtail_sites", "--profile", "dev"]
+    assert calls[1][6:] == ["migrate", "--noinput"]
 
 
 def test_expands_env_name_placeholder(minimal_project) -> None:
@@ -97,7 +98,7 @@ def test_expands_env_name_placeholder(minimal_project) -> None:
     exec_args: list[str] = []
 
     def fake_compose(compose_file: str, *args: str, **kwargs: object) -> MagicMock:
-        if args and args[0] == "exec":
+        if args and args[0] == "run":
             exec_args.extend(args)
         m = MagicMock()
         m.returncode = 0
@@ -126,7 +127,7 @@ def test_propagates_first_failure(minimal_project) -> None:
 
     def fake_compose(compose_file: str, *args: str, **kwargs: object) -> MagicMock:
         m = MagicMock()
-        if args and args[0] == "exec":
+        if args and args[0] == "run":
             m.returncode = 2
         else:
             m.returncode = 0
@@ -321,7 +322,7 @@ def _run_and_capture_exec(cfg, *, env_add, env_name="dev") -> tuple[int, list[st
     exec_args: list[str] = []
 
     def fake_compose(compose_file: str, *args: str, **kwargs: object) -> MagicMock:
-        if args and args[0] == "exec":
+        if args and args[0] == "run":
             exec_args.extend(args)
         m = MagicMock()
         m.returncode = 0
@@ -366,7 +367,7 @@ def test_expands_site_and_worktree_placeholders(minimal_project) -> None:
     )
 
     assert rc == 0
-    assert exec_args[4:] == [
+    assert exec_args[6:] == [
         "sync_wagtail_sites",
         "--profile",
         "dev",
@@ -381,7 +382,7 @@ def test_worktree_slug_is_empty_outside_a_worktree(minimal_project) -> None:
     cfg = _config_with_hooks(minimal_project, commands=(("noop", "--slug={worktree_slug}"),))
     rc, exec_args = _run_and_capture_exec(cfg, env_add={})
     assert rc == 0
-    assert exec_args[4:] == ["noop", "--slug="]
+    assert exec_args[6:] == ["noop", "--slug="]
 
 
 def test_site_placeholder_without_site_origin_refuses_to_run(minimal_project, capsys) -> None:
@@ -399,3 +400,75 @@ def test_site_placeholder_without_site_origin_refuses_to_run(minimal_project, ca
     ensure_volumes.assert_not_called()
     compose.assert_not_called()
     assert "SITE_ORIGIN is not set" in capsys.readouterr().err
+
+
+# --- run_hook_set: the order and stopping rules both runtimes share ---------------------------
+
+
+def _entry(file: str):
+    from catalpa_tooling.config import DbPsqlRestoreEntry
+
+    return DbPsqlRestoreEntry(target="app", file=file)  # type: ignore[arg-type]
+
+
+def _hook_set(*, psql=(), commands=()):
+    return PostDbRestoreOpsConfig(envs=None, db_psql=tuple(psql), manage_commands=tuple(commands))
+
+
+def _run_set(cfg, hooks, events, *, psql_rc=0, manage_rc=0, dry_run=False, prepare_rc=0):
+    from catalpa_tooling.post_db_restore import run_hook_set
+
+    def run_psql(entry):
+        events.append(("psql", entry.file))
+        return psql_rc
+
+    def run_manage(argv):
+        events.append(("manage", *argv))
+        return manage_rc
+
+    def prepare():
+        events.append(("prepare",))
+        return prepare_rc
+
+    return run_hook_set(
+        cfg, hooks, env_name="dev", env_add={}, hook_label="post_db_restore",
+        run_psql=run_psql, run_manage=run_manage, prepare=prepare, dry_run=dry_run,
+    )  # fmt: skip
+
+
+def test_hook_set_runs_psql_then_prepares_then_each_command(minimal_project) -> None:
+    events: list = []
+    hooks = _hook_set(psql=[_entry("a.sql"), _entry("b.sql")], commands=[("migrate",), ("sync", "--p={env_name}")])
+    assert _run_set(minimal_project, hooks, events) == 0
+    assert events == [("psql", "a.sql"), ("psql", "b.sql"), ("prepare",), ("manage", "migrate"), ("manage", "sync", "--p=dev")]
+
+
+def test_hook_set_stops_at_the_first_failure(minimal_project) -> None:
+    events: list = []
+    hooks = _hook_set(psql=[_entry("a.sql")], commands=[("migrate",)])
+    assert _run_set(minimal_project, hooks, events, psql_rc=3) == 3
+    assert events == [("psql", "a.sql")]  # no command after a failed psql
+    events.clear()
+    hooks = _hook_set(commands=[("one",), ("two",)])
+    assert _run_set(minimal_project, hooks, events, manage_rc=2) == 2
+    assert events == [("prepare",), ("manage", "one")]
+
+
+def test_hook_set_without_commands_does_not_prepare(minimal_project) -> None:
+    events: list = []
+    assert _run_set(minimal_project, _hook_set(psql=[_entry("a.sql")]), events) == 0
+    assert events == [("psql", "a.sql")]
+
+
+def test_hook_set_dry_run_only_describes_commands(minimal_project, capsys) -> None:
+    events: list = []
+    assert _run_set(minimal_project, _hook_set(commands=[("migrate",)]), events, dry_run=True) == 0
+    assert events == [("prepare",)]  # compose's prepare is itself dry-run aware
+    assert "dry-run: would manage.py migrate" in capsys.readouterr().err
+
+
+def test_hook_set_unfillable_placeholder_runs_nothing(minimal_project) -> None:
+    events: list = []
+    hooks = _hook_set(psql=[_entry("a.sql")], commands=[("sync", "{site_host}")])
+    assert _run_set(minimal_project, hooks, events) == 1
+    assert events == []
