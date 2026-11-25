@@ -12,6 +12,7 @@ from catalpa_tooling.db_restore import (
 )
 from catalpa_tooling.fetch_db import dump_path_usable, run_fetch_all_dbs
 from catalpa_tooling.pgbackrest_volume_config import PREFIX_READ
+from tests.helpers import spy_compose_backend
 
 
 def _write_tooling(tmp_path: Path) -> None:
@@ -276,24 +277,7 @@ def test_metabase_dump_restore_runs_hooks_after_pgrestore(
     _write_tooling_with_metabase(tmp_path)
     cfg = load_project_config(tmp_path)
     _valid_dump(cfg.fetch_metabase_db_dump_path)
-    order: list[str] = []
-
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.ensure_db_service_running",
-        lambda *a, **k: 0,
-    )
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_drop_create_metabase_database",
-        lambda *a, **k: 0,
-    )
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_pg_restore",
-        lambda *a, **k: (order.append("pgrestore") or 0),
-    )
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_post_metabase_db_restore_manage_commands",
-        lambda *a, **k: (order.append("hooks") or 0),
-    )
+    calls = spy_compose_backend(monkeypatch)
 
     rc = run_compose_metabase_dump_restore(
         cfg,
@@ -302,7 +286,7 @@ def test_metabase_dump_restore_runs_hooks_after_pgrestore(
         env_name="dev",
     )
     assert rc == 0
-    assert order == ["pgrestore", "hooks"]
+    assert calls == ["ensure", ("copy", cfg.fetch_metabase_db_dump_path), "drop_create", "pg_restore", "rm", "hooks:metabase"]
 
 
 def test_restore_refuses_before_drop_when_metabase_dump_is_bad(
@@ -315,17 +299,7 @@ def test_restore_refuses_before_drop_when_metabase_dump_is_bad(
     cfg = load_project_config(tmp_path)
     _valid_dump(cfg.fetch_db_dump_path)
     cfg.fetch_metabase_db_dump_path.write_bytes(b"-- PostgreSQL database dump\n")
-    dropped: list[str] = []
-
-    for name in ("run_drop_create_app_database", "run_drop_create_metabase_database"):
-        monkeypatch.setattr(
-            f"catalpa_tooling.db_restore.{name}",
-            lambda *a, _n=name, **k: (dropped.append(_n) or 0),
-        )
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.ensure_db_service_running",
-        lambda *a, **k: 0,
-    )
+    calls = spy_compose_backend(monkeypatch)
 
     rc = run_unified_db_restore(
         cfg,
@@ -334,4 +308,4 @@ def test_restore_refuses_before_drop_when_metabase_dump_is_bad(
         env_name="dev",
     )
     assert rc == 1
-    assert dropped == []
+    assert calls == []

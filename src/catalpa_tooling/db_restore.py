@@ -7,19 +7,15 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.db_archive import restore_archive
 from catalpa_tooling.fetch_db import (
     configured_app_dump_exists,
     configured_metabase_dump_exists,
     run_fetch_all_dbs,
 )
 from catalpa_tooling.pgbackrest_db import (
-    compose_pg_restore_extras_for_config,
-    ensure_db_service_running,
     pg_dump_archive_error,
     plan_restore_offline,
-    run_drop_create_app_database,
-    run_drop_create_metabase_database,
-    run_pg_restore,
     run_restore_offline,
 )
 from catalpa_tooling.pgbackrest_volume_config import (
@@ -29,10 +25,7 @@ from catalpa_tooling.pgbackrest_volume_config import (
     _validate_repo_vars,
     resolve_mode,
 )
-from catalpa_tooling.post_db_restore import (
-    run_post_db_restore_manage_commands,
-    run_post_metabase_db_restore_manage_commands,
-)
+from catalpa_tooling.stack_backend import ComposeBackend
 
 
 def pgbackrest_restore_configured(env: dict[str, str]) -> bool:
@@ -45,6 +38,14 @@ def pgbackrest_restore_configured(env: dict[str, str]) -> bool:
     return _validate_repo_vars(vars_map, mode=mode) is None
 
 
+def _compose_backend(
+    config: ProjectConfig, *, compose_file: str, env_add: dict[str, str], env_name: str
+) -> ComposeBackend:
+    return ComposeBackend.from_parts(
+        config, env_name, compose_file, env_add, docker_host=str(env_add.get("DOCKER_HOST", ""))
+    )
+
+
 def run_compose_app_dump_restore(
     config: ProjectConfig,
     *,
@@ -55,37 +56,10 @@ def run_compose_app_dump_restore(
     extra_pg_restore_args: Sequence[str] | None = None,
 ) -> int:
     """Drop/create app DB, pg_restore from ``archive_path`` or the configured dump, then post hooks."""
-    dump_path = archive_path or config.fetch_db_dump_path
-    extras = list(extra_pg_restore_args or [])
-    extras = ["--file", str(dump_path), *extras]
-    restore_extras = compose_pg_restore_extras_for_config(
-        config,
-        extras,
-    )
-    rc = ensure_db_service_running(
-        compose_file, env_add, config=config, dk_env_name=env_name
-    )
-    if rc != 0:
-        return rc
-    print(
-        "db restore: replacing app database with an empty database before restore …",
-        file=sys.stderr,
-    )
-    rc = run_drop_create_app_database(
-        compose_file,
-        env_add,
-        postgis=config.native.reset_db.postgis,
-    )
-    if rc != 0:
-        return rc
-    rc = run_pg_restore(compose_file, env_add, restore_extras, config=config)
-    if rc != 0:
-        return rc
-    return run_post_db_restore_manage_commands(
-        config,
-        compose_file=compose_file,
-        env_add=env_add,
-        env_name=env_name,
+    return restore_archive(
+        _compose_backend(config, compose_file=compose_file, env_add=env_add, env_name=env_name),
+        archive_path or config.fetch_db_dump_path,
+        extra_pg_restore_args or (),
     )
 
 
@@ -104,38 +78,11 @@ def run_compose_metabase_dump_restore(
     dump_path = archive_path or config.fetch_metabase_db_dump_path
     if dump_path is None:
         return 0
-    extras = list(extra_pg_restore_args or [])
-    extras = ["--file", str(dump_path), *extras]
-    restore_extras = compose_pg_restore_extras_for_config(
-        config,
-        extras,
-    )
-    rc = ensure_db_service_running(
-        compose_file, env_add, config=config, dk_env_name=env_name
-    )
-    if rc != 0:
-        return rc
-    print(
-        "db restore: replacing Metabase database with an empty database before restore …",
-        file=sys.stderr,
-    )
-    rc = run_drop_create_metabase_database(compose_file, env_add)
-    if rc != 0:
-        return rc
-    rc = run_pg_restore(
-        compose_file,
-        env_add,
-        restore_extras,
-        config=config,
+    return restore_archive(
+        _compose_backend(config, compose_file=compose_file, env_add=env_add, env_name=env_name),
+        dump_path,
+        extra_pg_restore_args or (),
         target="metabase",
-    )
-    if rc != 0:
-        return rc
-    return run_post_metabase_db_restore_manage_commands(
-        config,
-        compose_file=compose_file,
-        env_add=env_add,
-        env_name=env_name,
     )
 
 

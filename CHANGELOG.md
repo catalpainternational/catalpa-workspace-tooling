@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Restoring a `pg_dump -Fc` archive is one code path on both runtimes** (M5): `db restore
+  --file` / `--dumps` and `dk transfer` into a rendered host now run `db_archive.restore_archive`
+  over `StackBackend`. Compose and quadlet envs used to each carry their own copy of the
+  sequence (copy into db, drop and create, `pg_restore`, remove the copy, hooks). No change
+  in what runs; two small differences: a rendered host starts db first when it's stopped
+  (compose already did), and the compose Metabase leg shares the code too. A compose restore
+  still has no confirmation and doesn't stop the app; a rendered host's still does both.
+  A restore or transfer into a rendered host now refuses up front when a post-restore hook runs
+  `manage.py` and the render has no `<web>-task` unit (it used to fail at the hook, after the
+  database was replaced).
 - **`post_db_restore` manage commands run in one-shot containers, on both runtimes** (M5).
   They used to `exec` into the web service, which compose had to start (`up -d web --wait`) and
   which had to be healthy against the restored database. Compose now runs each command with

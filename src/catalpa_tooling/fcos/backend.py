@@ -27,6 +27,7 @@ import argparse
 import shlex
 from pathlib import Path
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from catalpa_tooling.config import ProjectConfig
@@ -62,6 +63,8 @@ class Backend:
     host: Host
     login: str
     info: dict = field(default_factory=dict)
+    #: Streams a local file to a remote command's stdin (``dbdump.upload``; tests replace it).
+    uploader: Callable[[list[str], Path], int] | None = None
 
     runtime = "quadlet"  # stack_backend.StackBackend
 
@@ -77,6 +80,45 @@ class Backend:
         start returns once Postgres answers ``pg_isready``."""
         db = f"{self.config.stack.services.db}.service"
         return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
+
+    def _upload(self, argv: list[str], path: Path) -> int:
+        from catalpa_tooling.fcos.dbdump import upload
+
+        return (self.uploader or upload)(argv, path)
+
+    def copy_into_db(self, archive: Path, container_path: str) -> int:
+        """Stream ``archive`` over SSH into ``db`` (``podman exec -i`` stdin), then check its
+        SHA-256 there and hand it to ``postgres``."""
+        from catalpa_tooling.fcos.dbdump import _sha256
+
+        q = shlex.quote
+        db = self.config.stack.services.db
+        argv = self.host._argv(
+            self.login,
+            f"podman exec -i -u root {q(db)} sh -c {q(f'umask 077; cat > {q(container_path)}')}",
+        )
+        rc = self._upload(argv, archive)
+        if rc != 0:
+            return rc or 1
+        check = (
+            f"chown postgres:postgres {q(container_path)} && chmod 600 {q(container_path)} && "
+            f"sha256sum {q(container_path)} | cut -d' ' -f1 | grep -qx {q(_sha256(archive))}"
+        )
+        rc = self.db_sh(check, root=True)
+        if rc != 0:
+            print("db restore: the archive in the container doesn't match (SHA-256)", file=sys.stderr)
+            return rc or 1
+        return 0
+
+    def db_sh(self, script: str, *, root: bool = False) -> int:
+        db = shlex.quote(self.config.stack.services.db)
+        return self._ssh(f"podman exec {'-u root ' if root else ''}-i {db} sh -c {shlex.quote(script)}", tty=False)
+
+    def run_post_restore_hooks(self, target: str = "app") -> int:
+        from catalpa_tooling.fcos.dbdump import post_metabase_restore_hooks, post_restore_hooks
+
+        hooks = post_metabase_restore_hooks if target == "metabase" else post_restore_hooks
+        return hooks(self, uploader=self._upload)
 
     def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None) -> int:
         """``podman exec … pg_dump -Fc`` streamed to ``dest`` (``fcos.fetch.fetch_db``)."""
@@ -214,6 +256,32 @@ class Backend:
             tty=tty,
         )
 
+    def _require_task_unit(self) -> str:
+        """The ``<web>-task`` unit's name; ``Usage`` when the committed render has none."""
+        from catalpa_tooling.fcos.quadlets import task_unit_name
+
+        unit = task_unit_name(self.config.stack_service("web"))
+        if f"quadlets/{unit}.container" not in self.committed.files:
+            raise Usage(
+                f"{self.env_name}'s render has no {unit}.container; `dk {self.env_name} render` "
+                "and deploy it first"
+            )
+        return unit
+
+    def check_hooks_runnable(self) -> None:
+        """Before a restore replaces anything: ``Usage`` if a post-restore hook that applies to
+        this env runs ``manage.py`` and the render has no task unit to run it in (it would only
+        fail after the data was already replaced)."""
+        from catalpa_tooling.fcos.dbdump import metabase_hooks_apply
+        from catalpa_tooling.post_db_restore import post_db_restore_applies
+
+        c = self.config
+        needs = (post_db_restore_applies(c, self.env_name) and c.ops.post_db_restore.manage_commands) or (
+            metabase_hooks_apply(c, self.env_name) and c.ops.post_metabase_db_restore.manage_commands
+        )
+        if needs:
+            self._require_task_unit()
+
     def run_manage_once(self, manage_args: list[str], *, user: str | None = None) -> int:
         """``./manage.py …`` in a throwaway container of the web service: the rendered
         ``<web>-task`` one-shot unit, started with a per-run drop-in that sets its command.
@@ -224,13 +292,7 @@ class Backend:
         the command's own."""
         from catalpa_tooling.fcos.quadlets import _exec_escape, _exec_words, task_unit_name
 
-        web = self.config.stack_service("web")
-        unit = task_unit_name(web)
-        if f"quadlets/{unit}.container" not in self.committed.files:
-            raise Usage(
-                f"{self.env_name}'s render has no {unit}.container; `dk {self.env_name} render` "
-                "and deploy it first"
-            )
+        unit = self._require_task_unit()
         if any(a == "" or "\n" in a for a in manage_args):
             # systemd drops an empty word and everything after it; a line break ends the line.
             raise Usage("a one-shot manage command can't take an empty or multi-line argument")
@@ -470,6 +532,7 @@ class Backend:
         db = self.config.stack.services.db
         web = self.config.stack_service("web")
         source = self.restore.get("from")
+        self.check_hooks_runnable()
         script = self._stop_then_start_as_found(
             [self._db_restore_line(extra)],
             stopped_hint=f"restore the media (dk {self.env_name} files restore), then start them (dk {self.env_name} host provision).",
@@ -500,6 +563,8 @@ class Backend:
         kinds = kinds if kinds is not None else self.restore_kinds()
         if not kinds:
             raise Usage(f"{self.env_name} has nothing to restore from (backups: or restore_from: in info.yaml)")
+        if "db" in kinds:
+            self.check_hooks_runnable()
         body: list[str] = []
         paths: list[str] = []
         if "db" in kinds:
@@ -630,9 +695,10 @@ class Backend:
     def db_restore_dump(self, archive: Path | None, *, yes: bool, dry_run: bool) -> int:
         """``db restore --file PATH`` / ``--dumps``: replace the app database with a local
         ``pg_dump -Fc`` archive (``--dumps``: the configured ``paths.fetch_db_dump``)."""
-        from catalpa_tooling.fcos.dbdump import restore_archive
+        from catalpa_tooling.db_archive import restore_archive
 
         path = archive or self.config.fetch_db_dump_path
+        self.check_hooks_runnable()
         if archive is None and self.config.has_metabase_fetch():
             print(
                 "db restore --dumps: the Metabase dump isn't restored on quadlet envs yet; "
@@ -648,7 +714,7 @@ class Backend:
             yes=yes,
         ):
             return 1
-        return restore_archive(self, Path(path))
+        return restore_archive(self, Path(path), stop_app=True)
 
     def _files_restore_steps(self, snapshot: str) -> tuple[list[str], list[str]]:
         """(shell steps, the paths restored): restic restore of each backed-up directory, exactly
