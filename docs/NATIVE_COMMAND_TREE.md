@@ -102,14 +102,19 @@ Requires `uv`, `bash`, and network/SSH access to the remote stack (same as `dk <
 
 ## `fetch media`
 
-**Docker volume mode (default):** SSH to `docker_host` from `docker/envs/<env>/info.yaml`, `docker volume inspect` on `{compose_project}_{ops.restic.data_volume}` (default `{project}_django_media`), then `rsync` the volume mount path.
+**Default:** the env says where its media is, whichever runtime runs it (rsync adds and updates files, deletes none):
+
+- **compose:** the media mount from the compose file: a host directory (local envs), or the named volume `{compose_project}_{ops.restic.data_volume}` (default `{project}_django_media`), found with `docker volume inspect` over SSH to `docker_host`, then rsync from its mount path. Where rsync can't reach it (a local engine whose volumes the host can't read, as Docker Desktop's), or fails (an SSH user that can't read Docker's volumes), the media is copied with `tar` through the engine instead.
+- **rendered host (`runtime: quadlet`):** rsync from the media directory on the data volume, as the account.
+
+`--host` or `--compose-project` skip that: rsync from the named volume on that host / with that project, as before.
 
 | Option | Default | Notes |
 |--------|---------|--------|
 | `--env` | `native.fetch_media.dk_env` | Which `info.yaml` supplies `docker_host` / `compose_project_name` |
-| `--host` | from `info.yaml` | Override SSH target (`user@host` or bare hostname → `root@`) |
+| `--host` | from `info.yaml` | Override SSH target (`user@host` or bare hostname → `root@`); a compose volume |
 | `--dest` | `<repo>/native.fetch_media.dest` | Local destination |
-| `--partial` | off | Only `documents/` and `original_images/` |
+| `--partial` | off | Only `documents/` and `original_images/` (needs an rsync route) |
 | `--compose-project` | from `info.yaml` or `stack.compose_project_default` | Volume name prefix |
 | `--legacy-path` / `--no-legacy-path` | `native.fetch_media.legacy.default` (else off) | Use `native.fetch_media.legacy` instead of Docker volume |
 | `--remote` | `legacy.remote` | Remote directory when `--legacy-path` (override) |
@@ -225,4 +230,4 @@ Arguments after the subcommand are passed to the script. Unknown flags on `pg-re
 | CLI | Overlap |
 |-----|---------|
 | `scripts` | Non-`native-` shell helpers under `paths.scripts` (string or list; e.g. `fetch-db` → `fetch_db.sh`) |
-| `dk` | Remote deploy, `db pgdump`, `files push`, `pull_media` (tar volume export; `native fetch media` is rsync pull; `dk transfer` media defaults to rsync) |
+| `dk` | Remote deploy, `db pgdump`, `files push`, `pull_media` (deprecated: runs `fetch media`; `dk transfer` media defaults to rsync) |

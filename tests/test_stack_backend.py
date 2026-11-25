@@ -9,6 +9,7 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -118,7 +119,8 @@ def test_compose_ensure_db_running(site, monkeypatch) -> None:
     monkeypatch.setattr(pgbackrest_db, "ensure_db_service_running", fake)
     ctx = compose_ctx(site)
     assert ComposeBackend(ctx).ensure_db_running() == 3
-    assert seen == {"compose_file": ctx.compose_file, "env": ctx.env_add, "config": site, "env_name": "prod"}
+    env = {**ctx.env_add, "COMPOSE_PROJECT_NAME": "site"}  # as `dk prod` sets it
+    assert seen == {"compose_file": ctx.compose_file, "env": env, "config": site, "env_name": "prod"}
 
 
 def test_compose_writers_go_through_transfers_functions(site, monkeypatch) -> None:
@@ -157,16 +159,74 @@ def test_compose_manage_execs_in_web(site, monkeypatch) -> None:
     assert seen["docker_host"] == "ssh://deploy@prod.example"
 
 
-def test_compose_pull_media(site, monkeypatch, tmp_path) -> None:
-    seen = {}
+class MediaRoute:
+    """``ComposeBackend.pull_media``'s collaborators, faked: where rsync can read the media
+    (``source``), what rsync returns, and the tar copy."""
 
-    def fake(env, *, target, dry_run, alpine_image, config, compose_file):
-        seen.update(target=target, dry_run=dry_run, compose_file=compose_file)
-        return 0
+    def __init__(self, monkeypatch, *, source: str | None, rsync_rc: int = 0) -> None:
+        from catalpa_tooling import media_rsync
+        from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
 
-    monkeypatch.setattr(media_pull, "run_pull_media", fake)
+        self.calls: list[tuple] = []
+        storage = MediaStorage(MediaStorageKind.VOLUME, "site_django_media")
+        monkeypatch.setattr(ComposeBackend, "media_storage", lambda self: storage)
+        monkeypatch.setattr(media_rsync, "resolve_rsync_endpoint", lambda env, st, **k: source)
+
+        def rsync(src, dst, *, delete, dry_run):
+            self.calls.append(("rsync", src, dst, delete, dry_run))
+            return rsync_rc
+
+        def tar(env, *, target, dry_run, alpine_image, config, storage):
+            self.calls.append(("tar", target, storage.location))
+            return 0
+
+        monkeypatch.setattr(media_rsync, "rsync_between_endpoints", rsync)
+        monkeypatch.setattr(media_pull, "run_pull_media", tar)
+
+
+def test_compose_pull_media_rsyncs_when_it_can(site, monkeypatch, tmp_path) -> None:
+    m = MediaRoute(monkeypatch, source="deploy@prod.example:/var/lib/docker/volumes/site_django_media/_data")
+    assert ComposeBackend(compose_ctx(site)).pull_media(tmp_path / "m") == 0
+    assert m.calls == [
+        ("rsync", "deploy@prod.example:/var/lib/docker/volumes/site_django_media/_data", str(tmp_path / "m"), False, False)
+    ]
+
+
+def test_compose_pull_media_falls_back_to_tar(site, monkeypatch, tmp_path) -> None:
+    m = MediaRoute(monkeypatch, source="deploy@prod.example:/v", rsync_rc=23)  # e.g. permission denied
     assert ComposeBackend(compose_ctx(site)).pull_media(tmp_path) == 0
-    assert seen == {"target": tmp_path, "dry_run": False, "compose_file": "docker/compose.yml"}
+    assert [c[0] for c in m.calls] == ["rsync", "tar"]
+
+
+def test_compose_pull_media_tars_without_an_rsync_route(site, monkeypatch, tmp_path) -> None:
+    m = MediaRoute(monkeypatch, source=None)  # a local engine whose volumes the host can't read
+    assert ComposeBackend(compose_ctx(site)).pull_media(tmp_path) == 0
+    assert m.calls == [("tar", tmp_path, "site_django_media")]
+
+
+def test_compose_pull_media_dry_run_doesnt_fall_back(site, monkeypatch, tmp_path) -> None:
+    m = MediaRoute(monkeypatch, source="deploy@prod.example:/v", rsync_rc=23)
+    assert ComposeBackend(compose_ctx(site)).pull_media(tmp_path / "m", dry_run=True) == 23
+    assert [c[0] for c in m.calls] == ["rsync"] and not (tmp_path / "m").exists()
+
+
+def test_a_local_compose_env_uses_its_own_project(site) -> None:
+    ctx = compose_ctx(site, "dev")
+    ctx = replace(ctx, env_add={"DOCKER_HOST": ""}, docker_host="")
+    assert ComposeBackend(ctx).env["COMPOSE_PROJECT_NAME"] == "site_dev"
+
+
+def test_quadlet_pull_media_rsyncs_the_media_directory(site, monkeypatch, tmp_path) -> None:
+    from catalpa_tooling import media_rsync
+
+    b, _ = quadlet(site)
+    calls = []
+    monkeypatch.setattr(media_rsync, "rsync_between_endpoints", lambda *a, **k: calls.append((a, k)) or 0)
+    assert b.media_rsync_source() == "deploy@staging.site.example:/var/mnt/data/django_media"
+    assert b.pull_media(tmp_path / "m") == 0
+    assert calls == [
+        (("deploy@staging.site.example:/var/mnt/data/django_media", str(tmp_path / "m")), {"delete": False, "dry_run": False})
+    ]
 
 
 # --- backend_for ----------------------------------------------------------------------------

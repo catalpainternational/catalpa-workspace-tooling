@@ -476,9 +476,16 @@ def _attach_env_command_parsers(
     )
     p_manage.add_argument("manage_args", nargs=argparse.REMAINDER)
 
-    p_pull = cmd_sub.add_parser("pull_media", help="Copy django_media volume to local directory.")
-    p_pull.add_argument("--target", "-t", default=None, metavar="DIR")
-    p_pull.add_argument("--image", default="alpine:3.21")
+    p_pull = cmd_sub.add_parser(
+        "pull_media", help="Deprecated: use `dk fetch media --env <env>` (it does the same)."
+    )
+    p_pull.add_argument(
+        "--target", "-t", default=None, metavar="DIR",
+        help="Local directory (default: native.fetch_media.dest, as fetch media).",
+    )  # fmt: skip
+    p_pull.add_argument(
+        "--image", default="alpine:3.21", help="Image for the tar copy, when rsync can't reach the media."
+    )
 
     p_restore_all = cmd_sub.add_parser(
         "restore",

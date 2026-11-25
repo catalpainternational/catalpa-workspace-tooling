@@ -175,7 +175,7 @@ def test_docker_volume_mountpoint_parses_json(monkeypatch) -> None:
     assert docker_volume_mountpoint_ssh("root@h", "vol") == "/var/lib/docker/volumes/vol/_data"
 
 
-def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, monkeypatch) -> None:
+def _prod_env(tmp_path: Path):
     _write_minimal_tooling(tmp_path)
     env_dir = tmp_path / "docker" / "envs" / "prod"
     env_dir.mkdir(parents=True)
@@ -183,26 +183,90 @@ def test_run_fetch_media_docker_volume(tmp_path: Path, isolated_tooling: None, m
         yaml.dump({"docker_host": "ssh://u@h", "env": {}}),
         encoding="utf-8",
     )
-    cfg = load_project_config(tmp_path)
-    calls: list[tuple[str, str, Path]] = []
+    return load_project_config(tmp_path)
 
-    def fake_rsync(ssh_target: str, remote_path: str, local_path: Path) -> int:
-        calls.append((ssh_target, remote_path, local_path))
+
+def _fetch(cfg, dest: Path, **kw) -> None:
+    args = dict(dk_env="prod", host=None, dest=dest, partial=False, legacy_path=False,
+                legacy_remote=None, compose_project=None)  # fmt: skip
+    run_fetch_media(cfg, **{**args, **kw})
+
+
+class _FakeBackend:
+    def __init__(self, source: str | None) -> None:
+        self.source, self.pulled = source, []
+
+    def describe(self) -> str:
+        return "prod (fake)"
+
+    def pull_media(self, target: Path) -> int:
+        self.pulled.append(target)
         return 0
 
+    def media_rsync_source(self) -> str | None:
+        return self.source
+
+
+def test_run_fetch_media_asks_the_envs_backend(tmp_path: Path, isolated_tooling: None, monkeypatch) -> None:
+    cfg = _prod_env(tmp_path)
+    b = _FakeBackend("u@h:/vol/mount")
+    monkeypatch.setattr("catalpa_tooling.stack_backend.backend_for", lambda config, env: b)
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
+    _fetch(cfg, tmp_path / "media")
+    assert b.pulled == [tmp_path / "media"]
+
+
+def test_run_fetch_media_partial_rsyncs_two_directories(tmp_path: Path, isolated_tooling: None, monkeypatch) -> None:
+    cfg = _prod_env(tmp_path)
+    b = _FakeBackend("u@h:/vol/mount")
+    calls = []
+    monkeypatch.setattr("catalpa_tooling.stack_backend.backend_for", lambda config, env: b)
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.rsync_between_endpoints", lambda s, d, **k: calls.append((s, d, k)) or 0
+    )
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
+    _fetch(cfg, tmp_path / "media", partial=True)
+    assert b.pulled == []
+    assert calls == [
+        ("u@h:/vol/mount/documents", str(tmp_path / "media" / "documents"), {"delete": False, "dry_run": False}),
+        (
+            "u@h:/vol/mount/original_images",
+            str(tmp_path / "media" / "original_images"),
+            {"delete": False, "dry_run": False},
+        ),
+    ]
+
+
+def test_run_fetch_media_partial_needs_an_rsync_route(tmp_path: Path, isolated_tooling: None, monkeypatch) -> None:
+    cfg = _prod_env(tmp_path)
+    monkeypatch.setattr("catalpa_tooling.stack_backend.backend_for", lambda config, env: _FakeBackend(None))
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
+    with pytest.raises(ValueError, match="--partial needs rsync"):
+        _fetch(cfg, tmp_path / "media", partial=True)
+
+
+def test_run_fetch_media_explicit_host_keeps_the_docker_volume_path(
+    tmp_path: Path, isolated_tooling: None, monkeypatch
+) -> None:
+    cfg = _prod_env(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "catalpa_tooling.stack_backend.backend_for", lambda *a: pytest.fail("--host doesn't use the backend")
+    )
     monkeypatch.setattr(
         "catalpa_tooling.fetch_media.docker_volume_mountpoint_ssh",
         lambda _s, _v, **_: "/vol/mount",
     )
-    monkeypatch.setattr("catalpa_tooling.fetch_media.rsync_pull_remote_to_local", fake_rsync)
+    monkeypatch.setattr(
+        "catalpa_tooling.fetch_media.rsync_between_endpoints", lambda s, d, **k: calls.append((s, d)) or 0
+    )
     monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/x")
     monkeypatch.setattr(
         "catalpa_tooling.fetch_media.ensure_ssh_known_host_for_ssh_target",
         lambda *_a, **_k: 0,
     )
-
-    run_fetch_media(cfg, dk_env="prod", host=None, dest=tmp_path / "media", partial=False, legacy_path=False, legacy_remote=None, compose_project=None)
-    assert calls == [("u@h", "/vol/mount/", tmp_path / "media")]
+    _fetch(cfg, tmp_path / "media", host="v@other")
+    assert calls == [("v@other:/vol/mount", str(tmp_path / "media"))]
 
 
 def test_run_fetch_media_legacy_requires_host(tmp_path: Path, isolated_tooling: None) -> None:

@@ -95,7 +95,7 @@ dk
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
     ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
     ├── manage [--user U] <django …> # ./manage.py as stack.manage_user (or U)
-    ├── pull_media                   # volume → host dir (tar)
+    ├── pull_media                   # deprecated: dk fetch media --env <env>
     ├── restore [--snapshot S] [-- pgBackRest args]  # db restore + files restore, one confirmation
     ├── wipe                         # alias: compose down -v
     │

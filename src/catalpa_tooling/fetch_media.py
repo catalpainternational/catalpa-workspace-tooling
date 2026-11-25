@@ -11,7 +11,7 @@ import yaml
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.media_rsync import (
     docker_volume_mountpoint_ssh,
-    rsync_pull_remote_to_local,
+    rsync_between_endpoints,
     ssh_target_from_host,
 )
 from catalpa_tooling.restic_files import django_media_volume_name
@@ -44,14 +44,53 @@ def dk_info_fetch_media_defaults(config: ProjectConfig, env_name: str) -> tuple[
     return ssh, project
 
 
-def _quadlet(config: ProjectConfig, dk_env: str):
-    from catalpa_tooling.fcos.fetch import quadlet_env
-    from catalpa_tooling.fcos.host import HostError
+PARTIAL_SUBDIRS = ("documents", "original_images")
+
+
+def pull_media_target(config: ProjectConfig, env_name: str, target: str | None) -> Path:
+    """Warn that ``dk <env> pull_media`` is deprecated; return where it copies to: ``--target``
+    (relative to the repo root, as before), else ``fetch media``'s ``native.fetch_media.dest``."""
+    from catalpa_tooling.deprecation import warn_deprecated
+
+    where = f"--target {target}" if target else f"native.fetch_media.dest ({config.native.fetch_media.dest})"
+    warn_deprecated(
+        f"dk {env_name} pull_media",
+        f"dk fetch media --env {env_name}",
+        context=f"it does the same; copying into {where}",
+    )
+    raw = Path(target).expanduser() if target else config.fetch_media_dest_path
+    return (raw if raw.is_absolute() else config.repo_root / raw).resolve()
+
+
+def _rsync_into(source: str, local: Path) -> None:
+    """rsync ``source/`` into ``local`` (adds and updates, deletes nothing)."""
+    local.mkdir(parents=True, exist_ok=True)
+    rc = rsync_between_endpoints(source, str(local), delete=False, dry_run=False)
+    if rc != 0:
+        raise SystemExit(rc)
+
+
+def _fetch_from_backend(config: ProjectConfig, dk_env: str, local_base: Path, *, partial: bool) -> None:
+    """The env's stack, whichever runtime runs it, finds its media (``StackBackend``)."""
+    from catalpa_tooling import stack_backend
+    from catalpa_tooling.fcos.backend import Usage
+    from catalpa_tooling.media_storage import MediaStorageError
 
     try:
-        return quadlet_env(config, dk_env)
-    except HostError as exc:
+        b = stack_backend.backend_for(config, dk_env)
+        print(f"Fetching media from {b.describe()} → {local_base}", file=sys.stderr)
+        if not partial:
+            rc = b.pull_media(local_base)
+            if rc != 0:
+                raise SystemExit(rc)
+            return
+        source = b.media_rsync_source()
+    except (stack_backend.BackendError, MediaStorageError, Usage) as exc:
         raise ValueError(str(exc)) from None
+    if source is None:
+        raise ValueError(f"--partial needs rsync, and {dk_env}'s media can only be copied with tar")
+    for sub in PARTIAL_SUBDIRS:
+        _rsync_into(f"{source}/{sub}", local_base / sub)
 
 
 def run_fetch_media(
@@ -65,7 +104,12 @@ def run_fetch_media(
     legacy_remote: str | None,
     compose_project: str | None,
 ) -> None:
-    """Sync media into ``dest`` (default: ``native.fetch_media.dest`` under repo root)."""
+    """Sync media into ``dest`` (default: ``native.fetch_media.dest`` under repo root).
+
+    By default the env's backend says where the media is (``stack_backend``). ``--legacy-path``
+    (a directory on a host), ``--host`` and ``--compose-project`` (a named Docker volume on a
+    given host) keep their own paths.
+    """
     if not shutil.which("rsync"):
         print("rsync is not installed or not on PATH.", file=sys.stderr)
         raise SystemExit(1)
@@ -74,7 +118,6 @@ def run_fetch_media(
         raise SystemExit(1)
 
     local_base = (dest if dest is not None else config.fetch_media_dest_path).resolve()
-    q = None
 
     if legacy_path:
         legacy = config.native.fetch_media.legacy
@@ -94,45 +137,26 @@ def run_fetch_media(
             )
         ssh_target = ssh_target_from_host(ssh_host)
         print(f"Rsync legacy path {remote_base!r} from {ssh_target} …", file=sys.stderr)
-    elif (q := _quadlet(config, dk_env)) is not None:
-        # No Docker volume: the media is a directory on the data volume (fcos.bind_volumes).
-        from catalpa_tooling.fcos.fetch import media_path
-
-        ssh_target = ssh_target_from_host(host) if host else q.ssh_target
-        remote_base = media_path(config, q)
-        print(f"Rsync {remote_base!r} from {ssh_target} ({dk_env}: runtime quadlet) …", file=sys.stderr)
-    else:
-        if host is None:
-            ssh_target, project = dk_info_fetch_media_defaults(config, dk_env)
-        else:
-            ssh_target = ssh_target_from_host(host)
-            if compose_project is not None:
-                project = compose_project
-            else:
-                _, project = dk_info_fetch_media_defaults(config, dk_env)
-        volume = django_media_volume_name(
-            compose_project if compose_project is not None else project,
-            config=config,
-        )
+    elif host is None and compose_project is None:
+        _fetch_from_backend(config, dk_env, local_base, partial=partial)
+        print(f"Done: {local_base}", file=sys.stderr)
+        return
+    else:  # a compose volume on an explicit host and/or project
+        default_ssh = default_project = ""
+        if host is None or compose_project is None:
+            default_ssh, default_project = dk_info_fetch_media_defaults(config, dk_env)
+        ssh_target = ssh_target_from_host(host) if host else default_ssh
+        project = compose_project if compose_project is not None else default_project
+        volume = django_media_volume_name(project, config=config)
         print(f"Resolving Docker volume {volume!r} on {ssh_target} …", file=sys.stderr)
 
     _ensure_ssh_target_known(ssh_target)
 
-    if not legacy_path and q is None:
+    if not legacy_path:
         remote_base = docker_volume_mountpoint_ssh(ssh_target, volume, label="fetch media")
 
-    if partial:
-        for sub in ("documents", "original_images"):
-            rc = rsync_pull_remote_to_local(
-                ssh_target,
-                f"{remote_base}/{sub}/",
-                local_base / sub,
-            )
-            if rc != 0:
-                raise SystemExit(rc)
-    else:
-        rc = rsync_pull_remote_to_local(ssh_target, f"{remote_base}/", local_base)
-        if rc != 0:
-            raise SystemExit(rc)
+    subdirs = PARTIAL_SUBDIRS if partial else ("",)
+    for sub in subdirs:
+        _rsync_into(f"{ssh_target}:{remote_base}/{sub}".rstrip("/"), local_base / sub)
 
     print(f"Done: {local_base}", file=sys.stderr)

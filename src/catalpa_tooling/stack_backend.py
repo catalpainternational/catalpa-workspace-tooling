@@ -7,7 +7,8 @@ once per runtime. ``StackBackend`` is the set of primitives they need, so each c
 once over it.
 
 The protocol grows as operations move onto it; ``ComposeBackend`` delegates to the functions
-compose callers already used. Moved so far: ``dk fetch db`` (``via: dk``). Behaviour that
+compose callers already used. Moved so far: ``dk fetch db`` (``via: dk``), ``dk fetch media``
+(and the deprecated ``dk <env> pull_media``). Behaviour that
 really differs between the runtimes (pgBackRest restore, restic restore, backup units) stays
 per backend.
 """
@@ -17,6 +18,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -61,8 +63,14 @@ class StackBackend(Protocol):
         """``./manage.py …`` in the web service, as ``stack.manage_user`` unless ``user``."""
         ...
 
-    def pull_media(self, target: Path) -> int:
-        """Copy the env's media to the local directory ``target``."""
+    def media_rsync_source(self) -> str | None:
+        """Where rsync can read the env's media: ``user@host:/path`` or a local path. None when
+        nothing can (compose on a local engine whose volumes the host can't read)."""
+        ...
+
+    def pull_media(self, target: Path, *, dry_run: bool = False) -> int:
+        """Copy the env's media into the local directory ``target`` (``dk fetch media``):
+        rsync from ``media_rsync_source``, adding and updating files, deleting none."""
         ...
 
 
@@ -82,6 +90,16 @@ class ComposeBackend:
     def env_name(self) -> str:
         return self.ctx.env_name
 
+    @cached_property
+    def env(self) -> dict[str, str]:
+        """The context's env with ``COMPOSE_PROJECT_NAME`` set as ``dk <env>`` sets it (a local
+        env's project is ``<default>_<env>``), so volumes resolve to the env's own."""
+        from catalpa_tooling.restic_files import resolve_env_with_compose_project
+
+        return resolve_env_with_compose_project(
+            self.ctx.compose_file, self.ctx.env_add, config=self.config, dk_env_name=self.env_name
+        )
+
     def describe(self) -> str:
         return f"{self.env_name} (compose on {self.ctx.docker_host or 'the local Docker'})"
 
@@ -89,7 +107,7 @@ class ComposeBackend:
         from catalpa_tooling import pgbackrest_db
 
         return pgbackrest_db.ensure_db_service_running(
-            self.ctx.compose_file, self.ctx.env_add, config=self.config, dk_env_name=self.env_name
+            self.ctx.compose_file, self.env, config=self.config, dk_env_name=self.env_name
         )
 
     def dump_db(self, dest: Path, pg_dump_args: Sequence[str] = (), *, database: str | None = None) -> int:
@@ -99,7 +117,7 @@ class ComposeBackend:
         label = "the app database" if database is None else database
         print(f"Fetching {label} via dk {self.env_name} db pgdump → {dest}", file=sys.stderr)
         rc = pgbackrest_db.run_pg_dump_to_file(
-            self.ctx.compose_file, self.ctx.env_add, dest, list(pg_dump_args) or None, database=database
+            self.ctx.compose_file, self.env, dest, list(pg_dump_args) or None, database=database
         )
         if rc != 0:
             return rc
@@ -116,7 +134,7 @@ class ComposeBackend:
     def stop_writers(self) -> object:
         from catalpa_tooling import dk_transfer
 
-        dk_transfer._stop_dest_writers(self.ctx.compose_file, self.ctx.env_add, dry_run=False)
+        dk_transfer._stop_dest_writers(self.ctx.compose_file, self.env, dry_run=False)
         return None  # start_writers brings the whole stack up: nothing to remember
 
     def start_writers(self, token: object) -> int:
@@ -126,7 +144,7 @@ class ComposeBackend:
 
         dk_transfer._start_dest_writers(
             self.ctx.compose_file,
-            self.ctx.env_add,
+            self.env,
             dry_run=False,
             config=self.config,
             env_name=self.env_name,
@@ -140,20 +158,52 @@ class ComposeBackend:
         return compose._compose(
             self.ctx.compose_file,
             *compose.manage_exec_args(self.config, manage_args, tty=tty, user=user),
-            env_add=self.ctx.env_add,
+            env_add=self.env,
             check=False,
         ).returncode
 
-    def pull_media(self, target: Path, *, dry_run: bool = False, alpine_image: str = "alpine:3.21") -> int:
-        from catalpa_tooling import media_pull
+    def media_storage(self):
+        """The media's named volume or host directory, from the compose file
+        (``media_storage.MediaStorage``). Raises ``MediaStorageError``."""
+        from catalpa_tooling.media_storage import resolve_media_storage
 
+        return resolve_media_storage(compose_file=self.ctx.compose_file, env=self.env, config=self.config)
+
+    def media_rsync_source(self) -> str | None:
+        """As ``transfer`` finds it: a bind directory, a remote volume's mountpoint (``docker
+        volume inspect`` over SSH), or a local volume's when the host can read it."""
+        from catalpa_tooling.media_rsync import resolve_rsync_endpoint
+
+        return resolve_rsync_endpoint(self.env, self.media_storage(), label="fetch media")
+
+    def pull_media(self, target: Path, *, dry_run: bool = False, alpine_image: str = "alpine:3.21") -> int:
+        """rsync when the media is reachable; otherwise, or when rsync fails (an SSH user that
+        can't read Docker's volumes), ``tar`` through the engine (``media_pull``)."""
+        from catalpa_tooling import media_pull, media_rsync
+        from catalpa_tooling.media_storage import MediaStorageError
+
+        try:
+            storage = self.media_storage()
+        except MediaStorageError as exc:
+            print(f"fetch media: {exc}", file=sys.stderr)
+            return 1
+        source = media_rsync.resolve_rsync_endpoint(self.env, storage, label="fetch media")
+        if source is not None:
+            if not dry_run:
+                target.mkdir(parents=True, exist_ok=True)
+            rc = media_rsync.rsync_between_endpoints(source, str(target), delete=False, dry_run=dry_run)
+            if rc == 0 or dry_run:
+                return rc
+            print(f"fetch media: rsync failed (exit {rc}); copying with tar instead.", file=sys.stderr)
+        else:
+            print(f"fetch media: no rsync route to {storage.describe()}; copying with tar.", file=sys.stderr)
         return media_pull.run_pull_media(
-            self.ctx.env_add,
+            self.env,
             target=target,
             dry_run=dry_run,
             alpine_image=alpine_image,
             config=self.config,
-            compose_file=self.ctx.compose_file,
+            storage=storage,
         )
 
 

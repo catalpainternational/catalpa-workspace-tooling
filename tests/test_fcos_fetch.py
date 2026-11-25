@@ -81,9 +81,10 @@ def test_media_path(site) -> None:
 def test_fetch_media_rsyncs_the_host_directory(site, tmp_path, monkeypatch) -> None:
     from catalpa_tooling import fetch_media
 
+    from catalpa_tooling import media_rsync
+
     calls = []
-    monkeypatch.setattr(fetch_media, "rsync_pull_remote_to_local", lambda *a: calls.append(a) or 0)
-    monkeypatch.setattr(fetch_media, "_ensure_ssh_target_known", lambda t: None)
+    monkeypatch.setattr(media_rsync, "rsync_between_endpoints", lambda src, dst, **k: calls.append((src, dst)) or 0)
     monkeypatch.setattr(
         fetch_media, "docker_volume_mountpoint_ssh", lambda *a, **k: pytest.fail("no Docker volume")
     )
@@ -92,7 +93,7 @@ def test_fetch_media_rsyncs_the_host_directory(site, tmp_path, monkeypatch) -> N
         site, dk_env="staging", host=None, dest=tmp_path / "m", partial=False,
         legacy_path=False, legacy_remote=None, compose_project=None,
     )  # fmt: skip
-    assert calls == [("deploy@staging.site.example", "/var/mnt/data/django_media/", (tmp_path / "m").resolve())]
+    assert calls == [("deploy@staging.site.example:/var/mnt/data/django_media", str((tmp_path / "m").resolve()))]
 
 
 def test_pg_dump_command_names_a_database_other_than_the_apps() -> None:
