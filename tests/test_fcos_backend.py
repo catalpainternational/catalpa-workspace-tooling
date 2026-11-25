@@ -428,16 +428,17 @@ def test_media_owner_and_push(swlt, tmp_path, monkeypatch) -> None:
     assert b.push_media(tmp_path, dry_run=True) == 0 and r.calls == []
 
 
-def test_pull_media_dispatch(swlt, monkeypatch) -> None:
+def test_pull_media_is_deprecated_and_fetches_media(swlt, monkeypatch, tmp_path, capsys) -> None:
     calls = []
     monkeypatch.setattr(
-        "catalpa_tooling.media_rsync.rsync_pull_remote_to_local", lambda *a: calls.append(a) or 0
+        "catalpa_tooling.media_rsync.rsync_between_endpoints", lambda src, dst, **k: calls.append((src, dst)) or 0
     )
     r = Recorder()
-    ns = argparse.Namespace(env_command="pull_media", target="/tmp/m", dry_run=False)
+    ns = argparse.Namespace(env_command="pull_media", target=str(tmp_path / "m"), dry_run=False)
     info = {"docker_host": "ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock"}
     assert backend.handle(ns, swlt, "staging", info, runner=r, tty=False) == 0
-    assert calls == [("deploy@staging.site.example", "/var/mnt/data/django_media/", Path("/tmp/m").resolve())]
+    assert calls == [("deploy@staging.site.example:/var/mnt/data/django_media", str((tmp_path / "m").resolve()))]
+    assert "Deprecated: use `dk fetch media --env staging`" in capsys.readouterr().err
 
 
 def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:

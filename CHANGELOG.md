@@ -5,6 +5,17 @@
 - **`dk fetch db --only metabase` from a rendered host dumps the Metabase database.** The quadlet
   path always dumped the app database (`$APP_DB`), so every `via: dk` entry's file got the app's.
   It now follows compose: the `app` entry dumps `$APP_DB`, any other entry its `db_name`.
+- **`dk fetch db` from a rendered host starts db first when it's stopped**, as it already did on
+  compose (`systemctl --user start` on db's unit, which waits until Postgres answers). Both
+  runtimes now go through one code path (M5).
+- **`dk <env> pull_media` is deprecated: use `dk fetch media --env <env>`** (#43). It warns, then
+  does what `fetch media` does, into `native.fetch_media.dest` unless `--target` (it used to copy
+  into `<backend>/media`).
+- **`dk fetch media` reads the media where the env keeps it, whichever runtime** (M5). On compose
+  it now finds the mount from the compose file, so a local env's host directory and a volume
+  with a compose `name:` work, and it copies with `tar` through the engine where rsync can't reach
+  the volume or fails, as `pull_media` did. `--host` / `--compose-project` keep the old lookup.
+  `--host` no longer applies to a rendered host's env.
 
 ## 2.0.0b3
 

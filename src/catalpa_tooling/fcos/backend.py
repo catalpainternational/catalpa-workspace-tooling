@@ -63,9 +63,30 @@ class Backend:
     login: str
     info: dict = field(default_factory=dict)
 
+    runtime = "quadlet"  # stack_backend.StackBackend
+
     @property
     def ssh_target(self) -> str:
         return f"{self.login}@{self.host.address}"
+
+    def describe(self) -> str:
+        return f"{self.env_name} (quadlets on {self.ssh_target})"
+
+    def ensure_db_running(self) -> int:
+        """Start db's unit (a no-op when it's active). The unit has ``Notify=healthy``, so the
+        start returns once Postgres answers ``pg_isready``."""
+        db = f"{self.config.stack.services.db}.service"
+        return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
+
+    def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None) -> int:
+        """``podman exec … pg_dump -Fc`` streamed to ``dest`` (``fcos.fetch.fetch_db``)."""
+        from catalpa_tooling.fcos.fetch import fetch_db
+
+        try:
+            fetch_db(self.config, self, dest=dest, pg_dump_args=list(pg_dump_args), database=database)
+        except SystemExit as exc:  # it has printed why
+            return int(exc.code or 1)
+        return 0
 
     @property
     def services(self) -> list[str]:
@@ -664,13 +685,17 @@ class Backend:
         vol = (self.committed.manifest.get("bind_volumes") or {})[restic_data_volume_key(self.config)]
         return int(self.committed.manifest["id_ranges"][vol["id_range"]]["start"])
 
-    def pull_media(self, target: Path) -> int:
-        """Rsync the media directory to ``target`` (as ``fetch media``)."""
-        from catalpa_tooling.media_rsync import rsync_pull_remote_to_local
+    def media_rsync_source(self) -> str:
+        """The media directory on the data volume: it's 0755, so the account reads it."""
+        return f"{self.ssh_target}:{self.media_dir()}"
 
-        remote = self.media_dir()
-        print(f"pull_media: rsync {self.ssh_target}:{remote}/ → {target}", file=sys.stderr)
-        return rsync_pull_remote_to_local(self.ssh_target, f"{remote}/", target)
+    def pull_media(self, target: Path, *, dry_run: bool = False) -> int:
+        """Rsync the media directory into ``target`` (``dk fetch media``)."""
+        from catalpa_tooling.media_rsync import rsync_between_endpoints
+
+        if not dry_run:
+            target.mkdir(parents=True, exist_ok=True)
+        return rsync_between_endpoints(self.media_rsync_source(), str(target), delete=False, dry_run=dry_run)
 
     def push_media(self, source: Path, *, dry_run: bool = False) -> int:
         """Rsync ``source/`` over the media directory (``--delete``), then hand it to the media's
@@ -715,6 +740,10 @@ class Backend:
             print(f"{self.env_name}: systemctl --user stop {' '.join(units)}", file=sys.stderr)
             self._ssh("systemctl --user stop " + " ".join(shlex.quote(u) for u in units), tty=False)
         return units
+
+    def start_writers(self, token: object) -> int:
+        """``start_units`` for ``stop_writers``' list (stack_backend.StackBackend)."""
+        return self.start_units(list(token or []))
 
     def start_units(self, units: list[str]) -> int:
         if not units:
@@ -966,12 +995,10 @@ def handle(
                 yes=bool(getattr(ns, "yes", False)), dry_run=dry_run,
             )  # fmt: skip
         if verb == "pull_media":
-            raw = Path(getattr(ns, "target", None) or f"{config.paths.backend}/media").expanduser()
-            target = raw if raw.is_absolute() else config.repo_root / raw
-            if dry_run:
-                print(f"dry-run: rsync {b.ssh_target}:{b.media_dir()}/ → {target.resolve()}", file=sys.stderr)
-                return 0
-            return b.pull_media(target.resolve())
+            from catalpa_tooling.fetch_media import pull_media_target
+
+            target = pull_media_target(config, env_name, getattr(ns, "target", None))
+            return b.pull_media(target, dry_run=dry_run)
         if verb in ("db", "files"):
             sub = getattr(ns, f"{command}_command", None)
             allowed = DB_COMMANDS if verb == "db" else FILES_COMMANDS

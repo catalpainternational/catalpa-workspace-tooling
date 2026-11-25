@@ -127,6 +127,8 @@ def test_run_fetch_via_dk_dumps_each_entrys_database(
     class _Ctx:
         compose_file = "compose.yml"
         env_add: dict[str, str] = {}
+        config = cfg
+        env_name = "prod"
 
     scripts: list[str] = []
 
@@ -139,8 +141,8 @@ def test_run_fetch_via_dk_dumps_each_entrys_database(
         kwargs["stdout"].write(b"PGDMP" + b"x" * 200_000)  # type: ignore[attr-defined]
         return _Result()
 
-    monkeypatch.setattr("catalpa_tooling.fetch_db.load_managed_deploy_context", lambda *_a: _Ctx())
-    monkeypatch.setattr("catalpa_tooling.fetch_db.db_service_responds", lambda *_a: True)
+    monkeypatch.setattr("catalpa_tooling.managed_deploy_env.load_managed_deploy_context", lambda *_a: _Ctx())
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_db.db_service_responds", lambda *_a: True)
     monkeypatch.setattr("catalpa_tooling.pgbackrest_db.run_cmd", fake_run)
 
     run_fetch_all_dbs(cfg)

@@ -31,7 +31,6 @@ from catalpa_tooling.managed_deploy_env import (
     remote_env_site_origin_error,
     resolve_compose_file_from_info,
 )
-from catalpa_tooling.media_pull import run_pull_media
 from catalpa_tooling.media_rsync import resolve_push_media_source, run_push_media_rsync
 from catalpa_tooling.pgbackrest_db import (
     db_service_responds,
@@ -713,16 +712,11 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         ).returncode
 
     if env_command == "pull_media":
-        raw_target = Path(ns.target or f"{config.paths.backend}/media").expanduser()
-        target = raw_target.resolve() if raw_target.is_absolute() else (repo_root / raw_target).resolve()
-        return run_pull_media(
-            env_add,
-            target=target,
-            dry_run=dry_run,
-            alpine_image=str(ns.image),
-            config=config,
-            compose_file=compose_file,
-        )
+        from catalpa_tooling.fetch_media import pull_media_target
+        from catalpa_tooling.stack_backend import ComposeBackend
+
+        target = pull_media_target(config, env_name, getattr(ns, "target", None))
+        return ComposeBackend(ctx).pull_media(target, dry_run=dry_run, alpine_image=str(ns.image))
 
     if env_command == "restore":
         return _restore_all_compose(
