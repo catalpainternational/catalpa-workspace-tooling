@@ -8,8 +8,8 @@ once over it.
 
 The protocol grows as operations move onto it; ``ComposeBackend`` delegates to the functions
 compose callers already used. Moved so far: ``dk fetch db`` (``via: dk``), ``dk fetch media``
-(and the deprecated ``dk <env> pull_media``), the post-restore hooks, and restoring a dump
-archive (``db_archive.restore_archive``). Behaviour that
+(and the deprecated ``dk <env> pull_media``), the post-restore hooks, restoring a dump
+archive (``db_archive.restore_archive``) and ``dk transfer`` (``stack_transfer``). Behaviour that
 really differs between the runtimes (pgBackRest restore, restic restore, backup units) stays
 per backend.
 """
@@ -92,6 +92,19 @@ class StackBackend(Protocol):
     def pull_media(self, target: Path, *, dry_run: bool = False) -> int:
         """Copy the env's media into the local directory ``target`` (``dk fetch media``):
         rsync from ``media_rsync_source``, adding and updating files, deleting none."""
+        ...
+
+    def push_media(self, source: Path, *, dry_run: bool = False) -> int:
+        """Make the env's media match the local directory ``source`` (rsync ``--delete``)."""
+        ...
+
+    def describe_media(self) -> str:
+        """Where the env's media lives, for messages. Call after ``preflight_transfer``."""
+        ...
+
+    def preflight_transfer(self, *, role: Literal["source", "destination"], db: bool, media: bool) -> list[str]:
+        """Before ``dk transfer`` changes anything: what would stop this end from taking part,
+        as messages (empty: ready). ``db``/``media``: the legs that will run. May start db."""
         ...
 
 
@@ -250,6 +263,47 @@ class ComposeBackend:
         from catalpa_tooling.media_storage import resolve_media_storage
 
         return resolve_media_storage(compose_file=self.ctx.compose_file, env=self.env, config=self.config)
+
+    def describe_media(self) -> str:
+        return self.media_storage().describe()
+
+    def preflight_transfer(self, *, role: Literal["source", "destination"], db: bool, media: bool) -> list[str]:
+        """``dk_transfer.compose_preflight_errors``: services, external volumes, db up."""
+        from catalpa_tooling.dk_transfer import compose_preflight_errors
+        from catalpa_tooling.media_storage import MediaStorageError
+
+        storage = None
+        if media:
+            try:
+                storage = self.media_storage()
+            except MediaStorageError as exc:
+                return [f"{role} (`{self.env_name}`): {exc}"]
+        return compose_preflight_errors(
+            label=role,
+            env_name=self.env_name,
+            compose_file=self.ctx.compose_file,
+            env_r=self.env,
+            media=storage,
+            do_db=db,
+            do_media=media,
+            config=self.config,
+        )
+
+    def push_media(self, source: Path, *, dry_run: bool = False) -> int:
+        """rsync ``--delete`` into the media's bind directory or volume (over SSH for a remote
+        engine); ``media_rsync.run_push_media_rsync`` falls back to tar where rsync can't."""
+        from catalpa_tooling.media_rsync import run_push_media_rsync
+
+        return run_push_media_rsync(
+            self.env,
+            source=source,
+            dry_run=dry_run,
+            method="rsync",
+            delete=True,
+            config=self.config,
+            storage=self.media_storage(),
+            label="transfer push",
+        )
 
     def media_rsync_source(self) -> str | None:
         """As ``transfer`` finds it: a bind directory, a remote volume's mountpoint (``docker

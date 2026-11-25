@@ -447,34 +447,67 @@ def test_pull_media_is_deprecated_and_fetches_media(swlt, monkeypatch, tmp_path,
 
 def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:
     from catalpa_tooling import db_archive
-    from catalpa_tooling.fcos import dbdump, fetch
-    from catalpa_tooling.fcos import transfer as t
+    from catalpa_tooling import stack_transfer as t
 
     log = []
     r = Recorder()
     src, dst = _backend(swlt, r), _backend(swlt, r)
-    monkeypatch.setattr(fetch, "fetch_db", lambda c, b, dest: log.append("dump") or dest.write_bytes(b"PGDMP"))
+    B = type(src)
+    monkeypatch.setattr(B, "dump_db", lambda self, dest: log.append("dump") or dest.write_bytes(b"PGDMP") and 0)
     monkeypatch.setattr(db_archive, "restore_archive", lambda b, p, **k: log.append(("restore", k)) or 0)
-    monkeypatch.setattr(dbdump, "post_restore_hooks", lambda b: log.append("hooks") or 0)
-    monkeypatch.setattr(type(src), "pull_media", lambda self, d: log.append("pull") or 0)
-    monkeypatch.setattr(type(src), "push_media", lambda self, d: log.append("push") or 0)
-    monkeypatch.setattr(type(src), "stop_writers", lambda self: log.append("stop") or ["django.service"])
-    monkeypatch.setattr(type(src), "start_units", lambda self, u: log.append(("start", tuple(u))) or 0)
-    kw = dict(src="a", dst="b", src_b=src, dst_b=dst, do_db=True, do_media=True, media_method="rsync",
+    monkeypatch.setattr(B, "run_post_restore_hooks", lambda self, target="app": log.append("hooks") or 0)
+    monkeypatch.setattr(B, "pull_media", lambda self, d: log.append("pull") or 0)
+    monkeypatch.setattr(B, "push_media", lambda self, d: log.append("push") or 0)
+    monkeypatch.setattr(B, "stop_writers", lambda self: log.append("stop") or ["django.service"])
+    monkeypatch.setattr(B, "start_units", lambda self, u: log.append(("start", tuple(u))) or 0)
+    kw = dict(src_b=src, dst_b=dst, do_db=True, do_media=True, media_method="rsync",
               dry=False, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
     assert t.run_transfer(swlt, **kw) == 0
     assert log == [
         "stop", "dump", ("restore", {"stop_app": False, "run_hooks": False}), "pull", "push",
         ("start", ("django.service",)), "hooks",
     ]  # fmt: skip
-    assert not list(tmp_path.glob("a_to_b_*"))  # session directory removed
+    assert not list(tmp_path.glob("staging_to_staging_*"))  # session directory removed
 
     # A failed step still brings the destination's writers back.
     log.clear()
-    monkeypatch.setattr(type(src), "push_media", lambda self, d: log.append("push") or 23)
+    monkeypatch.setattr(B, "push_media", lambda self, d: log.append("push") or 23)
     assert t.run_transfer(swlt, **kw) == 23
     assert log[-1] == ("start", ("django.service",)) and "hooks" not in log
     assert t.run_transfer(swlt, **{**kw, "media_method": "tar"}) == 1
+
+
+def test_compose_to_quadlet_transfer_stages_media_locally(swlt, tmp_path, monkeypatch) -> None:
+    """A compose source and a quadlet destination: each end's own primitives, the media through
+    the session directory; tar is refused, since the quadlet end takes rsync only."""
+    from catalpa_tooling import db_archive
+    from catalpa_tooling import stack_transfer as t
+    from catalpa_tooling.stack_backend import ComposeBackend
+
+    log = []
+    src = ComposeBackend.from_parts(swlt, "dev", "compose.yml", {})
+    dst = _backend(swlt, Recorder())
+    B = type(dst)
+    monkeypatch.setattr(ComposeBackend, "preflight_transfer", lambda self, **k: [])
+    monkeypatch.setattr(ComposeBackend, "describe_media", lambda self: "volume dev_media")
+    monkeypatch.setattr(ComposeBackend, "dump_db", lambda self, dest: log.append(("dump", self.runtime)) or 0)
+    monkeypatch.setattr(ComposeBackend, "pull_media", lambda self, d: log.append(("pull", self.runtime)) or 0)
+    monkeypatch.setattr(B, "preflight_transfer", lambda self, **k: [])
+    monkeypatch.setattr(B, "describe_media", lambda self: "deploy@host:/media")
+    monkeypatch.setattr(B, "push_media", lambda self, d: log.append(("push", self.runtime, d.name)) or 0)
+    monkeypatch.setattr(B, "stop_writers", lambda self: log.append("stop") or ["django.service"])
+    monkeypatch.setattr(B, "start_units", lambda self, u: log.append("start") or 0)
+    monkeypatch.setattr(B, "run_post_restore_hooks", lambda self, target="app": log.append("hooks") or 0)
+    monkeypatch.setattr(db_archive, "restore_archive", lambda b, p, **k: log.append(("restore", b.runtime)) or 0)
+    kw = dict(src_b=src, dst_b=dst, do_db=True, do_media=True, media_method="rsync",
+              dry=False, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
+    assert t.run_transfer(swlt, **kw) == 0
+    assert log == [
+        "stop", ("dump", "compose"), ("restore", "quadlet"), ("pull", "compose"),
+        ("push", "quadlet", "media"), "start", "hooks",
+    ]  # fmt: skip
+    log.clear()
+    assert t.run_transfer(swlt, **{**kw, "media_method": "tar"}) == 1 and log == []
 
 
 def test_push_media_chowns_even_when_rsync_is_interrupted(swlt, tmp_path, monkeypatch) -> None:
@@ -662,11 +695,11 @@ def test_dump_restore_refuses_before_touching_anything_without_the_task_unit(swl
 
 
 def test_transfer_preflight_refuses_a_destination_without_the_task_unit(swlt, tmp_path, capsys) -> None:
-    from catalpa_tooling.fcos import transfer as t
+    from catalpa_tooling import stack_transfer as t
 
     r = Recorder()
     src, dst = _backend(swlt, r), _without_task_unit(_backend(_with_hooks(swlt), r))
-    kw = dict(src="a", dst="b", src_b=src, dst_b=dst, do_db=True, do_media=False, media_method="rsync",
+    kw = dict(src_b=src, dst_b=dst, do_db=True, do_media=False, media_method="rsync",
               dry=False, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
     assert t.run_transfer(_with_hooks(swlt), **kw) == 1
     assert r.calls == []

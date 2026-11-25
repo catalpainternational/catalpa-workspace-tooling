@@ -820,6 +820,28 @@ class Backend:
         vol = (self.committed.manifest.get("bind_volumes") or {})[restic_data_volume_key(self.config)]
         return int(self.committed.manifest["id_ranges"][vol["id_range"]]["start"])
 
+    def describe_media(self) -> str:
+        return f"{self.ssh_target}:{self.media_dir()}"
+
+    def preflight_transfer(self, *, role: str, db: bool, media: bool) -> list[str]:
+        """The render has db and the media volume; a destination taking the database can run
+        its post-restore hooks (else they'd fail after the database is replaced)."""
+        where = f"{role} (`{self.env_name}`)"
+        errs = []
+        if db and self.config.stack.services.db not in self.services:
+            errs.append(f"{where}: the render has no {self.config.stack.services.db!r} service")
+        if media:
+            try:
+                self.media_dir()
+            except Usage as exc:
+                errs.append(f"{where}: {exc}")
+        if db and role == "destination":
+            try:
+                self.check_hooks_runnable()
+            except Usage as exc:
+                errs.append(f"{where}: {exc}")
+        return errs
+
     def media_rsync_source(self) -> str:
         """The media directory on the data volume: it's 0755, so the account reads it."""
         return f"{self.ssh_target}:{self.media_dir()}"

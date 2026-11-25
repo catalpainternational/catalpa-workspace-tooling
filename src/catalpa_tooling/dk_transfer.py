@@ -1,13 +1,16 @@
-"""``dk transfer`` — copy Postgres app DB + ``django_media`` between managed environments."""
+"""``dk transfer`` — copy Postgres app DB + ``django_media`` between managed environments.
+
+The command (argument checks) and the compose pieces the transfer uses: preflight, stopping and
+starting the destination's writers. The transfer itself is ``stack_transfer.run_transfer``, the
+same for compose and quadlet envs.
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,33 +22,18 @@ from catalpa_tooling.dc_backup.hosts import (
     dc_backup_tls_extra_compose_files,
     merge_extra_compose_files,
 )
-from catalpa_tooling.run_cmd import run as run_cmd
-from catalpa_tooling.managed_deploy_env import ManagedDeployContext, load_managed_deploy_context
-from catalpa_tooling.post_db_restore import run_post_db_restore_manage_commands
-from catalpa_tooling.media_rsync import TransferMediaMethod
-from catalpa_tooling.media_storage import (
-    MediaStorage,
-    MediaStorageError,
-    MediaStorageKind,
-    resolve_media_storage,
-)
-from catalpa_tooling.media_transfer import run_transfer_media
-from catalpa_tooling.pgbackrest_db import (
-    compose_pg_restore_extras_for_config,
-    db_service_responds,
-    run_drop_create_app_database,
-    run_pg_dump_to_file,
-    run_pg_restore,
-)
-from catalpa_tooling.remote_deploy import list_deploy_env_names
 from catalpa_tooling.host_storage import ensure_host_storage
 from catalpa_tooling.local_proxy import (
     LocalProxyConfigError,
     local_proxy_extra_compose_files,
     sync_local_proxy_for_compose_action,
 )
+from catalpa_tooling.media_rsync import TransferMediaMethod
+from catalpa_tooling.media_storage import MediaStorage, MediaStorageKind
+from catalpa_tooling.pgbackrest_db import db_service_responds
+from catalpa_tooling.remote_deploy import list_deploy_env_names
+from catalpa_tooling.run_cmd import run as run_cmd
 from catalpa_tooling.storage_config import volume_bind_kwargs
-from catalpa_tooling.restic_files import resolve_env_with_compose_project
 
 # Optional writers to quiet during transfer (only if present in the destination compose file).
 _WRITER_SERVICE_CANDIDATES: tuple[str, ...] = ("django", "caddy")
@@ -139,7 +127,9 @@ def _ensure_stack_volumes(
             env_add=env_r,
         )
     else:
-        from catalpa_tooling.pgbackrest_volume_config import ensure_external_stack_volumes
+        from catalpa_tooling.pgbackrest_volume_config import (
+            ensure_external_stack_volumes,
+        )
 
         rc = ensure_external_stack_volumes(env_r, config=config)
     if rc != 0:
@@ -154,110 +144,102 @@ def _bind_dir_nonempty(path: Path) -> bool:
         return False
 
 
-def _collect_transfer_preflight_errors(
+def compose_preflight_errors(
     *,
-    src: str,
-    dst: str,
-    src_ctx: ManagedDeployContext,
-    dst_ctx: ManagedDeployContext,
-    src_r: dict[str, str],
-    dst_r: dict[str, str],
-    src_media: MediaStorage | None,
-    dst_media: MediaStorage | None,
+    label: str,
+    env_name: str,
+    compose_file: str,
+    env_r: dict[str, str],
+    media: MediaStorage | None,
     do_db: bool,
     do_media: bool,
     config: ProjectConfig,
 ) -> list[str]:
-    """Return human-readable errors; empty means preflight passed."""
+    """One compose end's transfer preflight (``label``: source or destination): its services
+    list, its external volumes (created when missing), db started and answering, the media
+    present (a source bind directory must not be empty). Human-readable errors; empty means ok.
+    """
     errs: list[str] = []
-    sides: tuple[
-        tuple[str, str, ManagedDeployContext, dict[str, str], MediaStorage | None],
-        ...,
-    ] = (
-        ("source", src, src_ctx, src_r, src_media),
-        ("destination", dst, dst_ctx, dst_r, dst_media),
-    )
-    for label, env_name, ctx, env_r, media in sides:
-        svcs, hint = _compose_services_checked(ctx.compose_file, env_r)
-        if svcs is None:
-            errs.append(
-                f"{label} (`{env_name}`): cannot list compose services for {ctx.compose_file!r}: {hint}. "
-                "Check DOCKER_HOST and the compose file."
-            )
-            continue
-
-        media_needs_named_vol = (
-            do_media
-            and media is not None
-            and media.kind is MediaStorageKind.VOLUME
+    svcs, hint = _compose_services_checked(compose_file, env_r)
+    if svcs is None:
+        errs.append(
+            f"{label} (`{env_name}`): cannot list compose services for {compose_file!r}: {hint}. "
+            "Check DOCKER_HOST and the compose file."
         )
-        # Ensure external volumes when DB needs them, or media uses a named volume.
-        needs_volume_ensure = (do_db and "db" in svcs) or media_needs_named_vol
-        vol_probe = media.location if media_needs_named_vol and media is not None else None
-        if needs_volume_ensure and (
-            vol_probe is None or not _docker_volume_exists(vol_probe, env_r)
-        ):
-            ensure_err = _ensure_stack_volumes(
-                label=label, env_name=env_name, env_r=env_r, config=config
+        return errs
+
+    media_needs_named_vol = (
+        do_media
+        and media is not None
+        and media.kind is MediaStorageKind.VOLUME
+    )
+    # Ensure external volumes when DB needs them, or media uses a named volume.
+    needs_volume_ensure = (do_db and "db" in svcs) or media_needs_named_vol
+    vol_probe = media.location if media_needs_named_vol and media is not None else None
+    if needs_volume_ensure and (
+        vol_probe is None or not _docker_volume_exists(vol_probe, env_r)
+    ):
+        ensure_err = _ensure_stack_volumes(
+            label=label, env_name=env_name, env_r=env_r, config=config
+        )
+        if ensure_err:
+            errs.append(ensure_err)
+            return errs
+
+    if do_db:
+        if "db" not in svcs:
+            errs.append(
+                f"{label} (`{env_name}`): compose file {compose_file!r} has no `db` service "
+                "(required for database transfer)."
             )
-            if ensure_err:
-                errs.append(ensure_err)
-                continue
-
-        if do_db:
-            if "db" not in svcs:
+        elif not db_service_responds(compose_file, env_r):
+            print(
+                f"transfer: {label} (`{env_name}`): `db` not responding, starting it …",
+                file=sys.stderr,
+            )
+            _compose(
+                compose_file,
+                "up",
+                "-d",
+                "db",
+                env_add=env_r,
+                extra_compose_files=merge_extra_compose_files(
+                    dc_backup_tls_extra_compose_files(
+                        {},
+                        config,
+                        env_name,
+                        env_r,
+                        ["up"],
+                    )
+                )
+                if config is not None
+                else None,
+                check=False,
+            )
+            if not db_service_responds(compose_file, env_r):
                 errs.append(
-                    f"{label} (`{env_name}`): compose file {ctx.compose_file!r} has no `db` service "
-                    "(required for database transfer)."
+                    f"{label} (`{env_name}`): `db` service did not become ready after "
+                    f"`docker compose up -d db`."
                 )
-            elif not db_service_responds(ctx.compose_file, env_r):
-                print(
-                    f"transfer: {label} (`{env_name}`): `db` not responding, starting it …",
-                    file=sys.stderr,
-                )
-                _compose(
-                    ctx.compose_file,
-                    "up",
-                    "-d",
-                    "db",
-                    env_add=env_r,
-                    extra_compose_files=merge_extra_compose_files(
-                        dc_backup_tls_extra_compose_files(
-                            {},
-                            config,
-                            env_name,
-                            env_r,
-                            ["up"],
-                        )
-                    )
-                    if config is not None
-                    else None,
-                    check=False,
-                )
-                if not db_service_responds(ctx.compose_file, env_r):
-                    errs.append(
-                        f"{label} (`{env_name}`): `db` service did not become ready after "
-                        f"`docker compose up -d db`."
-                    )
 
-        if do_media and media is not None:
-            if media.kind is MediaStorageKind.VOLUME:
-                if not _docker_volume_exists(media.location, env_r):
-                    errs.append(
-                        f"{label} (`{env_name}`): Docker volume {media.location!r} not found even after "
-                        f"`ensure_external_stack_volumes`."
-                    )
-            else:
-                host = Path(media.location)
-                if not host.is_dir():
-                    errs.append(
-                        f"{label} (`{env_name}`): media bind path is not a directory: {host}"
-                    )
-                elif label == "source" and not _bind_dir_nonempty(host):
-                    errs.append(
-                        f"{label} (`{env_name}`): media bind path is empty: {host} "
-                        "(refusing to overwrite destination with no files)."
-                    )
+    if do_media and media is not None:
+        if media.kind is MediaStorageKind.VOLUME:
+            if not _docker_volume_exists(media.location, env_r):
+                errs.append(
+                    f"{label} (`{env_name}`): Docker volume {media.location!r} not found even after "
+                    f"`ensure_external_stack_volumes`."
+                )
+        else:
+            host = Path(media.location)
+            if not host.is_dir():
+                errs.append(
+                    f"{label} (`{env_name}`): media bind path is not a directory: {host}"
+                )
+            elif label == "source" and not _bind_dir_nonempty(host):
+                errs.append(
+                    f"{label} (`{env_name}`): media bind path is empty: {host} "
+                    "(refusing to overwrite destination with no files)."
+                )
     return errs
 
 
@@ -302,49 +284,6 @@ def _transfer_extra_compose_files(
         compose_args,
     )
     return merge_extra_compose_files(proxy_files, tls_files)
-
-
-def _confirm_transfer_overwrite(
-    dest_env: str,
-    *,
-    src_env: str,
-    do_db: bool,
-    do_media: bool,
-    dst_media: MediaStorage | None = None,
-    media_method: TransferMediaMethod = "rsync",
-) -> bool:
-    print(
-        "WARNING: This will overwrite data on the destination environment:",
-        file=sys.stderr,
-    )
-    if do_db:
-        print(
-            "  - PostgreSQL app database (drop + recreate empty DB, then pg_restore)",
-            file=sys.stderr,
-        )
-    if do_media:
-        where = dst_media.describe() if dst_media is not None else "django_media"
-        if media_method == "tar":
-            media_how = "existing files removed, then tar extract"
-        else:
-            media_how = "rsync --delete (tar fallback on failure)"
-        print(
-            f"  - media ({where}; {media_how})",
-            file=sys.stderr,
-        )
-    print(f"  Source: {src_env}", file=sys.stderr)
-    print(f"  Destination: {dest_env}", file=sys.stderr)
-    print(file=sys.stderr)
-    print(
-        f"Type the destination environment name '{dest_env}' to confirm, or press Enter to cancel: ",
-        file=sys.stderr,
-        end="",
-    )
-    try:
-        line = input()
-    except EOFError:
-        return False
-    return line.strip() == dest_env
 
 
 def _stop_dest_writers(compose_file: str, env_add: dict[str, str], *, dry_run: bool) -> None:
@@ -447,7 +386,6 @@ def _start_dest_writers(
 
 def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     """Run ``dk transfer`` (see docs/DK.md)."""
-    repo_root = config.repo_root
     src = ns.source_env
     dst = ns.dest_env
     dry = bool(ns.dry_run)
@@ -478,218 +416,19 @@ def cmd_transfer(ns: argparse.Namespace, config: ProjectConfig) -> int:
     else:
         do_db = do_media = True
 
-    # A quadlet end (runtime: quadlet) has no compose stack to exec into: fcos/transfer.py.
-    from catalpa_tooling.fcos.backend import EnvError, quadlet_backend
+    from catalpa_tooling.stack_backend import BackendError, backend_for
+    from catalpa_tooling.stack_transfer import run_transfer
 
     try:
-        src_b = quadlet_backend(config, src)
-        dst_b = quadlet_backend(config, dst)
-    except EnvError as exc:
+        src_b = backend_for(config, src)
+        dst_b = backend_for(config, dst)
+    except BackendError as exc:
         print(f"dk transfer: {exc}", file=sys.stderr)
         return 1
-    if src_b is not None or dst_b is not None:
-        from catalpa_tooling.fcos.transfer import run_transfer
-
-        return run_transfer(
-            config, src=src, dst=dst, src_b=src_b, dst_b=dst_b, do_db=do_db, do_media=do_media,
-            media_method=media_method, dry=dry, yes=yes, workdir=ns.workdir,
-            keep_workdir=bool(ns.keep_workdir),
-        )  # fmt: skip
-
-    src_ctx = load_managed_deploy_context(config, src)
-    if src_ctx is None:
-        return 1
-    dst_ctx = load_managed_deploy_context(config, dst)
-    if dst_ctx is None:
-        return 1
-
-    src_r = resolve_env_with_compose_project(
-        src_ctx.compose_file, src_ctx.env_add, config=config, dk_env_name=src
-    )
-    dst_r = resolve_env_with_compose_project(
-        dst_ctx.compose_file, dst_ctx.env_add, config=config, dk_env_name=dst
-    )
-
-    src_media: MediaStorage | None = None
-    dst_media: MediaStorage | None = None
-    if do_media:
-        try:
-            src_media = resolve_media_storage(
-                compose_file=src_ctx.compose_file, env=src_r, config=config
-            )
-            dst_media = resolve_media_storage(
-                compose_file=dst_ctx.compose_file, env=dst_r, config=config
-            )
-        except MediaStorageError as exc:
-            print(f"dk transfer: {exc}", file=sys.stderr)
-            return 1
-
-    print(
-        f"  source: {src} compose={src_ctx.compose_file!r} DOCKER_HOST={src_ctx.docker_host!r}"
-        + (f" media={src_media.describe()}" if src_media else ""),
-        file=sys.stderr,
-    )
-    print(
-        f"  dest:   {dst} compose={dst_ctx.compose_file!r} DOCKER_HOST={dst_ctx.docker_host!r}"
-        + (f" media={dst_media.describe()}" if dst_media else ""),
-        file=sys.stderr,
-    )
-    print(f"  steps: db={do_db} media={do_media}" + (f" media_method={media_method}" if do_media else ""), file=sys.stderr)
-
-    preflight_errs = _collect_transfer_preflight_errors(
-        src=src,
-        dst=dst,
-        src_ctx=src_ctx,
-        dst_ctx=dst_ctx,
-        src_r=src_r,
-        dst_r=dst_r,
-        src_media=src_media,
-        dst_media=dst_media,
-        do_db=do_db,
-        do_media=do_media,
-        config=config,
-    )
-    if preflight_errs:
-        print("transfer: preflight failed:", file=sys.stderr)
-        for line in preflight_errs:
-            print(f"  - {line}", file=sys.stderr)
-        return 1
-
-    print("transfer: preflight ok.", file=sys.stderr)
-
-    if dry:
-        print("transfer: dry-run (no changes, no temp dir).", file=sys.stderr)
-        return 0
-
-    if not yes and not sys.stdin.isatty():
-        print(
-            "Refusing transfer without a TTY. Pass --yes if you intend to run non-interactively.",
-            file=sys.stderr,
-        )
-        return 1
-    if not yes and not _confirm_transfer_overwrite(
-        dst,
-        src_env=src,
-        do_db=do_db,
-        do_media=do_media,
-        dst_media=dst_media,
-        media_method=media_method,
-    ):
-        print("transfer: cancelled.", file=sys.stderr)
-        return 1
-
-    parent_raw = ns.workdir
-    if parent_raw:
-        parent = Path(parent_raw).expanduser()
-        parent = parent.resolve() if parent.is_absolute() else (repo_root / parent).resolve()
-    else:
-        parent = repo_root / config.ops.transfer_workdir
-    parent.mkdir(parents=True, exist_ok=True)
-    session = Path(tempfile.mkdtemp(prefix=f"{src}_to_{dst}_", dir=str(parent)))
-    print(f"transfer: session directory {session}", file=sys.stderr)
-
-    dump_path = session / "pg.dump"
-    media_dir = session / "media"
-    dst_info = dst_ctx.info
-
-    def restart_dest_writers() -> None:
-        _start_dest_writers(
-            dst_ctx.compose_file,
-            dst_r,
-            dry_run=False,
-            config=config,
-            env_name=dst,
-            info=dst_info,
-        )
-
-    if do_db or do_media:
-        _stop_dest_writers(dst_ctx.compose_file, dst_r, dry_run=False)
-
-    if do_db:
-        print("transfer: pg_dump (source) …", file=sys.stderr)
-        rc = run_pg_dump_to_file(src_ctx.compose_file, src_r, dump_path)
-        if rc != 0:
-            restart_dest_writers()
-            shutil.rmtree(session, ignore_errors=True)
-            return rc
-        print("transfer: drop + recreate app database (destination) …", file=sys.stderr)
-        rc = run_drop_create_app_database(
-            dst_ctx.compose_file,
-            dst_r,
-            postgis=config.native.reset_db.postgis,
-        )
-        if rc != 0:
-            try:
-                dump_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            restart_dest_writers()
-            shutil.rmtree(session, ignore_errors=True)
-            return rc
-        print("transfer: pg_restore (destination) …", file=sys.stderr)
-        rc = run_pg_restore(
-            dst_ctx.compose_file,
-            dst_r,
-            compose_pg_restore_extras_for_config(
-                config,
-                ["--file", str(dump_path)],
-            ),
-            config=config,
-        )
-        if rc != 0:
-            try:
-                dump_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            restart_dest_writers()
-            shutil.rmtree(session, ignore_errors=True)
-            return rc
-        try:
-            dump_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    if do_media:
-        assert src_media is not None and dst_media is not None
-        fallback_tar = media_method == "rsync"
-        rc = run_transfer_media(
-            src_r,
-            dst_r,
-            src_media=src_media,
-            dst_media=dst_media,
-            media_dir=media_dir,
-            method=media_method,
-            dry_run=False,
-            config=config,
-            fallback_tar=fallback_tar,
-        )
-        if rc != 0:
-            restart_dest_writers()
-            shutil.rmtree(session, ignore_errors=True)
-            return rc
-
-    if do_db or do_media:
-        restart_dest_writers()
-
-    if do_db:
-        rc_hooks = run_post_db_restore_manage_commands(
-            config,
-            compose_file=dst_ctx.compose_file,
-            env_add=dst_r,
-            env_name=dst,
-        )
-        if rc_hooks != 0:
-            if not ns.keep_workdir:
-                shutil.rmtree(session, ignore_errors=True)
-            return rc_hooks
-
-    if not ns.keep_workdir:
-        shutil.rmtree(session, ignore_errors=True)
-    else:
-        print(f"transfer: kept workdir {session}", file=sys.stderr)
-
-    print("transfer: done.", file=sys.stderr)
-    return 0
+    return run_transfer(
+        config, src_b=src_b, dst_b=dst_b, do_db=do_db, do_media=do_media, media_method=media_method,
+        dry=dry, yes=yes, workdir=ns.workdir, keep_workdir=bool(ns.keep_workdir),
+    )  # fmt: skip
 
 
 def populate_transfer_arguments(parser: argparse.ArgumentParser, config: ProjectConfig) -> None:
