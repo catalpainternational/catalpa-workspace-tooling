@@ -671,3 +671,44 @@ def test_transfer_preflight_refuses_a_destination_without_the_task_unit(swlt, tm
     assert t.run_transfer(_with_hooks(swlt), **kw) == 1
     assert r.calls == []
     assert "preflight failed" in capsys.readouterr().err
+
+
+def _metabase_hooks_only(config):
+    from dataclasses import replace
+
+    hooked = _with_hooks(config)
+    ops = replace(hooked.ops, post_db_restore=replace(hooked.ops.post_db_restore, manage_commands=()))
+    return replace(hooked, ops_optional=ops)
+
+
+def test_a_metabase_only_manage_hook_blocks_only_the_pgbackrest_paths(swlt, tmp_path) -> None:
+    """The dump restore and transfer run only the app hooks, so a Metabase hook needing the task
+    unit must not refuse them; a pgBackRest restore brings back Metabase's database too."""
+    cfg = _metabase_hooks_only(swlt)
+    b = _without_task_unit(_backend(cfg, Recorder()))
+    b.check_hooks_runnable()  # the app hooks have no manage command
+    with pytest.raises(backend.Usage, match="django-task.container"):
+        b.check_hooks_runnable(metabase=True)
+
+    dump = tmp_path / "app.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 100)
+    b = _without_task_unit(_backend(cfg, Recorder()))
+    assert b.db_restore_dump(dump, yes=True, dry_run=True) == 0  # a clean dry run: not refused
+    with pytest.raises(backend.Usage, match="django-task.container"):
+        _without_task_unit(_backend(cfg, Recorder())).db_restore([], yes=True, dry_run=False)
+
+
+def test_dry_run_prints_the_plan_and_reports_that_a_real_run_would_be_refused(swlt, tmp_path, capsys) -> None:
+    dump = tmp_path / "app.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 100)
+    r = Recorder()
+    b = _without_task_unit(_backend(_with_hooks(swlt), r))
+    assert b.db_restore_dump(dump, yes=True, dry_run=True) == 1
+    err = capsys.readouterr().err
+    assert "dry-run: would replace" in err and "a real run would be refused" in err and "django-task.container" in err
+    assert r.calls == []
+
+    assert _without_task_unit(_backend(_with_hooks(swlt), Recorder())).db_restore([], yes=True, dry_run=True) == 1
+    assert "dry-run: on " in capsys.readouterr().err  # the plan still printed
+    # With the unit present a dry run is still clean.
+    assert _backend(_with_hooks(swlt), Recorder()).db_restore_dump(dump, yes=True, dry_run=True) == 0

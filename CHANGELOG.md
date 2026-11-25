@@ -11,7 +11,9 @@
   still has no confirmation and doesn't stop the app; a rendered host's still does both.
   A restore or transfer into a rendered host now refuses up front when a post-restore hook runs
   `manage.py` and the render has no `<web>-task` unit (it used to fail at the hook, after the
-  database was replaced).
+  database was replaced). A `--dry-run` prints its plan and then says a real run would be
+  refused (exit 1). Metabase's hooks count only for the pgBackRest restore, which brings
+  Metabase's database back.
 - **`post_db_restore` manage commands run in one-shot containers, on both runtimes** (M5).
   They used to `exec` into the web service, which compose had to start (`up -d web --wait`) and
   which had to be healthy against the restored database. Compose now runs each command with

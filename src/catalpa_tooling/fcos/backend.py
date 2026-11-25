@@ -268,19 +268,41 @@ class Backend:
             )
         return unit
 
-    def check_hooks_runnable(self) -> None:
-        """Before a restore replaces anything: ``Usage`` if a post-restore hook that applies to
-        this env runs ``manage.py`` and the render has no task unit to run it in (it would only
-        fail after the data was already replaced)."""
+    def check_hooks_runnable(self, *, metabase: bool = False) -> None:
+        """Before a restore replaces anything: ``Usage`` if a post-restore hook that will run
+        runs ``manage.py`` and the render has no task unit to run it in (it would only fail
+        after the data was already replaced). The ``post_db_restore`` hooks always run after a
+        restore; ``post_metabase_db_restore`` only when it brings back the whole cluster
+        (pgBackRest), so only those paths pass ``metabase=True``."""
         from catalpa_tooling.fcos.dbdump import metabase_hooks_apply
         from catalpa_tooling.post_db_restore import post_db_restore_applies
 
         c = self.config
         needs = (post_db_restore_applies(c, self.env_name) and c.ops.post_db_restore.manage_commands) or (
-            metabase_hooks_apply(c, self.env_name) and c.ops.post_metabase_db_restore.manage_commands
+            metabase
+            and metabase_hooks_apply(c, self.env_name)
+            and c.ops.post_metabase_db_restore.manage_commands
         )
         if needs:
             self._require_task_unit()
+
+    def _hooks_problem(self, *, metabase: bool, dry_run: bool) -> str | None:
+        """``check_hooks_runnable``: raises in a real run; in a dry run returns the message so
+        the plan still prints (``_dry_run_end`` reports it)."""
+        try:
+            self.check_hooks_runnable(metabase=metabase)
+        except Usage as exc:
+            if not dry_run:
+                raise
+            return str(exc)
+        return None
+
+    @staticmethod
+    def _dry_run_end(problem: str | None) -> int:
+        if problem:
+            print(f"dry-run: a real run would be refused: {problem}", file=sys.stderr)
+            return 1
+        return 0
 
     def run_manage_once(self, manage_args: list[str], *, user: str | None = None) -> int:
         """``./manage.py …`` in a throwaway container of the web service: the rendered
@@ -532,14 +554,14 @@ class Backend:
         db = self.config.stack.services.db
         web = self.config.stack_service("web")
         source = self.restore.get("from")
-        self.check_hooks_runnable()
+        problem = self._hooks_problem(metabase=True, dry_run=dry_run)
         script = self._stop_then_start_as_found(
             [self._db_restore_line(extra)],
             stopped_hint=f"restore the media (dk {self.env_name} files restore), then start them (dk {self.env_name} host provision).",
         )
         if dry_run:
             print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
-            return 0
+            return self._dry_run_end(problem)
         what = f"{source}'s backup" if source else "the backup"
         if not self._confirm(
             f"pgBackRest restore --delta of {what} into {self.env_name}'s database. {web} and "
@@ -563,8 +585,7 @@ class Backend:
         kinds = kinds if kinds is not None else self.restore_kinds()
         if not kinds:
             raise Usage(f"{self.env_name} has nothing to restore from (backups: or restore_from: in info.yaml)")
-        if "db" in kinds:
-            self.check_hooks_runnable()
+        problem = self._hooks_problem(metabase=True, dry_run=dry_run) if "db" in kinds else None
         body: list[str] = []
         paths: list[str] = []
         if "db" in kinds:
@@ -580,7 +601,7 @@ class Backend:
         )
         if dry_run:
             print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
-            return 0
+            return self._dry_run_end(problem)
         source = self.restore.get("from")
         what = " and ".join(
             x for x in (
@@ -698,7 +719,7 @@ class Backend:
         from catalpa_tooling.db_archive import restore_archive
 
         path = archive or self.config.fetch_db_dump_path
-        self.check_hooks_runnable()
+        problem = self._hooks_problem(metabase=False, dry_run=dry_run)
         if archive is None and self.config.has_metabase_fetch():
             print(
                 "db restore --dumps: the Metabase dump isn't restored on quadlet envs yet; "
@@ -707,7 +728,7 @@ class Backend:
             )
         if dry_run:
             print(f"dry-run: would replace {self.env_name}'s app database with {path}", file=sys.stderr)
-            return 0
+            return self._dry_run_end(problem)
         if not self._confirm(
             f"replace {self.env_name}'s app database with {path}. The app stops while it runs; "
             "the current data is lost.",

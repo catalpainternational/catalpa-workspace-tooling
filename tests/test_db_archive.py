@@ -128,7 +128,7 @@ def test_compose_backend_db_primitives(monkeypatch: pytest.MonkeyPatch, minimal_
 
     seen.clear()
     assert b.copy_into_db(archive, "/tmp/x.dump") == 0
-    assert seen[0][3:5] == ["compose", "-f"] or seen[0][:4] == ["docker", "compose", "-f", "compose.yml"]
+    assert seen[0][:4] == ["docker", "compose", "-f", "compose.yml"]
     assert seen[0][4:] == ["cp", str(archive.resolve()), "db:/tmp/x.dump"]
     assert "chown postgres:postgres /tmp/x.dump" in seen[1][-1]  # readable by postgres: root exec
     assert "-u" in seen[1] and "root" in seen[1]
