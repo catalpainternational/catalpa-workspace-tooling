@@ -63,9 +63,20 @@ class Backend:
     login: str
     info: dict = field(default_factory=dict)
 
+    runtime = "quadlet"  # stack_backend.StackBackend
+
     @property
     def ssh_target(self) -> str:
         return f"{self.login}@{self.host.address}"
+
+    def describe(self) -> str:
+        return f"{self.env_name} (quadlets on {self.ssh_target})"
+
+    def ensure_db_running(self) -> int:
+        """Start db's unit (a no-op when it's active). The unit has ``Notify=healthy``, so the
+        start returns once Postgres answers ``pg_isready``."""
+        db = f"{self.config.stack.services.db}.service"
+        return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
 
     @property
     def services(self) -> list[str]:
@@ -715,6 +726,10 @@ class Backend:
             print(f"{self.env_name}: systemctl --user stop {' '.join(units)}", file=sys.stderr)
             self._ssh("systemctl --user stop " + " ".join(shlex.quote(u) for u in units), tty=False)
         return units
+
+    def start_writers(self, token: object) -> int:
+        """``start_units`` for ``stop_writers``' list (stack_backend.StackBackend)."""
+        return self.start_units(list(token or []))
 
     def start_units(self, units: list[str]) -> int:
         if not units:
