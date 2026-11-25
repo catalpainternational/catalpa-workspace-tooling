@@ -240,6 +240,7 @@ def render_env(
         project=project,
         compose_rel=compose_rel,
         proxy=config.stack.services.proxy,
+        web=config.stack.services.web or "",
         settings=settings,
         bind_volumes=bind_volumes,
         config_dir=config_dir,

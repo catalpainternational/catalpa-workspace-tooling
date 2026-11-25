@@ -577,3 +577,49 @@ def test_restic_paths_include_ops_backup_path(swlt) -> None:
     }
     # Without backup_path, only /backup/… counts.
     assert list(_backend(swlt, Recorder())._restic_mounts(text)) == ["/backup/other"]
+
+
+def _backend(site, r):
+    info = {"docker_host": "ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock"}
+    return backend.open_backend(site, "staging", info, runner=r, register_key=False)
+
+
+def test_run_manage_once_starts_the_task_unit_with_a_per_run_drop_in(site) -> None:
+    r = Recorder()
+    rc = _backend(site, r).run_manage_once(["sync_wagtail_sites", "--origin=https://a.test/?x=1&y", "50%", "$HOME", 'it\'s "q"'])
+    assert rc == 0
+    script = r.calls[-1][-1]
+    # The task unit, not django: the app need not be up.
+    assert "systemctl --user start django-task.service" in script
+    assert "systemctl --user start django.service" not in script
+    # Quoted for systemd (`%` and `$` doubled, words with quotes in double quotes), as for `command:`.
+    dropin = next(t for t in shlex.split(script) if t.startswith("[Container]"))
+    assert dropin.splitlines()[1] == (
+        'Exec=./manage.py sync_wagtail_sites --origin=https://a.test/?x=1&y 50%% $$HOME "it\'s \\"q\\""'
+    )
+    # Per run: in the account's runtime dir, under a lock, removed afterwards.
+    assert "/run/user/$(id -u)/containers/systemd/django-task.container.d" in script
+    assert "flock" in script and "rm -rf" in script and "trap" in script
+    assert "User=" not in script
+
+
+def test_run_manage_once_sets_the_user_when_one_is_given(site) -> None:
+    r = Recorder()
+    _backend(site, r).run_manage_once(["shell"], user="root")
+    dropin = next(t for t in shlex.split(r.calls[-1][-1]) if t.startswith("[Container]"))
+    assert dropin.splitlines()[2] == "User=root"
+
+
+@pytest.mark.parametrize("bad", ["", "a\nb"])
+def test_run_manage_once_refuses_an_argument_systemd_would_mangle(site, bad) -> None:
+    r = Recorder()
+    with pytest.raises(backend.Usage, match="empty or multi-line"):
+        _backend(site, r).run_manage_once(["a", bad, "c"])
+    assert r.calls == []  # nothing reached the host
+
+
+def test_run_manage_once_needs_the_task_unit_in_the_render(site) -> None:
+    b = _backend(site, Recorder())
+    del b.committed.files["quadlets/django-task.container"]
+    with pytest.raises(backend.Usage, match="render"):
+        b.run_manage_once(["migrate"])

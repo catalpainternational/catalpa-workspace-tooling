@@ -63,6 +63,12 @@ class StackBackend(Protocol):
         """``./manage.py …`` in the web service, as ``stack.manage_user`` unless ``user``."""
         ...
 
+    def run_manage_once(self, manage_args: list[str], *, user: str | None = None) -> int:
+        """``./manage.py …`` in a throwaway container of the web service (compose: ``run --rm
+        --no-deps``; quadlet: the ``<web>-task`` unit). Needs db running, not web. A one-shot
+        command, for work that must not depend on the app being up (post-restore hooks)."""
+        ...
+
     def media_rsync_source(self) -> str | None:
         """Where rsync can read the env's media: ``user@host:/path`` or a local path. None when
         nothing can (compose on a local engine whose volumes the host can't read)."""
@@ -158,6 +164,16 @@ class ComposeBackend:
         return compose._compose(
             self.ctx.compose_file,
             *compose.manage_exec_args(self.config, manage_args, tty=tty, user=user),
+            env_add=self.env,
+            check=False,
+        ).returncode
+
+    def run_manage_once(self, manage_args: list[str], *, user: str | None = None) -> int:
+        from catalpa_tooling import compose
+
+        return compose._compose(
+            self.ctx.compose_file,
+            *compose.manage_run_args(self.config, manage_args, user=user),
             env_add=self.env,
             check=False,
         ).returncode

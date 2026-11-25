@@ -152,37 +152,37 @@ def post_metabase_restore_hooks(b, *, uploader: Uploader = upload) -> int:
 
 
 def _run_hooks(b, hooks, label: str, uploader: Uploader) -> int:
+    """One hook set on a quadlet env: ``db_psql`` SQL piped to psql in ``db``, then each
+    ``manage.py`` command in a one-shot ``<web>-task`` container (``Backend.run_manage_once``),
+    in the order and with the stopping rules compose has (``post_db_restore.run_hook_set``)."""
     from catalpa_tooling.pgbackrest_db import _db_shell_vars
-    from catalpa_tooling.post_db_restore import _expand_commands
+    from catalpa_tooling.post_db_restore import run_hook_set
     from catalpa_tooling.site_origin import primary_site_origin_from_info
 
     config = b.config
     env_add = {"SITE_ORIGIN": primary_site_origin_from_info(b.info)} if b.info else {}
-    commands = _expand_commands(
-        config, hooks.manage_commands, env_name=b.env_name, env_add=env_add, hook_label=label,
-    )  # fmt: skip
-    if commands is None:
-        return 1
     db = config.stack.services.db
     q = shlex.quote
-    for entry in hooks.db_psql:
+
+    def run_psql(entry) -> int:
         vars_ = _db_shell_vars(entry.target)  # type: ignore[arg-type]
         psql = 'export PGPASSWORD="$POSTGRES_PASSWORD"; psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 -f '
         print(f"{label}: db_psql target={entry.target} file={entry.file} …", file=sys.stderr)
         if entry.file.startswith("/"):  # a path inside the db image
-            rc = b._ssh(f"podman exec {q(db)} sh -c {q(vars_ + psql + q(entry.file))}", tty=False)
-        else:
-            path = (config.repo_root / entry.file).resolve()
-            if not path.is_file():
-                print(f"{label}: db_psql file not found: {path}", file=sys.stderr)
-                return 1
-            argv = b.host._argv(b.login, f"podman exec -i {q(db)} sh -c {q(vars_ + psql + '-')}")
-            rc = uploader(argv, path)
-        if rc != 0:
-            return rc
-    for argv in commands:
-        print(f"{label}: manage.py {' '.join(argv)}", file=sys.stderr)
-        rc = b.manage(list(argv), user=None, tty=False)
-        if rc != 0:
-            return rc
-    return 0
+            return b._ssh(f"podman exec {q(db)} sh -c {q(vars_ + psql + q(entry.file))}", tty=False)
+        path = (config.repo_root / entry.file).resolve()
+        if not path.is_file():
+            print(f"{label}: db_psql file not found: {path}", file=sys.stderr)
+            return 1
+        argv = b.host._argv(b.login, f"podman exec -i {q(db)} sh -c {q(vars_ + psql + '-')}")
+        return uploader(argv, path)
+
+    return run_hook_set(
+        config,
+        hooks,
+        env_name=b.env_name,
+        env_add=env_add,
+        hook_label=label,
+        run_psql=run_psql,
+        run_manage=lambda argv: b.run_manage_once(argv),
+    )

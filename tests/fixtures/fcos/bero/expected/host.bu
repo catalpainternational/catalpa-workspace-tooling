@@ -332,6 +332,10 @@ storage:
       mode: 0644
       contents:
         local: quadlets/db.container
+    - path: /etc/containers/systemd/users/1001/django-task.container
+      mode: 0644
+      contents:
+        local: quadlets/django-task.container
     - path: /etc/containers/systemd/users/1001/django.container
       mode: 0644
       contents:
