@@ -1,24 +1,13 @@
-"""Restore a ``pg_dump -Fc`` archive into a ``runtime: quadlet`` env's database.
-
-What ``db restore --file/--dumps`` and ``dk transfer`` (into a quadlet env) share. It runs the
-same scripts as on compose envs (``drop_create_app_database_script``, the ``pg_restore``
-script, the ``ops.post_db_restore`` hooks), through ``podman exec`` over SSH:
-
-1. stop the stack's other units and the edge's socket, so nothing writes while the database is
-   replaced (db stays);
-2. copy the archive into ``db`` over SSH stdin and check its SHA-256 there;
-3. replace the app database with an empty one, then ``pg_restore`` the archive;
-4. start the stack again, then run the post-restore hooks (``db_psql``, ``manage.py``).
-"""
+"""Post-restore hooks on a ``runtime: quadlet`` env, and the SSH upload they and the archive
+copy use (``Backend.copy_into_db``). Restoring an archive is ``db_archive.restore_archive``."""
 
 from __future__ import annotations
 
 import hashlib
-import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 
 #: (ssh argv, local file) → exit code: stream a file to a remote command's stdin.
@@ -36,86 +25,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def restore_archive(
-    b,
-    archive: Path,
-    extra_pg_restore_args: Sequence[str] = (),
-    *,
-    stop_app: bool = True,
-    run_hooks: bool = True,
-    uploader: Uploader = upload,
-) -> int:
-    """Replace ``b``'s app database with ``archive``. ``b`` is a ``fcos.backend.Backend``."""
-    from catalpa_tooling.pgbackrest_db import (
-        _pg_restore_compose_inner_script,
-        _pg_restore_promote_app_superuser,
-        compose_pg_restore_extras_for_config,
-        drop_create_app_database_script,
-        pg_dump_archive_error,
-    )
-
-    config = b.config
-    err = pg_dump_archive_error(archive)
-    if err:
-        print(f"db restore: {err}", file=sys.stderr)
-        return 1
-    db = config.stack.services.db
-    q = shlex.quote
-    prefix = config.ops.pgbackrest.restore_temp_prefix
-    remote = f"/tmp/{prefix}{os.urandom(8).hex()}.dump"
-    # Everything but db, the edge's socket first (else the next request starts caddy again).
-    stopped = b.stop_writers() if stop_app else []
-    try:
-        print(f"db restore: copying {archive} ({archive.stat().st_size} bytes) into {db} …", file=sys.stderr)
-        argv = b.host._argv(
-            b.login,
-            f"podman exec -i -u root {q(db)} sh -c {q(f'umask 077; cat > {q(remote)}')}",
-        )
-        rc = uploader(argv, archive)
-        if rc != 0:
-            print("db restore: copying the archive failed", file=sys.stderr)
-            return rc or 1
-        want = _sha256(archive)
-        check = (
-            f"chown postgres:postgres {q(remote)} && chmod 600 {q(remote)} && "
-            f"sha256sum {q(remote)} | cut -d' ' -f1 | grep -qx {q(want)}"
-        )
-        rc = b._ssh(f"podman exec -u root {q(db)} sh -c {q(check)}", tty=False)
-        if rc != 0:
-            print("db restore: the archive in the container doesn't match (SHA-256)", file=sys.stderr)
-            return rc or 1
-
-        print("db restore: replacing the app database with an empty one …", file=sys.stderr)
-        script = drop_create_app_database_script(postgis=config.native.reset_db.postgis)
-        rc = b._ssh(f"podman exec -i {q(db)} sh -c {q(script)}", tty=False)
-        if rc != 0:
-            return rc
-
-        extras = compose_pg_restore_extras_for_config(config, list(extra_pg_restore_args))
-        restore_as_super = config.native.reset_db.restore_as_super
-        inner = _pg_restore_compose_inner_script(
-            "app",
-            extras,
-            container_path=remote,
-            promote_app_superuser=_pg_restore_promote_app_superuser(
-                extras, target="app", restore_as_super=restore_as_super
-            ),
-            postgis=config.native.reset_db.postgis,
-            restore_as_super=restore_as_super,
-        )
-        print("db restore: pg_restore …", file=sys.stderr)
-        rc = b._ssh(f"podman exec -i {q(db)} sh -c {q(inner)}", tty=False)
-        if rc != 0:
-            return rc
-    finally:
-        b._ssh(f"podman exec -u root {q(db)} rm -f {q(remote)}", tty=False)
-        b.start_units(stopped)
-    rc = post_restore_hooks(b, uploader=uploader) if run_hooks else 0
-    if rc == 0:
-        print("db restore: done.", file=sys.stderr)
-    return rc
 
 
 def post_restore_hooks(b, *, uploader: Uploader = upload) -> int:

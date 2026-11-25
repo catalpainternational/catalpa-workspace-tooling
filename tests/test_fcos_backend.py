@@ -295,10 +295,10 @@ def test_db_restore_asks_first(swlt, monkeypatch) -> None:
 
 
 def test_db_restore_file_dispatches(swlt, tmp_path, monkeypatch) -> None:
-    from catalpa_tooling.fcos import dbdump
+    from catalpa_tooling import db_archive
 
     seen = []
-    monkeypatch.setattr(dbdump, "restore_archive", lambda b, path, *a, **k: seen.append(path) or 0)
+    monkeypatch.setattr(db_archive, "restore_archive", lambda b, path, *a, **k: seen.append(path) or 0)
     dump = tmp_path / "x.dump"
     rc, r = run_sub(swlt, "db", "restore", archive_file=str(dump), yes=True)
     assert rc == 0 and seen == [dump]
@@ -352,38 +352,40 @@ def _backend(config, runner):
 def test_restore_archive_sequence(swlt, tmp_path) -> None:
     import hashlib
 
-    from catalpa_tooling.fcos.dbdump import restore_archive
+    from catalpa_tooling.db_archive import restore_archive
 
     dump = tmp_path / "app.dump"
     dump.write_bytes(b"PGDMP" + b"x" * 1000)
     r = Recorder()
     uploads = []
     b = _backend(swlt, r)
-    rc = restore_archive(b, dump, uploader=lambda argv, path: uploads.append((argv, path)) or 0)
+    b.uploader = lambda argv, path: uploads.append((argv, path)) or 0
+    rc = restore_archive(b, dump, stop_app=True)
     assert rc == 0
     cmds = [c[-1] for c in r.calls]
     assert cmds[0].startswith("systemctl --user stop ") and "db.service" not in cmds[0]
     assert "django.service" in cmds[0]
+    assert cmds[1] == "systemctl --user start db.service"  # db is up before anything is copied
     if b._proxy_socket():  # the edge's socket stops first and starts last
         assert cmds[0].split()[3] == b._proxy_socket()[0]
-        assert cmds[5].endswith(b._proxy_socket()[0])
+        assert cmds[6].endswith(b._proxy_socket()[0])
     (up_argv, up_path), = uploads
     assert up_path == dump and "podman exec -i -u root db sh -c" in up_argv[-1]
     remote = up_argv[-1].split("cat > ")[1].split("'")[0]
-    assert hashlib.sha256(dump.read_bytes()).hexdigest() in cmds[1] and remote in cmds[1]
-    assert "dropdb" in cmds[2] and "createdb" in cmds[2]
-    assert "pg_restore" in cmds[3] and remote in cmds[3]
-    assert cmds[4] == f"podman exec -u root db rm -f {remote}"
-    assert cmds[5].startswith("systemctl --user start ") and "django.service" in cmds[5]
+    assert hashlib.sha256(dump.read_bytes()).hexdigest() in cmds[2] and remote in cmds[2]
+    assert "dropdb" in cmds[3] and "createdb" in cmds[3]
+    assert "pg_restore" in cmds[4] and remote in cmds[4]
+    assert cmds[5] == f"podman exec -u root -i db sh -c 'rm -f {remote}'"
+    assert cmds[6].startswith("systemctl --user start ") and "django.service" in cmds[6]
 
 
 def test_restore_archive_refuses_a_non_archive_and_cleans_up_on_failure(swlt, tmp_path) -> None:
-    from catalpa_tooling.fcos.dbdump import restore_archive
+    from catalpa_tooling.db_archive import restore_archive
 
     bad = tmp_path / "bad.dump"
     bad.write_bytes(b"not a dump")
     r = Recorder()
-    assert restore_archive(_backend(swlt, r), bad) == 1 and r.calls == []
+    assert restore_archive(_backend(swlt, r), bad, stop_app=True) == 1 and r.calls == []
 
     good = tmp_path / "app.dump"
     good.write_bytes(b"PGDMP" + b"x" * 10)
@@ -394,9 +396,11 @@ def test_restore_archive_refuses_a_non_archive_and_cleans_up_on_failure(swlt, tm
             return subprocess.CompletedProcess(argv, 1 if "pg_restore" in argv[-1] else 0, b"", b"")
 
     r = FailRestore()
-    assert restore_archive(_backend(swlt, r), good, uploader=lambda a, p: 0) == 1
+    b = _backend(swlt, r)
+    b.uploader = lambda a, p: 0
+    assert restore_archive(b, good, stop_app=True) == 1
     tail = [c[-1] for c in r.calls[-2:]]
-    assert tail[0].startswith("podman exec -u root db rm -f ")  # archive removed
+    assert tail[0].startswith("podman exec -u root -i db sh -c 'rm -f ")  # archive removed
     assert tail[1].startswith("systemctl --user start ")  # the app comes back
 
 
@@ -442,6 +446,7 @@ def test_pull_media_is_deprecated_and_fetches_media(swlt, monkeypatch, tmp_path,
 
 
 def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:
+    from catalpa_tooling import db_archive
     from catalpa_tooling.fcos import dbdump, fetch
     from catalpa_tooling.fcos import transfer as t
 
@@ -449,7 +454,7 @@ def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:
     r = Recorder()
     src, dst = _backend(swlt, r), _backend(swlt, r)
     monkeypatch.setattr(fetch, "fetch_db", lambda c, b, dest: log.append("dump") or dest.write_bytes(b"PGDMP"))
-    monkeypatch.setattr(dbdump, "restore_archive", lambda b, p, **k: log.append(("restore", k)) or 0)
+    monkeypatch.setattr(db_archive, "restore_archive", lambda b, p, **k: log.append(("restore", k)) or 0)
     monkeypatch.setattr(dbdump, "post_restore_hooks", lambda b: log.append("hooks") or 0)
     monkeypatch.setattr(type(src), "pull_media", lambda self, d: log.append("pull") or 0)
     monkeypatch.setattr(type(src), "push_media", lambda self, d: log.append("push") or 0)
@@ -547,12 +552,14 @@ def test_hooks_for_other_envs_do_nothing(swlt) -> None:
 
 def test_dump_restore_runs_only_the_app_hooks(swlt, tmp_path) -> None:
     """A dump restore replaces only the app database: the Metabase hooks don't apply."""
-    from catalpa_tooling.fcos.dbdump import restore_archive
+    from catalpa_tooling.db_archive import restore_archive
 
     dump = tmp_path / "app.dump"
     dump.write_bytes(b"PGDMP" + b"x" * 100)
     r = _StackRecorder(active=True)
-    assert restore_archive(_backend(_with_hooks(swlt), r), dump, uploader=lambda argv, path: 0) == 0
+    b = _backend(_with_hooks(swlt), r)
+    b.uploader = lambda argv, path: 0
+    assert restore_archive(b, dump, stop_app=True) == 0
     cmds = " ".join(c[-1] for c in r.calls)
     assert "app-followups" in cmds and "mb-followups" not in cmds and "restart metabase" not in cmds
 
@@ -623,3 +630,85 @@ def test_run_manage_once_needs_the_task_unit_in_the_render(site) -> None:
     del b.committed.files["quadlets/django-task.container"]
     with pytest.raises(backend.Usage, match="render"):
         b.run_manage_once(["migrate"])
+
+
+# --- refusing early when the hooks can't run -------------------------------------------------
+
+
+def _without_task_unit(b):
+    b.committed.files.pop("quadlets/django-task.container")
+    return b
+
+
+def test_check_hooks_runnable(swlt) -> None:
+    hooked = _with_hooks(swlt)
+    # Hooks apply and the render has the task unit: fine.
+    _backend(hooked, Recorder()).check_hooks_runnable()
+    # No hook applies to this env (or it has none): the task unit isn't needed.
+    _without_task_unit(_backend(_with_hooks(swlt, envs=("prod",)), Recorder())).check_hooks_runnable()
+    # Hooks apply, no task unit: refused, saying what to do.
+    with pytest.raises(backend.Usage, match="render has no django-task.container"):
+        _without_task_unit(_backend(hooked, Recorder())).check_hooks_runnable()
+
+
+def test_dump_restore_refuses_before_touching_anything_without_the_task_unit(swlt, tmp_path) -> None:
+    dump = tmp_path / "app.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 100)
+    r = Recorder()
+    b = _without_task_unit(_backend(_with_hooks(swlt), r))
+    with pytest.raises(backend.Usage, match="django-task.container"):
+        b.db_restore_dump(dump, yes=True, dry_run=False)
+    assert r.calls == []  # nothing stopped, nothing replaced
+
+
+def test_transfer_preflight_refuses_a_destination_without_the_task_unit(swlt, tmp_path, capsys) -> None:
+    from catalpa_tooling.fcos import transfer as t
+
+    r = Recorder()
+    src, dst = _backend(swlt, r), _without_task_unit(_backend(_with_hooks(swlt), r))
+    kw = dict(src="a", dst="b", src_b=src, dst_b=dst, do_db=True, do_media=False, media_method="rsync",
+              dry=False, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
+    assert t.run_transfer(_with_hooks(swlt), **kw) == 1
+    assert r.calls == []
+    assert "preflight failed" in capsys.readouterr().err
+
+
+def _metabase_hooks_only(config):
+    from dataclasses import replace
+
+    hooked = _with_hooks(config)
+    ops = replace(hooked.ops, post_db_restore=replace(hooked.ops.post_db_restore, manage_commands=()))
+    return replace(hooked, ops_optional=ops)
+
+
+def test_a_metabase_only_manage_hook_blocks_only_the_pgbackrest_paths(swlt, tmp_path) -> None:
+    """The dump restore and transfer run only the app hooks, so a Metabase hook needing the task
+    unit must not refuse them; a pgBackRest restore brings back Metabase's database too."""
+    cfg = _metabase_hooks_only(swlt)
+    b = _without_task_unit(_backend(cfg, Recorder()))
+    b.check_hooks_runnable()  # the app hooks have no manage command
+    with pytest.raises(backend.Usage, match="django-task.container"):
+        b.check_hooks_runnable(metabase=True)
+
+    dump = tmp_path / "app.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 100)
+    b = _without_task_unit(_backend(cfg, Recorder()))
+    assert b.db_restore_dump(dump, yes=True, dry_run=True) == 0  # a clean dry run: not refused
+    with pytest.raises(backend.Usage, match="django-task.container"):
+        _without_task_unit(_backend(cfg, Recorder())).db_restore([], yes=True, dry_run=False)
+
+
+def test_dry_run_prints_the_plan_and_reports_that_a_real_run_would_be_refused(swlt, tmp_path, capsys) -> None:
+    dump = tmp_path / "app.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 100)
+    r = Recorder()
+    b = _without_task_unit(_backend(_with_hooks(swlt), r))
+    assert b.db_restore_dump(dump, yes=True, dry_run=True) == 1
+    err = capsys.readouterr().err
+    assert "dry-run: would replace" in err and "a real run would be refused" in err and "django-task.container" in err
+    assert r.calls == []
+
+    assert _without_task_unit(_backend(_with_hooks(swlt), Recorder())).db_restore([], yes=True, dry_run=True) == 1
+    assert "dry-run: on " in capsys.readouterr().err  # the plan still printed
+    # With the unit present a dry run is still clean.
+    assert _backend(_with_hooks(swlt), Recorder()).db_restore_dump(dump, yes=True, dry_run=True) == 0

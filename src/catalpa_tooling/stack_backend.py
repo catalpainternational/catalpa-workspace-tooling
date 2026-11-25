@@ -8,7 +8,8 @@ once over it.
 
 The protocol grows as operations move onto it; ``ComposeBackend`` delegates to the functions
 compose callers already used. Moved so far: ``dk fetch db`` (``via: dk``), ``dk fetch media``
-(and the deprecated ``dk <env> pull_media``). Behaviour that
+(and the deprecated ``dk <env> pull_media``), the post-restore hooks, and restoring a dump
+archive (``db_archive.restore_archive``). Behaviour that
 really differs between the runtimes (pgBackRest restore, restic restore, backup units) stays
 per backend.
 """
@@ -67,6 +68,20 @@ class StackBackend(Protocol):
         """``./manage.py …`` in a throwaway container of the web service (compose: ``run --rm
         --no-deps``; quadlet: the ``<web>-task`` unit). Needs db running, not web. A one-shot
         command, for work that must not depend on the app being up (post-restore hooks)."""
+        ...
+
+    def copy_into_db(self, archive: Path, container_path: str) -> int:
+        """Put the local file ``archive`` at ``container_path`` inside the db container, readable
+        by ``postgres`` (quadlet also checks its SHA-256 there). db must be running."""
+        ...
+
+    def db_sh(self, script: str, *, root: bool = False) -> int:
+        """``sh -c script`` in the db container, as root when asked."""
+        ...
+
+    def run_post_restore_hooks(self, target: Literal["app", "metabase"] = "app") -> int:
+        """The ``ops.post_db_restore`` (``target="metabase"``: ``post_metabase_db_restore``)
+        hooks for this env, after a restore of that database. 0 when none apply."""
         ...
 
     def media_rsync_source(self) -> str | None:
@@ -177,6 +192,57 @@ class ComposeBackend:
             env_add=self.env,
             check=False,
         ).returncode
+
+    @classmethod
+    def from_parts(
+        cls,
+        config: ProjectConfig,
+        env_name: str,
+        compose_file: str,
+        env_add: dict[str, str],
+        *,
+        docker_host: str = "",
+        info: dict | None = None,
+    ) -> ComposeBackend:
+        """A backend from what a ``dk <env>`` handler already holds. The context fields only
+        media and deploy use (origins, registry, storage volumes) are left empty: don't call
+        the media methods on this one."""
+        ctx = ManagedDeployContext(
+            env_name=env_name,
+            compose_file=compose_file,
+            env_add=env_add,
+            docker_host=docker_host,
+            dc_backup_docker_host="",
+            site_origin="",
+            site_origins=(),
+            use_prepulled_registry=False,
+            image_registry="",
+            info_tag=None,
+            config=config,
+            storage_volumes={},
+            info=info or {},
+        )
+        return cls(ctx)
+
+    def copy_into_db(self, archive: Path, container_path: str) -> int:
+        from catalpa_tooling import pgbackrest_db
+
+        return pgbackrest_db.copy_archive_into_db(self.ctx.compose_file, self.env, archive, container_path)
+
+    def db_sh(self, script: str, *, root: bool = False) -> int:
+        from catalpa_tooling import pgbackrest_db
+
+        return pgbackrest_db.run_db_sh(self.ctx.compose_file, self.env, script, root=root)
+
+    def run_post_restore_hooks(self, target: Literal["app", "metabase"] = "app") -> int:
+        from catalpa_tooling import post_db_restore
+
+        run = (
+            post_db_restore.run_post_metabase_db_restore_manage_commands
+            if target == "metabase"
+            else post_db_restore.run_post_db_restore_manage_commands
+        )
+        return run(self.config, compose_file=self.ctx.compose_file, env_add=self.env, env_name=self.env_name)
 
     def media_storage(self):
         """The media's named volume or host directory, from the compose file

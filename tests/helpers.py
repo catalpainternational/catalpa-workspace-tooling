@@ -216,3 +216,27 @@ def install_doctl_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     for mod in modules:
         patch_module_attrs(monkeypatch, mod, attrs)
+
+
+def spy_compose_backend(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Replace ``ComposeBackend``'s db primitives with recorders and return the call log.
+
+    Entries: ``"ensure"``, ``("copy", archive)``, ``"drop_create"`` / ``"pg_restore"`` / ``"rm"`` (what a
+    ``db_sh`` script does), ``"hooks:<target>"``.
+    """
+    from catalpa_tooling.stack_backend import ComposeBackend
+
+    calls: list = []
+
+    def db_sh(self, script: str, *, root: bool = False) -> int:
+        kind = "drop_create" if "dropdb" in script else "pg_restore" if "pg_restore" in script else "rm"
+        calls.append(kind)
+        return 0
+
+    monkeypatch.setattr(ComposeBackend, "ensure_db_running", lambda self: calls.append("ensure") or 0)
+    monkeypatch.setattr(ComposeBackend, "copy_into_db", lambda self, archive, path: calls.append(("copy", archive)) or 0)
+    monkeypatch.setattr(ComposeBackend, "db_sh", db_sh)
+    monkeypatch.setattr(
+        ComposeBackend, "run_post_restore_hooks", lambda self, target="app": calls.append(f"hooks:{target}") or 0
+    )
+    return calls

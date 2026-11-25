@@ -93,6 +93,12 @@ def run_transfer(
         if b is not None and config.stack.services.db not in b.services and do_db:
             print(f"transfer: preflight failed: {name}'s render has no db service", file=sys.stderr)
             return 1
+    if dst_b is not None and do_db:
+        try:
+            dst_b.check_hooks_runnable()  # else the hooks fail after the database is replaced
+        except Usage as exc:
+            print(f"transfer: preflight failed: {exc}", file=sys.stderr)
+            return 1
     print("transfer: preflight ok.", file=sys.stderr)
     if dry:
         print("transfer: dry-run (no changes, no temp dir).", file=sys.stderr)
@@ -162,7 +168,7 @@ def run_transfer(
 
 
 def _db_leg(config, src, dst, src_b, dst_b, ctx, dump_path: Path) -> int:
-    from catalpa_tooling.fcos.dbdump import restore_archive
+    from catalpa_tooling.db_archive import restore_archive
     from catalpa_tooling.fcos.fetch import fetch_db
     from catalpa_tooling.pgbackrest_db import (
         compose_pg_restore_extras_for_config,
