@@ -15,8 +15,7 @@ from tests.helpers import spy_compose_backend
 
 
 def _backend(cfg, env_add=None) -> ComposeBackend:
-    b = ComposeBackend.from_parts(cfg, "dev", "compose.yml", dict(env_add or {}))
-    b.__dict__["env"] = dict(env_add or {})  # no compose project to resolve in these tests
+    b = ComposeBackend.with_env(ComposeBackend.from_parts(cfg, "dev", "compose.yml", dict(env_add or {})).ctx, dict(env_add or {}))
     return b
 
 

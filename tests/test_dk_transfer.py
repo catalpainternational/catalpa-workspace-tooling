@@ -411,11 +411,9 @@ def test_compose_to_compose_transfer_order(monkeypatch: pytest.MonkeyPatch, mini
 
     log: list = []
     ends = {
-        "local": ComposeBackend(_minimal_ctx("local", "compose.yml", minimal_project)),
-        "dev": ComposeBackend(_minimal_ctx("dev", "compose.dev.yaml", minimal_project)),
+        name: ComposeBackend.with_env(_minimal_ctx(name, f, minimal_project), {"COMPOSE_PROJECT_NAME": f"app_{name}"})
+        for name, f in (("local", "compose.yml"), ("dev", "compose.dev.yaml"))
     }
-    for b in ends.values():
-        b.__dict__["env"] = {"COMPOSE_PROJECT_NAME": f"app_{b.env_name}"}  # the cached_property
     monkeypatch.setattr("catalpa_tooling.dk_transfer.list_deploy_env_names", lambda _d: ["local", "dev"])
     monkeypatch.setattr("catalpa_tooling.stack_backend.backend_for", lambda _c, name: ends[name])
     monkeypatch.setattr(ComposeBackend, "preflight_transfer", lambda self, **k: log.append(("preflight", self.env_name)) or [])

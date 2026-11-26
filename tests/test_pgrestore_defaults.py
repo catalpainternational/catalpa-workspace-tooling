@@ -92,8 +92,7 @@ def test_ensure_db_starts_service_when_down() -> None:
 def _b(config):
     from catalpa_tooling.stack_backend import ComposeBackend
 
-    b = ComposeBackend.from_parts(config, "dev", "compose.yml", {})
-    b.__dict__["env"] = {}
+    b = ComposeBackend.with_env(ComposeBackend.from_parts(config, "dev", "compose.yml", {}).ctx, {})
     return b
 
 
@@ -118,6 +117,7 @@ def test_db_restore_file_dry_run_runs_nothing(minimal_project, monkeypatch, caps
     from catalpa_tooling.stack_commands import db_restore
 
     archive = Path(minimal_project.repo_root) / "one.custom"
+    archive.write_bytes(b"PGDMP" + b"\x00" * 64)
     calls = spy_compose_backend(monkeypatch)
     assert db_restore(_b(minimal_project), archive=archive, dry_run=True) == 0
     assert calls == []

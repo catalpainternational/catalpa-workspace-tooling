@@ -20,7 +20,6 @@ import argparse
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -175,6 +174,7 @@ class ComposeBackend:
     runtime: Runtime = "compose"
     dump_restore_stops_app: bool = False
     _media_storage: object = field(default=None, init=False, repr=False, compare=False)
+    _env: dict[str, str] | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def config(self) -> ProjectConfig:
@@ -184,10 +184,16 @@ class ComposeBackend:
     def env_name(self) -> str:
         return self.ctx.env_name
 
-    @cached_property
+    @property
     def env(self) -> dict[str, str]:
         """The context's env with ``COMPOSE_PROJECT_NAME`` set as ``dk <env>`` sets it (a local
-        env's project is ``<default>_<env>``), so volumes resolve to the env's own."""
+        env's project is ``<default>_<env>``), so volumes resolve to the env's own. Resolved
+        once, unless ``with_env`` gave it."""
+        if self._env is None:
+            self._env = self._resolve_env()
+        return self._env
+
+    def _resolve_env(self) -> dict[str, str]:
         from catalpa_tooling.restic_files import resolve_env_with_compose_project
 
         return resolve_env_with_compose_project(
@@ -422,7 +428,7 @@ class ComposeBackend:
         """A backend whose ``env`` is the one a ``dk <env>`` handler already resolved (compose
         project set, db image named), so every step sees the same values."""
         b = cls(ctx)
-        b.__dict__["env"] = env  # the cached_property's slot
+        b._env = env
         return b
 
     def refused_subcommand(self, verb: str, sub: str) -> str | None:

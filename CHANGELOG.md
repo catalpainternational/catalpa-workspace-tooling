@@ -11,7 +11,14 @@
     too**, as a rendered host already did. Pass `--yes` in scripts; without a TTY and without
     `--yes` they refuse before touching anything.
   - **A rendered host with no pgBackRest repository restores the local dumps** on a plain
-    `db restore`, fetching them first when missing, as compose does (it used to refuse).
+    `db restore`, fetching them first when missing, as compose does (it used to refuse). Only
+    when the env neither backs up nor restores its database: one with `backups: [db]` or
+    `restore_from` whose repository can't be found (missing credentials, a stale render) now
+    refuses on both runtimes instead of restoring an old dump.
+  - **Restoring several dumps stops the app once** (on a rendered host) and runs the
+    post-restore hooks after the last one, so the app never serves a half-restored cluster.
+    The fetch of missing dumps waits until every check and the confirmation have passed, and
+    a dry run reports an archive a real run would refuse.
   - **`db restore --dumps` restores the Metabase dump on a rendered host too**, then runs
     `post_metabase_db_restore`; it refuses up front when those hooks need a `<web>-task` unit
     the render lacks.

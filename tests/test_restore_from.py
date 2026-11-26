@@ -378,8 +378,7 @@ def test_compose_restore_runs_db_then_files_and_a_dry_run_never_restores_media(m
     monkeypatch.setattr(stack_commands, "db_restore", lambda b, **k: ran.append(("db", k["yes"], k["dry_run"])) or 0)
 
     monkeypatch.setattr(rf, "run_restore", lambda env, snap, **k: ran.append(("files", snap)) or 0)
-    b = ComposeBackend.from_parts(config, "staging", "c.yml", {}, info={"restore_from": "prod"})
-    b.__dict__["env"] = {}
+    b = ComposeBackend.with_env(ComposeBackend.from_parts(config, "staging", "c.yml", {}, info={"restore_from": "prod"}).ctx, {})
     ns = argparse.Namespace(yes=True, pgbackrest_restore_args=[], snapshot="latest")
     assert stack_commands.run(b, "restore", ns, dry_run=False) == 0
     assert ran == [("db", True, False), ("files", "latest")]

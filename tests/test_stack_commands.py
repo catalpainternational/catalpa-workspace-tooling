@@ -60,10 +60,22 @@ class FakeBackend:
     def restore_hooks_problem(self, *, metabase):
         return self._hooks_problem if metabase else None
 
+    def stop_writers(self):
+        self.calls.append("stop")
+        return "token"
+
+    def start_writers(self, token):
+        self.calls.append(("start", token))
+        return 0
+
+    def run_post_restore_hooks(self, target="app"):
+        self.calls.append(("hooks", target))
+        return 0
+
 
 @pytest.fixture
 def project(minimal_project):
-    for env, text in (("staging", "backups: [db, files]\n"), ("prod", "")):
+    for env, text in (("staging", "backups: [db, files]\n"), ("prod", ""), ("dev", "")):
         (minimal_project.deploy_envs_dir / env).mkdir(parents=True, exist_ok=True)
         (minimal_project.deploy_envs_dir / env / "info.yaml").write_text(f"name: {env}\n{text}")
     return minimal_project
@@ -72,9 +84,12 @@ def project(minimal_project):
 @pytest.fixture
 def restored(monkeypatch) -> list:
     seen: list = []
-    monkeypatch.setattr(
-        db_archive, "restore_archive", lambda b, path, *a, target="app", stop_app=False, **k: seen.append((target, path, stop_app)) or 0
-    )
+    def fake(b, path, *a, target="app", stop_app=False, run_hooks=True, **k):
+        b.calls.append(("restore", target)) if hasattr(b, "calls") else None
+        seen.append((target, path, stop_app, run_hooks))
+        return 0
+
+    monkeypatch.setattr(db_archive, "restore_archive", fake)
     return seen
 
 
@@ -88,29 +103,67 @@ def ns(**kw) -> argparse.Namespace:
     return argparse.Namespace(yes=True, **kw)
 
 
+def _dev(project, **kw) -> FakeBackend:
+    b = FakeBackend(project, **kw)
+    b.env_name = "dev"  # neither backs up nor restores: dumps are its normal source
+    return b
+
+
 def test_db_restore_without_pgbackrest_restores_the_configured_dump(project, restored) -> None:
     """Same on both runtimes: no repository to restore from → the local dumps."""
     dump = _dump(project.fetch_db_dump_path)
-    b = FakeBackend(project, pgbackrest=False)
+    b = _dev(project, pgbackrest=False)
     assert stack_commands.run(b, "db", ns(db_command="restore"), dry_run=False) == 0
-    assert restored == [("app", dump, True)]  # the backend's stop scope
-    assert b.calls == []
+    assert restored == [("app", dump, False, False)]
+    # One stop around the restores (the backend's scope), then the hooks once the app is back.
+    assert b.calls == ["stop", ("restore", "app"), ("start", "token"), ("hooks", "app")]
+
+
+def test_an_env_with_pgbackrest_backups_never_falls_back_to_dumps(project, restored, capsys) -> None:
+    """A stale render or missing credentials must not turn `db restore` into an old dump."""
+    _dump(project.fetch_db_dump_path)
+    b = FakeBackend(project, pgbackrest=False)  # staging: backups: [db]
+    assert stack_commands.run(b, "db", ns(db_command="restore"), dry_run=False) == 1
+    err = capsys.readouterr().err
+    assert "backs up its database" in err and "--file PATH or --dumps" in err
+    assert restored == [] and b.calls == []
 
 
 def test_db_restore_without_pgbackrest_or_a_dump_fetches_first(project, restored, monkeypatch) -> None:
     from catalpa_tooling import fetch_db
 
     monkeypatch.setattr(fetch_db, "run_fetch_all_dbs", lambda config, **k: _dump(config.fetch_db_dump_path))
-    assert stack_commands.run(FakeBackend(project), "db", ns(db_command="restore"), dry_run=False) == 0
-    assert [t for t, _p, _s in restored] == ["app"]
+    assert stack_commands.run(_dev(project), "db", ns(db_command="restore"), dry_run=False) == 0
+    assert [r[0] for r in restored] == ["app"]
+
+
+def test_the_fetch_waits_for_every_check(project, restored, monkeypatch, capsys) -> None:
+    """Refusing (no TTY, no --yes) costs no download."""
+    import sys
+
+    from catalpa_tooling import fetch_db
+
+    monkeypatch.setattr(fetch_db, "run_fetch_all_dbs", lambda *a, **k: pytest.fail("fetched before asking"))
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    args = argparse.Namespace(yes=False, db_command="restore")
+    assert stack_commands.run(_dev(project), "db", args, dry_run=False) == 1
+    assert "Pass --yes" in capsys.readouterr().err and restored == []
 
 
 def test_db_restore_dry_run_never_fetches(project, restored, monkeypatch, capsys) -> None:
     from catalpa_tooling import fetch_db
 
     monkeypatch.setattr(fetch_db, "run_fetch_all_dbs", lambda *a, **k: pytest.fail("fetched in a dry run"))
-    assert stack_commands.run(FakeBackend(project), "db", ns(db_command="restore"), dry_run=True) == 0
+    assert stack_commands.run(_dev(project), "db", ns(db_command="restore"), dry_run=True) == 0
     assert restored == [] and "would run `dk fetch db`" in capsys.readouterr().err
+
+
+def test_a_dry_run_reports_an_archive_a_real_run_would_refuse(project, restored, capsys) -> None:
+    bad = project.repo_root / "bad.custom"
+    bad.write_bytes(b"-- PostgreSQL database dump\n")
+    args = ns(db_command="restore", archive_file=str(bad))
+    assert stack_commands.run(FakeBackend(project), "db", args, dry_run=True) == 1
+    assert "a real run would be refused" in capsys.readouterr().err and restored == []
 
 
 def test_db_restore_with_pgbackrest_uses_it(project, restored) -> None:
@@ -125,8 +178,12 @@ def test_dumps_restores_metabase_too_and_checks_its_hooks_first(project, restore
     monkeypatch.setattr(type(project), "has_metabase_fetch", lambda self: True)
     monkeypatch.setattr(type(project), "fetch_metabase_db_dump_path", property(lambda self: self.repo_root / "mb.custom"))
     app, mb = _dump(project.fetch_db_dump_path), _dump(project.repo_root / "mb.custom")
-    assert stack_commands.run(FakeBackend(project), "db", ns(db_command="restore", restore_from_dumps=True), dry_run=False) == 0
-    assert [(t, p) for t, p, _s in restored] == [("app", app), ("metabase", mb)]
+    b = FakeBackend(project)
+    assert stack_commands.run(b, "db", ns(db_command="restore", restore_from_dumps=True), dry_run=False) == 0
+    assert [(r[0], r[1]) for r in restored] == [("app", app), ("metabase", mb)]
+    # The app stops once around both, and no hook runs until both are back.
+    assert b.calls == ["stop", ("restore", "app"), ("restore", "metabase"), ("start", "token"),
+                       ("hooks", "app"), ("hooks", "metabase")]  # fmt: skip
 
     restored.clear()
     b = FakeBackend(project, hooks_problem="render has no django-task.container")
@@ -161,6 +218,13 @@ def test_bkp_spellings_still_work_with_a_warning(project, capsys) -> None:
     b = FakeBackend(project)
     assert stack_commands.run(b, "bkp_files", ns(bkp_files_command="stats"), dry_run=False) == 0
     assert b.calls == [("restic", "stats")] and "Deprecated" in capsys.readouterr().err
+
+
+def test_pgbackrest_options_keep_a_later_double_dash(project) -> None:
+    b = FakeBackend(project, pgbackrest=True)
+    args = ns(db_command="restore", pgbackrest_restore_args=["--", "--type=time", "--", "x"])
+    assert stack_commands.run(b, "db", args, dry_run=False) == 0
+    assert b.calls == [("pgbackrest_restore", ["--type=time", "--", "x"])]
 
 
 def test_restore_goes_to_the_backend(project) -> None:

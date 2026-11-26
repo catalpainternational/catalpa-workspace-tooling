@@ -100,8 +100,7 @@ def test_compose_db_commands_that_back_up_are_refused_without_backups(envs, monk
         doctl_spaces_provision, "ensure_spaces_backup_credentials", lambda *a, **k: pytest.fail("offered to provision")
     )
     ns = argparse.Namespace(db_command=sub, yes=False, **extra)
-    b = ComposeBackend.from_parts(config, "staging", "compose.yml", {})
-    b.__dict__["env"] = {}
+    b = ComposeBackend.with_env(ComposeBackend.from_parts(config, "staging", "compose.yml", {}).ctx, {})
     rc = stack_commands.run(b, "db", ns, dry_run=False)
     assert rc == 2
     assert "staging doesn't back up db" in capsys.readouterr().err

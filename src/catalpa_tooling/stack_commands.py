@@ -90,8 +90,12 @@ def _snapshot(ns: argparse.Namespace) -> str:
 
 
 def _pgbackrest_extra(ns: argparse.Namespace) -> list[str]:
-    """pgBackRest restore options after ``--`` (the ``--`` itself dropped)."""
-    return [a for a in (getattr(ns, "pgbackrest_restore_args", None) or []) if a != "--"]
+    """pgBackRest restore options after ``--``: the leading ``--`` dropped, anything after it
+    (a later ``--`` included) passed on as given."""
+    args = list(getattr(ns, "pgbackrest_restore_args", None) or [])
+    while args and args[0] == "--":
+        args.pop(0)
+    return args
 
 
 def _write_target(verb: str, sub: str, ns: argparse.Namespace) -> Literal["pgbackrest", "restic"] | None:
@@ -135,7 +139,12 @@ def db_restore(
 ) -> int:
     """``dk <env> db restore``: from ``archive`` (``--file``; the app database only), the
     configured dumps (``--dumps``), else pgBackRest when the env has a repository to restore
-    from, else the configured dumps, fetched first when missing."""
+    from, else the configured dumps, fetched first when missing.
+
+    An env whose database is backed up or restored with pgBackRest (``backups: [db]`` or
+    ``restore_from``) never falls back to dumps silently: when the backend can't find its
+    repository, that's a misconfiguration (missing credentials, a stale render), so it refuses.
+    """
     from catalpa_tooling.fetch_db import configured_app_dump_exists
 
     config = b.config
@@ -146,18 +155,39 @@ def db_restore(
         return rc if rc != 0 else restore_dumps(b, configured_dumps(config), yes=yes, dry_run=dry_run)
     if b.pgbackrest_restore_available():
         return b.pgbackrest_restore(list(pgbackrest_args or []), yes=yes, dry_run=dry_run)
-    if not configured_app_dump_exists(config):
-        if dry_run:
-            print(
-                f"dry-run: no pgBackRest repository and no dump at {config.fetch_db_dump_path}: "
-                "would run `dk fetch db`, then restore what it fetched.",
-                file=sys.stderr,
-            )
-            return 0
-        rc = _ensure_local_dumps(b, auto_fetch=True)
-        if rc != 0:
-            return rc
-    return restore_dumps(b, configured_dumps(config), yes=yes, dry_run=dry_run)
+    why = _pgbackrest_expected(b)
+    if why:
+        print(
+            f"dk {b.env_name} db restore: {why}, but no pgBackRest repository is configured for it "
+            f"(credentials, or on a rendered host the render). Fix that, or restore a dump "
+            "explicitly with --file PATH or --dumps.",
+            file=sys.stderr,
+        )
+        return 1
+    fetch = not configured_app_dump_exists(config)
+    return restore_dumps(b, configured_dumps(config), yes=yes, dry_run=dry_run, fetch=fetch)
+
+
+def _pgbackrest_expected(b: StackBackend) -> str | None:
+    """Why this env's database should restore with pgBackRest (``backups`` / ``restore_from``),
+    or None when dumps are its normal source."""
+    from catalpa_tooling.backup_settings import (
+        BackupSettingsError,
+        backup_settings,
+        load_info,
+    )
+
+    try:
+        roles = backup_settings(b.config, b.env_name, load_info(b.config, b.env_name))
+    except FileNotFoundError:
+        return None  # no info.yaml (a bare test or local env): nothing says pgBackRest
+    except BackupSettingsError as exc:
+        return str(exc)
+    if roles.writes("db"):
+        return f"{b.env_name} backs up its database (backups: [db])"
+    if roles.reads("db"):
+        return f"{b.env_name} restores {roles.restore_from}'s database (restore_from: {roles.restore_from})"
+    return None
 
 
 def configured_dumps(config) -> list[tuple[Literal["app", "metabase"], Path]]:
@@ -171,34 +201,52 @@ def configured_dumps(config) -> list[tuple[Literal["app", "metabase"], Path]]:
 _LABEL = {"app": "app", "metabase": "Metabase"}
 
 
+def _archive_problem(dumps: list[tuple[str, Path]]) -> str | None:
+    from catalpa_tooling.pgbackrest_db import pg_dump_archive_error
+
+    for _t, path in dumps:
+        err = pg_dump_archive_error(path)
+        if err:
+            return err
+    return None
+
+
 def restore_dumps(
     b: StackBackend,
     dumps: list[tuple[Literal["app", "metabase"], Path]],
     *,
     yes: bool,
     dry_run: bool,
+    fetch: bool = False,
 ) -> int:
-    """Replace each ``(database, archive)`` in turn, after checking every archive and asking
-    once. Refuses before anything is replaced when a hook that will run can't."""
-    from catalpa_tooling.pgbackrest_db import pg_dump_archive_error
+    """Replace each ``(database, archive)``, after checking every archive and asking once.
+
+    Everything that can refuse runs first (archives, hooks, the confirmation), and only then,
+    with ``fetch``, ``dk fetch db`` brings the dumps. The app stops once around all of them
+    (when the backend stops it at all), and the post-restore hooks run after the last one, so
+    the app never serves a half-restored cluster.
+    """
+    from catalpa_tooling.db_archive import restore_archive
 
     env = b.env_name
     problem = b.restore_hooks_problem(metabase=any(t == "metabase" for t, _ in dumps))
+    archive_err = None if fetch else _archive_problem(dumps)
     what = " and ".join(f"{env}'s {_LABEL[t]} database with {p}" for t, p in dumps)
     if dry_run:
+        if fetch:
+            print(f"dry-run: no dump at {b.config.fetch_db_dump_path}: would run `dk fetch db`, then", file=sys.stderr)
         print(f"dry-run: would replace {what}", file=sys.stderr)
-        if problem:
-            print(f"dry-run: a real run would be refused: {problem}", file=sys.stderr)
+        refused = problem or (f"refusing before dropping anything: {archive_err}" if archive_err else None)
+        if refused:
+            print(f"dry-run: a real run would be refused: {refused}", file=sys.stderr)
             return 1
         return 0
     if problem:
         print(f"dk {env} db restore: {problem}", file=sys.stderr)
         return 1
-    for _t, path in dumps:
-        err = pg_dump_archive_error(path)
-        if err:
-            print(f"db restore: refusing before dropping anything: {err}", file=sys.stderr)
-            return 1
+    if archive_err:
+        print(f"db restore: refusing before dropping anything: {archive_err}", file=sys.stderr)
+        return 1
     if not yes:
         if not sys.stdin.isatty():
             print("Refusing db restore without a TTY. Pass --yes for non-interactive use.", file=sys.stderr)
@@ -206,19 +254,37 @@ def restore_dumps(
         from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 
         stops = " The app stops while it runs." if b.dump_restore_stops_app else ""
+        fetched = " (fetched first with `dk fetch db`)" if fetch else ""
         print(
-            f"WARNING: replace {what}.{stops} The current data is lost.\n  Environment: {b.describe()}",
+            f"WARNING: replace {what}{fetched}.{stops} The current data is lost.\n  Environment: {b.describe()}",
             file=sys.stderr,
         )
         if not confirm_by_typing_env_name(env):
             print("db restore: cancelled.", file=sys.stderr)
             return 1
-    from catalpa_tooling.db_archive import restore_archive
-
-    for target, path in dumps:
-        rc = restore_archive(b, Path(path), target=target, stop_app=b.dump_restore_stops_app)
+    if fetch:
+        rc = _ensure_local_dumps(b, auto_fetch=True)
         if rc != 0:
             return rc
+        archive_err = _archive_problem(dumps)
+        if archive_err:
+            print(f"db restore: refusing before dropping anything: {archive_err}", file=sys.stderr)
+            return 1
+
+    stopped = b.stop_writers() if b.dump_restore_stops_app else None
+    try:
+        for target, path in dumps:
+            rc = restore_archive(b, Path(path), target=target, stop_app=False, run_hooks=False)
+            if rc != 0:
+                return rc
+    finally:
+        if b.dump_restore_stops_app:
+            b.start_writers(stopped)
+    for target, _path in dumps:
+        rc = b.run_post_restore_hooks(target)
+        if rc != 0:
+            return rc
+    print("db restore: done.", file=sys.stderr)
     return 0
 
 

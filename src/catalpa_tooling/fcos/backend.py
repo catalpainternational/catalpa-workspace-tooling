@@ -508,7 +508,9 @@ class Backend:
     def _db_restore_line(self, extra: list[str]) -> str:
         """The one-off that restores the database: pgBackRest restore --delta in a container
         like db (in read mode, with the read key, then the source's WAL replayed in it)."""
-        extra = [a for a in extra if a != "--"]
+        extra = list(extra)
+        while extra and extra[0] == "--":  # a later `--` is pgBackRest's to see
+            extra.pop(0)
         source = self.restore.get("from")
         if self.restore.get("pgbackrest"):
             run_args = self._db_read_args()
