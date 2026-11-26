@@ -17,6 +17,10 @@
     refuses on both runtimes instead of restoring an old dump.
   - **Restoring several dumps stops the app once** (on a rendered host) and runs the
     post-restore hooks after the last one, so the app never serves a half-restored cluster.
+    If a restore fails, the app stays stopped (it used to start again on the broken database)
+    and the command says to run `dk <env> start` once the database is fixed. If the app
+    doesn't start again after a good restore, the command says so and fails instead of
+    printing "done".
     The fetch of missing dumps waits until every check and the confirmation have passed, and
     a dry run reports an archive a real run would refuse.
   - **`db restore --dumps` restores the Metabase dump on a rendered host too**, then runs

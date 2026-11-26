@@ -224,7 +224,8 @@ def restore_dumps(
     Everything that can refuse runs first (archives, hooks, the confirmation), and only then,
     with ``fetch``, ``dk fetch db`` brings the dumps. The app stops once around all of them
     (when the backend stops it at all), and the post-restore hooks run after the last one, so
-    the app never serves a half-restored cluster.
+    the app never serves a half-restored cluster. If a restore fails the app stays stopped; if
+    it does not start again afterwards, the command says so and fails.
     """
     from catalpa_tooling.db_archive import restore_archive
 
@@ -272,18 +273,35 @@ def restore_dumps(
             return 1
 
     stopped = b.stop_writers() if b.dump_restore_stops_app else None
+    restored = False
     try:
         for target, path in dumps:
             rc = restore_archive(b, Path(path), target=target, stop_app=False, run_hooks=False)
             if rc != 0:
                 return rc
+        restored = True
     finally:
-        if b.dump_restore_stops_app:
-            b.start_writers(stopped)
+        # A failed or interrupted restore leaves the app stopped: better down than serving a
+        # database that is dropped or half restored.
+        if b.dump_restore_stops_app and not restored:
+            print(
+                f"db restore failed: {env}'s app is left stopped. "
+                f"Fix the database, then run `dk {env} start`.",
+                file=sys.stderr,
+            )
+    start_rc = b.start_writers(stopped) if b.dump_restore_stops_app else 0
+    # The hooks run in one-shot containers, so they don't wait on the app coming back.
     for target, _path in dumps:
         rc = b.run_post_restore_hooks(target)
         if rc != 0:
             return rc
+    if start_rc != 0:
+        print(
+            f"db restore: the database is restored, but {env}'s app did not start again "
+            f"(exit {start_rc}). Check it, then run `dk {env} start`.",
+            file=sys.stderr,
+        )
+        return start_rc
     print("db restore: done.", file=sys.stderr)
     return 0
 

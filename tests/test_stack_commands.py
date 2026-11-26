@@ -64,9 +64,11 @@ class FakeBackend:
         self.calls.append("stop")
         return "token"
 
+    start_rc = 0
+
     def start_writers(self, token):
         self.calls.append(("start", token))
-        return 0
+        return self.start_rc
 
     def run_post_restore_hooks(self, target="app"):
         self.calls.append(("hooks", target))
@@ -127,6 +129,32 @@ def test_an_env_with_pgbackrest_backups_never_falls_back_to_dumps(project, resto
     err = capsys.readouterr().err
     assert "backs up its database" in err and "--file PATH or --dumps" in err
     assert restored == [] and b.calls == []
+
+
+def test_a_failed_restore_leaves_the_app_stopped(project, restored, monkeypatch, capsys) -> None:
+    """Better down than serving a dropped or half-restored database."""
+    _dump(project.fetch_db_dump_path)
+    b = _dev(project)
+
+    def fail(b, path, *a, target="app", **k):
+        b.calls.append(("restore", target))
+        return 3
+
+    monkeypatch.setattr(db_archive, "restore_archive", fail)
+    assert stack_commands.run(b, "db", ns(db_command="restore"), dry_run=False) == 3
+    assert b.calls == ["stop", ("restore", "app")]  # no start, no hooks
+    err = capsys.readouterr().err
+    assert "app is left stopped" in err and "dk dev start" in err
+
+
+def test_an_app_that_does_not_start_again_fails_the_restore(project, restored, capsys) -> None:
+    _dump(project.fetch_db_dump_path)
+    b = _dev(project)
+    b.start_rc = 1
+    assert stack_commands.run(b, "db", ns(db_command="restore"), dry_run=False) == 1
+    assert b.calls == ["stop", ("restore", "app"), ("start", "token"), ("hooks", "app")]
+    err = capsys.readouterr().err
+    assert "did not start again" in err and "done" not in err
 
 
 def test_db_restore_without_pgbackrest_or_a_dump_fetches_first(project, restored, monkeypatch) -> None:
