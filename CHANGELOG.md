@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 2.0.0b4
 
+- **`dk push` no longer fails on a credential compose requires** (#211). A build in CI has no
+  credentials loaded, and compose interpolates the whole file, so one `${KEY:?…}` stopped the
+  build before it began. `dk push` now gives every required variable that is unset the value
+  `dk-build-placeholder` for the build only, and prints their names. A placeholder that would
+  land in a service's `build.args` stops the push instead, naming the service and argument.
+- **A credential that is optional by design is written `${KEY?KEY must be set}`** (no colon: set,
+  but may be empty), not `${KEY:-}`, which `dk <env> check` fails (#212). Docs only: FCOS.md
+  (Principles) and UPGRADING_2.md.
 - **`dk <env> db`, `files` and `restore` are one dispatcher on both runtimes** (M5,
   `stack_commands`). The deprecated `bkp_*` spellings, refusing what a runtime doesn't have,
   refusing a backup on an env without `backups:`, creating missing write credentials and the
