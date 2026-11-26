@@ -181,3 +181,21 @@ def test_which_commands_need_write_credentials() -> None:
     assert w("files", "init", ns) == "restic"
     assert w("files", "backup", ns) == "restic"
     assert w("files", "snapshots", ns) is None
+
+
+def test_restore_dry_run_after_the_command_is_a_dry_run(project) -> None:
+    """`dk <env> restore --dry-run` used to hand --dry-run to pgBackRest and run for real."""
+    from catalpa_tooling.dk_cli import _parse_dk
+    from catalpa_tooling.dk_parser import build_dk_parser
+
+    parsed = _parse_dk(project, ["staging", "restore", "--dry-run"], build_dk_parser(project))
+    assert parsed.restore_dry_run is True and parsed.pgbackrest_restore_args == []
+    seen = []
+
+    class B(FakeBackend):
+        def restore_all(self, extra, snapshot, *, yes, dry_run):
+            seen.append(dry_run)
+            return 0
+
+    assert stack_commands.run(B(project), "restore", parsed, dry_run=False) == 0
+    assert seen == [True]

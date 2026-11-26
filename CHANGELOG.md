@@ -18,6 +18,10 @@
   - A `db restore` dry run with no dump no longer runs `dk fetch db`; it says it would.
   - Compose `files restore --dry-run` prints what it would replace instead of restoring.
   - Refusing a backup on an env without `backups:` exits 2 on compose too (it was 1).
+  - **`dk <env> restore --dry-run` is a dry run.** The flag went to pgBackRest's options
+    instead (only `dk <env> --dry-run restore` worked), so the command ran for real: on a
+    rendered host it stopped the app and db, then pgBackRest refused the option and they stayed
+    stopped.
 - **Restoring a `pg_dump -Fc` archive is one code path on both runtimes** (M5): `db restore
   --file` / `--dumps` and `dk transfer` into a rendered host now run `db_archive.restore_archive`
   over `StackBackend`. Compose and quadlet envs used to each carry their own copy of the

@@ -42,7 +42,10 @@ def run(b: StackBackend, verb: str, ns: argparse.Namespace, *, dry_run: bool) ->
         verb = new
     if verb == "restore":
         return b.restore_all(
-            _pgbackrest_extra(ns), _snapshot(ns), yes=bool(getattr(ns, "yes", False)), dry_run=dry_run
+            _pgbackrest_extra(ns),
+            _snapshot(ns),
+            yes=bool(getattr(ns, "yes", False)),
+            dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
         )
 
     sub = getattr(ns, f"{verb}_command", None) or getattr(ns, f"bkp_{verb}_command", None)
