@@ -202,9 +202,9 @@ def restore_dumps(
             return 1
         from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
 
-        stops = " The app stops while it runs;" if b.dump_restore_stops_app else ""
+        stops = " The app stops while it runs." if b.dump_restore_stops_app else ""
         print(
-            f"WARNING: replace {what}.{stops} the current data is lost.\n  Environment: {b.describe()}",
+            f"WARNING: replace {what}.{stops} The current data is lost.\n  Environment: {b.describe()}",
             file=sys.stderr,
         )
         if not confirm_by_typing_env_name(env):
