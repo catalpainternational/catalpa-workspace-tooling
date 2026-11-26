@@ -1,7 +1,9 @@
 """dk push: build compose.yml stack then push images to a registry (local workstation)."""
 
 import argparse
+import json
 import os
+import re
 import sys
 
 from catalpa_tooling.config import ProjectConfig
@@ -117,6 +119,71 @@ def verify_built_image_platforms(
     return 1
 
 
+BUILD_PLACEHOLDER = "dk-build-placeholder"
+_REQUIRED_VAR = re.compile(r"required variable (\w+) is missing a value")
+_MAX_PLACEHOLDERS = 100
+
+
+def fill_required_placeholders(config: ProjectConfig, env_add: dict[str, str]) -> bool:
+    """Give every variable compose requires (``${KEY:?…}``) and finds unset a placeholder (#211).
+
+    A build in CI has no credentials loaded, and compose interpolates the whole file before
+    building, so one required credential stops it even though the build never uses it. The
+    placeholders go into ``env_add`` (this build's environment only), and their names are printed.
+    A placeholder that ends up in a service's ``build.args`` would be baked into an image, so that
+    build is refused (False) naming the variable.
+    """
+    filled: list[str] = []
+    run_env = os.environ.copy()
+    for _ in range(_MAX_PLACEHOLDERS):
+        run_env.update(env_add)
+        proc = run_cmd(
+            ["docker", "compose", "-f", config.compose_prod, "config", "--format", "json"],
+            cwd=config.repo_root,
+            env=run_env,
+            capture_output=True,
+            text=True,
+            check=False,
+            print_cmd=False,
+        )
+        if proc.returncode == 0:
+            break
+        match = _REQUIRED_VAR.search(proc.stderr or "")
+        if not match or match.group(1) in env_add:
+            return True  # not a missing credential: the build itself reports it
+        env_add[match.group(1)] = BUILD_PLACEHOLDER
+        filled.append(match.group(1))
+    else:
+        return True
+    if not filled:
+        return True
+    try:
+        services = json.loads(proc.stdout or "{}").get("services") or {}
+    except json.JSONDecodeError:
+        services = {}
+    refused: list[str] = []
+    for name, svc in services.items():
+        args = (svc.get("build") or {}).get("args") or {}
+        if isinstance(args, list):
+            args = dict(a.split("=", 1) for a in args if "=" in a)
+        for arg, value in args.items():
+            if value == BUILD_PLACEHOLDER:
+                refused.append(f"{name}: build arg {arg}")
+    if refused:
+        print(
+            "dk push: compose needs a real value for a variable used in build.args, "
+            "and it is not set: " + ", ".join(refused) + ". Set it in the build's environment.",
+            file=sys.stderr,
+        )
+        return False
+    print(
+        f"dk push: no value set for {', '.join(filled)}; using {BUILD_PLACEHOLDER!r} for the build "
+        "only (required by compose.yml, not used by the build).",
+        file=sys.stderr,
+    )
+    return True
+
+
 def push_images(
     config: ProjectConfig,
     *,
@@ -144,6 +211,8 @@ def push_images(
         image_tag=resolved_tag,
         stack_platform=deploy_platform,
     )
+    if not fill_required_placeholders(config, env_add):
+        return 1
     if compose_yml_build(config, env_add=env_add if env_add else None) != 0:
         return 1
     # Between build and tag: the last point where a wrong-architecture image is still local.
