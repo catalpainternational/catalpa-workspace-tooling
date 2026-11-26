@@ -233,6 +233,28 @@ def test_a_backup_on_an_env_that_does_not_back_up_is_refused(project, capsys) ->
     assert "prod doesn't back up files" in capsys.readouterr().err and b.calls == []
 
 
+def test_reading_snapshots_on_an_env_without_files_backups_says_what_to_add(project, capsys) -> None:
+    b = FakeBackend(project)
+    b.env_name = "prod"  # no backups:, no restore_from:
+    assert stack_commands.run(b, "files", ns(files_command="snapshots"), dry_run=False) == 2
+    err = capsys.readouterr().err
+    assert "prod neither backs up nor restores its files" in err
+    assert "backups: [files]" in err and "restore_from" in err and b.calls == []
+
+
+def test_a_compose_files_restore_dry_run_lists_the_volumes(project, capsys) -> None:
+    from types import SimpleNamespace
+
+    from catalpa_tooling import compose_backups
+
+    cfg = SimpleNamespace(
+        has_ops=True, ops=SimpleNamespace(restic=SimpleNamespace(data_volumes=("django_media", "django_private_uploads")))
+    )
+    b = SimpleNamespace(env_name="qad", config=cfg)
+    assert compose_backups.files_restore(b, "latest", yes=False, dry_run=True) == 0
+    assert "volumes django_media, django_private_uploads" in capsys.readouterr().err
+
+
 def test_a_backup_creates_missing_credentials_then_runs(project) -> None:
     b = FakeBackend(project)
     assert stack_commands.run(b, "db", ns(db_command="backup", backup_type="incr"), dry_run=False) == 0

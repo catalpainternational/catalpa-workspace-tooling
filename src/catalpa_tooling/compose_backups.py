@@ -194,8 +194,10 @@ def files_restore(b: ComposeBackend, snapshot: str, *, yes: bool, dry_run: bool)
     from catalpa_tooling.restic_files import run_restore
 
     if dry_run:
+        volumes = list(b.config.ops.restic.data_volumes) if b.config.has_ops else []
+        what = f"volumes {', '.join(volumes)}" if volumes else "media"
         print(
-            f"dry-run: would replace {b.env_name}'s media with restic snapshot {snapshot!r} "
+            f"dry-run: would replace {b.env_name}'s {what} with restic snapshot {snapshot!r} "
             "(files not in the snapshot are deleted)",
             file=sys.stderr,
         )

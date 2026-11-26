@@ -254,7 +254,7 @@ def _run_compose_path(
             return rc
 
     if _is_compose_down_with_volumes(compose_args):
-        if not ns.yes:
+        if not ns.yes and not dry_run:
             if not sys.stdin.isatty():
                 print(
                     "Refusing to wipe a managed deploy without a TTY. "
@@ -268,6 +268,20 @@ def _run_compose_path(
 
     compose_args = _strip_dk_up_provision_flag(compose_args)
     compose_args = _insert_down_remove_orphans(compose_args)
+
+    if dry_run and compose_args and compose_args[0] == "down":
+        # `down` (and `wipe`, which is `down -v`) removes containers and volumes for real, so a
+        # dry run says what it would do and stops (#233: it used to run them).
+        print(f"dry-run: would run: docker compose -f {compose_file} {' '.join(compose_args)}", file=sys.stderr)
+        if _is_compose_down_with_volumes(compose_args):
+            print("dry-run: would then remove this env's wipe data volumes", file=sys.stderr)
+        try:
+            return sync_local_proxy_for_compose_action(
+                info, config, env_name, compose_args, env_add, dry_run=True
+            )
+        except LocalProxyConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
 
     try:
         if compose_args and compose_args[0] == "up":
