@@ -254,7 +254,7 @@ def _run_compose_path(
             return rc
 
     if _is_compose_down_with_volumes(compose_args):
-        if not ns.yes:
+        if not ns.yes and not dry_run:
             if not sys.stdin.isatty():
                 print(
                     "Refusing to wipe a managed deploy without a TTY. "

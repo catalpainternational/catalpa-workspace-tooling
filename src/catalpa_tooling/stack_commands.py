@@ -59,6 +59,11 @@ def run(b: StackBackend, verb: str, ns: argparse.Namespace, *, dry_run: bool) ->
         return 2
 
     yes = bool(getattr(ns, "yes", False))
+    if verb == "files" and sub in _RESTIC_READ_ONLY:
+        why = _refuse_unconfigured(b, label)
+        if why:
+            print(why, file=sys.stderr)
+            return 2
     target = _write_target(verb, sub, ns)
     if target:
         why = _refuse_write(b, _KIND[verb], label)
@@ -109,6 +114,27 @@ def _write_target(verb: str, sub: str, ns: argparse.Namespace) -> Literal["pgbac
         mode = getattr(ns, "configure_mode", None) if sub == "configure" else None
         return "pgbackrest" if needs_pgbr_write(sub, [mode] if mode else []) else None
     return "restic" if needs_restic_write(sub) else None
+
+
+_RESTIC_READ_ONLY = ("snapshots", "check", "stats")
+
+
+def _refuse_unconfigured(b: StackBackend, what: str) -> str | None:
+    """Why a restic command that only reads has nothing to read: the env neither backs up its
+    files nor restores another env's (instead of restic's own "RESTIC_REPOSITORY is required")."""
+    from catalpa_tooling.backup_settings import BackupSettingsError, backup_settings, load_info
+
+    try:
+        s = backup_settings(b.config, b.env_name, load_info(b.config, b.env_name))
+    except BackupSettingsError as exc:
+        return str(exc)
+    if s.writes("files") or s.reads("files"):
+        return None
+    return (
+        f"{what}: {s.env} neither backs up nor restores its files (restic). To back up, add "
+        f"`backups: [{', '.join(sorted(s.backups | {'files'}))}]` to docker/envs/{s.env}/info.yaml; "
+        "to restore another env's backups, set `restore_from:` there."
+    )
 
 
 def _refuse_write(b: StackBackend, kind: str, what: str) -> str | None:

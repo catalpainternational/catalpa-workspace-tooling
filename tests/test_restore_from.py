@@ -384,4 +384,4 @@ def test_compose_restore_runs_db_then_files_and_a_dry_run_never_restores_media(m
     assert ran == [("db", True, False), ("files", "latest")]
     ran.clear()
     assert stack_commands.run(b, "restore", ns, dry_run=True) == 0
-    assert ran == [("db", True, True)] and "would replace staging's media" in capsys.readouterr().err
+    assert ran == [("db", True, True)] and "would replace staging's volumes django_media" in capsys.readouterr().err

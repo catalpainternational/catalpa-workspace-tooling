@@ -224,7 +224,7 @@ def test_render_owned_backup_commands_are_refused(swlt, command, sub, hint, caps
 def test_files_without_restic(site, capsys) -> None:
     rc, r = run_sub(site, "files", "snapshots")
     assert rc == 2 and r.calls == []
-    assert "no restic backup" in capsys.readouterr().err
+    assert "neither backs up nor restores its files" in capsys.readouterr().err
 
 
 def test_podman_run_args_reads_only_the_container_section() -> None:

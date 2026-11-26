@@ -305,12 +305,25 @@ def unknown_env_subcommand(argv: list[str]) -> str | None:
     return first
 
 
+# Subcommands that were removed or exist only on another runtime, and what to use instead.
+REMOVED_SUBCOMMAND_HINTS = {
+    "pgrestore": "use `dk {env} db restore --dumps` (or `db restore --file X`)",
+    "install-systemd": (
+        "on a compose host it is `dk {env} db install-systemd` / `files install-systemd`; "
+        "a rendered host has none, `dk {env} apply` installs its units"
+    ),
+}
+
+
 def unknown_env_subcommand_message(env_name: str, token: str) -> str:
     """Error text naming both the dk subcommands and the compose verbs that are valid."""
     dk_names = ", ".join(sorted(SPECIAL_ENV_COMMANDS))
     app_names = ", ".join(sorted(RUNNING_APP_VERBS))
+    hint = REMOVED_SUBCOMMAND_HINTS.get(token)
+    replaced = f"  {token!r} has moved: {hint.format(env=env_name)}.\n" if hint else ""
     return (
         f"dk {env_name}: unknown subcommand {token!r}.\n"
+        f"{replaced}"
         f"  dk subcommands: {dk_names}\n"
         f"  the running app: {app_names}\n"
         f"  compose itself: `dk {env_name} compose <verb> …` (e.g. `compose up -d`)\n"

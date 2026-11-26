@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Four papercuts from running swlt_ws2 on 2.0.0b4** (#233):
+  - A compose `files restore` dry run names the volumes it would replace (all of
+    `ops.restic.data_volumes`), not "media".
+  - `files snapshots`, `check` and `stats` on an env that neither backs up nor restores its
+    files say what to add (`backups: [files]` or `restore_from:`), on both runtimes, instead of
+    restic's `RESTIC_REPOSITORY is required`.
+  - `dk <env> pgrestore` and `install-systemd` say where they went (`db restore --dumps`;
+    `db install-systemd` / `files install-systemd` on compose, `apply` on a rendered host).
+  - `dk <env> --dry-run wipe` no longer needs a TTY. A real wipe without one still refuses.
+
 ## 2.0.0b4
 
 - **`dk push` no longer fails on a credential compose requires** (#211). A build in CI has no
