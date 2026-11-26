@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from catalpa_tooling.config import load_project_config
+from catalpa_tooling import stack_commands
 from catalpa_tooling.fcos import backend
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "fcos"
@@ -300,6 +301,7 @@ def test_db_restore_file_dispatches(swlt, tmp_path, monkeypatch) -> None:
     seen = []
     monkeypatch.setattr(db_archive, "restore_archive", lambda b, path, *a, **k: seen.append(path) or 0)
     dump = tmp_path / "x.dump"
+    dump.write_bytes(b"PGDMP" + b"x" * 100)
     rc, r = run_sub(swlt, "db", "restore", archive_file=str(dump), yes=True)
     assert rc == 0 and seen == [dump]
     rc, r = run_sub(swlt, "db", "restore", archive_file=str(dump), yes=False, dry_run=True)
@@ -747,14 +749,14 @@ def test_check_hooks_runnable(swlt) -> None:
         _without_task_unit(_backend(hooked, Recorder())).check_hooks_runnable()
 
 
-def test_dump_restore_refuses_before_touching_anything_without_the_task_unit(swlt, tmp_path) -> None:
+def test_dump_restore_refuses_before_touching_anything_without_the_task_unit(swlt, tmp_path, capsys) -> None:
     dump = tmp_path / "app.dump"
     dump.write_bytes(b"PGDMP" + b"x" * 100)
     r = Recorder()
     b = _without_task_unit(_backend(_with_hooks(swlt), r))
-    with pytest.raises(backend.Usage, match="django-task.container"):
-        b.db_restore_dump(dump, yes=True, dry_run=False)
+    assert stack_commands.restore_dumps(b, [("app", dump)], yes=True, dry_run=False) == 1
     assert r.calls == []  # nothing stopped, nothing replaced
+    assert "django-task.container" in capsys.readouterr().err
 
 
 def test_transfer_preflight_refuses_a_destination_without_the_task_unit(swlt, tmp_path, capsys) -> None:
@@ -790,7 +792,9 @@ def test_a_metabase_only_manage_hook_blocks_only_the_pgbackrest_paths(swlt, tmp_
     dump = tmp_path / "app.dump"
     dump.write_bytes(b"PGDMP" + b"x" * 100)
     b = _without_task_unit(_backend(cfg, Recorder()))
-    assert b.db_restore_dump(dump, yes=True, dry_run=True) == 0  # a clean dry run: not refused
+    assert stack_commands.restore_dumps(b, [("app", dump)], yes=True, dry_run=True) == 0  # not refused
+    # Restoring the Metabase dump too runs the Metabase hooks: that one is refused.
+    assert stack_commands.restore_dumps(b, [("app", dump), ("metabase", dump)], yes=True, dry_run=True) == 1
     with pytest.raises(backend.Usage, match="django-task.container"):
         _without_task_unit(_backend(cfg, Recorder())).db_restore([], yes=True, dry_run=False)
 
@@ -800,7 +804,7 @@ def test_dry_run_prints_the_plan_and_reports_that_a_real_run_would_be_refused(sw
     dump.write_bytes(b"PGDMP" + b"x" * 100)
     r = Recorder()
     b = _without_task_unit(_backend(_with_hooks(swlt), r))
-    assert b.db_restore_dump(dump, yes=True, dry_run=True) == 1
+    assert stack_commands.restore_dumps(b, [("app", dump)], yes=True, dry_run=True) == 1
     err = capsys.readouterr().err
     assert "dry-run: would replace" in err and "a real run would be refused" in err and "django-task.container" in err
     assert r.calls == []
@@ -808,4 +812,4 @@ def test_dry_run_prints_the_plan_and_reports_that_a_real_run_would_be_refused(sw
     assert _without_task_unit(_backend(_with_hooks(swlt), Recorder())).db_restore([], yes=True, dry_run=True) == 1
     assert "dry-run: on " in capsys.readouterr().err  # the plan still printed
     # With the unit present a dry run is still clean.
-    assert _backend(_with_hooks(swlt), Recorder()).db_restore_dump(dump, yes=True, dry_run=True) == 0
+    assert stack_commands.restore_dumps(_backend(_with_hooks(swlt), Recorder()), [("app", dump)], yes=True, dry_run=True) == 0

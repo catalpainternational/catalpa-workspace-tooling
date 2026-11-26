@@ -5,14 +5,18 @@ from pathlib import Path
 import pytest
 
 from catalpa_tooling.config import load_project_config
-from catalpa_tooling.db_restore import (
-    pgbackrest_restore_configured,
-    run_compose_metabase_dump_restore,
-    run_unified_db_restore,
-)
+from catalpa_tooling import stack_commands
+from catalpa_tooling.compose_backups import pgbackrest_restore_configured
+from catalpa_tooling.db_archive import restore_archive
 from catalpa_tooling.fetch_db import dump_path_usable, run_fetch_all_dbs
 from catalpa_tooling.pgbackrest_volume_config import PREFIX_READ
+from catalpa_tooling.stack_backend import ComposeBackend
 from tests.helpers import spy_compose_backend
+
+
+def _backend(cfg, env_add=None) -> ComposeBackend:
+    b = ComposeBackend.with_env(ComposeBackend.from_parts(cfg, "dev", "compose.yml", dict(env_add or {})).ctx, dict(env_add or {}))
+    return b
 
 
 def _write_tooling(tmp_path: Path) -> None:
@@ -176,13 +180,7 @@ def test_unified_restore_force_dumps_missing_file(
 ) -> None:
     _write_tooling(tmp_path)
     cfg = load_project_config(tmp_path)
-    rc = run_unified_db_restore(
-        cfg,
-        compose_file="compose.yml",
-        env_add={},
-        env_name="dev",
-        force_dumps=True,
-    )
+    rc = stack_commands.db_restore(_backend(cfg), dumps=True, yes=True)
     assert rc == 1
 
 
@@ -195,26 +193,11 @@ def test_unified_restore_auto_fetch_then_restore(
     cfg = load_project_config(tmp_path)
     _valid_dump(cfg.fetch_db_dump_path)
 
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.pgbackrest_restore_configured",
-        lambda _env: False,
-    )
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_compose_app_dump_restore",
-        lambda *a, **k: 0,
-    )
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_compose_metabase_dump_restore",
-        lambda *a, **k: 0,
-    )
+    calls = spy_compose_backend(monkeypatch)
 
-    rc = run_unified_db_restore(
-        cfg,
-        compose_file="compose.yml",
-        env_add={},
-        env_name="dev",
-    )
+    rc = stack_commands.db_restore(_backend(cfg), yes=True)
     assert rc == 0
+    assert calls == ["ensure", ("copy", cfg.fetch_db_dump_path), "drop_create", "pg_restore", "rm", "hooks:app"]
 
 
 def test_unified_restore_auto_fetch_invokes_fetch(
@@ -231,26 +214,10 @@ def test_unified_restore_auto_fetch_invokes_fetch(
         _valid_dump(config.fetch_db_dump_path)
         return None
 
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.pgbackrest_restore_configured",
-        lambda _env: False,
-    )
-    monkeypatch.setattr("catalpa_tooling.db_restore.run_fetch_all_dbs", _fake_fetch)
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_compose_app_dump_restore",
-        lambda *a, **k: 0,
-    )
-    monkeypatch.setattr(
-        "catalpa_tooling.db_restore.run_compose_metabase_dump_restore",
-        lambda *a, **k: 0,
-    )
+    monkeypatch.setattr("catalpa_tooling.fetch_db.run_fetch_all_dbs", _fake_fetch)
+    spy_compose_backend(monkeypatch)
 
-    rc = run_unified_db_restore(
-        cfg,
-        compose_file="compose.yml",
-        env_add={},
-        env_name="dev",
-    )
+    rc = stack_commands.db_restore(_backend(cfg), yes=True)
     assert rc == 0
     assert called == ["fetch"]
 
@@ -280,12 +247,7 @@ def test_metabase_dump_restore_runs_hooks_after_pgrestore(
     _valid_dump(cfg.fetch_metabase_db_dump_path)
     calls = spy_compose_backend(monkeypatch)
 
-    rc = run_compose_metabase_dump_restore(
-        cfg,
-        compose_file="compose.yml",
-        env_add={},
-        env_name="dev",
-    )
+    rc = restore_archive(_backend(cfg), cfg.fetch_metabase_db_dump_path, target="metabase")
     assert rc == 0
     assert calls == ["ensure", ("copy", cfg.fetch_metabase_db_dump_path), "drop_create", "pg_restore", "rm", "hooks:metabase"]
 
@@ -302,11 +264,6 @@ def test_restore_refuses_before_drop_when_metabase_dump_is_bad(
     cfg.fetch_metabase_db_dump_path.write_bytes(b"-- PostgreSQL database dump\n")
     calls = spy_compose_backend(monkeypatch)
 
-    rc = run_unified_db_restore(
-        cfg,
-        compose_file="compose.yml",
-        env_add={},
-        env_name="dev",
-    )
+    rc = stack_commands.db_restore(_backend(cfg), yes=True)
     assert rc == 1
     assert calls == []

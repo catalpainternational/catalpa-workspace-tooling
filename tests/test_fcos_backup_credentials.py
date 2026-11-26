@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import shutil
 import subprocess
 from pathlib import Path
@@ -47,18 +46,6 @@ class Runner:
         if "secret create" in argv[-1] and input:  # the push script confirms each secret
             out = b"".join(b"pushed " + line.split()[0] + b"\n" for line in input.splitlines())
         return subprocess.CompletedProcess(argv, 0, out, b"")
-
-
-def test_which_commands_need_write_credentials() -> None:
-    ns = argparse.Namespace(configure_mode="stanza-create")
-    assert bc.needs_write("db", "configure", ns) == "pgbackrest"
-    assert bc.needs_write("db", "configure", argparse.Namespace(configure_mode="verify")) is None
-    assert bc.needs_write("db", "backup", ns) == "pgbackrest"
-    assert bc.needs_write("db", "info", ns) is None
-    assert bc.needs_write("db", "restore", ns) is None
-    assert bc.needs_write("files", "init", ns) == "restic"
-    assert bc.needs_write("files", "backup", ns) == "restic"
-    assert bc.needs_write("files", "snapshots", ns) is None
 
 
 def test_configured_credentials_change_nothing(swlt, monkeypatch) -> None:

@@ -92,16 +92,15 @@ def test_compose_env_with_credentials_but_no_setting_stops(envs, capsys) -> None
      ("install-systemd", {})],
 )  # fmt: skip
 def test_compose_db_commands_that_back_up_are_refused_without_backups(envs, monkeypatch, capsys, sub, extra) -> None:
-    from catalpa_tooling import env_handlers
+    from catalpa_tooling import doctl_spaces_provision, stack_commands
+    from catalpa_tooling.stack_backend import ComposeBackend
 
     config = envs(staging="")
     monkeypatch.setattr(
-        env_handlers, "ensure_spaces_backup_credentials", lambda *a, **k: pytest.fail("offered to provision")
+        doctl_spaces_provision, "ensure_spaces_backup_credentials", lambda *a, **k: pytest.fail("offered to provision")
     )
     ns = argparse.Namespace(db_command=sub, yes=False, **extra)
-    rc = env_handlers._handle_bkp_db(
-        ns, config, "staging", {}, config.deploy_envs_dir / "staging" / "credentials.yaml",
-        "compose.yml", "", False, use_prepulled_registry=False,
-    )  # fmt: skip
-    assert rc == 1
+    b = ComposeBackend.with_env(ComposeBackend.from_parts(config, "staging", "compose.yml", {}).ctx, {})
+    rc = stack_commands.run(b, "db", ns, dry_run=False)
+    assert rc == 2
     assert "staging doesn't back up db" in capsys.readouterr().err

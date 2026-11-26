@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from catalpa_tooling import env_handlers
+from catalpa_tooling import env_handlers, stack_commands
 from catalpa_tooling.config import load_project_config
 from tests.helpers import write_minimal_tooling_tree
 
@@ -38,6 +38,9 @@ def test_db_restore_prints_deploy_summary_once(
         nonlocal summary_calls
         summary_calls += 1
         return SimpleNamespace(
+            env_name=env_name,
+            config=config,
+            compose_file="compose.yml",
             env_add={},
             docker_host="",
             site_origin="http://example.test:9004",
@@ -53,7 +56,7 @@ def test_db_restore_prints_deploy_summary_once(
         "resolve_env_with_compose_project",
         lambda _compose_file, env_add, **_kwargs: env_add,
     )
-    monkeypatch.setattr(env_handlers, "run_unified_db_restore", lambda *_a, **_k: 0)
+    monkeypatch.setattr(stack_commands, "db_restore", lambda *_a, **_k: 0)
     monkeypatch.setattr(
         env_handlers, "ensure_stack_matches_checkout", lambda *_a, **_k: (0, None)
     )
@@ -105,6 +108,9 @@ def _patch_env_handlers_for_restore(
         env_handlers,
         "load_managed_deploy_context",
         lambda *_a, **_k: SimpleNamespace(
+            env_name=env_name,
+            config=config,
+            compose_file="compose.yml",
             env_add={},
             docker_host="",
             site_origin="http://example.test:9004",
@@ -139,8 +145,8 @@ def test_db_restore_checks_the_stack_before_restoring(
         lambda *_a, **_k: (order.append("ensure") or 0, None),
     )
     monkeypatch.setattr(
-        env_handlers,
-        "run_unified_db_restore",
+        stack_commands,
+        "db_restore",
         lambda *_a, **_k: order.append("restore") or 0,
     )
 
@@ -159,8 +165,8 @@ def test_db_restore_aborts_when_stack_rebuild_fails(
     )
 
     def _unreachable(*_a, **_k):
-        raise AssertionError("run_unified_db_restore ran after the stack rebuild failed")
+        raise AssertionError("db restore ran after the stack rebuild failed")
 
-    monkeypatch.setattr(env_handlers, "run_unified_db_restore", _unreachable)
+    monkeypatch.setattr(stack_commands, "db_restore", _unreachable)
 
     assert env_handlers.handle_env_command(_restore_ns(env_name), config) == 7

@@ -496,6 +496,10 @@ def _attach_env_command_parsers(
         "--snapshot", default="latest", help="restic snapshot for the media (default: latest)."
     )
     p_restore_all.add_argument(
+        "--dry-run", action="store_true", dest="restore_dry_run",
+        help="Print what would be restored without running it.",
+    )  # fmt: skip
+    p_restore_all.add_argument(
         "pgbackrest_restore_args", nargs=argparse.REMAINDER,
         help="After --: pgBackRest restore options (e.g. -- --type=time '--target=…').",
     )  # fmt: skip
