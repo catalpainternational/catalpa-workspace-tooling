@@ -52,9 +52,10 @@ def run_transfer(
         f"  steps: db={do_db} media={do_media}" + (f" media_method={media_method}" if do_media else ""),
         file=sys.stderr,
     )
+    # A dry run starts and creates nothing: preflight reports what a real run would.
     errs = [
-        *src_b.preflight_transfer(role="source", db=do_db, media=do_media),
-        *dst_b.preflight_transfer(role="destination", db=do_db, media=do_media),
+        *src_b.preflight_transfer(role="source", db=do_db, media=do_media, start_db=not dry),
+        *dst_b.preflight_transfer(role="destination", db=do_db, media=do_media, start_db=not dry),
     ]
     if errs:
         print("transfer: preflight failed:", file=sys.stderr)

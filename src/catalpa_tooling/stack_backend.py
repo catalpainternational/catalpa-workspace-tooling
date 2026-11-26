@@ -106,9 +106,13 @@ class StackBackend(Protocol):
         """Where the env's media lives, for messages. Call after ``preflight_transfer``."""
         ...
 
-    def preflight_transfer(self, *, role: Literal["source", "destination"], db: bool, media: bool) -> list[str]:
+    def preflight_transfer(
+        self, *, role: Literal["source", "destination"], db: bool, media: bool, start_db: bool = True
+    ) -> list[str]:
         """Before ``dk transfer`` changes anything: what would stop this end from taking part,
-        as messages (empty: ready). ``db``/``media``: the legs that will run. May start db."""
+        as messages (empty: ready). ``db``/``media``: the legs that will run. Starts db (and,
+        on compose, creates missing external volumes) unless ``start_db`` is False: a dry run
+        changes nothing, and prints what a real run would start or create instead."""
         ...
 
 
@@ -283,7 +287,9 @@ class ComposeBackend:
     def describe_media(self) -> str:
         return self.media_storage().describe()
 
-    def preflight_transfer(self, *, role: Literal["source", "destination"], db: bool, media: bool) -> list[str]:
+    def preflight_transfer(
+        self, *, role: Literal["source", "destination"], db: bool, media: bool, start_db: bool = True
+    ) -> list[str]:
         """``dk_transfer.compose_preflight_errors``: services, external volumes, db up."""
         from catalpa_tooling.dk_transfer import compose_preflight_errors
         from catalpa_tooling.media_storage import MediaStorageError
@@ -303,6 +309,7 @@ class ComposeBackend:
             do_db=db,
             do_media=media,
             config=self.config,
+            start_db=start_db,
         )
 
     def push_media(self, source: Path, *, dry_run: bool = False) -> int:

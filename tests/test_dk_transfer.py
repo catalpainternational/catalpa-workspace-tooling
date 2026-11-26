@@ -227,6 +227,45 @@ def test_preflight_errors_when_volume_missing(
     assert all("not found" in e for e in errs)
 
 
+def test_dry_run_preflight_starts_no_db_and_creates_no_volumes(
+    monkeypatch: pytest.MonkeyPatch, minimal_project, capsys
+) -> None:
+    """``--dry-run`` (start_db=False) changes nothing: a stopped db and missing volumes are
+    reported as what a real run would do, not errors, and nothing is started or created."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        calls.append(cmd)
+        m = MagicMock()
+        m.returncode, m.stdout = 0, ""
+        if "config" in cmd and "--services" in cmd:
+            m.stdout = "db\ndjango\n"
+        elif cmd[:3] == ["docker", "volume", "inspect"]:
+            m.returncode = 1  # every volume missing
+        return m
+
+    monkeypatch.setattr("catalpa_tooling.dk_transfer.run_cmd", fake_run)
+    monkeypatch.setattr("catalpa_tooling.pgbackrest_volume_config.run_cmd", fake_run)
+    monkeypatch.setattr("catalpa_tooling.dk_transfer.db_service_responds", lambda c, e: False)
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer._compose", lambda *a, **k: pytest.fail(f"compose ran in a dry run: {a}")
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.dk_transfer._ensure_stack_volumes", lambda **k: pytest.fail("volumes created in a dry run")
+    )
+    errs = compose_preflight_errors(
+        label="destination", env_name="dev", compose_file="compose.dev.yaml", env_r={},
+        media=_vol("app_compose_django_media"), do_db=True, do_media=True, config=minimal_project,
+        start_db=False,
+    )  # fmt: skip
+    assert errs == []
+    assert not any(c[:3] == ["docker", "volume", "create"] for c in calls)
+    assert not any("up" in c for c in calls)
+    err = capsys.readouterr().err
+    assert "db not running; a real transfer would start it" in err
+    assert "a real transfer would create them" in err
+
+
 def test_preflight_bind_source_skips_named_volume_ensure(
     monkeypatch: pytest.MonkeyPatch,
     minimal_project,

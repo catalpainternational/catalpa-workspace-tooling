@@ -81,6 +81,11 @@ class Backend:
         db = f"{self.config.stack.services.db}.service"
         return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
 
+    def db_active(self) -> bool:
+        """db's unit is active (``Notify=healthy``: Postgres answers). Starts nothing."""
+        db = f"{self.config.stack.services.db}.service"
+        return self._ssh(f"systemctl --user is-active --quiet {shlex.quote(db)}", tty=False) == 0
+
     def _upload(self, argv: list[str], path: Path) -> int:
         from catalpa_tooling.fcos.dbdump import upload
 
@@ -825,7 +830,7 @@ class Backend:
     def describe_media(self) -> str:
         return f"{self.ssh_target}:{self.media_dir()}"
 
-    def preflight_transfer(self, *, role: str, db: bool, media: bool) -> list[str]:
+    def preflight_transfer(self, *, role: str, db: bool, media: bool, start_db: bool = True) -> list[str]:
         """The render has db, and db is running (started if not); the media volume is on the
         data volume; a destination taking the database can run its post-restore hooks (else
         they'd fail after the database is replaced)."""
@@ -833,6 +838,10 @@ class Backend:
         errs = []
         if db and self.config.stack.services.db not in self.services:
             errs.append(f"{where}: the render has no {self.config.stack.services.db!r} service")
+        elif db and not start_db:
+            # A dry run changes nothing: say what a real one would do.
+            if not self.db_active():
+                print(f"transfer: {where}: db not running; a real transfer would start it.", file=sys.stderr)
         elif db and self.ensure_db_running() != 0:
             # As compose's preflight does: a stopped db would only fail once the destination's
             # writers were already down.

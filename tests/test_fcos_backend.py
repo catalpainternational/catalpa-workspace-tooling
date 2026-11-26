@@ -477,6 +477,26 @@ def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:
     assert t.run_transfer(swlt, **{**kw, "media_method": "tar"}) == 1
 
 
+def test_dry_run_transfer_starts_no_db_on_a_quadlet_end(swlt, tmp_path, capsys) -> None:
+    from catalpa_tooling import stack_transfer as t
+
+    class DbStopped(Recorder):
+        def __call__(self, argv, *, input=None, tty=False):
+            self.calls.append(argv)
+            rc = 3 if "is-active" in argv[-1] else 0
+            return subprocess.CompletedProcess(argv, rc, b"", b"")
+
+    r = DbStopped()
+    src, dst = _backend(swlt, r), _backend(swlt, r)
+    kw = dict(src_b=src, dst_b=dst, do_db=True, do_media=False, media_method="rsync",
+              dry=True, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
+    assert t.run_transfer(swlt, **kw) == 0
+    remote = [c[-1] for c in r.calls]
+    assert remote and all("is-active" in c for c in remote)
+    assert not any("systemctl --user start" in c for c in remote)
+    assert capsys.readouterr().err.count("db not running; a real transfer would start it") == 2
+
+
 def test_transfer_restarts_writers_when_stopping_them_is_interrupted(swlt, tmp_path) -> None:
     """Ctrl-C (or an SSH error) while the destination's writers are stopping: stop_writers never
     returns its token, and they still start again."""

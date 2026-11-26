@@ -137,6 +137,14 @@ def _ensure_stack_volumes(
     return None
 
 
+def _missing_stack_volumes(env_r: dict[str, str], config: ProjectConfig) -> list[str]:
+    """The stack's external volumes ``_ensure_stack_volumes`` would create (a dry run)."""
+    from catalpa_tooling.pgbackrest_volume_config import _stack_volumes_with_compose_keys
+
+    names = [name for name, _key in _stack_volumes_with_compose_keys(env_r, config=config)]
+    return [n for n in names if not _docker_volume_exists(n, env_r)]
+
+
 def _bind_dir_nonempty(path: Path) -> bool:
     try:
         return path.is_dir() and any(path.iterdir())
@@ -154,12 +162,18 @@ def compose_preflight_errors(
     do_db: bool,
     do_media: bool,
     config: ProjectConfig,
+    start_db: bool = True,
 ) -> list[str]:
     """One compose end's transfer preflight (``label``: source or destination): its services
     list, its external volumes (created when missing), db started and answering, the media
     present (a source bind directory must not be empty). Human-readable errors; empty means ok.
+
+    ``start_db=False`` (``--dry-run``) changes nothing: a stopped db and missing volumes are
+    printed as what a real run would do, not errors, so the rest of the check still reports.
     """
     errs: list[str] = []
+    where = f"{label} (`{env_name}`)"
+    would_create: list[str] = []
     svcs, hint = _compose_services_checked(compose_file, env_r)
     if svcs is None:
         errs.append(
@@ -176,7 +190,15 @@ def compose_preflight_errors(
     # Ensure external volumes when DB needs them, or media uses a named volume.
     needs_volume_ensure = (do_db and "db" in svcs) or media_needs_named_vol
     vol_probe = media.location if media_needs_named_vol and media is not None else None
-    if needs_volume_ensure and (
+    if needs_volume_ensure and not start_db:
+        would_create = _missing_stack_volumes(env_r, config)
+        if would_create:
+            print(
+                f"transfer: {where}: external volumes missing; a real transfer would create "
+                f"them: {', '.join(would_create)}",
+                file=sys.stderr,
+            )
+    elif needs_volume_ensure and (
         vol_probe is None or not _docker_volume_exists(vol_probe, env_r)
     ):
         ensure_err = _ensure_stack_volumes(
@@ -192,6 +214,9 @@ def compose_preflight_errors(
                 f"{label} (`{env_name}`): compose file {compose_file!r} has no `db` service "
                 "(required for database transfer)."
             )
+        elif not start_db:
+            if not db_service_responds(compose_file, env_r):
+                print(f"transfer: {where}: db not running; a real transfer would start it.", file=sys.stderr)
         elif not db_service_responds(compose_file, env_r):
             print(
                 f"transfer: {label} (`{env_name}`): `db` not responding, starting it …",
@@ -224,7 +249,9 @@ def compose_preflight_errors(
 
     if do_media and media is not None:
         if media.kind is MediaStorageKind.VOLUME:
-            if not _docker_volume_exists(media.location, env_r):
+            if media.location in would_create:
+                pass  # reported above: a real run creates it
+            elif not _docker_volume_exists(media.location, env_r):
                 errs.append(
                     f"{label} (`{env_name}`): Docker volume {media.location!r} not found even after "
                     f"`ensure_external_stack_volumes`."
