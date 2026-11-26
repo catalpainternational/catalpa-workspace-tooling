@@ -364,7 +364,9 @@ def run_push_media_rsync(
     storage: MediaStorage | None = None,
     label: str = "bkp_files push",
 ) -> int:
-    """Push host media into ``django_media`` via rsync (tar fallback on failure or ``method=tar``)."""
+    """Push host media into ``django_media``: rsync (through a container when the host can't
+    write a local volume's mountpoint), or tar with ``method=tar``. A failed rsync is not retried
+    with tar; the message suggests ``--method tar``."""
     from catalpa_tooling.media_pull import run_push_media
 
     if method == "tar":

@@ -25,17 +25,14 @@ def _ensure_ssh(ssh_host: str) -> None:
         raise SystemExit(1)
 
 
-def _atomic_write_from_stream(dest: Path, stream) -> None:
+def _atomic_write_from_stream(dest: Path, stream, *, min_bytes: int = _MIN_CUSTOM_DUMP_BYTES) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     try:
         with open(tmp, "wb") as out_f:
             shutil.copyfileobj(stream, out_f)
-        if tmp.stat().st_size < _MIN_CUSTOM_DUMP_BYTES:
-            raise ValueError(
-                f"dump at {dest} is only {tmp.stat().st_size} bytes "
-                f"(expected at least {_MIN_CUSTOM_DUMP_BYTES})"
-            )
+        if tmp.stat().st_size < min_bytes:
+            raise ValueError(f"dump at {dest} is only {tmp.stat().st_size} bytes (expected at least {min_bytes})")
         with open(tmp, "rb") as f:
             if f.read(5) != _PG_DUMP_CUSTOM_MAGIC:
                 raise ValueError(f"{dest} does not look like a pg_dump -Fc archive")
@@ -128,7 +125,9 @@ def _fetch_via_dk(
         raise SystemExit(1) from None
     rc = b.ensure_db_running()
     if rc == 0:
-        rc = b.dump_db(dest, pg_dump_args or (), database=None if key == "app" else db_name)
+        database = None if key == "app" else db_name
+        print(f"Fetching {database or 'the app database'} from {b.describe()} → {dest}", file=sys.stderr)
+        rc = b.dump_db(dest, pg_dump_args or (), database=database, min_bytes=_MIN_CUSTOM_DUMP_BYTES)
     if rc != 0:
         raise SystemExit(rc)
 

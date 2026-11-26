@@ -338,11 +338,13 @@ The restores ask you to type the env name first, unless you pass dk's `--yes`. U
 `files restore`, the media is restored in place rather than through a staging volume: a restore
 that fails part-way leaves a mix. Run it again to finish.
 
-`dk transfer SRC DST` works when either end is a quadlet env. The steps are the usual ones, each
-end done its own way: a quadlet destination stops everything but `db` (the edge's socket
-first), takes the dump through the restore above, and takes the media by rsync under
-`podman unshare`, chowned to the media's ID range (`--delete`). The media goes through the
-local session directory, by rsync only. A compose end works as before.
+`dk transfer SRC DST` works between any two envs, compose or quadlet: one implementation
+(`stack_transfer.py`) over each end's backend. A quadlet destination stops everything but `db`
+(the edge's socket first), takes the dump through the restore above, and takes the media by
+rsync under `podman unshare`, chowned to the media's ID range (`--delete`). When either end is a
+quadlet env the media goes through the local session directory, by rsync only; between two
+compose envs it goes as before (a direct rsync when both hosts are reachable, `--media-method
+tar`, the tar fallbacks).
 
 Refused, since the render owns them: `db init`, `install-systemd`, `files push`, and
 `db configure` without a mode.

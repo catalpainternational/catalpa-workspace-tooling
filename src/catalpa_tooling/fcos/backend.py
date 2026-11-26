@@ -81,6 +81,13 @@ class Backend:
         db = f"{self.config.stack.services.db}.service"
         return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
 
+    def db_active(self) -> int:
+        """``systemctl --user is-active`` for db's unit: 0 when active (``Notify=healthy``:
+        Postgres answers), 255 when SSH itself failed, another code when it isn't running.
+        Starts nothing."""
+        db = f"{self.config.stack.services.db}.service"
+        return self._ssh(f"systemctl --user is-active --quiet {shlex.quote(db)}", tty=False)
+
     def _upload(self, argv: list[str], path: Path) -> int:
         from catalpa_tooling.fcos.dbdump import upload
 
@@ -120,12 +127,14 @@ class Backend:
         hooks = post_metabase_restore_hooks if target == "metabase" else post_restore_hooks
         return hooks(self, uploader=self._upload)
 
-    def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None) -> int:
+    def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None, min_bytes: int = 0) -> int:
         """``podman exec … pg_dump -Fc`` streamed to ``dest`` (``fcos.fetch.fetch_db``)."""
         from catalpa_tooling.fcos.fetch import fetch_db
 
         try:
-            fetch_db(self.config, self, dest=dest, pg_dump_args=list(pg_dump_args), database=database)
+            fetch_db(
+                self.config, self, dest=dest, pg_dump_args=list(pg_dump_args), database=database, min_bytes=min_bytes
+            )
         except SystemExit as exc:  # it has printed why
             return int(exc.code or 1)
         return 0
@@ -820,6 +829,41 @@ class Backend:
         vol = (self.committed.manifest.get("bind_volumes") or {})[restic_data_volume_key(self.config)]
         return int(self.committed.manifest["id_ranges"][vol["id_range"]]["start"])
 
+    def describe_media(self) -> str:
+        return f"{self.ssh_target}:{self.media_dir()}"
+
+    def preflight_transfer(self, *, role: str, db: bool, media: bool, dry_run: bool = False) -> list[str]:
+        """The render has db, and db is running (started if not); the media volume is on the
+        data volume; a destination taking the database can run its post-restore hooks (else
+        they'd fail after the database is replaced)."""
+        where = f"{role} (`{self.env_name}`)"
+        errs = []
+        if db and self.config.stack.services.db not in self.services:
+            errs.append(f"{where}: the render has no {self.config.stack.services.db!r} service")
+        elif db and dry_run:
+            # A dry run changes nothing: say what a real one would do. An unreachable host is an
+            # error, as it is when a real run's start fails.
+            rc = self.db_active()
+            if rc == 255:
+                errs.append(f"{where}: couldn't reach {self.ssh_target} (ssh exit 255)")
+            elif rc != 0:
+                print(f"transfer: {where}: db not running; a real transfer would start it.", file=sys.stderr)
+        elif db and self.ensure_db_running() != 0:
+            # As compose's preflight does: a stopped db would only fail once the destination's
+            # writers were already down.
+            errs.append(f"{where}: couldn't start {self.config.stack.services.db}.service")
+        if media:
+            try:
+                self.media_dir()
+            except Usage as exc:
+                errs.append(f"{where}: {exc}")
+        if db and role == "destination":
+            try:
+                self.check_hooks_runnable()
+            except Usage as exc:
+                errs.append(f"{where}: {exc}")
+        return errs
+
     def media_rsync_source(self) -> str:
         """The media directory on the data volume: it's 0755, so the account reads it."""
         return f"{self.ssh_target}:{self.media_dir()}"
@@ -871,14 +915,19 @@ class Backend:
         db = f"{self.config.stack.services.db}.service"
         user_units, _system = stack_units(self.committed)
         units = self._proxy_socket() + [u for u in user_units if u != db]
+        # Remembered before stopping: if the stop is interrupted, start_writers(None) still
+        # brings back whatever may be down.
+        self._stopping = units
         if units:
             print(f"{self.env_name}: systemctl --user stop {' '.join(units)}", file=sys.stderr)
             self._ssh("systemctl --user stop " + " ".join(shlex.quote(u) for u in units), tty=False)
         return units
 
     def start_writers(self, token: object) -> int:
-        """``start_units`` for ``stop_writers``' list (stack_backend.StackBackend)."""
-        return self.start_units(list(token or []))
+        """``start_units`` for ``stop_writers``' list (stack_backend.StackBackend). With no
+        token (the stop was interrupted before it returned), the units it set out to stop."""
+        units = token if token is not None else getattr(self, "_stopping", None)
+        return self.start_units(list(units or []))
 
     def start_units(self, units: list[str]) -> int:
         if not units:
