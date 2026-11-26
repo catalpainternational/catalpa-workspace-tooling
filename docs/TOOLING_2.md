@@ -125,14 +125,15 @@ snapshots`; `worktree create` and `dk dev` locally; every refused command gives 
 
 ## Open questions
 
-- **Restored media and the edge's access to it.** After `files restore`, a quadlet env runs
+- **Restored media and the edge's access to it** (#230). After `files restore`, a quadlet env runs
   `chmod -R o+rX` on every restored volume the edge (Caddy) also mounts. Caddy runs in its own ID
   range, and a compose host's app can write `2750`/`640` (catalpa-site's prod), readable there only
   because its Caddy is root. That fits public media. A project whose edge mounts a volume with a
   private part (files Django serves only after a permission check) would get that part readable
   to every ID range on the host, though Caddy still serves only what it routes. Volumes the edge
-  doesn't mount are untouched. Decide before M4 reaches such a project: a per-project switch or
-  path list, or Caddy joining the app's group instead.
+  doesn't mount are untouched. No current project has such a volume, so this is a documented
+  limit and nothing is built until one does; #230 has the options (leaning towards an
+  `edge_private` exclude list in `info.yaml`).
 
 ## Not changing
 
