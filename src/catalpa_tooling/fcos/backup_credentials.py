@@ -31,15 +31,6 @@ def _flat(credentials: dict) -> dict[str, str]:
     }
 
 
-def needs_write(verb: str, sub: str | None, ns) -> Target | None:
-    """Which WRITE credentials ``dk <env> <verb> <sub>`` needs, if any."""
-    if verb == "db" and (sub == "backup" or (sub == "configure" and getattr(ns, "configure_mode", None) == "stanza-create")):
-        return "pgbackrest"
-    if verb == "files" and sub in ("init", "backup"):
-        return "restic"
-    return None
-
-
 def ensure_backup_credentials(
     b, target: Target, *, yes: bool, dry_run: bool, label: str, read_credentials=None
 ) -> int:

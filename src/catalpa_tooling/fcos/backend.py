@@ -67,6 +67,7 @@ class Backend:
     uploader: Callable[[list[str], Path], int] | None = None
 
     runtime = "quadlet"  # stack_backend.StackBackend
+    dump_restore_stops_app = True
 
     @property
     def ssh_target(self) -> str:
@@ -722,29 +723,42 @@ class Backend:
                 )
         return 0
 
-    def db_restore_dump(self, archive: Path | None, *, yes: bool, dry_run: bool) -> int:
-        """``db restore --file PATH`` / ``--dumps``: replace the app database with a local
-        ``pg_dump -Fc`` archive (``--dumps``: the configured ``paths.fetch_db_dump``)."""
-        from catalpa_tooling.db_archive import restore_archive
+    # --- stack_backend.StackBackend: dk <env> db / files / restore (stack_commands) -------
 
-        path = archive or self.config.fetch_db_dump_path
-        problem = self._hooks_problem(metabase=False, dry_run=dry_run)
-        if archive is None and self.config.has_metabase_fetch():
-            print(
-                "db restore --dumps: the Metabase dump isn't restored on quadlet envs yet; "
-                "only the app database.",
-                file=sys.stderr,
-            )
-        if dry_run:
-            print(f"dry-run: would replace {self.env_name}'s app database with {path}", file=sys.stderr)
-            return self._dry_run_end(problem)
-        if not self._confirm(
-            f"replace {self.env_name}'s app database with {path}. The app stops while it runs; "
-            "the current data is lost.",
-            yes=yes,
-        ):
-            return 1
-        return restore_archive(self, Path(path), stop_app=True)
+    def refused_subcommand(self, verb: str, sub: str) -> str | None:
+        allowed = DB_COMMANDS if verb == "db" else FILES_COMMANDS
+        if sub in allowed:
+            return None
+        return BACKUP_REFUSED.get(sub, "not on a quadlet env").format(env=self.env_name)
+
+    def ensure_backup_credentials(self, target, *, yes: bool, dry_run: bool, label: str) -> int:
+        from catalpa_tooling.fcos.backup_credentials import ensure_backup_credentials
+
+        return ensure_backup_credentials(self, target, yes=yes, dry_run=dry_run, label=label)
+
+    def pgbackrest(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        return self.db(sub, ns)  # a dry run's runner only prints
+
+    def restic(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        return self.files(sub)
+
+    def pgbackrest_restore_available(self) -> bool:
+        if self.restore.get("pgbackrest"):
+            return True
+        try:
+            return "PGBACKREST_" in self._db_quadlet()
+        except Usage:
+            return False
+
+    def pgbackrest_restore(self, extra: list[str], *, yes: bool, dry_run: bool) -> int:
+        return self.db_restore(extra, yes=yes, dry_run=dry_run)
+
+    def restore_hooks_problem(self, *, metabase: bool) -> str | None:
+        try:
+            self.check_hooks_runnable(metabase=metabase)
+        except Usage as exc:
+            return str(exc)
+        return None
 
     def _files_restore_steps(self, snapshot: str) -> tuple[list[str], list[str]]:
         """(shell steps, the paths restored): restic restore of each backed-up directory, exactly
@@ -1173,63 +1187,18 @@ def handle(
             args = [a for a in getattr(ns, "manage_args", []) if a]
             return b.manage(args, user=getattr(ns, "user", None), tty=tty)
         if verb == "restore":
-            return b.restore_all(
-                list(getattr(ns, "pgbackrest_restore_args", None) or []),
-                getattr(ns, "snapshot", None) or "latest",
-                yes=bool(getattr(ns, "yes", False)), dry_run=dry_run,
-            )  # fmt: skip
+            from catalpa_tooling import stack_commands
+
+            return stack_commands.run(b, "restore", ns, dry_run=dry_run)
         if verb == "pull_media":
             from catalpa_tooling.fetch_media import pull_media_target
 
             target = pull_media_target(config, env_name, getattr(ns, "target", None))
             return b.pull_media(target, dry_run=dry_run)
         if verb in ("db", "files"):
-            sub = getattr(ns, f"{command}_command", None)
-            allowed = DB_COMMANDS if verb == "db" else FILES_COMMANDS
-            if sub not in allowed:
-                hint = BACKUP_REFUSED.get(sub, "not on a quadlet env").format(env=env_name)
-                raise Usage(f"dk {env_name} {verb} {sub}: {hint}")
-            yes = bool(getattr(ns, "yes", False))
-            from catalpa_tooling.fcos.backup_credentials import ensure_backup_credentials, needs_write
+            from catalpa_tooling import stack_commands
 
-            target = needs_write(verb, sub, ns)
-            if target:
-                from catalpa_tooling.backup_settings import (
-                    BackupSettingsError,
-                    backup_settings,
-                    refuse_write,
-                )
-
-                from catalpa_tooling.backup_settings import load_info
-
-                try:
-                    roles = backup_settings(config, env_name, load_info(config, env_name))
-                except BackupSettingsError as exc:
-                    raise Usage(str(exc)) from None
-                why = refuse_write(roles, "db" if target == "pgbackrest" else "files", f"dk {env_name} {verb} {sub}")
-                if why:
-                    raise Usage(why)
-                rc = ensure_backup_credentials(
-                    b, target, yes=yes, dry_run=dry_run, label=f"dk {env_name} {verb} {sub}"
-                )
-                if rc != 0:
-                    return rc
-            if verb == "db" and sub == "restore":
-                archive = getattr(ns, "archive_file", None)
-                if archive or getattr(ns, "restore_from_dumps", False):
-                    return b.db_restore_dump(
-                        Path(archive).expanduser() if archive else None,
-                        yes=yes,
-                        dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
-                    )
-                return b.db_restore(
-                    list(getattr(ns, "pgbackrest_restore_args", None) or []),
-                    yes=yes,
-                    dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
-                )
-            if verb == "files" and sub == "restore":
-                return b.files_restore(getattr(ns, "snapshot", "latest"), yes=yes, dry_run=dry_run)
-            return b.db(sub, ns) if verb == "db" else b.files(sub)
+            return stack_commands.run(b, command, ns, dry_run=dry_run)
         return b.units(verb, argv)
     except Usage as exc:
         print(str(exc), file=sys.stderr)

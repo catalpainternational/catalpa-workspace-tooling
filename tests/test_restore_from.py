@@ -365,19 +365,24 @@ def test_restorable_asks_the_repositories(read_env) -> None:
     assert b.restorable() == {"db": True, "files": False}
 
 
-def test_compose_restore_runs_db_then_files_and_a_dry_run_never_restores_media(monkeypatch, capsys) -> None:
-    from catalpa_tooling import env_handlers
-    from catalpa_tooling.backup_settings import BackupSettings
+def test_compose_restore_runs_db_then_files_and_a_dry_run_never_restores_media(minimal_project, monkeypatch, capsys) -> None:
+    import catalpa_tooling.restic_files as rf
+    from catalpa_tooling import stack_commands
+    from catalpa_tooling.stack_backend import ComposeBackend
 
+    config = minimal_project
+    for env, text in (("prod", "backups: [db, files]\n"), ("staging", "restore_from: prod\n")):
+        (config.deploy_envs_dir / env).mkdir(parents=True, exist_ok=True)
+        (config.deploy_envs_dir / env / "info.yaml").write_text(f"name: {env}\n{text}")
     ran = []
-    monkeypatch.setattr(env_handlers, "_handle_bkp_db", lambda ns, *a, **k: ran.append(("db", ns.yes)) or 0)
-    monkeypatch.setattr(env_handlers, "_handle_bkp_files", lambda ns, *a, **k: ran.append(("files", ns.snapshot)) or 0)
-    roles = BackupSettings(env="staging", backups=frozenset(), restore_from="prod", restores=frozenset({"db", "files"}))
+    monkeypatch.setattr(stack_commands, "db_restore", lambda b, **k: ran.append(("db", k["yes"], k["dry_run"])) or 0)
+
+    monkeypatch.setattr(rf, "run_restore", lambda env, snap, **k: ran.append(("files", snap)) or 0)
+    b = ComposeBackend.from_parts(config, "staging", "c.yml", {}, info={"restore_from": "prod"})
+    b.__dict__["env"] = {}
     ns = argparse.Namespace(yes=True, pgbackrest_restore_args=[], snapshot="latest")
-    args = (None, "staging", {}, None, "c.yml", "", False, {}, {}, roles)
-    assert env_handlers._restore_all_compose(ns, *args, use_prepulled_registry=False) == 0
-    assert ran == [("db", True), ("files", "latest")]
+    assert stack_commands.run(b, "restore", ns, dry_run=False) == 0
+    assert ran == [("db", True, False), ("files", "latest")]
     ran.clear()
-    dry = (None, "staging", {}, None, "c.yml", "", True, {}, {}, roles)
-    assert env_handlers._restore_all_compose(ns, *dry, use_prepulled_registry=False) == 0
-    assert ran == [("db", True)] and "would then restore the media" in capsys.readouterr().err
+    assert stack_commands.run(b, "restore", ns, dry_run=True) == 0
+    assert ran == [("db", True, True)] and "would replace staging's media" in capsys.readouterr().err

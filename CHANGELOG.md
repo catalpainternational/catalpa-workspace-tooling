@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **`dk <env> db`, `files` and `restore` are one dispatcher on both runtimes** (M5,
+  `stack_commands`). The deprecated `bkp_*` spellings, refusing what a runtime doesn't have,
+  refusing a backup on an env without `backups:`, creating missing write credentials and the
+  whole `db restore` source choice are written once; pgBackRest and restic themselves stay per
+  runtime. Behaviour changes:
+  - **`db restore --file`, `--dumps` and the dump fallback ask for the env name on compose
+    too**, as a rendered host already did. Pass `--yes` in scripts; without a TTY and without
+    `--yes` they refuse before touching anything.
+  - **A rendered host with no pgBackRest repository restores the local dumps** on a plain
+    `db restore`, fetching them first when missing, as compose does (it used to refuse).
+  - **`db restore --dumps` restores the Metabase dump on a rendered host too**, then runs
+    `post_metabase_db_restore`; it refuses up front when those hooks need a `<web>-task` unit
+    the render lacks.
+  - A `db restore` dry run with no dump no longer runs `dk fetch db`; it says it would.
+  - Compose `files restore --dry-run` prints what it would replace instead of restoring.
+  - Refusing a backup on an env without `backups:` exits 2 on compose too (it was 1).
 - **Restoring a `pg_dump -Fc` archive is one code path on both runtimes** (M5): `db restore
   --file` / `--dumps` and `dk transfer` into a rendered host now run `db_archive.restore_archive`
   over `StackBackend`. Compose and quadlet envs used to each carry their own copy of the

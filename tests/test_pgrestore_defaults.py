@@ -89,22 +89,24 @@ def test_ensure_db_starts_service_when_down() -> None:
     assert calls[0][4:8] == ["up", "-d", "db", "--wait"]
 
 
+def _b(config):
+    from catalpa_tooling.stack_backend import ComposeBackend
+
+    b = ComposeBackend.from_parts(config, "dev", "compose.yml", {})
+    b.__dict__["env"] = {}
+    return b
+
+
 def test_db_restore_file_restores_that_archive_and_runs_hooks(minimal_project, monkeypatch) -> None:
     """``db restore --file`` is what replaced ``db pgrestore --file`` (#42)."""
-    from catalpa_tooling.db_restore import run_unified_db_restore
+    from catalpa_tooling.stack_commands import db_restore
 
     archive = Path(minimal_project.repo_root) / "one.custom"
     archive.write_bytes(b"PGDMP" + b"\x00" * 64)
     calls = spy_compose_backend(monkeypatch)
 
-    with patch("catalpa_tooling.db_restore.run_restore_offline") as offline:
-        rc = run_unified_db_restore(
-            minimal_project,
-            compose_file="compose.yml",
-            env_add={},
-            env_name="dev",
-            archive_path=archive,
-        )
+    with patch("catalpa_tooling.compose_backups.pgbackrest_restore") as offline:
+        rc = db_restore(_b(minimal_project), archive=archive, yes=True)
 
     assert rc == 0
     assert calls == ["ensure", ("copy", archive), "drop_create", "pg_restore", "rm", "hooks:app"]
@@ -112,46 +114,35 @@ def test_db_restore_file_restores_that_archive_and_runs_hooks(minimal_project, m
     offline.assert_not_called()
 
 
-def test_db_restore_file_dry_run_runs_nothing(minimal_project, capsys) -> None:
-    from catalpa_tooling.db_restore import run_unified_db_restore
+def test_db_restore_file_dry_run_runs_nothing(minimal_project, monkeypatch, capsys) -> None:
+    from catalpa_tooling.stack_commands import db_restore
 
     archive = Path(minimal_project.repo_root) / "one.custom"
-    with patch("catalpa_tooling.db_restore.run_compose_app_dump_restore") as restore:
-        rc = run_unified_db_restore(
-            minimal_project,
-            compose_file="compose.yml",
-            env_add={},
-            env_name="dev",
-            archive_path=archive,
-            dry_run=True,
-        )
-    assert rc == 0
-    restore.assert_not_called()
+    calls = spy_compose_backend(monkeypatch)
+    assert db_restore(_b(minimal_project), archive=archive, dry_run=True) == 0
+    assert calls == []
     assert str(archive) in capsys.readouterr().err
 
 
-def test_db_restore_dumps_without_tty_uses_configured_dump(minimal_project, monkeypatch) -> None:
-    """#124: ``--dumps`` from a non-interactive shell must not read the archive from stdin."""
-    from catalpa_tooling.db_restore import run_unified_db_restore
+@pytest.mark.parametrize("dumps", [False, True])
+def test_db_restore_from_a_dump_asks_first(minimal_project, monkeypatch, capsys, dumps: bool) -> None:
+    """``--file`` and ``--dumps`` replace the database: without --yes they ask, and without a
+    TTY to ask on they refuse before touching anything (#124: never read stdin as the archive)."""
+    from catalpa_tooling.stack_commands import db_restore
 
     dump = minimal_project.fetch_db_dump_path
     dump.parent.mkdir(parents=True, exist_ok=True)
     dump.write_bytes(b"PGDMP" + b"\x00" * 200_000)
     calls = spy_compose_backend(monkeypatch)
+    kw = {"dumps": True} if dumps else {"archive": dump}
 
     with (
         patch.object(sys.stdin, "isatty", return_value=False),
         patch.object(sys.stdin, "read", side_effect=AssertionError("stdin read")),
     ):
-        rc = run_unified_db_restore(
-            minimal_project,
-            compose_file="compose.yml",
-            env_add={},
-            env_name="dev",
-            force_dumps=True,
-        )
-
-    assert rc == 0
+        assert db_restore(_b(minimal_project), **kw) == 1
+        assert calls == [] and "Pass --yes" in capsys.readouterr().err
+        assert db_restore(_b(minimal_project), yes=True, **kw) == 0
     assert ("copy", dump) in calls
 
 
@@ -159,20 +150,14 @@ def test_db_restore_dumps_without_tty_uses_configured_dump(minimal_project, monk
 def test_db_restore_bad_file_refuses_before_drop(
     minimal_project, capsys, monkeypatch, content: bytes | None
 ) -> None:
-    from catalpa_tooling.db_restore import run_unified_db_restore
+    from catalpa_tooling.stack_commands import db_restore
 
     archive = Path(minimal_project.repo_root) / "bad.custom"
     if content is not None:
         archive.write_bytes(content)
     calls = spy_compose_backend(monkeypatch)
 
-    rc = run_unified_db_restore(
-        minimal_project,
-        compose_file="compose.yml",
-        env_add={},
-        env_name="dev",
-        archive_path=archive,
-    )
+    rc = db_restore(_b(minimal_project), archive=archive, yes=True)
 
     assert rc == 1
     assert calls == []  # not even the db was started

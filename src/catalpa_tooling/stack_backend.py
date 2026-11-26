@@ -9,13 +9,14 @@ once over it.
 The protocol grows as operations move onto it; ``ComposeBackend`` delegates to the functions
 compose callers already used. Moved so far: ``dk fetch db`` (``via: dk``), ``dk fetch media``
 (and the deprecated ``dk <env> pull_media``), the post-restore hooks, restoring a dump
-archive (``db_archive.restore_archive``) and ``dk transfer`` (``stack_transfer``). Behaviour that
-really differs between the runtimes (pgBackRest restore, restic restore, backup units) stays
-per backend.
+archive (``db_archive.restore_archive``), ``dk transfer`` (``stack_transfer``) and the
+``dk <env> db`` / ``files`` / ``restore`` commands (``stack_commands``). Behaviour that really
+differs between the runtimes (pgBackRest and restic themselves, backup units) stays per backend.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -115,6 +116,55 @@ class StackBackend(Protocol):
         nothing, and prints what a real run would start or create instead."""
         ...
 
+    # --- dk <env> db / files / restore (``stack_commands``) ---------------------------------
+
+    #: Whether restoring a dump stops the app around it (quadlet does; compose never has).
+    dump_restore_stops_app: bool
+
+    def refused_subcommand(self, verb: str, sub: str) -> str | None:
+        """Why ``dk <env> <verb> <sub>`` (verb: ``db``/``files``) isn't on this runtime, and what
+        to use instead; None when it is."""
+        ...
+
+    def ensure_backup_credentials(
+        self, target: Literal["pgbackrest", "restic"], *, yes: bool, dry_run: bool, label: str
+    ) -> int:
+        """Create the repository's WRITE credentials when missing (and put them where the
+        stack reads them). 0 when they're in place."""
+        ...
+
+    def pgbackrest(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        """``dk <env> db <sub>``, every subcommand but ``restore``."""
+        ...
+
+    def restic(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        """``dk <env> files <sub>``, every subcommand but ``restore``."""
+        ...
+
+    def pgbackrest_restore_available(self) -> bool:
+        """Whether ``db restore`` can restore from a pgBackRest repository (the env's own, or
+        ``restore_from``'s with a read key)."""
+        ...
+
+    def pgbackrest_restore(self, extra: list[str], *, yes: bool, dry_run: bool) -> int:
+        """pgBackRest restore of the whole cluster, confirmation and post-restore hooks
+        included. ``extra``: pgBackRest restore options."""
+        ...
+
+    def files_restore(self, snapshot: str, *, yes: bool, dry_run: bool) -> int:
+        """Replace the media with a restic snapshot, confirmation included."""
+        ...
+
+    def restore_all(self, extra: list[str], snapshot: str, *, yes: bool, dry_run: bool) -> int:
+        """``dk <env> restore``: the database and the media, from the env's backups (or
+        ``restore_from``'s), after one confirmation."""
+        ...
+
+    def restore_hooks_problem(self, *, metabase: bool) -> str | None:
+        """Why the post-restore hooks (Metabase's too, with ``metabase``) couldn't run, checked
+        before a restore replaces anything; None when they can."""
+        ...
+
 
 @dataclass
 class ComposeBackend:
@@ -123,6 +173,7 @@ class ComposeBackend:
     ctx: ManagedDeployContext
 
     runtime: Runtime = "compose"
+    dump_restore_stops_app: bool = False
     _media_storage: object = field(default=None, init=False, repr=False, compare=False)
 
     @property
@@ -365,6 +416,57 @@ class ComposeBackend:
             config=self.config,
             storage=storage,
         )
+
+    @classmethod
+    def with_env(cls, ctx: ManagedDeployContext, env: dict[str, str]) -> ComposeBackend:
+        """A backend whose ``env`` is the one a ``dk <env>`` handler already resolved (compose
+        project set, db image named), so every step sees the same values."""
+        b = cls(ctx)
+        b.__dict__["env"] = env  # the cached_property's slot
+        return b
+
+    def refused_subcommand(self, verb: str, sub: str) -> str | None:
+        return None
+
+    def ensure_backup_credentials(
+        self, target: Literal["pgbackrest", "restic"], *, yes: bool, dry_run: bool, label: str
+    ) -> int:
+        from catalpa_tooling import compose_backups
+
+        return compose_backups.ensure_backup_credentials(self, target, yes=yes, dry_run=dry_run, label=label)
+
+    def pgbackrest(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        from catalpa_tooling import compose_backups
+
+        return compose_backups.pgbackrest(self, sub, ns, dry_run=dry_run)
+
+    def restic(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        from catalpa_tooling import compose_backups
+
+        return compose_backups.restic(self, sub, ns, dry_run=dry_run)
+
+    def pgbackrest_restore_available(self) -> bool:
+        from catalpa_tooling.compose_backups import pgbackrest_restore_configured
+
+        return pgbackrest_restore_configured(self.env)
+
+    def pgbackrest_restore(self, extra: list[str], *, yes: bool, dry_run: bool) -> int:
+        from catalpa_tooling import compose_backups
+
+        return compose_backups.pgbackrest_restore(self, extra, yes=yes, dry_run=dry_run)
+
+    def files_restore(self, snapshot: str, *, yes: bool, dry_run: bool) -> int:
+        from catalpa_tooling import compose_backups
+
+        return compose_backups.files_restore(self, snapshot, yes=yes, dry_run=dry_run)
+
+    def restore_all(self, extra: list[str], snapshot: str, *, yes: bool, dry_run: bool) -> int:
+        from catalpa_tooling import compose_backups
+
+        return compose_backups.restore_all(self, extra, snapshot, yes=yes, dry_run=dry_run)
+
+    def restore_hooks_problem(self, *, metabase: bool) -> str | None:
+        return None  # compose runs the hooks with `run --rm`: nothing to render first
 
 
 class BackendError(Exception):

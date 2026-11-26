@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from catalpa_tooling import env_handlers, stale_stack
+from catalpa_tooling import env_handlers, stack_commands, stale_stack
 from catalpa_tooling.config import ProjectConfig, ProjectConfigError, load_project_config
 from catalpa_tooling.pgbackrest_volume_config import (
     postgres_image_from_env,
@@ -96,7 +96,7 @@ def test_every_env_command_names_the_db_image_from_compose(
         lambda _config, compose_file, env_add: calls.append(compose_file),
     )
     monkeypatch.setattr(env_handlers, "ensure_stack_matches_checkout", lambda *_a, **_k: (0, None))
-    monkeypatch.setattr(env_handlers, "run_unified_db_restore", lambda *_a, **_k: 0)
+    monkeypatch.setattr(stack_commands, "db_restore", lambda *_a, **_k: 0)
 
     assert env_handlers.handle_env_command(_restore_ns(env_name), config) == 0
     assert calls == ["compose.yml"]
