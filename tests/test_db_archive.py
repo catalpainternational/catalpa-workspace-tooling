@@ -93,10 +93,12 @@ def test_a_non_archive_is_refused_before_anything_runs(minimal_project, tmp_path
     assert "db restore:" in capsys.readouterr().err
 
 
-def test_hooks_can_be_deferred_and_target_selects_the_hook_set(minimal_project, archive) -> None:
+def test_hooks_can_be_deferred_and_target_selects_the_hook_set(minimal_project, archive, capsys) -> None:
     b = FakeBackend(minimal_project)
     assert restore_archive(b, archive, run_hooks=False) == 0
     assert not any(str(k).startswith("hooks") for k in _kinds(b))
+    # The caller (dk transfer) reports when it is done, not the restore half-way through.
+    assert "db restore: done." not in capsys.readouterr().err
     b = FakeBackend(minimal_project)
     assert restore_archive(b, archive, target="metabase") == 0
     assert _kinds(b)[-1] == "hooks:metabase"

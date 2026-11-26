@@ -95,7 +95,10 @@ def restore_archive(
             b.db_sh(f"rm -f {shlex.quote(remote)}", root=True)
         if stop_app:
             b.start_writers(stopped)
-    rc = b.run_post_restore_hooks(target) if run_hooks else 0
+    if not run_hooks:
+        # The caller runs the hooks and reports when the whole job is done (``dk transfer``).
+        return 0
+    rc = b.run_post_restore_hooks(target)
     if rc == 0:
         print("db restore: done.", file=sys.stderr)
     return rc
