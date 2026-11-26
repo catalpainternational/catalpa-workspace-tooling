@@ -130,6 +130,11 @@ hand along the lines of section 3.
   keys and credentials are left alone.
 - **`docker/credentials.yaml`** (project level, beside `envs/`) is new and optional. Rendered hosts
   read it; compose envs don't yet. It needs its own `.sops.yaml` creation rule.
+- **Credentials are required variables in `compose.yml`**: `${KEY:?KEY must be set}`, so plain
+  `docker compose up` refuses to start without them, and `dk <env> check` fails on a credential
+  that resolves without a value. For one that is optional by design, write `${KEY?KEY must be
+  set}` (no colon: set, but may be empty) and set it empty in the envs without the feature. See
+  [FCOS.md](FCOS.md) (Principles).
 - **`dk <env> restore`** restores the database and the media together, with one confirmation.
 
 ## 6. Check

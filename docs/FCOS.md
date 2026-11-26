@@ -21,6 +21,14 @@ are in catalpa-site's `docker/envs/fcos-rootless/` (catalpa-site#1006).
   `${KEY:?KEY must be set}`, never with a default. `check` enforces this: for each
   credential, it resolves the compose file without that credential and expects compose to
   refuse.
+- **A credential that is optional by design** (a feature that switches itself off when its key
+  is empty, such as an OAuth client ID whose button is hidden without it) is written
+  `${KEY?KEY must be set}`, without the colon: it must be *set*, and may be empty. `check`
+  passes, an env that has the key gets it as a Podman secret, and an env without the feature
+  sets it empty (in `info.yaml` `env:` for a local env). Don't write `${KEY:-}`: `check` fails
+  on every env that has the key. Don't write `${KEY:?…}` either: that makes every env, local
+  dev included, give it a value. An image build needs no value for it: `dk push` fills required
+  variables that are unset with a placeholder for the build.
 - **A render holds no secret, and it's the same whoever runs it.** It reads only the *names*
   in `credentials.yaml` (SOPS leaves the keys in the clear) and never decrypts. It ignores the
   shell's environment and the `dk` worktree overlay. Each credential becomes a Podman secret
