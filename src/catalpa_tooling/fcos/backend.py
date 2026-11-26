@@ -81,10 +81,12 @@ class Backend:
         db = f"{self.config.stack.services.db}.service"
         return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
 
-    def db_active(self) -> bool:
-        """db's unit is active (``Notify=healthy``: Postgres answers). Starts nothing."""
+    def db_active(self) -> int:
+        """``systemctl --user is-active`` for db's unit: 0 when active (``Notify=healthy``:
+        Postgres answers), 255 when SSH itself failed, another code when it isn't running.
+        Starts nothing."""
         db = f"{self.config.stack.services.db}.service"
-        return self._ssh(f"systemctl --user is-active --quiet {shlex.quote(db)}", tty=False) == 0
+        return self._ssh(f"systemctl --user is-active --quiet {shlex.quote(db)}", tty=False)
 
     def _upload(self, argv: list[str], path: Path) -> int:
         from catalpa_tooling.fcos.dbdump import upload
@@ -830,7 +832,7 @@ class Backend:
     def describe_media(self) -> str:
         return f"{self.ssh_target}:{self.media_dir()}"
 
-    def preflight_transfer(self, *, role: str, db: bool, media: bool, start_db: bool = True) -> list[str]:
+    def preflight_transfer(self, *, role: str, db: bool, media: bool, dry_run: bool = False) -> list[str]:
         """The render has db, and db is running (started if not); the media volume is on the
         data volume; a destination taking the database can run its post-restore hooks (else
         they'd fail after the database is replaced)."""
@@ -838,9 +840,13 @@ class Backend:
         errs = []
         if db and self.config.stack.services.db not in self.services:
             errs.append(f"{where}: the render has no {self.config.stack.services.db!r} service")
-        elif db and not start_db:
-            # A dry run changes nothing: say what a real one would do.
-            if not self.db_active():
+        elif db and dry_run:
+            # A dry run changes nothing: say what a real one would do. An unreachable host is an
+            # error, as it is when a real run's start fails.
+            rc = self.db_active()
+            if rc == 255:
+                errs.append(f"{where}: couldn't reach {self.ssh_target} (ssh exit 255)")
+            elif rc != 0:
                 print(f"transfer: {where}: db not running; a real transfer would start it.", file=sys.stderr)
         elif db and self.ensure_db_running() != 0:
             # As compose's preflight does: a stopped db would only fail once the destination's

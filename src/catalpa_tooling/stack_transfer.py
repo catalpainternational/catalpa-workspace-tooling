@@ -54,8 +54,8 @@ def run_transfer(
     )
     # A dry run starts and creates nothing: preflight reports what a real run would.
     errs = [
-        *src_b.preflight_transfer(role="source", db=do_db, media=do_media, start_db=not dry),
-        *dst_b.preflight_transfer(role="destination", db=do_db, media=do_media, start_db=not dry),
+        *src_b.preflight_transfer(role="source", db=do_db, media=do_media, dry_run=dry),
+        *dst_b.preflight_transfer(role="destination", db=do_db, media=do_media, dry_run=dry),
     ]
     if errs:
         print("transfer: preflight failed:", file=sys.stderr)

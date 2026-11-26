@@ -230,7 +230,7 @@ def test_preflight_errors_when_volume_missing(
 def test_dry_run_preflight_starts_no_db_and_creates_no_volumes(
     monkeypatch: pytest.MonkeyPatch, minimal_project, capsys
 ) -> None:
-    """``--dry-run`` (start_db=False) changes nothing: a stopped db and missing volumes are
+    """``--dry-run`` (dry_run=True) changes nothing: a stopped db and missing volumes are
     reported as what a real run would do, not errors, and nothing is started or created."""
     calls: list[list[str]] = []
 
@@ -256,7 +256,7 @@ def test_dry_run_preflight_starts_no_db_and_creates_no_volumes(
     errs = compose_preflight_errors(
         label="destination", env_name="dev", compose_file="compose.dev.yaml", env_r={},
         media=_vol("app_compose_django_media"), do_db=True, do_media=True, config=minimal_project,
-        start_db=False,
+        dry_run=True,
     )  # fmt: skip
     assert errs == []
     assert not any(c[:3] == ["docker", "volume", "create"] for c in calls)

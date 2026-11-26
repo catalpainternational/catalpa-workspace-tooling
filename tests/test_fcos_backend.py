@@ -497,6 +497,27 @@ def test_dry_run_transfer_starts_no_db_on_a_quadlet_end(swlt, tmp_path, capsys) 
     assert capsys.readouterr().err.count("db not running; a real transfer would start it") == 2
 
 
+def test_dry_run_transfer_fails_when_a_quadlet_host_is_unreachable(swlt, tmp_path, capsys) -> None:
+    """SSH failing (exit 255) isn't "db not running": the dry run reports it and fails, as a
+    real run's preflight does."""
+    from catalpa_tooling import stack_transfer as t
+
+    class Unreachable(Recorder):
+        def __call__(self, argv, *, input=None, tty=False):
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 255, b"", b"")
+
+    r = Unreachable()
+    src, dst = _backend(swlt, Recorder()), _backend(swlt, r)
+    kw = dict(src_b=src, dst_b=dst, do_db=True, do_media=False, media_method="rsync",
+              dry=True, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
+    assert t.run_transfer(swlt, **kw) == 1
+    assert not any("systemctl --user start" in c[-1] for c in r.calls)
+    err = capsys.readouterr().err
+    assert "couldn't reach deploy@staging.site.example (ssh exit 255)" in err
+    assert "preflight ok" not in err
+
+
 def test_transfer_restarts_writers_when_stopping_them_is_interrupted(swlt, tmp_path) -> None:
     """Ctrl-C (or an SSH error) while the destination's writers are stopping: stop_writers never
     returns its token, and they still start again."""

@@ -162,13 +162,13 @@ def compose_preflight_errors(
     do_db: bool,
     do_media: bool,
     config: ProjectConfig,
-    start_db: bool = True,
+    dry_run: bool = False,
 ) -> list[str]:
     """One compose end's transfer preflight (``label``: source or destination): its services
     list, its external volumes (created when missing), db started and answering, the media
     present (a source bind directory must not be empty). Human-readable errors; empty means ok.
 
-    ``start_db=False`` (``--dry-run``) changes nothing: a stopped db and missing volumes are
+    ``dry_run`` (``--dry-run``) changes nothing: a stopped db and missing volumes are
     printed as what a real run would do, not errors, so the rest of the check still reports.
     """
     errs: list[str] = []
@@ -190,7 +190,7 @@ def compose_preflight_errors(
     # Ensure external volumes when DB needs them, or media uses a named volume.
     needs_volume_ensure = (do_db and "db" in svcs) or media_needs_named_vol
     vol_probe = media.location if media_needs_named_vol and media is not None else None
-    if needs_volume_ensure and not start_db:
+    if needs_volume_ensure and dry_run:
         would_create = _missing_stack_volumes(env_r, config)
         if would_create:
             print(
@@ -214,7 +214,7 @@ def compose_preflight_errors(
                 f"{label} (`{env_name}`): compose file {compose_file!r} has no `db` service "
                 "(required for database transfer)."
             )
-        elif not start_db:
+        elif dry_run:
             if not db_service_responds(compose_file, env_r):
                 print(f"transfer: {where}: db not running; a real transfer would start it.", file=sys.stderr)
         elif not db_service_responds(compose_file, env_r):

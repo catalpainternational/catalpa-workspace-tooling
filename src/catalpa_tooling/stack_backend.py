@@ -107,12 +107,12 @@ class StackBackend(Protocol):
         ...
 
     def preflight_transfer(
-        self, *, role: Literal["source", "destination"], db: bool, media: bool, start_db: bool = True
+        self, *, role: Literal["source", "destination"], db: bool, media: bool, dry_run: bool = False
     ) -> list[str]:
         """Before ``dk transfer`` changes anything: what would stop this end from taking part,
         as messages (empty: ready). ``db``/``media``: the legs that will run. Starts db (and,
-        on compose, creates missing external volumes) unless ``start_db`` is False: a dry run
-        changes nothing, and prints what a real run would start or create instead."""
+        on compose, creates missing external volumes), except with ``dry_run``: that changes
+        nothing, and prints what a real run would start or create instead."""
         ...
 
 
@@ -288,7 +288,7 @@ class ComposeBackend:
         return self.media_storage().describe()
 
     def preflight_transfer(
-        self, *, role: Literal["source", "destination"], db: bool, media: bool, start_db: bool = True
+        self, *, role: Literal["source", "destination"], db: bool, media: bool, dry_run: bool = False
     ) -> list[str]:
         """``dk_transfer.compose_preflight_errors``: services, external volumes, db up."""
         from catalpa_tooling.dk_transfer import compose_preflight_errors
@@ -309,7 +309,7 @@ class ComposeBackend:
             do_db=db,
             do_media=media,
             config=self.config,
-            start_db=start_db,
+            dry_run=dry_run,
         )
 
     def push_media(self, source: Path, *, dry_run: bool = False) -> int:
