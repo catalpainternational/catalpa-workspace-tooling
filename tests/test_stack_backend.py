@@ -269,12 +269,12 @@ def test_quadlet_dump_db_returns_the_fetchs_exit_code(site, tmp_path, monkeypatc
     b, _ = quadlet(site)
     seen = {}
 
-    def ok(config, q, *, dest, pg_dump_args, database):
-        seen.update(q=q, dest=dest, args=pg_dump_args, database=database)
+    def ok(config, q, *, dest, pg_dump_args, database, min_bytes):
+        seen.update(q=q, dest=dest, args=pg_dump_args, database=database, min_bytes=min_bytes)
 
     monkeypatch.setattr(fetch, "fetch_db", ok)
-    assert b.dump_db(tmp_path / "x.dump", ["-x"], database="metabase") == 0
-    assert seen == {"q": b, "dest": tmp_path / "x.dump", "args": ["-x"], "database": "metabase"}
+    assert b.dump_db(tmp_path / "x.dump", ["-x"], database="metabase", min_bytes=7) == 0
+    assert seen == {"q": b, "dest": tmp_path / "x.dump", "args": ["-x"], "database": "metabase", "min_bytes": 7}
 
     def fails(config, q, **kw):
         raise SystemExit(1)
@@ -283,23 +283,28 @@ def test_quadlet_dump_db_returns_the_fetchs_exit_code(site, tmp_path, monkeypatc
     assert b.dump_db(tmp_path / "x.dump") == 1
 
 
-def test_compose_dump_db_rejects_a_dump_too_small(site, tmp_path, monkeypatch) -> None:
+def test_compose_dump_db_checks_the_archive_and_only_the_asked_minimum(site, tmp_path, monkeypatch) -> None:
     dest = tmp_path / "app.dump"
     seen = {}
+    body = b"PGDMP" + b"\0" * 10
 
     def fake(compose_file, env, d, extra, *, database=None):
         seen.update(extra=extra, database=database)
-        d.write_bytes(b"PGDMP" + b"\0" * size)
+        d.write_bytes(body)
         return 0
 
     monkeypatch.setattr(pgbackrest_db, "run_pg_dump_to_file", fake)
     c = ComposeBackend(compose_ctx(site))
-    size = 200_000
+    # A transfer takes a small (empty) database: no minimum unless asked.
     assert c.dump_db(dest) == 0
     assert seen == {"extra": None, "database": None}
-    size = 10
-    assert c.dump_db(dest, ["-x"], database="metabase") == 1
+    # dk fetch db asks for a real-sized dump.
+    assert c.dump_db(dest, ["-x"], database="metabase", min_bytes=100_000) == 1
     assert seen == {"extra": ["-x"], "database": "metabase"}
+    assert not dest.exists()
+    body = b"not an archive"
+    assert c.dump_db(dest) == 1
+    assert not dest.exists()
 
 
 def _fetch_dk(config, tmp_path, key: str = "app") -> None:
@@ -316,17 +321,20 @@ def test_fetch_db_via_dk_starts_db_then_dumps(site, tmp_path, monkeypatch) -> No
     calls = []
 
     class Fake:
+        def describe(self):
+            return "staging (fake)"
+
         def ensure_db_running(self):
             calls.append("ensure")
             return 0
 
-        def dump_db(self, dest, args, *, database):
-            calls.append(("dump", database))
+        def dump_db(self, dest, args, *, database, min_bytes):
+            calls.append(("dump", database, min_bytes))
             return 0
 
     monkeypatch.setattr(stack_backend, "backend_for", lambda config, env: Fake())
     _fetch_dk(site, tmp_path)
-    assert calls == ["ensure", ("dump", None)]
+    assert calls == ["ensure", ("dump", None, 100_000)]
 
 
 def test_fetch_db_via_dk_stops_when_db_wont_start(site, tmp_path, monkeypatch) -> None:

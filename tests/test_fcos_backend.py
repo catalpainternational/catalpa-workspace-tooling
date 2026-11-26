@@ -477,6 +477,28 @@ def test_quadlet_to_quadlet_transfer_order(swlt, tmp_path, monkeypatch) -> None:
     assert t.run_transfer(swlt, **{**kw, "media_method": "tar"}) == 1
 
 
+def test_transfer_restarts_writers_when_stopping_them_is_interrupted(swlt, tmp_path) -> None:
+    """Ctrl-C (or an SSH error) while the destination's writers are stopping: stop_writers never
+    returns its token, and they still start again."""
+    from catalpa_tooling import stack_transfer as t
+
+    class Interrupted(Recorder):
+        def __call__(self, argv, *, input=None, tty=False):
+            if "systemctl --user stop" in argv[-1]:
+                raise KeyboardInterrupt
+            return super().__call__(argv, input=input, tty=tty)
+
+    r = Interrupted()
+    src, dst = _backend(swlt, Recorder()), _backend(swlt, r)
+    kw = dict(src_b=src, dst_b=dst, do_db=False, do_media=True, media_method="rsync",
+              dry=False, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
+    with pytest.raises(KeyboardInterrupt):
+        t.run_transfer(swlt, **kw)
+    started = [c[-1] for c in r.calls if "systemctl --user start" in c[-1]]
+    assert len(started) == 1 and "django.service" in started[0]
+    assert not list(tmp_path.glob("staging_to_staging_*"))
+
+
 def test_compose_to_quadlet_transfer_stages_media_locally(swlt, tmp_path, monkeypatch) -> None:
     """A compose source and a quadlet destination: each end's own primitives, the media through
     the session directory; tar is refused, since the quadlet end takes rsync only."""
@@ -702,7 +724,8 @@ def test_transfer_preflight_refuses_a_destination_without_the_task_unit(swlt, tm
     kw = dict(src_b=src, dst_b=dst, do_db=True, do_media=False, media_method="rsync",
               dry=False, yes=True, workdir=str(tmp_path), keep_workdir=False)  # fmt: skip
     assert t.run_transfer(_with_hooks(swlt), **kw) == 1
-    assert r.calls == []
+    # Preflight only started db on each end; nothing was stopped or changed.
+    assert [c[-1] for c in r.calls] == ["systemctl --user start db.service"] * 2
     assert "preflight failed" in capsys.readouterr().err
 
 

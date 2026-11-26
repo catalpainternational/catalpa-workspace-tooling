@@ -130,6 +130,7 @@ def test_run_fetch_via_dk_dumps_each_entrys_database(
         env_add: dict[str, str] = {}
         config = cfg
         env_name = "prod"
+        docker_host = ""
 
     scripts: list[str] = []
 

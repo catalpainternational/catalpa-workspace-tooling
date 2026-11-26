@@ -120,12 +120,14 @@ class Backend:
         hooks = post_metabase_restore_hooks if target == "metabase" else post_restore_hooks
         return hooks(self, uploader=self._upload)
 
-    def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None) -> int:
+    def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None, min_bytes: int = 0) -> int:
         """``podman exec … pg_dump -Fc`` streamed to ``dest`` (``fcos.fetch.fetch_db``)."""
         from catalpa_tooling.fcos.fetch import fetch_db
 
         try:
-            fetch_db(self.config, self, dest=dest, pg_dump_args=list(pg_dump_args), database=database)
+            fetch_db(
+                self.config, self, dest=dest, pg_dump_args=list(pg_dump_args), database=database, min_bytes=min_bytes
+            )
         except SystemExit as exc:  # it has printed why
             return int(exc.code or 1)
         return 0
@@ -824,12 +826,17 @@ class Backend:
         return f"{self.ssh_target}:{self.media_dir()}"
 
     def preflight_transfer(self, *, role: str, db: bool, media: bool) -> list[str]:
-        """The render has db and the media volume; a destination taking the database can run
-        its post-restore hooks (else they'd fail after the database is replaced)."""
+        """The render has db, and db is running (started if not); the media volume is on the
+        data volume; a destination taking the database can run its post-restore hooks (else
+        they'd fail after the database is replaced)."""
         where = f"{role} (`{self.env_name}`)"
         errs = []
         if db and self.config.stack.services.db not in self.services:
             errs.append(f"{where}: the render has no {self.config.stack.services.db!r} service")
+        elif db and self.ensure_db_running() != 0:
+            # As compose's preflight does: a stopped db would only fail once the destination's
+            # writers were already down.
+            errs.append(f"{where}: couldn't start {self.config.stack.services.db}.service")
         if media:
             try:
                 self.media_dir()
@@ -893,14 +900,19 @@ class Backend:
         db = f"{self.config.stack.services.db}.service"
         user_units, _system = stack_units(self.committed)
         units = self._proxy_socket() + [u for u in user_units if u != db]
+        # Remembered before stopping: if the stop is interrupted, start_writers(None) still
+        # brings back whatever may be down.
+        self._stopping = units
         if units:
             print(f"{self.env_name}: systemctl --user stop {' '.join(units)}", file=sys.stderr)
             self._ssh("systemctl --user stop " + " ".join(shlex.quote(u) for u in units), tty=False)
         return units
 
     def start_writers(self, token: object) -> int:
-        """``start_units`` for ``stop_writers``' list (stack_backend.StackBackend)."""
-        return self.start_units(list(token or []))
+        """``start_units`` for ``stop_writers``' list (stack_backend.StackBackend). With no
+        token (the stop was interrupted before it returned), the units it set out to stop."""
+        units = token if token is not None else getattr(self, "_stopping", None)
+        return self.start_units(list(units or []))
 
     def start_units(self, units: list[str]) -> int:
         if not units:

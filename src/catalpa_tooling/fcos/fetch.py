@@ -64,24 +64,23 @@ def fetch_db(
     dest: Path,
     pg_dump_args: Sequence[str] | None = None,
     database: str | None = None,
+    min_bytes: int = 0,
     popen=subprocess.Popen,
 ) -> None:
     from catalpa_tooling.fetch_db import _atomic_write_from_stream
 
     db = config.stack.services.db
     if db not in (q.committed.manifest.get("images") or {}):
-        raise _fail(f"fetch db: {q.env_name}'s render has no {db!r} service")
+        raise _fail(f"pg_dump: {q.env_name}'s render has no {db!r} service")
     command = pg_dump_command(db, pg_dump_args or (), database=database)
-    label = "the app database" if database is None else database
-    print(f"Fetching {label} via ssh {q.ssh_target} (podman exec {db} pg_dump -Fc) → {dest}", file=sys.stderr)
     argv = q.host._argv(q.login, command)
     proc = popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        _atomic_write_from_stream(dest, proc.stdout)
+        _atomic_write_from_stream(dest, proc.stdout, min_bytes=min_bytes)
     except ValueError:
         proc.wait()
         err = (proc.stderr.read() if proc.stderr else b"").decode(errors="replace").strip()
-        raise _fail(f"fetch db: pg_dump on {q.ssh_target} failed: {err or 'no output'}") from None
+        raise _fail(f"pg_dump on {q.ssh_target} failed: {err or 'no output'}") from None
     finally:
         if proc.stdout:
             proc.stdout.close()
@@ -89,7 +88,7 @@ def fetch_db(
     if rc != 0:
         err = (proc.stderr.read() if proc.stderr else b"").decode(errors="replace").strip()
         dest.unlink(missing_ok=True)
-        raise _fail(f"fetch db: pg_dump on {q.ssh_target} exited {rc}: {err}")
+        raise _fail(f"pg_dump on {q.ssh_target} exited {rc}: {err}")
 
 
 def media_path(config: ProjectConfig, q: Backend) -> str:

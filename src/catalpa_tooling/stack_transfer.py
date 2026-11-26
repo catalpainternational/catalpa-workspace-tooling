@@ -83,10 +83,12 @@ def run_transfer(
     print(f"transfer: session directory {session}", file=sys.stderr)
 
     # The destination's writers stay stopped for the whole transfer, and start again whatever
-    # happens: a failed step, or Ctrl-C.
-    stopped = dst_b.stop_writers()
+    # happens: a failed step, or Ctrl-C, also while they're being stopped (start_writers takes
+    # a None token then).
+    stopped = None
     restarted = False
     try:
+        stopped = dst_b.stop_writers()
         if do_db:
             rc = _db_leg(src_b, dst_b, session / "pg.dump")
             if rc != 0:

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
@@ -45,10 +45,14 @@ class StackBackend(Protocol):
         """Start the db service if it isn't running; 0 once it answers."""
         ...
 
-    def dump_db(self, dest: Path, pg_dump_args: Sequence[str] = (), *, database: str | None = None) -> int:
+    def dump_db(
+        self, dest: Path, pg_dump_args: Sequence[str] = (), *, database: str | None = None, min_bytes: int = 0
+    ) -> int:
         """``pg_dump -Fc`` of ``database`` to the local file ``dest``; None is the app database
-        as the db container resolves it (``$APP_DB``). db must be running. A dump too small to
-        be a real one fails, and a failure leaves no partial ``dest``."""
+        as the db container resolves it (``$APP_DB``). db must be running. Fails when the output
+        isn't a ``-Fc`` archive or is smaller than ``min_bytes`` (``dk fetch db`` asks for a
+        real-sized one; a transfer takes an empty database too), and leaves no partial ``dest``.
+        Prints nothing on success: the caller says what it's doing."""
         ...
 
     def stop_writers(self) -> object:
@@ -115,6 +119,7 @@ class ComposeBackend:
     ctx: ManagedDeployContext
 
     runtime: Runtime = "compose"
+    _media_storage: object = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def config(self) -> ProjectConfig:
@@ -144,24 +149,30 @@ class ComposeBackend:
             self.ctx.compose_file, self.env, config=self.config, dk_env_name=self.env_name
         )
 
-    def dump_db(self, dest: Path, pg_dump_args: Sequence[str] = (), *, database: str | None = None) -> int:
+    def dump_db(
+        self, dest: Path, pg_dump_args: Sequence[str] = (), *, database: str | None = None, min_bytes: int = 0
+    ) -> int:
         from catalpa_tooling import pgbackrest_db
-        from catalpa_tooling.fetch_db import _MIN_CUSTOM_DUMP_BYTES
+        from catalpa_tooling.pgbackrest_db import _PG_DUMP_CUSTOM_MAGIC
 
-        label = "the app database" if database is None else database
-        print(f"Fetching {label} via dk {self.env_name} db pgdump → {dest}", file=sys.stderr)
         rc = pgbackrest_db.run_pg_dump_to_file(
             self.ctx.compose_file, self.env, dest, list(pg_dump_args) or None, database=database
         )
         if rc != 0:
             return rc
         size = dest.stat().st_size
-        if size < _MIN_CUSTOM_DUMP_BYTES:
-            print(
-                f"fetch db: dump at {dest} is only {size} bytes "
-                f"(expected at least {_MIN_CUSTOM_DUMP_BYTES}).",
-                file=sys.stderr,
-            )
+        with open(dest, "rb") as f:
+            magic_ok = f.read(5) == _PG_DUMP_CUSTOM_MAGIC
+        problem = (
+            f"{dest} does not look like a pg_dump -Fc archive"
+            if not magic_ok
+            else f"dump at {dest} is only {size} bytes (expected at least {min_bytes})"
+            if size < min_bytes
+            else None
+        )
+        if problem:
+            print(f"pg_dump ({self.env_name}): {problem}.", file=sys.stderr)
+            dest.unlink(missing_ok=True)
             return 1
         return 0
 
@@ -259,10 +270,15 @@ class ComposeBackend:
 
     def media_storage(self):
         """The media's named volume or host directory, from the compose file
-        (``media_storage.MediaStorage``). Raises ``MediaStorageError``."""
+        (``media_storage.MediaStorage``), resolved once: it may ask docker over SSH. Raises
+        ``MediaStorageError``."""
         from catalpa_tooling.media_storage import resolve_media_storage
 
-        return resolve_media_storage(compose_file=self.ctx.compose_file, env=self.env, config=self.config)
+        if self._media_storage is None:
+            self._media_storage = resolve_media_storage(
+                compose_file=self.ctx.compose_file, env=self.env, config=self.config
+            )
+        return self._media_storage
 
     def describe_media(self) -> str:
         return self.media_storage().describe()
@@ -290,8 +306,9 @@ class ComposeBackend:
         )
 
     def push_media(self, source: Path, *, dry_run: bool = False) -> int:
-        """rsync ``--delete`` into the media's bind directory or volume (over SSH for a remote
-        engine); ``media_rsync.run_push_media_rsync`` falls back to tar where rsync can't."""
+        """rsync ``--delete`` into the media's bind directory or volume: over SSH for a remote
+        engine, or through a container when the host can't write a local volume's mountpoint.
+        No tar fallback (``media_rsync.run_push_media_rsync``)."""
         from catalpa_tooling.media_rsync import run_push_media_rsync
 
         return run_push_media_rsync(
@@ -364,6 +381,5 @@ def backend_for(config: ProjectConfig, env_name: str) -> StackBackend:
         return quadlet
     ctx = load_managed_deploy_context(config, env_name)
     if ctx is None:  # it has printed why
-        print(f"{env_name}: couldn't load the env's deploy settings", file=sys.stderr)
         raise BackendError(f"{env_name}: no deploy context")
     return ComposeBackend(ctx)
