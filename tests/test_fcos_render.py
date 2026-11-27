@@ -353,7 +353,7 @@ def test_host_bu_compiles_with_butane_strict(name: str, tmp_path: Path) -> None:
     _config, render = _render(name)
     write_render(tmp_path, render.files)
     r = subprocess.run(
-        ["docker", "run", "--rm", "-v", f"{tmp_path}:/work", "-w", "/work",
+        ["docker", "run", "--rm", "--security-opt", "label=disable", "-v", f"{tmp_path}:/work", "-w", "/work",
          "quay.io/coreos/butane:release", "--strict", "--files-dir", ".", "host.bu"],
         capture_output=True, text=True, timeout=300, check=False,
     )

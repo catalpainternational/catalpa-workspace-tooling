@@ -711,7 +711,10 @@ USER_DATA_LIMIT = 64 * 1024
 def compile_ignition(gen_dir: Path, *, runner: Runner = run) -> bytes:
     """``host.bu`` → Ignition, with Butane in a container (``--strict``: a warning fails)."""
     r = runner(
-        ["docker", "run", "--rm", "-v", f"{gen_dir.resolve()}:/work:ro", "-w", "/work",
+        # label=disable: on an SELinux workstation (Fedora, Podman's docker) a plain mount of
+        # the user's files is unreadable in the container; relabelling them would be worse.
+        ["docker", "run", "--rm", "--security-opt", "label=disable",
+         "-v", f"{gen_dir.resolve()}:/work:ro", "-w", "/work",
          BUTANE_IMAGE, "--strict", "--files-dir", ".", "host.bu"],
     )  # fmt: skip
     if r.returncode != 0:
