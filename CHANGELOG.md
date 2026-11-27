@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Several envs on one server, each in its own Linux account** (docs/MULTI_ENV_HOST.md,
+  docs/SHARED_HOST.md).
+  - A server is described by a `host.yaml` in a folder of its own, shared by every project
+    with an env on it.
+  - `dk host <folder> render|check|ignition` builds it, every account from its first boot
+    only, with a shared TLS edge and a loopback firewall between envs.
+  - An env says `host: <folder>` and takes its account, ID range and port from its slot.
+  - A blue/green site runs in three accounts (`site`, `blue`, `green`) at a version each,
+    from the units the project ships. `dk <env> deploy`, `rollback` and `colours` follow
+    Partisipa's own site deploy.
+  - Proved on a VM with a Nextgen-like env and a Partisipa-like site
+    (docs/examples/shared-host/EVIDENCE.md).
+- `dk <env> host ignition` and `dk host … ignition` run Butane without SELinux relabelling,
+  so they work on a Fedora workstation (the mount was unreadable there).
+
 ## 2.0.0b5
 
 - **`dk <env> host`'s "docker_host differs from droplet" note no longer cries wolf** (found

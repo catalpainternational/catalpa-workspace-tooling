@@ -1,0 +1,45 @@
+name: ${COMPOSE_PROJECT_NAME:-demo}
+
+services:
+  db:
+    image: docker.io/library/postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: demo
+      DJANGO_DB: demo           # what `dk <env> db restore` restores into
+      DJANGO_DB_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
+  web:
+    image: docker.io/traefik/whoami:v1.10
+    environment:
+      WHOAMI_NAME: ${ENV_LABEL:-dev}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: ${STACK_IMAGE_REGISTRY:-localhost}/demo-caddy:${STACK_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      - web
+
+volumes:
+  pgdata:
+  caddy_data:

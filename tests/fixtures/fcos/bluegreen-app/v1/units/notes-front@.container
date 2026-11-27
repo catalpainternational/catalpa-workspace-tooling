@@ -1,0 +1,17 @@
+# The site's front: the host edge sends the site's names here, and it sends them on to
+# the live colour. The switch hook rewrites its Caddyfile and reloads it.
+[Unit]
+PartOf=notes-site@%i.target
+BindsTo=notes-site-pod@%i.service
+After=notes-site-pod@%i.service
+
+[Container]
+ContainerName=notes-%i-front
+Image=docker.io/library/caddy:2-alpine
+PodmanArgs=--pod=notes-%i-site
+Volume=%h/.local/state/notes/%i/front:/etc/notes-front:z
+Exec=caddy run --config /etc/notes-front/Caddyfile --adapter caddyfile
+
+[Service]
+ExecStartPre=/bin/sh -c 'd=%h/.local/state/notes/%i/front; mkdir -p "$$d"; [ -e "$$d/Caddyfile" ] || printf ":80 {\\n\\trespond \\"no colour is live yet\\" 503\\n}\\n" > "$$d/Caddyfile"'
+Restart=on-failure

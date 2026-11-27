@@ -316,6 +316,12 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     )
     attach_context_arguments(p_context)
 
+    sub.add_parser(
+        "host",
+        help="A server shared by several envs: `dk host DIR render|check|ignition` (DIR has a host.yaml).",
+        add_help=False,
+    )
+
     p_secrets = sub.add_parser(
         "secrets",
         help="Edit the project's credentials.yaml with SOPS: values every env shares.",

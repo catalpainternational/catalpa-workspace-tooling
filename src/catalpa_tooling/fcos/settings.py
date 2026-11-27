@@ -93,6 +93,12 @@ class FcosSettings:
     admin_keys: tuple[str, ...] = ()
     update_window: UpdateWindow = UpdateWindow()
     zabbix_image: str = DEFAULT_ZABBIX_IMAGE
+    #: On a shared server (info.yaml ``host:``) these come from the account's slot in host.yaml,
+    #: never from info.yaml: its subordinate IDs, its loopback port behind the shared edge, and
+    #: the server's name.
+    subuid_start: int = SUBUID_START
+    local_port: int | None = None
+    shared_host: str | None = None
 
     @property
     def home(self) -> str:

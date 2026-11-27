@@ -1,0 +1,17 @@
+# The colour's migrate oneshot: runs against the site's database before web starts.
+[Unit]
+PartOf=notes@%i.target
+BindsTo=notes-pod@%i.service
+After=notes-pod@%i.service
+
+[Container]
+ContainerName=notes-%i-migrate
+Image=10.0.2.2:15000/notes-bluegreen:1
+PodmanArgs=--pod=notes-%i
+Environment=UNITS_VERSION=1 APP_VERSION=1
+Secret=notes-%i-dotenv,type=mount,target=/app/.env,mode=0444
+Exec=migrate
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes

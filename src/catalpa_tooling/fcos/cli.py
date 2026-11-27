@@ -153,6 +153,9 @@ def route(ns: argparse.Namespace, config: ProjectConfig, env_name: str, runtime:
     ``dk <env> render|check|diff|apply``, ``host ignition|provision`` and ``secrets push``, and
     the deprecated ``dk <env> fcos …`` they replace."""
     cmd = getattr(ns, "env_command", None)
+    rc = route_bluegreen(ns, config, env_name)
+    if rc is not None:
+        return rc
     if cmd in RENDER_VERBS:
         fcos_command = cmd
     elif cmd == "host" and getattr(ns, "host_command", None) in HOST_VERBS:
@@ -211,6 +214,14 @@ def handle_fcos_command(ns: argparse.Namespace, config: ProjectConfig, env_name:
     gen_dir = generated_dir(config, env_name)
     rel = gen_dir.relative_to(config.repo_root)
 
+    if command in ("ignition", "provision") and _shared_host_of(gen_dir):
+        print(
+            f"{new_name(env_name, command)}: {env_name} is on the shared server "
+            f"{_shared_host_of(gen_dir)}, made by `dk host <its folder> ignition`. Put the env on "
+            f"it with `dk {env_name} secrets push`, then `dk {env_name}`.",
+            file=sys.stderr,
+        )
+        return 2
     if command == "ignition":
         # Compiles what is committed; no fresh render needed (Butane reads only these files).
         return _ignition(ns, gen_dir)
@@ -254,6 +265,15 @@ def handle_fcos_command(ns: argparse.Namespace, config: ProjectConfig, env_name:
         return 1
 
 
+def _shared_host_of(gen_dir: Path) -> str | None:
+    import json
+
+    path = gen_dir / "manifest.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8")).get("host")
+
+
 def _ignition(ns: argparse.Namespace, gen_dir: Path) -> int:
     from catalpa_tooling.fcos.host import HostError, compile_ignition
 
@@ -294,6 +314,8 @@ def _host_command(
         if ensure_known_host(target.address, port=target.port, recovery_env_name=env_name) != 0:
             return 1
 
+    if not dry_run:
+        h.check_account(target, c)
     if command == "secrets":
         return _secrets_push(ns, config, env_name, c, target, dry_run=dry_run)
     if command == "login":
@@ -630,3 +652,224 @@ def start_stack(c, target) -> int:
     for unit, state in zip(user_units, states, strict=False):
         print(f"  {unit}: {state}", file=sys.stderr)
     return 0 if r.returncode == 0 else 1
+
+
+def shared_host_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="dk host",
+        description=(
+            "A server shared by several envs, possibly of several projects. DIR is its folder "
+            "(a host.yaml; each env names it with info.yaml `host:`). render writes "
+            "DIR/generated/ (commit it), check compares it with a fresh render, ignition "
+            "compiles generated/host.bu for the server's first boot. Every account is made "
+            "then: a new account means a new server."
+        ),
+    )
+    p.add_argument("host_dir", metavar="DIR", help="The server's folder, e.g. docker/hosts/shared-1.")
+    sub = p.add_subparsers(dest="shared_host_command", required=True)
+    sub.add_parser("render", help="Write DIR/generated/ from host.yaml.")
+    sub.add_parser("check", help="Fail if DIR/generated/ differs from a fresh render.")
+    ign = sub.add_parser("ignition", help="Compile DIR/generated/host.bu with Butane.")
+    ign.add_argument("-o", "--output", metavar="FILE", help="Write here (default: stdout).")
+    return p
+
+
+def main_shared_host(argv: list[str]) -> int:
+    """``dk host <dir> render|check|ignition``: needs no project (no tooling.yaml)."""
+    from catalpa_tooling.fcos.shared_host import HostConfigError, load_host, render_host
+
+    ns = shared_host_parser().parse_args(argv)
+    host_dir = Path(ns.host_dir).resolve()
+    command = ns.shared_host_command
+    label = f"dk host {ns.host_dir} {command}"
+    try:
+        host = load_host(host_dir)
+    except HostConfigError as exc:
+        print(f"{label}: {exc}", file=sys.stderr)
+        return 1
+    gen_dir = host.generated_dir
+    if command == "ignition":
+        return _ignition(ns, gen_dir)
+    files = render_host(host)
+    if command == "render":
+        changed = write_render(gen_dir, files)
+        for line in changed:
+            print(line)
+        print(
+            f"{ns.host_dir}/generated: {len(files)} files, {len(changed)} changed. Commit them; "
+            f"the server gets them at its first boot only (`dk host {ns.host_dir} ignition`).",
+            file=sys.stderr,
+        )
+        return 0
+    diffs = compare_render(gen_dir, files)
+    if diffs:
+        print(
+            f"{ns.host_dir}/generated differs from a fresh render "
+            f"(run `dk host {ns.host_dir} render` and commit):",
+            file=sys.stderr,
+        )
+        for line in diffs:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+    print(f"{ns.host_dir}/generated: matches a fresh render.", file=sys.stderr)
+    return 0
+
+
+# --- a blue/green site (info.yaml bluegreen:) -------------------------------------------------
+
+#: ``dk <env> <verb>`` for a blue/green site; the other rendered-host verbs don't apply to it.
+BLUEGREEN_VERBS = ("deploy", "rollback", "colours")
+
+
+def add_bluegreen_verbs(sub: argparse._SubParsersAction) -> None:
+    d = sub.add_parser(
+        "deploy",
+        help="A blue/green site: put the idle colour's committed version live (stop, freeze, start, switch).",
+    )
+    d.add_argument("colour", nargs="?", choices=("blue", "green"), help="Default: the one not live.")
+    r = sub.add_parser(
+        "rollback",
+        help="A blue/green site: back to the colour and database before the last deploy (writes since are lost).",
+    )
+    _flag(r, "--yes", "-y", help="Don't ask.")
+    sub.add_parser("colours", help="A blue/green site: which colour is live, and what each runs.")
+
+
+def _bluegreen_info(config: ProjectConfig, env_name: str) -> dict | None:
+    path = config.deploy_envs_dir / env_name / "info.yaml"
+    if not path.is_file():
+        return None
+    info = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return info if info.get("bluegreen") is not None else None
+
+
+def route_bluegreen(ns: argparse.Namespace, config: ProjectConfig, env_name: str) -> int | None:
+    """A blue/green site's commands, or None when ``ns`` isn't one of them."""
+    cmd = getattr(ns, "env_command", None)
+    info = _bluegreen_info(config, env_name)
+    if info is None:
+        if cmd in BLUEGREEN_VERBS:
+            print(f"dk {env_name} {cmd}: only for a blue/green site (info.yaml `bluegreen:`).", file=sys.stderr)
+            return 2
+        return None
+    if cmd in ("render", "check") or cmd in BLUEGREEN_VERBS:
+        return _bluegreen_command(ns, config, env_name, info, cmd)
+    if cmd == "secrets" and getattr(ns, "secrets_command", None) == "push":
+        return _bluegreen_command(ns, config, env_name, info, "secrets")
+    if cmd is None and not getattr(ns, "implicit_compose_argv", None):
+        print(
+            f"dk {env_name}: a blue/green site deploys with `dk {env_name} deploy` "
+            f"(`dk {env_name} colours` shows which colour is live).",
+            file=sys.stderr,
+        )
+        return 2
+    if cmd in ("diff", "apply", "host", "fcos"):
+        print(
+            f"dk {env_name}: a blue/green site changes its accounts only through "
+            f"`dk {env_name} deploy` (and `rollback`); see `dk {env_name} colours`.",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
+def _bluegreen_command(ns, config: ProjectConfig, env_name: str, info: dict, cmd: str) -> int:
+    from catalpa_tooling.fcos import bluegreen as bg
+    from catalpa_tooling.fcos.shared_host import HostConfigError, load_host
+
+    label = f"dk {env_name} {cmd}"
+    if not info.get("host"):
+        print(f"{label}: a blue/green site lives on a shared server: info.yaml needs host:", file=sys.stderr)
+        return 1
+    gen_dir = generated_dir(config, env_name)
+    rel = gen_dir.relative_to(config.repo_root)
+    try:
+        host = load_host((config.repo_root / str(info["host"])).resolve())
+        files = bg.render_bluegreen(
+            config.meta.name, env_name, bg.parse_bluegreen(info), host, config.repo_root
+        )
+    except (HostConfigError, bg.BlueGreenError) as exc:
+        print(f"{label}: {exc}", file=sys.stderr)
+        return 1
+    if cmd == "render":
+        changed = write_render(gen_dir, files)
+        for line in changed:
+            print(line)
+        print(f"{rel}: {len(files)} files, {len(changed)} changed. Commit them.", file=sys.stderr)
+        return 0
+    diffs = compare_render(gen_dir, files)
+    if cmd == "check" or diffs:
+        if diffs:
+            print(f"{rel} differs from a fresh render (run `dk {env_name} render` and commit):", file=sys.stderr)
+            for line in diffs:
+                print(f"  {line}", file=sys.stderr)
+            if cmd != "check":
+                print(f"{label}: not touching the server until the render is committed.", file=sys.stderr)
+            return 1
+        print(f"{rel}: matches a fresh render.", file=sys.stderr)
+        return 0
+
+    from catalpa_tooling.fcos import host as h
+    from catalpa_tooling.ssh_known_hosts import ensure_known_host
+
+    target = h.host_from_docker_host(info.get("docker_host"), getattr(ns, "host", None))
+    if ensure_known_host(target.address, port=target.port, recovery_env_name=env_name) != 0:
+        return 1
+    try:
+        committed = {role: h.load_committed(gen_dir / role) for role in bg.ROLES}
+        site = bg.Site(
+            env_name=env_name,
+            manifests={role: c.manifest for role, c in committed.items()},
+            committed=committed,
+            target=target,
+        )
+        for role in bg.ROLES:
+            h.check_account(target, committed[role])
+        if cmd == "secrets":
+            return _bluegreen_secrets(config, env_name, site, getattr(ns, "names", None) or None)
+        if cmd == "colours":
+            return bg.colours(site)
+        if cmd == "deploy":
+            return bg.deploy(site, getattr(ns, "colour", None))
+        if not getattr(ns, "yes", False):
+            from catalpa_tooling.cli_confirm import confirm_yes_default_no
+
+            if not confirm_yes_default_no(
+                f"Roll {env_name} back? Writes since the last deploy are lost. [y/N]: "
+            ):
+                print("Nothing changed.", file=sys.stderr)
+                return 1
+        return bg.rollback(site)
+    except (h.HostError, bg.BlueGreenError) as exc:
+        print(f"{label}: {exc}", file=sys.stderr)
+        return 1
+
+
+def _bluegreen_secrets(config: ProjectConfig, env_name: str, site, names: list[str] | None) -> int:
+    """Each account's secrets from credentials.yaml's ``site:``, ``blue:`` and ``green:``: as
+    containerwharf does, dk creates them and the app's units mount them."""
+    from catalpa_tooling.fcos import bluegreen as bg
+    from catalpa_tooling.fcos import host as h
+
+    creds = _credentials(config, env_name)
+    problems, batches = [], {}
+    for role in bg.ROLES:
+        given = creds.get(role) or {}
+        values = []
+        for name, key in site.manifests[role]["secrets"].items():
+            if names and name not in names:
+                continue
+            if not given.get(key):
+                problems.append(f"credentials.yaml has no {role}.{key} (for {site.user(role)}'s secret {name})")
+                continue
+            values.append((name, str(given[key]), False))
+        batches[role] = values
+    if problems:
+        for p in problems:
+            print(f"dk {env_name} secrets push: {p}", file=sys.stderr)
+        return 1
+    for role, values in batches.items():
+        if values:
+            print(f"{site.user(role)}:", file=sys.stderr)
+            h.push_secrets(site.target, site.committed[role], values)
+    return 0

@@ -1,0 +1,12 @@
+# Loopback ports per account: only the account's own env and the edge may connect.
+table inet dk_loopback
+delete table inet dk_loopback
+table inet dk_loopback {
+	chain output {
+		type filter hook output priority 0; policy accept;
+		oif "lo" ip daddr 127.0.0.1 tcp dport 20010-20019 meta skuid != { 1001, 1031 } counter reject with tcp reset  # deploy
+		oif "lo" ip daddr 127.0.0.1 tcp dport 20020-20029 meta skuid != { 1002, 1003, 1004, 1031 } counter reject with tcp reset  # site
+		oif "lo" ip daddr 127.0.0.1 tcp dport 20030-20039 meta skuid != { 1002, 1003, 1004, 1031 } counter reject with tcp reset  # blue
+		oif "lo" ip daddr 127.0.0.1 tcp dport 20040-20049 meta skuid != { 1002, 1003, 1004, 1031 } counter reject with tcp reset  # green
+	}
+}

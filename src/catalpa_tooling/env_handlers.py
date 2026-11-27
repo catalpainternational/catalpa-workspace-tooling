@@ -73,7 +73,8 @@ from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 #: What ``dk <env>`` may do for an env with ``runtime: quadlet``: everything else drives
 #: docker compose, which has no stack there.
 QUADLET_ENV_COMMANDS = frozenset(
-    {"info", "secrets", "host", "docker", "fcos", "render", "check", "diff", "apply"}
+    {"info", "secrets", "host", "docker", "fcos", "render", "check", "diff", "apply",
+     "deploy", "rollback", "colours"}
 )
 
 

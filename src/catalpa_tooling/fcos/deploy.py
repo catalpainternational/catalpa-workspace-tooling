@@ -159,6 +159,7 @@ def deploy(
             return 1
 
     try:
+        h.check_account(target, c)
         plan = h.make_plan(c, h.read_host(target, c))
         if not plan.secrets_in_sync:
             for line in h.describe(plan, show_diff=False):

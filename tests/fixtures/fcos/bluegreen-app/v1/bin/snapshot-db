@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# The site's database, set aside across a deploy: a miniature of Partisipa's snapshot-db.
+# Runs in the site account.
+#
+#   snapshot-db <env> frozen        exit 0 if a database is set aside, 1 if not
+#   snapshot-db <env> freeze        set the database aside and put a copy in its place
+#   snapshot-db <env> thaw          put the set-aside database back, dropping the copy
+#   snapshot-db <env> take-frozen   dump the set-aside database, drop it, print the dump
+#   snapshot-db <env> keep          dump the database into snapshots/kept/, never pruned,
+#                                   and print the dump; with no database, print nothing
+#   snapshot-db <env> restore <dump> replace the database with a dump (for rollback)
+set -euo pipefail
+env="${1:?usage: snapshot-db <env> frozen|freeze|thaw|take-frozen|keep|restore <dump>}"
+verb="${2:?usage: snapshot-db <env> frozen|freeze|thaw|take-frozen|keep|restore <dump>}"
+db="notes-$env-db"
+snaps="$HOME/.local/state/notes/$env/snapshots"
+sql() { podman exec -i -u postgres "$db" psql -v ON_ERROR_STOP=1 -qAt -U app -d postgres; }
+exists() { [ "$(echo "SELECT 1 FROM pg_database WHERE datname = '$1'" | sql)" = 1 ]; }
+kick() { echo "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$1' AND pid <> pg_backend_pid()" | sql >/dev/null; }
+case "$verb" in
+  frozen) exists app_before ;;
+  freeze)
+    exists app_before && { echo "a database is already set aside" >&2; exit 2; }
+    kick app
+    printf 'ALTER DATABASE app RENAME TO app_before;\nCREATE DATABASE app TEMPLATE app_before;\n' | sql ;;
+  thaw)
+    exists app_before || { echo "nothing is set aside" >&2; exit 2; }
+    kick app
+    printf 'DROP DATABASE app;\nALTER DATABASE app_before RENAME TO app;\n' | sql ;;
+  take-frozen)
+    exists app_before || { echo "nothing is set aside" >&2; exit 2; }
+    mkdir -p "$snaps"
+    snap="$snaps/$(date -u +%Y%m%dT%H%M%SZ).dump"
+    podman exec -u postgres "$db" pg_dump -Fc -U app -d app_before > "$snap.part"
+    mv "$snap.part" "$snap"
+    echo 'DROP DATABASE app_before;' | sql
+    echo "$snap" ;;
+  keep)
+    # What a rollback is about to throw away, kept for a person to look at.
+    exists app || exit 0
+    mkdir -p "$snaps/kept"
+    snap="$snaps/kept/$(date -u +%Y%m%dT%H%M%SZ).dump"
+    podman exec -u postgres "$db" pg_dump -Fc -U app -d app > "$snap.part"
+    mv "$snap.part" "$snap"
+    echo "$snap" ;;
+  restore)
+    snap="${3:?usage: snapshot-db <env> restore <dump>}"
+    [ -s "$snap" ] || { echo "no dump at $snap" >&2; exit 2; }
+    kick app
+    printf 'DROP DATABASE app;\nCREATE DATABASE app OWNER app;\n' | sql
+    podman exec -i -u postgres "$db" pg_restore --exit-on-error -U app -d app < "$snap" ;;
+  *) echo "snapshot-db: unknown verb $verb" >&2; exit 2 ;;
+esac

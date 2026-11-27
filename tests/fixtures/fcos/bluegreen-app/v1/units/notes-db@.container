@@ -1,0 +1,22 @@
+# The site's database, shared by both colours.
+[Unit]
+PartOf=notes-site@%i.target
+BindsTo=notes-site-pod@%i.service
+After=notes-site-pod@%i.service
+
+[Container]
+ContainerName=notes-%i-db
+Image=docker.io/library/postgres:17-alpine
+PodmanArgs=--pod=notes-%i-site
+Environment=POSTGRES_USER=app POSTGRES_DB=app POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password
+Secret=notes-%i-postgres-password,type=mount,target=/run/secrets/postgres-password,mode=0444
+Volume=notes-%i-db-data:/var/lib/postgresql/data
+HealthCmd=["pg_isready", "-U", "app", "-d", "app"]
+HealthInterval=10s
+HealthStartupCmd=["pg_isready", "-U", "app", "-d", "app"]
+HealthStartupInterval=1s
+HealthStartupRetries=60
+Notify=healthy
+
+[Service]
+Restart=on-failure

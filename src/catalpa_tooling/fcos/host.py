@@ -83,8 +83,17 @@ class Committed:
         return host_manifest_path(self.manifest["config_dir"])
 
     @property
+    def shared_host(self) -> str | None:
+        """The shared server this env is on (info.yaml ``host:``), whose host.yaml owns the
+        logins' keys and the accounts."""
+        return self.manifest.get("host")
+
+    @property
     def key_dirs(self) -> list[str]:
-        """``authorized_keys.d`` of core and the account: dk manages every file in them."""
+        """``authorized_keys.d`` of core and the account: dk manages every file in them (on a
+        shared server, host.yaml does)."""
+        if self.shared_host:
+            return []
         return [keys_dir("core"), keys_dir(self.user)]
 
     @property
@@ -203,10 +212,13 @@ class HostState:
 
 
 def _timer_links(c: Committed) -> dict[str, str]:
-    return {
+    """The account's enabling links: its timers', and on a shared server its proxy socket's."""
+    links = {
         f"{c.user_unit_dir}/timers.target.wants/{t}": f"../{t}"
         for t in c.manifest.get("timers") or []
     }
+    links.update(c.manifest.get("links") or {})
+    return links
 
 
 def _unit_path(unit: str) -> str:
@@ -262,6 +274,27 @@ def parse_state(out: str) -> HostState:
         elif kind == "S" and len(parts) == 2:
             s.system_secrets.add(parts[1])
     return s
+
+
+def check_account(host: Host, c: Committed) -> None:
+    """On a shared server the env's account must already exist: accounts are made only at the
+    server's first boot, and dk never adds one to a running server."""
+    if not c.shared_host:
+        return
+    r = host.ssh("core", f"id -u {shlex.quote(c.user)}", check=False)
+    if r.returncode != 0:
+        raise HostError(
+            f"{host.address} has no account {c.user}: accounts are made only at a server's first "
+            f"boot (host.yaml of {c.shared_host}), never added to a running one. Build a new "
+            "server with it"
+        )
+    uid = (r.stdout or b"").decode().strip()
+    if uid != str(c.uid):
+        # Another server's account of the same name (docker_host pointing at the wrong one).
+        raise HostError(
+            f"{host.address}'s account {c.user} has uid {uid or '?'}, but host.yaml of "
+            f"{c.shared_host} gives it {c.uid}: is docker_host the right server?"
+        )
 
 
 def read_host(host: Host, c: Committed) -> HostState:
@@ -711,7 +744,10 @@ USER_DATA_LIMIT = 64 * 1024
 def compile_ignition(gen_dir: Path, *, runner: Runner = run) -> bytes:
     """``host.bu`` → Ignition, with Butane in a container (``--strict``: a warning fails)."""
     r = runner(
-        ["docker", "run", "--rm", "-v", f"{gen_dir.resolve()}:/work:ro", "-w", "/work",
+        # label=disable: on an SELinux workstation (Fedora, Podman's docker) a plain mount of
+        # the user's files is unreadable in the container; relabelling them would be worse.
+        ["docker", "run", "--rm", "--security-opt", "label=disable",
+         "-v", f"{gen_dir.resolve()}:/work:ro", "-w", "/work",
          BUTANE_IMAGE, "--strict", "--files-dir", ".", "host.bu"],
     )  # fmt: skip
     if r.returncode != 0:

@@ -177,6 +177,8 @@ def render_env(
         settings = parse_fcos_settings(info)
     except FcosConfigError as exc:
         raise RenderError(str(exc)) from exc
+    if info.get("host") is not None:
+        settings = on_shared_host(config, env_name, info, settings)
     from catalpa_tooling.ssh_known_hosts import ssh_host_from_docker_host
 
     if not ssh_host_from_docker_host(str(info.get("docker_host") or "")):
@@ -214,6 +216,10 @@ def render_env(
         declared = set(resolved.get("volumes") or {})
         bind_volumes = tuple(v for v in bind_volumes if v in declared)
     config_dir = config.ops.config_dir if config.has_ops else f"/etc/{project}"
+    shared = settings.shared_host is not None
+    if shared:
+        # Several envs of one project can share the server: each its own settings folder.
+        config_dir = f"{config_dir}/{env_name}"
     compose_rel = os.path.relpath(compose_file, config.repo_root)
     hostname = settings.hostname or _default_hostname(project, env_name)
     db_service = config.stack.services.db
@@ -257,7 +263,7 @@ def render_env(
         proxy_svc = (resolved.get("services") or {}).get(inputs.proxy) or {}
         if proxy_svc.get("entrypoint") or image_entrypoint:
             q = quadlets_from_compose(resolved, replace(inputs, proxy_wrapped=True))
-        caddy_json = caddy_json_text(adapted)
+        caddy_json = caddy_json_text(adapted, shared_edge=shared)
     except (ComposeNotSupported, CaddyJsonError) as exc:
         raise RenderError(str(exc)) from exc
     if has_secret(caddy_json):
@@ -345,12 +351,13 @@ def render_env(
     files.update(au_files)
     install += au_install
 
-    try:
-        key_text, key_install = key_files(settings, q.header)
-    except ValueError as exc:
-        raise RenderError(str(exc)) from exc
-    files.update(key_text)
-    install += key_install
+    if not shared:  # on a shared server, host.yaml owns every login's keys
+        try:
+            key_text, key_install = key_files(settings, q.header)
+        except ValueError as exc:
+            raise RenderError(str(exc)) from exc
+        files.update(key_text)
+        install += key_install
     # The manifest goes on the host too: `dk <env> diff`/`apply` read the applied one back to find
     # files a later render no longer has.
     install.append(
@@ -360,28 +367,36 @@ def render_env(
     timezone = settings.timezone or (
         (config.digitalocean.timezone if config.digitalocean else None) or "UTC"
     )
-    try:
-        files["host.bu"] = host_bu(
-            settings=settings,
-            header=q.header,
-            hostname=hostname,
-            timezone=timezone,
-            install=install,
-            bind_volumes=manifest["bind_volumes"],
-            proxy=inputs.proxy,
-            timers=timers,
-            monitor_dir=mon_dir,
-            config_dir=config_dir,
+    links: dict[str, str] = {}
+    if shared:
+        # The server was made from its own host.bu (`dk host <dir> render`); this env arrives
+        # over SSH (`dk <env>`), which also enables the proxy's socket.
+        links[f"{settings.user_unit_dir}/sockets.target.wants/{inputs.proxy}.socket"] = (
+            f"../{inputs.proxy}.socket"
         )
-    except ValueError as exc:
-        raise RenderError(str(exc)) from exc
+    else:
+        try:
+            files["host.bu"] = host_bu(
+                settings=settings,
+                header=q.header,
+                hostname=hostname,
+                timezone=timezone,
+                install=install,
+                bind_volumes=manifest["bind_volumes"],
+                proxy=inputs.proxy,
+                timers=timers,
+                monitor_dir=mon_dir,
+                config_dir=config_dir,
+            )
+        except ValueError as exc:
+            raise RenderError(str(exc)) from exc
 
     manifest.update(
         {
             "hostname": hostname,
             "timezone": timezone,
             "config_dir": config_dir,
-            "masked_units": list(MASKED_UNITS),
+            "masked_units": [] if shared else list(MASKED_UNITS),
             "proxy": inputs.proxy,
             "secrets": dict(sorted({**manifest["secrets"], **plan.secrets}.items())),
             "system_secrets": dict(sorted(system_secrets.items())),
@@ -389,10 +404,83 @@ def render_env(
             "install": install,
         }
     )
+    if shared:
+        manifest["host"] = settings.shared_host
+        manifest["links"] = links
     if restore:
         manifest["restore"] = restore
     files[MANIFEST] = json.dumps(manifest, indent=2) + "\n"
     return Render(files=files, compose_file=compose_file, env=env, secret_keys=used)
+
+
+#: What a shared server's host.yaml decides, which an env on it may not set.
+HOST_OWNED_KEYS = ("user", "uid", "hostname", "timezone", "admin_keys", "ssh_authorized_keys", "update_window")
+
+
+def on_shared_host(config: ProjectConfig, env_name: str, info: dict, settings: FcosSettings) -> FcosSettings:
+    """An env on a server shared with other envs (info.yaml ``host: <folder>``): its account,
+    subordinate IDs and loopback port come from its slot in that folder's host.yaml."""
+    from catalpa_tooling.fcos.shared_host import HostConfigError, load_host
+
+    raw = info.get("fcos") or {}
+    owned = [k for k in HOST_OWNED_KEYS if k in raw]
+    if owned:
+        raise RenderError(
+            f"{env_name}: on a shared server (host: {info['host']}), host.yaml decides "
+            + ", ".join(f"fcos.{k}" for k in owned)
+            + ": remove them from info.yaml"
+        )
+    from catalpa_tooling.monitoring_setting import MonitoringSettingError, monitoring_of
+
+    try:
+        monitoring = monitoring_of(info)
+    except MonitoringSettingError as exc:
+        raise RenderError(f"{env_name}: {exc}") from exc
+    if monitoring == "zabbix":
+        # Every env would write the one system agent unit, and the last one applied would win.
+        raise RenderError(
+            f"{env_name}: monitoring: zabbix isn't built for a shared server yet "
+            "(docs/MULTI_ENV_HOST.md, Not built yet)"
+        )
+    storage = info.get("storage")
+    if isinstance(storage, dict) and storage.get("data_volume"):
+        raise RenderError(
+            f"{env_name}: on a shared server the data folder is host.yaml's data_mount/<account>: "
+            "remove storage.data_volume"
+        )
+    try:
+        host = load_host((config.repo_root / str(info["host"])).resolve())
+    except HostConfigError as exc:
+        raise RenderError(f"{env_name}: {exc}") from exc
+    project = config.meta.name
+    roles = host.accounts_of(project, env_name)
+    where = host.dir / "host.yaml"
+    if not roles:
+        raise RenderError(
+            f"{env_name}: {where} has no account for {project} {env_name}. Accounts are made "
+            "only at a server's first boot: add it there and build a new server"
+        )
+    if "env" not in roles:
+        raise RenderError(
+            f"{env_name}: {where} gives {project} {env_name} site, blue and green accounts: a "
+            "blue/green site is rendered from info.yaml `bluegreen:`, not from compose"
+        )
+    a = roles["env"]
+    return replace(
+        settings,
+        user=a.name,
+        uid=a.uid,
+        subuid_start=a.subuid_start,
+        local_port=a.port(),
+        shared_host=host.name,
+        hostname=host.hostname,
+        timezone=host.timezone,
+        update_window=host.update_window,
+        admin_keys=host.admin_keys,
+        ssh_authorized_keys=host.ssh_authorized_keys,
+        data_mount=host.data_dir(a),
+        block_volume=False,
+    )
 
 
 def _default_hostname(project: str, env_name: str) -> str:

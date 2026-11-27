@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Send the site's front to one colour: a miniature of Partisipa's switch-site. Runs in the
+# site account. The colour answers on the host's loopback at <port> (dk publishes it);
+# the front reaches the host's loopback as 169.254.1.3.
+#
+#   switch-site <env> <colour> <port>
+set -euo pipefail
+env="${1:?usage: switch-site <env> blue|green <port>}"
+colour="${2:?usage: switch-site <env> blue|green <port>}"
+port="${3:?usage: switch-site <env> blue|green <port>}"
+[[ "$colour" == blue || "$colour" == green ]] || { echo "the colour is blue or green, not $colour" >&2; exit 2; }
+[[ "$port" =~ ^[0-9]+$ ]] || { echo "not a port: $port" >&2; exit 2; }
+curl -fsS -m 5 "http://127.0.0.1:$port/healthz" >/dev/null \
+  || { echo "$colour does not answer on 127.0.0.1:$port; the site still goes where it went" >&2; exit 1; }
+dir="$HOME/.local/state/notes/$env/front"
+mkdir -p "$dir"
+printf ':80 {\n\treverse_proxy 169.254.1.3:%s\n\thandle_errors 502 503 504 {\n\t\trespond "notes is being updated" 503\n\t}\n}\n' "$port" > "$dir/Caddyfile.next"
+cp "$dir/Caddyfile" "$dir/Caddyfile.before" 2>/dev/null || true
+mv "$dir/Caddyfile.next" "$dir/Caddyfile"
+if ! podman exec "notes-$env-front" caddy reload --config /etc/notes-front/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+  [ -e "$dir/Caddyfile.before" ] && mv "$dir/Caddyfile.before" "$dir/Caddyfile"
+  echo "the front refused the new config; it still goes where it went" >&2
+  exit 1
+fi
+echo "$colour" > "$HOME/.local/state/notes/$env/live"

@@ -1,0 +1,4 @@
+FROM docker.io/library/python:3.13-alpine
+RUN pip install --no-cache-dir "psycopg[binary]==3.2.*"
+COPY app.py /app.py
+ENTRYPOINT ["python", "-u", "/app.py"]

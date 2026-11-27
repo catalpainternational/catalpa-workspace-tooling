@@ -30,6 +30,10 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "check",
         "diff",
         "apply",
+        # A blue/green site (info.yaml bluegreen:).
+        "deploy",
+        "rollback",
+        "colours",
     }
 )
 

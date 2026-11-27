@@ -1,0 +1,109 @@
+{
+  "admin": {
+    "disabled": true
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "edge": {
+          "automatic_https": {
+            "disable_redirects": true
+          },
+          "listen": [
+            "fd/4",
+            "fdgram/5"
+          ],
+          "listen_protocols": [
+            [
+              "h1",
+              "h2"
+            ],
+            [
+              "h3"
+            ]
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "127.0.0.1:20010"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "nextgen.vm.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "dial": "127.0.0.1:20020"
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "partisipa.vm.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            }
+          ]
+        },
+        "fd_http_redirect": {
+          "listen": [
+            "fd/3"
+          ],
+          "listen_protocols": [
+            [
+              "h1"
+            ]
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "headers": {
+                    "Location": [
+                      "https://{http.request.host}{http.request.uri}"
+                    ]
+                  },
+                  "status_code": 308
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "tls": {
+      "automation": {
+        "policies": [
+          {
+            "issuers": [
+              {
+                "module": "internal"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

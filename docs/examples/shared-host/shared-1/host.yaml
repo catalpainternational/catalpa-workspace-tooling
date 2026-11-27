@@ -1,0 +1,13 @@
+# The example server for docs/MULTI_ENV_HOST.md and the VM evidence: Nextgen (a plain env)
+# and Partisipa (a blue/green site) on one host. The key is a throwaway made for the VM.
+hostname: shared-1
+timezone: Asia/Dili
+admin_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8Ao5k/cvLSXdOdbJ3YF3J8M1wKPUdp6eptUEpAv8cW spike-multienv"]
+ssh_authorized_keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8Ao5k/cvLSXdOdbJ3YF3J8M1wKPUdp6eptUEpAv8cW spike-multienv"]
+edge: {tls: internal}
+accounts:
+  - {name: deploy, slot: 1, project: nextgen, env: staging, names: [nextgen.vm.test]}
+  - {name: site, slot: 2, project: partisipa, env: staging, role: site, names: [partisipa.vm.test]}
+  - {name: blue, slot: 3, project: partisipa, env: staging, role: blue}
+  - {name: green, slot: 4, project: partisipa, env: staging, role: green}
+insecure_registries: [10.0.2.2:15000]   # the VM's test registry, on the laptop

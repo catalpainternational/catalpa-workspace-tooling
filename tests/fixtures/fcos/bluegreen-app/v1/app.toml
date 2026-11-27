@@ -1,0 +1,42 @@
+# What dk needs from this app that its units cannot say (Partisipa's app.toml, plus the
+# blue/green sections dk reads). A test fixture: made-up data, public images or the
+# spike registry's.
+
+# The unit set: units/notes@.pod, notes@.target and the rest.
+set = "notes"
+
+# dk asks for this on the colour's port before it switches the site to the colour.
+health = "/healthz"
+
+# The secrets the units mount, as notes-<instance>-<role>: the site's instance is the env,
+# a colour's is <env>-<colour>.
+secrets = ["dotenv", "postgres-password"]
+
+[site]
+units = ["notes-site@.pod", "notes-db@.container", "notes-front@.container", "notes-site@.target"]
+start = ["notes-site@{env}.target"]
+secrets = ["postgres-password"]
+
+[colour]
+units = ["notes@.pod", "notes-migrate@.container", "notes-web@.container", "notes@.target"]
+start = ["notes@{env}-{colour}.target"]
+secrets = ["dotenv"]
+
+# name = "<site|colour>:<unit file>:<container port>". `edge` is the site's port the host
+# edge sends the site's names to; `colour` is each colour's port the site front switches
+# between; any other name is a site port the colours reach at 169.254.1.3:<port>.
+[ports]
+edge = "site:notes-site@.pod:80"
+colour = "colour:notes@.pod:8000"
+db = "site:notes-site@.pod:5432"
+
+# Run in the site account, from this folder's bin/. {env}, {colour}, {port} (the colour's
+# port) and {snapshot} are filled in by dk.
+[hooks]
+frozen = "bin/snapshot-db {env} frozen"
+freeze = "bin/snapshot-db {env} freeze"
+thaw = "bin/snapshot-db {env} thaw"
+done = "bin/snapshot-db {env} take-frozen"
+switch = "bin/switch-site {env} {colour} {port}"
+keep = "bin/snapshot-db {env} keep"
+rollback = "bin/snapshot-db {env} restore {snapshot}"
