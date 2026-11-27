@@ -20,7 +20,19 @@ from catalpa_tooling.run_cmd import run as run_cmd
 UNIT_NAME = "zabbix-agent2.service"
 UNIT_DESCRIPTION_LABEL = "project"
 CONTAINER_NAME = "zabbix-agent2"
-DEFAULT_IMAGE = "zabbix/zabbix-agent2:alpine-latest"
+# Pinned to the Zabbix server's series (#148): the agent must not be newer than the server
+# (zabbix.catalpa.build runs 7.0). ``alpine-latest`` moves between series.
+DEFAULT_IMAGE = "zabbix/zabbix-agent2:alpine-7.0-latest"
+# ``Include=`` globs that can hold UserParameters, per agent image series, as the running container
+# sees them (the 7.0 entrypoint adds ``zabbix_agentd.d`` at startup). To re-check an image:
+#   docker run -d --name zbx -e ZBX_SERVER_HOST=127.0.0.1 <image>
+#   docker exec zbx grep '^Include' /etc/zabbix/zabbix_agent2.conf; docker rm -f zbx
+AGENT_IMAGE_INCLUDES = {
+    "7.0": ("/etc/zabbix/zabbix_agentd.d/*.conf",),
+    "7.4": ("/etc/zabbix/zabbix_agentd.d/*.conf", "/etc/zabbix/zabbix_agent2.d/*.conf"),
+}
+# Read by both series. 7.0 ignores ``zabbix_agent2.d/*.conf``, so UserParameters there went unread.
+USERPARAMS_MOUNT_DIR = "/etc/zabbix/zabbix_agentd.d"
 SYSTEMD_UNIT_PATH = Path("/etc/systemd/system") / UNIT_NAME
 ENV_DIR = Path("/etc/zabbix")
 ENV_FILE = ENV_DIR / "zabbix-agent2.docker.env"
@@ -122,7 +134,7 @@ def _unit_file_content(*, image: str, docker_group_gid: int) -> str:
     # UserParameter commands use `chroot /host/root docker …` so the host Docker CLI runs with host libc
     # (the agent image is Alpine/musl and cannot execute the host `docker` binary directly).
     # chroot(2) needs CAP_SYS_CHROOT; run the container as root (--user 0:0).
-    userparams_mount = USERPARAMS_FILE.name
+    userparams_mount = f"{USERPARAMS_MOUNT_DIR}/{USERPARAMS_FILE.name}"
     return f"""[Unit]
 Description={UNIT_DESCRIPTION_LABEL}: Zabbix Agent 2 (Docker)
 Documentation=https://hub.docker.com/r/zabbix/zabbix-agent2
@@ -147,7 +159,7 @@ ExecStart=/usr/bin/docker run --rm \\
     -v /proc:/host/proc:ro \\
     -v /sys:/host/sys:ro \\
     -v /:/host/root:ro \\
-    -v {USERPARAMS_FILE}:/etc/zabbix/zabbix_agent2.d/{userparams_mount}:ro \\
+    -v {USERPARAMS_FILE}:{userparams_mount}:ro \\
     {image}
 ExecStop=/usr/bin/docker stop -t 30 {CONTAINER_NAME}
 ExecStopPost=-/usr/bin/docker rm -f {CONTAINER_NAME}
@@ -735,7 +747,7 @@ def render_userparams_conf(
     target: str = "app",
     offsite_timer_unit: str | None = None,
 ) -> str:
-    """Fragment for ``zabbix_agent2.d`` with ``UserParameter`` lines.
+    """Fragment for ``zabbix_agentd.d`` with ``UserParameter`` lines.
 
     ``target=app``: pgBackRest + restic (deploy host).
     ``target=backup``: Garage status + offsite timer (dc_backup_docker_host).

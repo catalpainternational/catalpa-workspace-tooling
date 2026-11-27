@@ -136,6 +136,8 @@ dk prod zabbix --target backup enable
 dk prod zabbix --target backup restart
 ```
 
-Default agent image: `zabbix/zabbix-agent2:alpine-latest` (override with `install --image`).
+Default agent image: `zabbix/zabbix-agent2:alpine-7.0-latest` (override with `install --image`).
+It matches the Zabbix server's 7.0 series: an agent must not be newer than its server. The
+UserParameters are mounted in `/etc/zabbix/zabbix_agentd.d/`, which both 7.0 and 7.4 images read.
 
 After changing `info.yaml` compose or UserParameter toggles, re-run `install` and `restart`.
