@@ -1,0 +1,3 @@
+[Unit]
+Description=notes site %i: its database and its front
+Wants=notes-site-pod@%i.service notes-db@%i.service notes-front@%i.service
