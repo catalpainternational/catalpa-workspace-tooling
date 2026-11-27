@@ -1,0 +1,59 @@
+{
+  "apps": {
+    "http": {
+      "servers": {
+        "srv0": {
+          "automatic_https": {
+            "disable": true
+          },
+          "listen": [
+            "fd/3"
+          ],
+          "listen_protocols": [
+            [
+              "h1"
+            ]
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [
+                            {
+                              "dial": "web:80"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "match": [
+                {
+                  "host": [
+                    "nextgen.vm.test"
+                  ]
+                }
+              ],
+              "terminal": true
+            }
+          ],
+          "trusted_proxies": {
+            "ranges": [
+              "127.0.0.1/32",
+              "::1/128"
+            ],
+            "source": "static"
+          }
+        }
+      }
+    }
+  }
+}

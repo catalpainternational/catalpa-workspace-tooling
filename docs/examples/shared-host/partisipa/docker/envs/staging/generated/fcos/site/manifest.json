@@ -1,0 +1,88 @@
+{
+  "bind_volumes": {},
+  "config_dir": "/etc/dk/partisipa/staging/site",
+  "env": "staging",
+  "health": "/healthz",
+  "hooks": {
+    "done": "bin/snapshot-db {env} take-frozen",
+    "freeze": "bin/snapshot-db {env} freeze",
+    "frozen": "bin/snapshot-db {env} frozen",
+    "rollback": "bin/snapshot-db {env} restore {snapshot}",
+    "switch": "bin/switch-site {env} {colour} {port}",
+    "thaw": "bin/snapshot-db {env} thaw"
+  },
+  "host": "shared-1",
+  "install": [
+    {
+      "dest": "/etc/dk/partisipa/staging/site/bin/snapshot-db",
+      "file": "bin/snapshot-db",
+      "mode": "0755",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/dk/partisipa/staging/site/bin/switch-site",
+      "file": "bin/switch-site",
+      "mode": "0755",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/dk/partisipa/staging/site/fcos-manifest.json",
+      "file": "manifest.json",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1002/notes-db@.container",
+      "file": "units/notes-db@.container",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1002/notes-front@.container",
+      "file": "units/notes-front@.container",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1002/notes-site@.pod",
+      "file": "units/notes-site@.pod",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1002/notes-site@.pod.d/50-dk.conf",
+      "file": "units/notes-site@.pod.d/50-dk.conf",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/var/home/site/.config/systemd/user/notes-site@.target",
+      "file": "units/notes-site@.target",
+      "mode": "0644",
+      "owner": "site"
+    }
+  ],
+  "links": {},
+  "masked_units": [],
+  "ports": {
+    "db": 20021,
+    "edge": 20020
+  },
+  "project": "partisipa",
+  "role": "site",
+  "secrets": {
+    "notes-staging-postgres-password": "postgres-password"
+  },
+  "set": "notes",
+  "source": {
+    "path": "v1",
+    "ref": null
+  },
+  "start": [
+    "notes-site@staging.target"
+  ],
+  "timers": [],
+  "uid": 1002,
+  "units_version": "1",
+  "user": "site"
+}

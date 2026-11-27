@@ -1,0 +1,146 @@
+{
+  "env": "staging",
+  "compose_file": "compose.yml",
+  "user": "deploy",
+  "uid": 1001,
+  "subuid": {
+    "start": 589824,
+    "count": 65536
+  },
+  "auto_update": false,
+  "network": "nextgen_staging_default",
+  "id_ranges": {
+    "caddy": {
+      "start": 10000,
+      "size": 5000,
+      "host_root_uid": 599823,
+      "services": [
+        "caddy"
+      ]
+    },
+    "db": {
+      "start": 15000,
+      "size": 5000,
+      "host_root_uid": 604823,
+      "services": [
+        "db"
+      ]
+    },
+    "web": {
+      "start": 20000,
+      "size": 5000,
+      "host_root_uid": 609823,
+      "services": [
+        "web"
+      ]
+    }
+  },
+  "bind_volumes": {
+    "caddy_data": {
+      "path": "/var/mnt/data/deploy/caddy_data",
+      "services": [
+        "caddy"
+      ],
+      "id_range": "caddy",
+      "owner_uid": 599823,
+      "mode": "0700"
+    },
+    "pgdata": {
+      "path": "/var/mnt/data/deploy/pgdata",
+      "services": [
+        "db"
+      ],
+      "id_range": "db",
+      "owner_uid": 605822,
+      "mode": "0700"
+    }
+  },
+  "podman_volumes": {},
+  "images": {
+    "caddy": "10.0.2.2:15000/demo-caddy:spike",
+    "db": "docker.io/library/postgres:17-alpine",
+    "web": "docker.io/traefik/whoami:v1.10"
+  },
+  "secrets": {
+    "postgres_password": "POSTGRES_PASSWORD"
+  },
+  "install": [
+    {
+      "file": "caddy/caddy.json",
+      "dest": "/var/home/deploy/.config/nextgen/caddy.json",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/caddy.env",
+      "dest": "/etc/nextgen/staging/caddy.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/db.env",
+      "dest": "/etc/nextgen/staging/db.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/web.env",
+      "dest": "/etc/nextgen/staging/web.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "manifest.json",
+      "dest": "/etc/nextgen/staging/fcos-manifest.json",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy.container",
+      "dest": "/etc/containers/systemd/users/1001/caddy.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/db.container",
+      "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/nextgen_staging_default.network",
+      "dest": "/etc/containers/systemd/users/1001/nextgen_staging_default.network",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/web-task.container",
+      "dest": "/etc/containers/systemd/users/1001/web-task.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/web.container",
+      "dest": "/etc/containers/systemd/users/1001/web.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/caddy.socket",
+      "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
+      "owner": "deploy",
+      "mode": "0644"
+    }
+  ],
+  "hostname": "shared-1",
+  "timezone": "Asia/Dili",
+  "config_dir": "/etc/nextgen/staging",
+  "masked_units": [],
+  "proxy": "caddy",
+  "system_secrets": {},
+  "timers": [],
+  "host": "shared-1",
+  "links": {
+    "/var/home/deploy/.config/systemd/user/sockets.target.wants/caddy.socket": "../caddy.socket"
+  }
+}

@@ -1,0 +1,11 @@
+# On the shared server ../shared-1: host.yaml gives this env the accounts site (slot 2), blue
+# (3) and green (4). Each account runs its own version of the app's units.
+name: staging
+docker_host: ssh://site@shared-vm/run/user/1002/podman/podman.sock
+runtime: quadlet
+host: ../shared-1
+bluegreen:
+  units: ../../../../tests/fixtures/fcos/bluegreen-app
+  site: {path: v1}
+  blue: {path: v1}
+  green: {path: v2}

@@ -48,6 +48,8 @@ dk
 # Global (before subcommand):
 #   dk --worktree <slug> | -W <slug>  …   # target .worktrees/<slug> without cd
 │
+├── host DIR render|check|ignition # a server shared by several envs (DIR/host.yaml; no project
+│                                  # needed): every account from its first boot (docs/SHARED_HOST.md)
 ├── digoc                          # access to doctl (probably removing this for access via dk)
 │   ├── auth                        
 │   │   ├── init
@@ -86,6 +88,9 @@ dk
     │   (runtime: quadlet envs: a bare `dk <env>` applies the committed render, pulls and
     │    restarts what changed; logs, ps, exec, manage, restart/stop/start go to the host's
     │    systemd/podman over SSH; other compose verbs are refused — docs/FCOS.md)
+    ├── deploy [blue|green]          # blue/green site (info.yaml bluegreen:): the idle colour goes live
+    ├── rollback [--yes]             # blue/green site: back one deploy (colour and database)
+    ├── colours                      # blue/green site: which colour is live, what each runs
     ├── render                       # rendered host (runtime: quadlet): write generated/fcos/ (commit it)
     ├── check                        # committed render == fresh render; secrets required
     ├── diff [--names-only]          # host files/dirs/timers/secret names vs the render

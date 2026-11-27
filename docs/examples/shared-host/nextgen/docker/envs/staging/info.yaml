@@ -1,0 +1,12 @@
+# On the shared server ../../../../shared-1: host.yaml gives this env the account deploy
+# (slot 1): its uid, ID range and loopback port. No fcos: user, keys or hostname here.
+name: staging
+site_origin: [https://nextgen.vm.test]
+docker_host: ssh://deploy@shared-vm/run/user/1001/podman/podman.sock
+image_registry: 10.0.2.2:15000
+image_tag: spike
+runtime: quadlet
+host: ../shared-1
+env: {compose_project_name: nextgen_staging, env_label: nextgen-staging}
+fcos:
+  bind_volumes: [pgdata, caddy_data]

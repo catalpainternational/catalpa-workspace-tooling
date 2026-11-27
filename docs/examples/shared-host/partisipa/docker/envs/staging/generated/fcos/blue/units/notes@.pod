@@ -1,0 +1,11 @@
+# One colour's pod, in that colour's account. dk's drop-in publishes its front port on
+# the host's loopback and gives it the host-loopback network in place of edge-net
+# (it resets Network= first). Partisipa's pods name edge-net the same way.
+[Unit]
+PartOf=notes@%i.target
+
+[Pod]
+PodName=notes-%i
+Network=edge-net.network
+# As Partisipa's pods: the migrate oneshot exiting must not stop the pod.
+ExitPolicy=continue

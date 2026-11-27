@@ -1,0 +1,63 @@
+{
+  "hostname": "shared-1",
+  "edge": {
+    "user": "edge",
+    "uid": 1031,
+    "image": "docker.io/library/caddy:2.11.4-alpine"
+  },
+  "accounts": {
+    "deploy": {
+      "slot": 1,
+      "uid": 1001,
+      "subuid_start": 589824,
+      "ports": [
+        20010,
+        20019
+      ],
+      "project": "nextgen",
+      "env": "staging",
+      "role": "env"
+    },
+    "site": {
+      "slot": 2,
+      "uid": 1002,
+      "subuid_start": 655360,
+      "ports": [
+        20020,
+        20029
+      ],
+      "project": "partisipa",
+      "env": "staging",
+      "role": "site"
+    },
+    "blue": {
+      "slot": 3,
+      "uid": 1003,
+      "subuid_start": 720896,
+      "ports": [
+        20030,
+        20039
+      ],
+      "project": "partisipa",
+      "env": "staging",
+      "role": "blue"
+    },
+    "green": {
+      "slot": 4,
+      "uid": 1004,
+      "subuid_start": 786432,
+      "ports": [
+        20040,
+        20049
+      ],
+      "project": "partisipa",
+      "env": "staging",
+      "role": "green"
+    }
+  },
+  "routes": {
+    "nextgen.vm.test": 20010,
+    "partisipa.vm.test": 20020
+  },
+  "retired_slots": []
+}

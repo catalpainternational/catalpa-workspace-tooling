@@ -1,0 +1,73 @@
+{
+  "bind_volumes": {},
+  "config_dir": "/etc/dk/partisipa/staging/green",
+  "env": "staging",
+  "health": "/healthz",
+  "host": "shared-1",
+  "install": [
+    {
+      "dest": "/etc/dk/partisipa/staging/green/fcos-manifest.json",
+      "file": "manifest.json",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/var/home/green/.config/systemd/user/dk-colour-boot.service",
+      "file": "units/dk-colour-boot.service",
+      "mode": "0644",
+      "owner": "green"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1004/notes-migrate@.container",
+      "file": "units/notes-migrate@.container",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1004/notes-web@.container",
+      "file": "units/notes-web@.container",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1004/notes@.pod",
+      "file": "units/notes@.pod",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/etc/containers/systemd/users/1004/notes@.pod.d/50-dk.conf",
+      "file": "units/notes@.pod.d/50-dk.conf",
+      "mode": "0644",
+      "owner": "root"
+    },
+    {
+      "dest": "/var/home/green/.config/systemd/user/notes@.target",
+      "file": "units/notes@.target",
+      "mode": "0644",
+      "owner": "green"
+    }
+  ],
+  "links": {},
+  "masked_units": [],
+  "ports": {
+    "colour": 20040
+  },
+  "project": "partisipa",
+  "role": "green",
+  "secrets": {
+    "notes-staging-green-dotenv": "dotenv"
+  },
+  "set": "notes",
+  "source": {
+    "path": "v2",
+    "ref": null
+  },
+  "start": [
+    "notes@staging-green.target"
+  ],
+  "timers": [],
+  "uid": 1004,
+  "units_version": "2",
+  "user": "green"
+}
