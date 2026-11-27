@@ -70,7 +70,7 @@ dk
     │   └── read-key                 # restore_from env: its own Spaces key that only reads the
     │                                #   source's backups; writes pgbr_s3_read_* / restic_read_*
     ├── dc-backup                    # TLS + Garage/Caddy on dc_backup_docker_host
-    ├── host [--write]               # verify and show droplet info
+    ├── host [--write] [--cloud-only] # the machine: droplet + DNS (DigitalOcean), then over SSH its OS state and failed units
     │   ├── create [--size …] …      # create droplet (rendered host: volume, Ignition, DNS, then provision [--no-start])
     │   ├── destroy [--dry-run] [--keep-dns|--keep-volumes|--keep-firewall|--keep-docker-host]  # DNS, droplet (clean shutdown), volumes, firewall; digitalocean.allow_destroy only
     │   ├── logging [--apply] [--target app|backup]  # Docker log rotation in daemon.json
@@ -144,6 +144,15 @@ dk
 | `context` | What an agent needs before touching the stack: every origin, compose project and web service per env, local vs remote, and inside a worktree its branch and what it was cut from. Reads config only (no SOPS, ssh or docker); `--status` adds `docker ps` for local envs. `--json` output carries `"schema": 1`. Works in the main checkout and in worktrees. |
 
 ## `<env>` only
+
+### Which command looks at which layer
+
+| Layer | Command | Answers |
+|---|---|---|
+| config | `dk context`, `dk <env> info` | What the repo says each env is (origins, compose project, local or remote); `context --status` adds the running services of local envs |
+| the machine | `dk <env> host` | Does the droplet exist, does DNS match; then over SSH: OS release and a staged update, Zincati, recent boots, failed units, data volume mounted, linger (rendered host); uptime, reboot pending, failed units, disk (compose host). Exit 1 when something failed; `--cloud-only` skips the SSH part |
+| the app | `dk <env> ps` | Which services are running |
+| drift | `dk <env> diff` | Host files, timers and secret names against the committed render |
 
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 

@@ -438,6 +438,11 @@ def _attach_env_command_parsers(
         help="Create or update DigitalOcean A records for site_origin hostnames.",
     )
     p_host.add_argument(
+        "--cloud-only",
+        action="store_true",
+        help="Skip the SSH section (OS state, failed units); only the DigitalOcean and DNS checks.",
+    )
+    p_host.add_argument(
         "--check-remote",
         action="store_true",
         help="SSH probe docker_host (and dc_backup_docker_host): reachability, timedatectl, Docker log rotation.",
