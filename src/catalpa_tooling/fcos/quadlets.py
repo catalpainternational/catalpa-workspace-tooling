@@ -31,7 +31,6 @@ from catalpa_tooling.fcos.settings import (
     ID_RANGE_FIRST,
     ID_RANGE_SIZE,
     SUBUID_COUNT,
-    SUBUID_START,
     FcosSettings,
 )
 
@@ -341,11 +340,18 @@ def quadlets_from_compose(resolved: dict, inputs: RenderInputs) -> QuadletRender
             "root",
         )
 
-    from catalpa_tooling.fcos.caddy_json import socket_unit
+    from catalpa_tooling.fcos.caddy_json import loopback_socket_unit, socket_unit
 
     add(
         f"systemd/{inputs.proxy}.socket",
-        header + socket_unit(f"{inputs.project} edge sockets (80, 443, 443/udp)"),
+        header
+        + (
+            socket_unit(f"{inputs.project} edge sockets (80, 443, 443/udp)")
+            if s.local_port is None
+            else loopback_socket_unit(
+                f"{inputs.project} {inputs.env_name}, behind the shared edge", s.local_port
+            )
+        ),
         f"{s.user_unit_dir}/{inputs.proxy}.socket",
         s.user,
     )
@@ -366,7 +372,7 @@ def quadlets_from_compose(resolved: dict, inputs: RenderInputs) -> QuadletRender
         id_ranges[labels[key]] = {
             "start": starts[key],
             "size": ID_RANGE_SIZE,
-            "host_root_uid": SUBUID_START + starts[key] - 1,
+            "host_root_uid": s.subuid_start + starts[key] - 1,
             "services": list(g),
         }
     manifest = {
@@ -374,7 +380,7 @@ def quadlets_from_compose(resolved: dict, inputs: RenderInputs) -> QuadletRender
         "compose_file": inputs.compose_rel,
         "user": s.user,
         "uid": s.uid,
-        "subuid": {"start": SUBUID_START, "count": SUBUID_COUNT},
+        "subuid": {"start": s.subuid_start, "count": SUBUID_COUNT},
         "auto_update": s.auto_update,
         "network": network_name,
         "id_ranges": dict(sorted(id_ranges.items())),
@@ -417,7 +423,7 @@ def _bind_volume_entry(v, s, inputs, users_of_volume, mounts, labels, group_of, 
         inside = inputs.volume_owners.get(v, 0)
         readers = {name for name, ms in mounts.items() if any(src == v for src, _ in ms)}
         other_range = any(group_of[r] != group for r in readers)
-        entry["owner_uid"] = SUBUID_START + starts[group] + inside - 1
+        entry["owner_uid"] = s.subuid_start + starts[group] + inside - 1
         entry["mode"] = "0755" if other_range else "0700"
     return entry
 

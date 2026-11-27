@@ -150,6 +150,12 @@ def _load_config_for_argv(argv: list[str]) -> tuple[ProjectConfig, list[str], st
 
 def _main_impl() -> None:
     argv = sys.argv[1:]
+    if argv[:1] == ["host"]:
+        # A server shared by several projects lives in a folder of its own (a hosts repo, or
+        # docker/hosts/<host>): no project, no tooling.yaml needed.
+        from catalpa_tooling.fcos.cli import main_shared_host
+
+        sys.exit(main_shared_host(argv[1:]))
     config, argv, _worktree_slug = _load_config_for_argv(argv)
     parser = build_dk_parser(config)
     # Must run before custom argv routing: argcomplete uses COMP_LINE while sys.argv is often bare ``dk``.
@@ -180,12 +186,13 @@ def _main_impl() -> None:
             "worktree",
             "context",
             "secrets",
+            "host",
         ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
                 f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk next-branch`, `dk worktree`, "
-                f"`dk context`, `dk secrets`, or a name with {envs_dir}/<name>/info.yaml.",
+                f"`dk context`, `dk secrets`, `dk host`, or a name with {envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
             if envs:

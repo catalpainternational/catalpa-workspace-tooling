@@ -43,6 +43,43 @@ def _redirect_route() -> dict:
     }
 
 
+#: Behind the shared edge, the edge connects from the host's loopback: trust its X-Forwarded-For.
+LOOPBACK_PROXIES = {"source": "static", "ranges": ["127.0.0.1/32", "::1/128"]}
+
+
+def rewrite_for_shared_edge(config: dict) -> dict:
+    """Behind a shared server's edge: TLS ends there, so the env's one server takes plain HTTP
+    on ``fd/3`` (its account's loopback port), whatever port its Caddyfile names, and trusts the
+    edge's forwarded client address."""
+    servers = config.setdefault("apps", {}).setdefault("http", {}).setdefault("servers", {})
+    if len(servers) != 1:
+        raise CaddyJsonError(
+            f"behind a shared server's edge the env's Caddy has one server; this one has {sorted(servers)}"
+        )
+    for srv in servers.values():
+        srv["listen"] = [HTTP_FD]
+        srv["listen_protocols"] = [["h1"]]
+        srv["automatic_https"] = {"disable": True}
+        srv.pop("tls_connection_policies", None)
+        srv["trusted_proxies"] = dict(LOOPBACK_PROXIES)
+    config["apps"].pop("tls", None)
+    return config
+
+
+def loopback_socket_unit(description: str, port: int) -> str:
+    return (
+        "[Unit]\n"
+        f"Description={description}\n"
+        "\n"
+        "[Socket]\n"
+        "# Passed to the container as fd 3 (see caddy.json); the shared edge connects here.\n"
+        f"ListenStream=127.0.0.1:{port}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=sockets.target\n"
+    )
+
+
 def rewrite_listeners(config: dict) -> dict:
     """Point every server of an adapted config at the systemd-passed sockets.
 
@@ -118,8 +155,9 @@ def adapt_in_image(
     return adapted, [str(w) for w in entrypoint]
 
 
-def caddy_json_text(adapted: dict) -> str:
-    return json.dumps(rewrite_listeners(adapted), indent=2, sort_keys=True) + "\n"
+def caddy_json_text(adapted: dict, *, shared_edge: bool = False) -> str:
+    rewrite = rewrite_for_shared_edge if shared_edge else rewrite_listeners
+    return json.dumps(rewrite(adapted), indent=2, sort_keys=True) + "\n"
 
 
 def socket_unit(description: str) -> str:
