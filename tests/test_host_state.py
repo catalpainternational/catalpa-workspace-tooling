@@ -155,3 +155,20 @@ def test_compose_host_unreachable() -> None:
 def test_docker_host_login() -> None:
     assert hs.docker_host_login("ssh://deploy@host.example/run/user/1001/podman/podman.sock") == "deploy"
     assert hs.docker_host_login("ssh://host.example") is None
+
+
+def test_marker_after_output_without_a_trailing_newline() -> None:
+    """rpm-ostree's JSON ends without a newline; the next marker must still start its line."""
+    script = hs.rendered_root_script("deploy", "/var/mnt/data")
+    assert script.startswith("m() {")
+    assert "echo '== " not in script
+    # What the shell prints for the marker helper, run for real:
+    out = subprocess.run(
+        ["sh", "-c", "m() { printf '\\n== %s\\n' \"$1\"; }; printf '{}'; m zincati; echo active"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert hs._section(out, "zincati") == "active"
+
+
+def test_compose_script_uses_line_markers() -> None:
+    assert hs.COMPOSE_SCRIPT.startswith("m() {") and "echo '== " not in hs.COMPOSE_SCRIPT

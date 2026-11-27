@@ -109,20 +109,26 @@ def data_mount_of(manifest: dict) -> str | None:
     return paths[0].rsplit("/", 1)[0]
 
 
+# A marker starts its own line: rpm-ostree's JSON has no trailing newline, so a bare
+# ``echo '== x'`` after it would join the closing brace.
+_MARK = "m() { printf '\\n== %s\\n' \"$1\"; }\n"
+
+
 def rendered_root_script(user: str, data_mount: str | None) -> str:
     mount = (
-        f"echo '== mount'; mountpoint -q {data_mount} && echo mounted || echo not-mounted\n"
+        f"m mount; mountpoint -q {data_mount} && echo mounted || echo not-mounted\n"
         if data_mount
         else ""
     )
     return (
-        "echo '== ostree'; rpm-ostree status --json 2>&1\n"
-        "echo '== zincati'; systemctl is-active zincati.service 2>&1; "
+        f"{_MARK}"
+        "m ostree; rpm-ostree status --json 2>&1\n"
+        "m zincati; systemctl is-active zincati.service 2>&1; "
         "journalctl -u zincati.service -n 3 --no-pager -o cat 2>&1\n"
-        "echo '== boots'; journalctl --list-boots --no-pager 2>&1 | tail -3\n"
-        "echo '== failed'; systemctl --failed --no-legend --plain 2>&1\n"
+        "m boots; journalctl --list-boots --no-pager 2>&1 | tail -3\n"
+        "m failed; systemctl --failed --no-legend --plain 2>&1\n"
         f"{mount}"
-        f"echo '== linger'; loginctl show-user {user} -p Linger 2>&1\n"
+        f"m linger; loginctl show-user {user} -p Linger 2>&1\n"
     )
 
 
@@ -154,10 +160,11 @@ def rendered_state(host: Host, *, user: str, data_mount: str | None) -> list[Che
 
 
 COMPOSE_SCRIPT = (
-    "echo '== uptime'; uptime -p 2>&1\n"
-    "echo '== reboot'; [ -f /var/run/reboot-required ] && echo required || echo no\n"
-    "echo '== failed'; systemctl --failed --no-legend --plain 2>&1\n"
-    "echo '== disk'; df -P / 2>&1 | tail -1\n"
+    f"{_MARK}"
+    "m uptime; uptime -p 2>&1\n"
+    "m reboot; [ -f /var/run/reboot-required ] && echo required || echo no\n"
+    "m failed; systemctl --failed --no-legend --plain 2>&1\n"
+    "m disk; df -P / 2>&1 | tail -1\n"
 )
 
 
