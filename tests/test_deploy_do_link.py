@@ -829,15 +829,24 @@ def test_cmd_env_host_create_wait_and_write(
         lambda *_a, **_k: "proj-1",
     )
     monkeypatch.setattr("catalpa_tooling.doctl_droplets.create_droplet", fake_create)
-    monkeypatch.setattr(
-        "catalpa_tooling.deploy_do_link.find_droplet_for_link",
-        lambda *_a, **_k: _active_droplet("test-prod"),
-    )
+    # No droplet before the create; the new one after it.
+    lookups: list[int] = []
+
+    def fake_find(*_a, **_k):
+        lookups.append(1)
+        return None if len(lookups) == 1 else _active_droplet("test-prod")
+
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link.find_droplet_for_link", fake_find)
     monkeypatch.setattr(
         "catalpa_tooling.ssh_known_hosts.ensure_ssh_known_host_for_docker_host",
         fake_ensure,
     )
     monkeypatch.setattr("catalpa_tooling.doctl_domains.sync_host_dns", lambda *_a, **_k: 0)
+    firewalls: list[str] = []
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_firewall.ensure_droplet_firewall",
+        lambda name, droplet_id, settings, **_k: firewalls.append(name) or 0,
+    )
     dns_check_calls: list[bool] = []
 
     def fake_dns_checks(*_a, **kwargs):
@@ -859,6 +868,8 @@ def test_cmd_env_host_create_wait_and_write(
     assert create_kwargs[0]["for_env"] is None
     assert create_kwargs[0]["dry_run"] is False
     assert ensure_calls == ["ssh://root@203.0.113.5"]
+    # Every new droplet gets its cloud firewall (doctl_firewall).
+    assert firewalls == ["test-prod"]
 
 
 def test_cmd_env_host_create_dry_run_skips_write(
@@ -1137,3 +1148,233 @@ def test_cmd_env_host_sync_dns(
 
     assert cmd_env_host(config, "prod", sync_dns=True) == 0
     assert sync_calls == ["203.0.113.5"]
+
+
+def test_cmd_env_host_create_takes_its_flags_after_the_documented_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QUICKSTART: create-only flags go after `--` so the top-level parser leaves them alone."""
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+    seen: dict = {}
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_projects.resolve_project_id_dry_run",
+        lambda project, **_k: seen.setdefault("project", project) or "proj",
+    )
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_droplets.create_droplet",
+        lambda *_a, **kw: seen.update(context=kw["context"]) or 0,
+    )
+    argv = ["--dry-run", "--", "--context", "personal", "--project", "mine"]
+    assert cmd_env_host_create(config, "staging", argv) == 0
+    assert seen == {"project": "mine", "context": "personal"}
+
+
+def test_cmd_env_host_create_finishes_in_the_account_and_project_it_created_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--context`/`--project` reached the droplet create but not the DNS and docker_host steps,
+    which then looked in tooling.yaml's project with the default doctl login."""
+    from catalpa_tooling import deploy_do_link
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.ensure_doctl_available", lambda: Path("/doctl"))
+    monkeypatch.setattr("catalpa_tooling.doctl_projects.resolve_project_id", lambda *_a, **_k: "p")
+    monkeypatch.setattr("catalpa_tooling.doctl_droplets.create_droplet", lambda *_a, **_k: 0)
+    finished: list = []
+    monkeypatch.setattr(
+        deploy_do_link, "_finish_host_provisioning", lambda cfg, env, **kw: finished.append(cfg) or 0
+    )
+    argv = ["--", "--context", "personal", "--project", "mine"]
+    assert deploy_do_link.cmd_env_host_create(config, "staging", argv) == 0
+    do = finished[0].digitalocean
+    assert (do.project_name, do.project_id, do.context) == ("mine", None, "personal")
+
+
+def _host_create_harness(monkeypatch, tmp_path, info_yaml: str, *, exists: bool = False, fw_rc: int = 0):
+    """`host create` with doctl, DNS and known_hosts stood in for; returns what it did."""
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text(info_yaml, encoding="utf-8")
+    seen: dict = {"create": [], "firewalls": [], "lookups": 0}
+
+    def fake_find(*_a, **_k):
+        seen["lookups"] += 1
+        return _active_droplet("test-prod") if exists or seen["lookups"] > 1 else None
+
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.ensure_doctl_available", lambda: Path("/doctl"))
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.try_resolve_doctl_binary", lambda: Path("/doctl"))
+    monkeypatch.setattr("catalpa_tooling.doctl_projects.resolve_project_id", lambda *_a, **_k: "proj-1")
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_droplets.create_droplet", lambda *_a, **kw: seen["create"].append(kw) or 0
+    )
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link.find_droplet_for_link", fake_find)
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.ensure_ssh_known_host_for_docker_host", lambda *_a, **_k: 0)
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.sync_host_dns", lambda *_a, **_k: 0)
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link._run_host_dns_checks", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_firewall.ensure_droplet_firewall",
+        lambda name, droplet_id, settings, **_k: seen["firewalls"].append(name) or fw_rc,
+    )
+    return config, env_dir, seen
+
+
+def test_host_create_leaves_an_existing_droplets_firewall_alone(tmp_path, monkeypatch, capsys) -> None:
+    """Re-running `host create` to finish provisioning must not put the outbound allowlist
+    on a server that is already running."""
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+
+    config, _, seen = _host_create_harness(monkeypatch, tmp_path, "description: test\n", exists=True)
+    assert cmd_env_host_create(config, "prod", []) == 0
+    assert seen["firewalls"] == []
+    assert "already existed" in capsys.readouterr().err
+
+
+def test_host_create_fails_when_the_firewall_could_not_be_made(tmp_path, monkeypatch) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+
+    config, _, seen = _host_create_harness(monkeypatch, tmp_path, "description: test\n", fw_rc=3)
+    assert cmd_env_host_create(config, "prod", []) != 0
+    assert seen["firewalls"] == ["test-prod"]
+
+
+def test_a_project_override_drops_tooling_yamls_project_id(tmp_path) -> None:
+    import dataclasses
+
+    from catalpa_tooling.deploy_do_link import _with_do_overrides
+
+    from catalpa_tooling.config import DigitalOceanConfig
+
+    config = _load_test_config(tmp_path)
+    do_pinned = DigitalOceanConfig(
+        project_name="Catalpa Site", project_id="uuid-prod", context=None, timezone=None,
+        region=None, size=None, image=None, ssh_keys=None,
+    )  # fmt: skip
+    pinned = dataclasses.replace(config, digitalocean=do_pinned)
+    do = _with_do_overrides(pinned, project="mine", context=None).digitalocean
+    assert (do.project_name, do.project_id) == ("mine", None)
+
+
+def test_host_create_leaves_a_droplet_from_outside_the_project_alone(tmp_path, monkeypatch, capsys):
+    """A server made by hand sits in the account's default project; `create_droplet` reuses
+    it and moves it in, so it existed already and must keep its firewall (review round 2)."""
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "prod"
+    env_dir.mkdir(parents=True)
+    (env_dir / "info.yaml").write_text("description: test\n", encoding="utf-8")
+    state = {"in_project": False}
+    fws = []
+
+    def fake_json(args, **_k):
+        if args[:3] == ["projects", "resources", "list"]:
+            return ["do:droplet:1"] if state["in_project"] else []
+        if args[:3] == ["compute", "droplet", "list"]:
+            return [_active_droplet("test-prod")]
+        if args[:3] == ["projects", "resources", "assign"]:
+            state["in_project"] = True
+            return []
+        raise AssertionError(args)
+
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl_json", fake_json)
+    import subprocess
+    def fake_run(args, **_k):
+        state["in_project"] = True
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.run_doctl", fake_run)
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.ensure_doctl_available", lambda: Path("/doctl"))
+    monkeypatch.setattr("catalpa_tooling.doctl_binary.try_resolve_doctl_binary", lambda: Path("/doctl"))
+    monkeypatch.setattr("catalpa_tooling.ssh_known_hosts.ensure_ssh_known_host_for_docker_host", lambda *_a, **_k: 0)
+    monkeypatch.setattr("catalpa_tooling.doctl_domains.sync_host_dns", lambda *_a, **_k: 0)
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link._run_host_dns_checks", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        "catalpa_tooling.doctl_firewall.ensure_droplet_firewall",
+        lambda name, droplet_id, settings, **_k: fws.append(name) or 0,
+    )
+    from catalpa_tooling.doctl_droplets import _resolve_existing_droplet_for_create
+
+    def fake_create(name, **kw):
+        # what create_droplet does first with reuse_existing=True
+        rc = _resolve_existing_droplet_for_create(
+            name, project_id=kw["project_id"], context=kw["context"], reuse_existing=True
+        )
+        assert rc == 0, rc
+        return 0
+
+    monkeypatch.setattr("catalpa_tooling.doctl_droplets.create_droplet", fake_create)
+    rc = cmd_env_host_create(config, "prod", ["--project", "11111111-1111-1111-1111-111111111111"])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert fws == [], f"firewall attached to pre-existing droplet: {fws}"
+    assert "already existed" in err
+
+
+def test_host_create_reports_a_failed_droplet_lookup_without_a_traceback(tmp_path, monkeypatch, capsys) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host_create
+    from catalpa_tooling.doctl_binary import DoctlCommandError
+
+    config, _, seen = _host_create_harness(monkeypatch, tmp_path, "description: test\n")
+
+    def broken(*_a, **_k):
+        raise DoctlCommandError("Unable to initialize DigitalOcean API client", returncode=1)
+
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link.find_droplet_for_link", broken)
+    assert cmd_env_host_create(config, "prod", []) == 1
+    assert seen["create"] == [], "nothing is created when the lookup failed"
+    assert "Could not look up droplet 'test-prod'" in capsys.readouterr().err
+
+
+# --- the "docker_host differs from droplet" note (found hand-testing #207) ---------------
+
+
+def _note(capsys, configured, resolved="ssh://root@203.0.113.5", **kw) -> str:
+    from catalpa_tooling.deploy_do_link import _compare_docker_host
+
+    _compare_docker_host(configured, resolved, **kw)
+    return capsys.readouterr().err
+
+
+def test_docker_host_note_skipped_when_the_name_resolves_to_the_droplet(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link._hostname_resolves_to", lambda host, ip: (host, ip) == ("bero.example", "203.0.113.5")
+    )
+    assert _note(capsys, "ssh://root@bero.example") == ""
+
+
+def test_docker_host_note_kept_for_another_address_or_user(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link._hostname_resolves_to", lambda host, ip: False)
+    assert "differs from droplet" in _note(capsys, "ssh://root@other.example")
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link._hostname_resolves_to", lambda host, ip: True)
+    assert "differs from droplet" in _note(capsys, "ssh://deploy@bero.example")
+
+
+def test_docker_host_note_never_for_a_rendered_host(capsys: pytest.CaptureFixture) -> None:
+    configured = "ssh://deploy@staging.example/run/user/1001/podman/podman.sock"
+    assert _note(capsys, configured, rendered=True) == ""
+
+
+def test_host_write_refuses_on_a_rendered_host(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    info = env_dir / "info.yaml"
+    text = "runtime: quadlet\ndocker_host: ssh://deploy@staging.example/run/user/1001/podman/podman.sock\n"
+    info.write_text(text, encoding="utf-8")
+    assert cmd_env_host(config, "staging", write=True) == 0
+    assert "not for a rendered host" in capsys.readouterr().err
+    assert info.read_text(encoding="utf-8") == text

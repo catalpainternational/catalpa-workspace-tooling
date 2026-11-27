@@ -62,6 +62,10 @@ Deduplication still applies, so the repository grows only by the new volumes' co
 
 ## Credentials per environment
 
+Which envs back up and which restore is set in `info.yaml` (`backups: [files]`, `restore_from`),
+not by which credentials exist: see [README_PGBACKREST.md](README_PGBACKREST.md#which-envs-back-up-and-which-restore).
+
+
 Use **one** credential style per environment (mutually exclusive). Keys in `credentials.yaml` are uppercased by `dk` like other deploy secrets.
 
 ### WRITE mode (scheduled backup hosts)
@@ -177,4 +181,4 @@ For private-CA S3 endpoints, issue/install via [README_DC_BACKUP.md](README_DC_B
 | `no snapshot found` on `files restore` | Snapshot `Paths` are a host prefix (Ansible); restore filters `/backup/<volume>`. Seed with `dk fetch media` + `files push`. |
 | `lchown … no such file` then empty media volume | Restore extracted to staging then discarded on Fatal. Same: do not `files restore` host-path snapshots. |
 
-Default image: `restic/restic:0.17.3` (override with `RESTIC_IMAGE` in the env file).
+Default image: `restic/restic:0.18.1` (override with `RESTIC_IMAGE` in the env file).

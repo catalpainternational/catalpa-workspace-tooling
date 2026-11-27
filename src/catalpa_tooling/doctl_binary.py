@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -15,6 +16,28 @@ from catalpa_tooling.run_cmd import run as run_cmd
 INSTALL_HINT = (
     "Install the official DigitalOcean CLI: https://docs.digitalocean.com/reference/doctl/how-to/install/"
 )
+
+
+# One dk command looks the same things up several times (projects, droplets, volumes, domain
+# records): each step resolves what it needs on its own. Read-only ``list``/``get`` results are
+# kept for the life of the process, and any other doctl call (create, delete, assign, …)
+# empties the cache, so a step after a change sees it. A poll waiting for DigitalOcean to catch
+# up calls ``clear_doctl_cache()`` first.
+_READ_VERBS = frozenset({"list", "get"})
+_json_cache: dict[tuple, object] = {}
+
+
+def _is_read(args: Sequence[str]) -> bool:
+    positional = []
+    for a in args:
+        if a.startswith("-"):
+            break
+        positional.append(a)
+    return any(a in _READ_VERBS for a in positional)
+
+
+def clear_doctl_cache() -> None:
+    _json_cache.clear()
 
 
 class DoctlNotFoundError(RuntimeError):
@@ -147,6 +170,8 @@ def run_doctl(
     capture_output: bool = False,
     stdin: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if not _is_read(args):
+        clear_doctl_cache()
     binary = ensure_doctl_available()
     cmd = build_doctl_argv(binary, args, context=context)
     kwargs: dict = {
@@ -194,6 +219,9 @@ def run_doctl_json(
     *,
     context: str | None = None,
 ) -> object:
+    key = (context, tuple(args))
+    if key in _json_cache:
+        return copy.deepcopy(_json_cache[key])
     try:
         result = run_doctl([*args, "-o", "json"], context=context, capture_output=True)
     except DoctlNotFoundError:
@@ -209,4 +237,6 @@ def run_doctl_json(
         raise DoctlCommandError(f"Invalid JSON from doctl: {e}", returncode=1) from e
     if isinstance(data, dict) and "errors" in data:
         raise DoctlCommandError(format_doctl_failure(result), returncode=1)
+    if _is_read(args):
+        _json_cache[key] = copy.deepcopy(data)
     return data

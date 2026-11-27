@@ -1,0 +1,19 @@
+name: staging
+site_origin:
+  - staging.site.example
+docker_host: ssh://deploy@staging.site.example/run/user/1001/podman/podman.sock
+image_registry: ghcr.io/example
+image_tag: v1.2.3
+runtime: quadlet
+fcos:
+  hostname: site-staging
+  admin_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
+  ssh_authorized_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey ci-deploy
+  bind_volumes: [pgdata, django_media, caddy_data]
+  id_ranges:
+    db: 10000
+    django: 20000
+    caddy: 30000

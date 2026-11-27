@@ -42,6 +42,9 @@ dk
 ├── context [--env NAME] [--json] [--status]  # every env's origins, compose project, local/remote;
 │                                  # worktree branch + base; config only unless --status
 │
+├── secrets [--dry-run]            # edit the project's docker/credentials.yaml (SOPS): values every
+│                                  # env shares (registry_user/registry_token); an env's file overrides
+│
 # Global (before subcommand):
 #   dk --worktree <slug> | -W <slug>  …   # target .worktrees/<slug> without cd
 │
@@ -63,21 +66,37 @@ dk
 └── <env>  [--dry-run] [-y] [--tag TAG]  …
     ├── info [-e]                    # see or edit env info
     ├── secrets                      # edit env encrypted credentials via SOPS
+    │   ├── push [NAME…] [--restart] # rendered host: sops → podman secrets over SSH stdin
+    │   └── read-key                 # restore_from env: its own Spaces key that only reads the
+    │                                #   source's backups; writes pgbr_s3_read_* / restic_read_*
     ├── dc-backup                    # TLS + Garage/Caddy on dc_backup_docker_host
-    ├── host [--write]               # verify and show droplet info
-    │   ├── create [--size …] …      # create droplet
-    │   └── logging [--apply] [--target app|backup]  # Docker log rotation in daemon.json
+    ├── host [--write] [--cloud-only] # the machine: droplet + DNS (DigitalOcean), then over SSH its OS state and failed units
+    │   ├── create [--size …] …      # create droplet (rendered host: volume, Ignition, DNS, then provision [--no-start])
+    │   ├── destroy [--dry-run] [--keep-dns|--keep-volumes|--keep-firewall|--keep-docker-host]  # DNS, droplet (clean shutdown), volumes, firewall; digitalocean.allow_destroy only
+    │   ├── logging [--apply] [--target app|backup]  # Docker log rotation in daemon.json
+    │   ├── ignition -o FILE         # rendered host: compile host.bu (Butane) → droplet user data
+    │   ├── provision [--no-start]   # rendered host: check files, push secrets, registry login, start
+    │   └── login                    # rendered host: registry login again from sops (rotated token)
     ├── zabbix                       # devops monitoring
     │   ├── install
     │   ├── enable
     │   ├── disable
     │   ├── restart
     │   └── logs
+    │   (runtime: quadlet envs: a bare `dk <env>` applies the committed render, pulls and
+    │    restarts what changed; logs, ps, exec, manage, restart/stop/start go to the host's
+    │    systemd/podman over SSH; other compose verbs are refused — docs/FCOS.md)
+    ├── render                       # rendered host (runtime: quadlet): write generated/fcos/ (commit it)
+    ├── check                        # committed render == fresh render; secrets required
+    ├── diff [--names-only]          # host files/dirs/timers/secret names vs the render
+    ├── apply [--no-restart] [-y] [--force] # install what differs (incl. SSH keys); restart affected units
+    ├── fcos …                       # deprecated spelling of the five above, with a note
     ├── ensure_volumes               # utility command 
     ├── storage ensure               # host paths + optional DO volumes + Docker binds
     ├── trust-caddy-cert [--dry-run] # trust Caddy local CA (global local proxy or stack proxy)
     ├── manage [--user U] <django …> # ./manage.py as stack.manage_user (or U)
-    ├── pull_media                   # volume → host dir (tar)
+    ├── pull_media                   # deprecated: dk fetch media --env <env>
+    ├── restore [--snapshot S] [-- pgBackRest args]  # db restore + files restore, one confirmation
     ├── wipe                         # alias: compose down -v
     │
     ├── files                        # restic backups + host media → volume (alias: bkp_files)
@@ -97,13 +116,16 @@ dk
     │   ├── info
     │   ├── check
     │   ├── version
-    │   ├── backup full|incr|diff
+    │   ├── backup [full|incr|diff]   # default incr
     │   ├── pgdump
     │   └── restore [--dumps] [--file PATH] [--dry-run] [pgBackRest args…]
     │
     ├── compose …                  # explicit passthrough (tab completion); e.g. compose up -d
     ├── docker …                   # passthrough to docker CLI (same DOCKER_HOST/env); e.g. docker volume ls
-    └── …                          # implicit compose passthrough (legacy); e.g. up -d
+    ├── ps | logs | exec | start | stop | restart  # the running app, on every runtime (compose: passed to compose)
+    └── (bare)                     # bring the env up to date: compose `up -d`; quadlet: render, pull, restart
+                                   # other compose verbs (`up -d`, `config`, `down` …) are refused:
+                                   # use `compose …` (tooling 2.0 M3)
 ```
 
 ## Top-level (no `<env>`)
@@ -123,9 +145,18 @@ dk
 
 ## `<env>` only
 
+### Which command looks at which layer
+
+| Layer | Command | Answers |
+|---|---|---|
+| config | `dk context`, `dk <env> info` | What the repo says each env is (origins, compose project, local or remote); `context --status` adds the running services of local envs |
+| the machine | `dk <env> host` | Does the droplet exist, does DNS match; then over SSH: OS release and a staged update, Zincati, recent boots, failed units, data volume mounted, linger (rendered host); uptime, reboot pending, failed units, disk (compose host). Exit 1 when something failed; `--cloud-only` skips the SSH part |
+| the app | `dk <env> ps` | Which services are running |
+| drift | `dk <env> diff` | Host files, timers and secret names against the committed render |
+
 Everything under `<env>` resolves `docker/envs/<env>/info.yaml`, credentials, and `DOCKER_HOST`, then runs on that deployment target.
 
-Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host logging`, `zabbix`, `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
+Special verbs (not plain compose): `info`, `secrets`, `dc-backup`, `host` / `host create` / `host destroy` / `host logging`, `zabbix`, `render` / `check` / `diff` / `apply` / `host ignition` / `host provision` / `host login` / `secrets push` (rendered hosts; `fcos …` is the deprecated spelling), `ensure_volumes`, `storage ensure`, `trust-caddy-cert`, `manage`, `pull_media`, `restore`, `wipe`, `files` (alias `bkp_files`), `db` (alias `bkp_db`).
 
 `db` / `files` may auto-provision missing WRITE credentials (DigitalOcean Spaces via `doctl` + `s3cmd`, `sops set`); see [README_PGBACKREST.md](../README_PGBACKREST.md) and [README_RESTIC.md](../README_RESTIC.md).
 

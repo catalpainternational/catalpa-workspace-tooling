@@ -16,6 +16,7 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "trust-caddy-cert",
         "manage",
         "pull_media",
+        "restore",
         "wipe",
         "files",
         "bkp_files",
@@ -24,6 +25,11 @@ SPECIAL_ENV_COMMANDS: frozenset[str] = frozenset(
         "dc-backup",
         "compose",
         "docker",
+        "fcos",
+        "render",
+        "check",
+        "diff",
+        "apply",
     }
 )
 
@@ -74,6 +80,27 @@ COMPOSE_VERBS: frozenset[str] = frozenset(
 )
 
 
+#: Compose verbs that stay ``dk <env> <verb>`` on a compose env: the running app's commands,
+#: which every runtime has (tooling 2.0, docs/TOOLING_2.md). Every other compose verb is
+#: refused there with a hint: ``dk <env> compose <verb> …`` runs it, and a bare ``dk <env>`` is
+#: ``up -d``. They still parse as compose verbs, so a quadlet env can refuse them with its own
+#: hints.
+RUNNING_APP_VERBS: frozenset[str] = frozenset({"ps", "logs", "exec", "start", "stop", "restart"})
+
+
+def implicit_compose_refused_message(env_name: str, compose_args: list[str]) -> str:
+    verb = compose_args[0]
+    typed = " ".join(compose_args)
+    lines = [f"dk {env_name}: `dk {env_name} {typed}` no longer runs docker compose."]
+    if verb == "up":
+        lines.append(f"  A bare `dk {env_name}` brings the env up to date (`up -d`).")
+    lines.append(f"  For compose itself: `dk {env_name} compose {typed}`.")
+    lines.append(
+        f"  `dk {env_name} {'|'.join(sorted(RUNNING_APP_VERBS))}` stay, as on every runtime."
+    )
+    return "\n".join(lines)
+
+
 def peel_worktree_flag(argv: list[str]) -> tuple[str | None, list[str]]:
     """Strip ``--worktree SLUG`` / ``-W SLUG`` / ``--worktree=SLUG`` from argv.
 
@@ -89,7 +116,7 @@ def peel_worktree_flag(argv: list[str]) -> tuple[str | None, list[str]]:
             if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
                 raise ValueError(
                     f"dk: {tok} requires a worktree slug "
-                    "(e.g. dk --worktree onboarding dev up -d)"
+                    "(e.g. dk --worktree onboarding dev)"
                 )
             if slug is not None:
                 raise ValueError("dk: --worktree / -W may only be given once")
@@ -278,14 +305,40 @@ def unknown_env_subcommand(argv: list[str]) -> str | None:
     return first
 
 
+# Subcommands that were removed or exist only on another runtime, and what to use instead.
+REMOVED_SUBCOMMAND_HINTS = {
+    "pgrestore": "use `dk {env} db restore --dumps` (or `db restore --file X`)",
+    "install-systemd": (
+        "on a compose host it is `dk {env} db install-systemd` / `files install-systemd`; "
+        "a rendered host has none, `dk {env} apply` installs its units"
+    ),
+}
+
+
+# Names people guess that never existed, and which command answers the question.
+NO_SUCH_SUBCOMMAND_HINTS = {
+    "status": (
+        "there is no `status`; each layer has its own command: `{env} ps` the running app, "
+        "`{env} host` the machine, `{env} diff` drift from the render, `{env} info` the config"
+    ),
+}
+
+
 def unknown_env_subcommand_message(env_name: str, token: str) -> str:
     """Error text naming both the dk subcommands and the compose verbs that are valid."""
     dk_names = ", ".join(sorted(SPECIAL_ENV_COMMANDS))
-    compose_names = ", ".join(sorted(COMPOSE_VERBS))
+    app_names = ", ".join(sorted(RUNNING_APP_VERBS))
+    hint = REMOVED_SUBCOMMAND_HINTS.get(token)
+    replaced = f"  {token!r} has moved: {hint.format(env=env_name)}.\n" if hint else ""
+    no_such = NO_SUCH_SUBCOMMAND_HINTS.get(token)
+    if no_such:
+        replaced = f"  {no_such.format(env='dk ' + env_name)}.\n"
     return (
         f"dk {env_name}: unknown subcommand {token!r}.\n"
+        f"{replaced}"
         f"  dk subcommands: {dk_names}\n"
-        f"  compose verbs:  {compose_names}\n"
+        f"  the running app: {app_names}\n"
+        f"  compose itself: `dk {env_name} compose <verb> …` (e.g. `compose up -d`)\n"
         f"  Bare `dk {env_name}` runs `up -d`, so an unrecognised subcommand is refused here\n"
         "  rather than starting the stack."
     )

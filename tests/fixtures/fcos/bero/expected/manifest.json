@@ -1,0 +1,394 @@
+{
+  "env": "staging",
+  "compose_file": "compose.yaml",
+  "user": "deploy",
+  "uid": 1001,
+  "subuid": {
+    "start": 589824,
+    "count": 65536
+  },
+  "auto_update": true,
+  "network": "bero_shape_default",
+  "id_ranges": {
+    "db": {
+      "start": 15000,
+      "size": 5000,
+      "host_root_uid": 604823,
+      "services": [
+        "db"
+      ]
+    },
+    "django": {
+      "start": 10000,
+      "size": 5000,
+      "host_root_uid": 599823,
+      "services": [
+        "caddy",
+        "collectstatic",
+        "django",
+        "migrate",
+        "rq_worker"
+      ]
+    },
+    "metabase": {
+      "start": 20000,
+      "size": 5000,
+      "host_root_uid": 609823,
+      "services": [
+        "metabase"
+      ]
+    },
+    "redis": {
+      "start": 25000,
+      "size": 5000,
+      "host_root_uid": 614823,
+      "services": [
+        "redis"
+      ]
+    }
+  },
+  "bind_volumes": {
+    "caddy_data": {
+      "path": "/var/mnt/data/caddy_data",
+      "services": [
+        "caddy"
+      ],
+      "id_range": "django",
+      "owner_uid": 599823,
+      "mode": "0700"
+    },
+    "django_media": {
+      "path": "/var/mnt/data/django_media",
+      "services": [
+        "bero_shape-restic-files-backup",
+        "caddy",
+        "collectstatic",
+        "django",
+        "django-task",
+        "migrate",
+        "rq_worker"
+      ],
+      "id_range": "django",
+      "owner_uid": 599823,
+      "mode": "0700"
+    },
+    "postgres_data": {
+      "path": "/var/mnt/data/postgres_data",
+      "services": [
+        "db"
+      ],
+      "id_range": "db",
+      "owner_uid": 605822,
+      "mode": "0700"
+    }
+  },
+  "podman_volumes": {
+    "caddy_config": "bero_shape_caddy_config",
+    "django_static": "bero_shape_django_static",
+    "redis_data": "bero_shape_redis_data"
+  },
+  "images": {
+    "caddy": "ghcr.io/example/bero_shape-caddy:v7.4.1",
+    "collectstatic": "ghcr.io/example/bero_shape-django:v7.4.1",
+    "db": "ghcr.io/example/bero_shape-db:v7.4.1",
+    "django": "ghcr.io/example/bero_shape-django:v7.4.1",
+    "metabase": "docker.io/metabase/metabase:v0.62.x",
+    "migrate": "ghcr.io/example/bero_shape-django:v7.4.1",
+    "redis": "docker.io/library/redis:8.0-alpine",
+    "rq_worker": "ghcr.io/example/bero_shape-django:v7.4.1"
+  },
+  "secrets": {
+    "django_secret_key": "DJANGO_SECRET_KEY",
+    "metabase_db_password": "METABASE_DB_PASSWORD",
+    "pgbr_s3_write_bucket": "PGBR_S3_WRITE_BUCKET",
+    "pgbr_s3_write_endpoint": "PGBR_S3_WRITE_ENDPOINT",
+    "pgbr_s3_write_key": "PGBR_S3_WRITE_KEY",
+    "pgbr_s3_write_region": "PGBR_S3_WRITE_REGION",
+    "pgbr_s3_write_repo_path": "PGBR_S3_WRITE_REPO_PATH",
+    "pgbr_s3_write_secret": "PGBR_S3_WRITE_SECRET",
+    "pgbr_s3_write_stanza": "PGBR_S3_WRITE_STANZA",
+    "postgres_password": "POSTGRES_PASSWORD",
+    "restic_write_password": "RESTIC_WRITE_PASSWORD",
+    "restic_write_repository": "RESTIC_WRITE_REPOSITORY",
+    "restic_write_s3_access_key_id": "RESTIC_WRITE_S3_ACCESS_KEY_ID",
+    "restic_write_s3_default_region": "RESTIC_WRITE_S3_DEFAULT_REGION",
+    "restic_write_s3_secret_access_key": "RESTIC_WRITE_S3_SECRET_ACCESS_KEY"
+  },
+  "install": [
+    {
+      "file": "backup/backup-status.sh",
+      "dest": "/var/home/deploy/.config/bero_shape/backup-status.sh",
+      "owner": "deploy",
+      "mode": "0755"
+    },
+    {
+      "file": "backup/pgbackrest.conf",
+      "dest": "/var/home/deploy/.config/bero_shape/50-bero_shape-managed.conf",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "backup/postgres-archive.conf",
+      "dest": "/var/home/deploy/.config/bero_shape/30-bero_shape-pgbackrest-archive.conf",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "caddy/caddy.json",
+      "dest": "/var/home/deploy/.config/bero_shape/caddy.json",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/caddy.env",
+      "dest": "/etc/bero_shape/caddy.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/collectstatic.env",
+      "dest": "/etc/bero_shape/collectstatic.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/db.env",
+      "dest": "/etc/bero_shape/db.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/django.env",
+      "dest": "/etc/bero_shape/django.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/metabase.env",
+      "dest": "/etc/bero_shape/metabase.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/migrate.env",
+      "dest": "/etc/bero_shape/migrate.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/redis.env",
+      "dest": "/etc/bero_shape/redis.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/rq_worker.env",
+      "dest": "/etc/bero_shape/rq_worker.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "manifest.json",
+      "dest": "/etc/bero_shape/fcos-manifest.json",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "monitoring/podman-ro-proxy.cfg",
+      "dest": "/etc/bero_shape/podman-ro-proxy.cfg",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "monitoring/tmpfiles.conf",
+      "dest": "/etc/tmpfiles.d/bero_shape.conf",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "monitoring/zabbix-docker.conf",
+      "dest": "/etc/bero_shape/zabbix-docker.conf",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "monitoring/zabbix-userparams.conf",
+      "dest": "/etc/bero_shape/zabbix-userparams.conf",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/bero_shape-restic-files-backup.container",
+      "dest": "/etc/containers/systemd/users/1001/bero_shape-restic-files-backup.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/bero_shape_default.network",
+      "dest": "/etc/containers/systemd/users/1001/bero_shape_default.network",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy.container",
+      "dest": "/etc/containers/systemd/users/1001/caddy.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy_config.volume",
+      "dest": "/etc/containers/systemd/users/1001/caddy_config.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/collectstatic.container",
+      "dest": "/etc/containers/systemd/users/1001/collectstatic.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/db.container",
+      "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django-task.container",
+      "dest": "/etc/containers/systemd/users/1001/django-task.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django.container",
+      "dest": "/etc/containers/systemd/users/1001/django.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django_static.volume",
+      "dest": "/etc/containers/systemd/users/1001/django_static.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/metabase.container",
+      "dest": "/etc/containers/systemd/users/1001/metabase.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/migrate.container",
+      "dest": "/etc/containers/systemd/users/1001/migrate.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/podman-ro-proxy.container",
+      "dest": "/etc/containers/systemd/users/1001/podman-ro-proxy.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/redis.container",
+      "dest": "/etc/containers/systemd/users/1001/redis.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/redis_data.volume",
+      "dest": "/etc/containers/systemd/users/1001/redis_data.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/rq_worker.container",
+      "dest": "/etc/containers/systemd/users/1001/rq_worker.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/zabbix-agent2.container",
+      "dest": "/etc/containers/systemd/zabbix-agent2.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "ssh/core.keys",
+      "dest": "/var/home/core/.ssh/authorized_keys.d/dk",
+      "owner": "core",
+      "mode": "0600"
+    },
+    {
+      "file": "ssh/deploy.keys",
+      "dest": "/var/home/deploy/.ssh/authorized_keys.d/dk",
+      "owner": "deploy",
+      "mode": "0600"
+    },
+    {
+      "file": "systemd/bero_shape-backup-status.service",
+      "dest": "/var/home/deploy/.config/systemd/user/bero_shape-backup-status.service",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/bero_shape-backup-status.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/bero_shape-backup-status.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/bero_shape-pgbackrest-backup-full.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/bero_shape-pgbackrest-backup-full.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/bero_shape-pgbackrest-backup-incr.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/bero_shape-pgbackrest-backup-incr.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/bero_shape-pgbackrest-backup@.service",
+      "dest": "/var/home/deploy/.config/systemd/user/bero_shape-pgbackrest-backup@.service",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/bero_shape-restic-files-backup.timer",
+      "dest": "/var/home/deploy/.config/systemd/user/bero_shape-restic-files-backup.timer",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/caddy.socket",
+      "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "systemd/podman-auto-update.service.d/10-dk-pull-first.conf",
+      "dest": "/var/home/deploy/.config/systemd/user/podman-auto-update.service.d/10-dk-pull-first.conf",
+      "owner": "deploy",
+      "mode": "0644"
+    }
+  ],
+  "hostname": "bero-shape-staging",
+  "timezone": "Asia/Dili",
+  "config_dir": "/etc/bero_shape",
+  "masked_units": [
+    "afterburn-sshkeys@core.service"
+  ],
+  "proxy": "caddy",
+  "system_secrets": {
+    "zbx_tlspsk": "ZBX_TLSPSK",
+    "zbx_tlspskidentity": "ZBX_TLSPSKIDENTITY"
+  },
+  "timers": [
+    "bero_shape-backup-status.timer",
+    "bero_shape-pgbackrest-backup-full.timer",
+    "bero_shape-pgbackrest-backup-incr.timer",
+    "bero_shape-restic-files-backup.timer"
+  ]
+}

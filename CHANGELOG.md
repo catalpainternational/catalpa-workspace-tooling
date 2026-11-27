@@ -1,8 +1,361 @@
 # Changelog
 
-## Unreleased
+## 2.0.0b5
+
+- **`dk <env> host`'s "docker_host differs from droplet" note no longer cries wolf** (found
+  hand-testing #207). It stays quiet when the configured name resolves to the droplet's address
+  (a compose `docker_host` written as a hostname), and for a rendered host, whose `docker_host`
+  is the account's podman socket by design. `dk <env> host --write` on a rendered host now says
+  it isn't for one and changes nothing; it used to offer to replace the socket with
+  `root@<droplet address>`.
+- **`dk <env> host` reads the machine** (#207). After the DigitalOcean and DNS checks it
+  connects over SSH and prints one line per check, `ok`/`warn`/`FAIL`:
+  - a rendered host: the booted OS version and any staged update (`rpm-ostree`), Zincati, the
+    last boots, failed system units, the data volume mounted, the stack account's failed units
+    and linger. System state goes through `core` (an admin key); without it that part says so
+    and the account's units are still read;
+  - a compose host: uptime, a pending reboot, failed system units, disk use on `/`.
+
+  It exits 1 when a unit failed, a mount is missing or the host can't be read; a staged update
+  or a pending reboot is only a warning. `--cloud-only` skips the SSH section;
+  `--write`, `--sync-dns` and a dry run never connect. `docs/DK_COMMAND_TREE.md` now says which
+  command looks at which layer. `context --status` stays (it is in the agent skill and the JSON
+  schema); it is a `docker ps` for local envs, not a second host check.
+- **Small fixes from the b4 runs** (#220, #235, #207, #233):
+  - `dk --version` prints the release (and the commit when installed from git). `dk <env> status`
+    is still refused, but the message now names the command for each layer: `ps` the app, `host`
+    the machine, `diff` drift, `info` config.
+  - A `--dry-run` given after the verb to a command with no `--dry-run` of its own now says
+    `--dry-run goes after the env name: dk <env> --dry-run <verb>`.
+  - A host step that fails because the account isn't logged in to the registry (`unable to
+    retrieve auth token`, `unauthorized`) says so, names `~/.config/containers/auth.json` and
+    `dk <env> host login`, and that the tag is fine.
+  - The generated `remote-environments` agent rule lists `dk fetch db` / `dk fetch media`, a
+    remote read when the fetch source is a remote env. Projects get it with `uv run setup-agents`.
+- **Four papercuts from running swlt_ws2 on 2.0.0b4** (#233):
+  - A compose `files restore` dry run names the volumes it would replace (all of
+    `ops.restic.data_volumes`), not "media".
+  - `files snapshots`, `check` and `stats` on an env that neither backs up nor restores its
+    files say what to add (`backups: [files]` or `restore_from:`), on both runtimes, instead of
+    restic's `RESTIC_REPOSITORY is required`.
+  - `dk <env> pgrestore` and `install-systemd` say where they went (`db restore --dumps`;
+    `db install-systemd` / `files install-systemd` on compose, `apply` on a rendered host).
+  - `dk <env> --dry-run wipe` (and `--dry-run compose down`) on a compose env is a dry run: it
+    prints the `docker compose … down` it would run and stops. It used to run `down -v` and
+    remove the env's volumes for real; only a non-TTY refusal stopped that, and with a TTY it
+    asked for confirmation and then wiped. It needs no TTY now. A real wipe without one still
+    refuses.
+
+## 2.0.0b4
+
+- **`dk push` no longer fails on a credential compose requires** (#211). A build in CI has no
+  credentials loaded, and compose interpolates the whole file, so one `${KEY:?…}` stopped the
+  build before it began. `dk push` now gives every required variable that is unset the value
+  `dk-build-placeholder` for the build only, and prints their names. A placeholder that would
+  land in a service's `build.args` stops the push instead, naming the service and argument.
+- **A credential that is optional by design is written `${KEY?KEY must be set}`** (no colon: set,
+  but may be empty), not `${KEY:-}`, which `dk <env> check` fails (#212). Docs only: FCOS.md
+  (Principles) and UPGRADING_2.md.
+- **`dk <env> db`, `files` and `restore` are one dispatcher on both runtimes** (M5,
+  `stack_commands`). The deprecated `bkp_*` spellings, refusing what a runtime doesn't have,
+  refusing a backup on an env without `backups:`, creating missing write credentials and the
+  whole `db restore` source choice are written once; pgBackRest and restic themselves stay per
+  runtime. Behaviour changes:
+  - **`db restore --file`, `--dumps` and the dump fallback ask for the env name on compose
+    too**, as a rendered host already did. Pass `--yes` in scripts; without a TTY and without
+    `--yes` they refuse before touching anything.
+  - **A rendered host with no pgBackRest repository restores the local dumps** on a plain
+    `db restore`, fetching them first when missing, as compose does (it used to refuse). Only
+    when the env neither backs up nor restores its database: one with `backups: [db]` or
+    `restore_from` whose repository can't be found (missing credentials, a stale render) now
+    refuses on both runtimes instead of restoring an old dump.
+  - **Restoring several dumps stops the app once** (on a rendered host) and runs the
+    post-restore hooks after the last one, so the app never serves a half-restored cluster.
+    If a restore fails, the app stays stopped (it used to start again on the broken database)
+    and the command says to run `dk <env> start` once the database is fixed. If the app
+    doesn't start again after a good restore, the command says so and fails instead of
+    printing "done".
+    The fetch of missing dumps waits until every check and the confirmation have passed, and
+    a dry run reports an archive a real run would refuse.
+  - **`db restore --dumps` restores the Metabase dump on a rendered host too**, then runs
+    `post_metabase_db_restore`; it refuses up front when those hooks need a `<web>-task` unit
+    the render lacks.
+  - A `db restore` dry run with no dump no longer runs `dk fetch db`; it says it would.
+  - Compose `files restore --dry-run` prints what it would replace instead of restoring.
+  - Refusing a backup on an env without `backups:` exits 2 on compose too (it was 1).
+  - **`dk <env> restore --dry-run` is a dry run.** The flag went to pgBackRest's options
+    instead (only `dk <env> --dry-run restore` worked), so the command ran for real: on a
+    rendered host it stopped the app and db, then pgBackRest refused the option and they stayed
+    stopped.
+- **Restoring a `pg_dump -Fc` archive is one code path on both runtimes** (M5): `db restore
+  --file` / `--dumps` and `dk transfer` into a rendered host now run `db_archive.restore_archive`
+  over `StackBackend`. Compose and quadlet envs used to each carry their own copy of the
+  sequence (copy into db, drop and create, `pg_restore`, remove the copy, hooks). No change
+  in what runs; two small differences: a rendered host starts db first when it's stopped
+  (compose already did), and the compose Metabase leg shares the code too. A compose restore
+  still has no confirmation and doesn't stop the app; a rendered host's still does both.
+  A restore or transfer into a rendered host now refuses up front when a post-restore hook runs
+  `manage.py` and the render has no `<web>-task` unit (it used to fail at the hook, after the
+  database was replaced). A `--dry-run` prints its plan and then says a real run would be
+  refused (exit 1). Metabase's hooks count only for the pgBackRest restore, which brings
+  Metabase's database back.
+- **`post_db_restore` manage commands run in one-shot containers, on both runtimes** (M5).
+  They used to `exec` into the web service, which compose had to start (`up -d web --wait`) and
+  which had to be healthy against the restored database. Compose now runs each command with
+  `docker compose run --rm --no-deps`; a rendered host gets a `<web>-task` unit (`Type=oneshot`,
+  web's image, env, secrets and volumes) that dk starts with a per-run drop-in setting the
+  command. Both need db running, not the app. **A rendered host needs `render` and `deploy`
+  once** to install the task unit; its volumes now take the shared SELinux label. An empty
+  argument in a hook command is refused on a rendered host (systemd would drop it and what
+  follows). `post_metabase_db_restore` is unchanged on compose, and uses the task unit on a
+  rendered host.
+- **`dk fetch db --only metabase` from a rendered host dumps the Metabase database.** The quadlet
+  path always dumped the app database (`$APP_DB`), so every `via: dk` entry's file got the app's.
+  It now follows compose: the `app` entry dumps `$APP_DB`, any other entry its `db_name`.
+- **`dk fetch db` from a rendered host starts db first when it's stopped**, as it already did on
+  compose (`systemctl --user start` on db's unit, which waits until Postgres answers). Both
+  runtimes now go through one code path (M5).
+- **`dk <env> pull_media` is deprecated: use `dk fetch media --env <env>`** (#43). It warns, then
+  does what `fetch media` does, into `native.fetch_media.dest` unless `--target` (it used to copy
+  into `<backend>/media`).
+- **`dk fetch media` reads the media where the env keeps it, whichever runtime** (M5). On compose
+  it now finds the mount from the compose file, so a local env's host directory and a volume
+  with a compose `name:` work, and it copies with `tar` through the engine where rsync can't reach
+  the volume or fails, as `pull_media` did. `--host` / `--compose-project` keep the old lookup.
+  `--host` no longer applies to a rendered host's env.
+
+## 2.0.0b3
+
+- **`fcos.auto_update` pulls every image before it restarts anything, and `fcos.auto_update_at`
+  sets when it runs** (#213). `podman auto-update` pulls and restarts one unit at a time, so a
+  dependency's restart took the app down while the app's image downloaded (1 min 37 s on a test
+  host). A rendered drop-in for the account's `podman-auto-update.service` now pulls them all
+  first (`ExecStartPre`). `auto_update_at: "HH:MM"` moves the run from Podman's midnight to that
+  time in the host's time zone, on time; `apply` restarts the timer for it.
+
+## 2.0.0b2
+
+- **`monitoring: zabbix` can be turned on for a running host with `apply`.** The `tmpfiles.d`
+  file that makes the read-only Podman socket's directory (and the backup status directory) was
+  written into Ignition only, so a host booted without monitoring never got it and the agent and
+  `podman-ro-proxy` failed to start. It's now an installed file (`monitoring/tmpfiles.conf`), and
+  `apply` runs `systemd-tmpfiles --create` on a new or changed one before restarting units.
+
+- **`host create` gives `docker_host`'s name the new droplet's SSH host key.** It records the
+  droplet's keys under its IP, then replaces any entry for the name, so dk's next command doesn't
+  fail with "REMOTE HOST IDENTIFICATION HAS CHANGED" when an earlier host behind the name wasn't
+  destroyed through dk. The keys are copied from the IP's entry, so it doesn't wait for DNS.
+
+## 2.0.0b1
+
+The first beta of 2.0, tagged on `dev-2.0`. Compose hosts are tested on swlt_ws2 (staging
+deploys, a qad host's backups), rendered Fedora CoreOS hosts on catalpa_bero staging (`host
+create` restoring prod's database and media) and catalpa-site. M5 and M7 continue on `dev-2.0`
+as later betas; pin the tag, not the branch.
+
+Moving a project to 2.0: [docs/UPGRADING_2.md](docs/UPGRADING_2.md) lists what to change.
 
 ### Added
+
+- **`dk <env> restore`, and `host create` restores onto a new data volume.** `dk <env> restore`
+  restores the database and the media together, with one confirmation: on a rendered env, the
+  app stopped throughout, started again as found, then the `ops.post_db_restore` hooks; on
+  compose, `db restore` then `files restore`. `dk <env> host create` for a rendered env now
+  restores before starting when its data volume is new, from `restore_from`'s backups or the
+  env's own, whatever exists, by IP (no DNS needed yet) and without asking (the volume is empty).
+  A rebuilt prod thereby continues its backup chain. A reused volume keeps its data; `--empty`
+  starts with none; `--no-start` restores and stops there.
+
+- **Restore-only envs: `restore_from` and `dk <env> secrets read-key` (#204).** `restore_from: prod`
+  in an env's `info.yaml` names the env whose backups it restores. `dk <env> secrets read-key`
+  creates a Spaces key for that env alone, `<bucket>-<env>-read`, that can only read the source's
+  bucket(s), and writes the env's `pgbr_s3_read_*` / `restic_read_*` from the source's settings
+  with `sops set`, printing nothing. Each env's access can now be revoked alone, instead of every
+  restoring env sharing one hand-made reader key. On a rendered (`runtime: quadlet`) env, read
+  credentials become Podman secrets for one-off restore containers only: no backup units, WAL
+  archiving or timers. `db restore` replays the source's WAL in the one-off, promotes, then starts
+  `db`; `files restore latest` picks the source's latest snapshot by path. `db info` and
+  `files snapshots` read the source's repositories; the backup commands are refused. `files restore` then makes the volumes the edge mounts readable to it (`o+rX`), since a compose host's media can be `2750`/`640` and Caddy runs in its own ID range. A quadlet
+  `db restore` (pgBackRest) now runs the `ops.post_db_restore` hooks too, as compose does. Read
+  and write credentials in one rendered env are refused for now.
+
+- **`host create` puts a DigitalOcean cloud firewall on every droplet it makes (Josh Brooks).**
+  `dk-<droplet>` lets in SSH, HTTP, HTTPS (and HTTP/3) and ping, and lets out only DNS, HTTP(S),
+  NTP, mail, git over SSH and Zabbix (port 10051). The rules are containerwharf's defaults,
+  adopted after a compromised staging server ran a miner and a tunnel. It filters before the
+  droplet, where Docker-published ports get around ufw. `digitalocean.firewall: false` makes none;
+  `{out_tcp: [...], out_udp: [...]}` adds outbound ports, `{out_open: true}` opens outbound. A
+  droplet that already existed keeps the firewall it has. A compose host whose Zabbix agent takes
+  passive checks (inbound 10050) doesn't get that port: add the rule or use active checks.
+  `host create` also takes its own flags after `--`, as QUICKSTART says, and with `--project` or
+  `--context` it finishes (`docker_host`, DNS) in that project and account.
+
+- **`dk <env> host create` creates a rendered host (`runtime: quadlet`) on DigitalOcean (tooling
+  2.0, M6).** It replaces the `doctl` steps a person ran:
+  1. checks the committed render is current and its Ignition fits in 64 KiB;
+  2. reuses the env's detached data volume (after `host destroy --keep-volumes`) or creates one;
+  3. creates the droplet from `digitalocean.image` with the volume attached and the Ignition as
+     user data;
+  4. points the DNS records at it;
+  5. runs `host provision` (`--no-start` for a restore, `--no-provision` to stop before it).
+
+  It refuses when the droplet exists (Ignition runs only on first boot) or the volume is attached
+  elsewhere. Before, `host create` on a quadlet env built an Ubuntu droplet with cloud-config.
+- **`storage.data_volume`: one data directory, optionally on one DigitalOcean volume, in the
+  `storage` block compose envs already use.** A quadlet env reads its path and volume (`name`,
+  `size_gib`, `filesystem`) from there; omitted, it's `/var/mnt/data` on a 10 GiB
+  `<hostname>-data` volume, as before. It replaces `fcos.data_mount` and `fcos.block_volume`,
+  which are now refused. Compose envs keep `storage.volumes`; `data_volume` comes to them with
+  M7.
+
+- **A project-level `credentials.yaml`, and the registry login kept in it (tooling 2.0, M3c).**
+  `docker/credentials.yaml` (beside `envs/`) holds what every env shares; `dk secrets` edits it
+  with sops. It needs its own `.sops.yaml` creation rule, which can name fewer people than the
+  env files'. An env's `credentials.yaml` overrides a value of the same name. Rendered hosts
+  read both files: the render sees both files' names, and `secrets push`, `host provision` and
+  `host login` both files' values. Compose envs don't read it yet.
+
+  With `registry_user` and `registry_token` in it, `dk <env> host provision` logs a new host in
+  to the image registry without asking; the token goes over SSH's stdin to
+  `podman login --password-stdin`, never on a command line or in the output. The new
+  `dk <env> host login` logs in again from sops after the token is rotated, and shows who the
+  host is logged in as. Without the keys, provision asks for the token as before.
+
+- **`dk <env> host destroy` tears a disposable env's DigitalOcean host down (#69, tooling 2.0
+  M2b).** It's the inverse of `host create` and of a rendered host's provisioning, and runs only
+  for an env with `digitalocean.allow_destroy: true` in `info.yaml`. No flag overrides that. In
+  order:
+  1. removes the env's DNS A records that point at the droplet;
+  2. shuts the droplet down cleanly, since a delete is a hard power cut that can lose file
+     writes still in the page cache;
+  3. detaches and deletes its volumes (for a rendered host, its data volume), deleting the
+     droplet in between;
+  4. forgets it locally: `docker_host` when it named the droplet's IP (a hostname is kept, since
+     it stays right for the next host), and the known_hosts entries.
+
+  It shows the plan, then asks for the env name, and, when volumes go, for `delete-volumes` or
+  `keep` (which carries on as `--keep-volumes` would). If the
+  droplet delete fails, it stops before the volumes. It takes no backup and never touches the
+  backups. `--dry-run` (either position), `--keep-dns`, `--keep-volumes` and
+  `--keep-docker-host` are available.
+
+  The droplet's cloud firewall `dk-<droplet>` (which `host create` makes) goes after the
+  droplet, unless another droplet is in it or `--keep-firewall`. A token that can't list
+  firewalls leaves it, with a note, rather than failing the destroy.
+
+  Once the droplet is gone, for example after `--keep-volumes`, running it again deletes what the
+  env left behind: its detached volumes and its empty firewall, after the same confirmations. A
+  volume attached to a droplet, or a firewall another droplet is in, is never touched: that
+  droplet isn't this env's.
+
+- **A bare `dk <env>` brings a quadlet env up to date (tooling 2.0, M1).** On a compose env it
+  runs `up -d`; on a `runtime: quadlet` env it was refused. Now it:
+  1. checks the committed render is current;
+  2. checks every secret is on the host;
+  3. installs any files that differ, as `fcos apply` does;
+  4. pulls every image the account's quadlets run, and restarts the units whose image changed;
+  5. checks the stack's units are active.
+
+  Step 4 is how a new image under the same tag goes out with `fcos.auto_update` off. `--tag`
+  is refused on a quadlet env (images follow `image_tag`, through a render), and
+  `--dry-run` shows the plan without pulling. See `docs/TOOLING_2.md` for the 2.0 plan.
+- **Backup credentials are created on quadlet envs too, and an env can have its own bucket.**
+  - When `pgbr_s3_write_*` or `restic_write_*` are missing, `db configure stanza-create`, `db
+    backup`, `files init` and `files backup` on a `runtime: quadlet` env now offer the same Spaces
+    provisioning as on compose envs. They then push the changed Podman secrets to the host and
+    restart `db`.
+  - A `spaces:` block in an env's `info.yaml` overrides `digitalocean.spaces` for that env (for
+    example `bucket:`), so a test env's key can't reach prod's backups.
+
+### Changed
+
+- **Releasing: pre-releases.** `scripts/release.sh` and `finalize-changelog.sh` take PEP 440
+  versions (`2.0.0b1`, `2.0.0rc1`) and refuse `2.0.0-rc.1`, whose wheel version (`2.0.0rc1`) the
+  release workflow would reject. A pre-release is tagged on the branch it's cut from; a release
+  still on `main`. The workflow publishes a pre-release as such, not as "Latest"
+  ([RELEASING.md](docs/RELEASING.md)).
+
+- **dk's SSH calls to a rendered host share one connection.** OpenSSH's `ControlMaster` (sockets
+  in `~/.ssh/dk-control/`, 0700), kept for a minute after the last call, so the next dk command
+  reuses it too. About 0.7 s a call instead of 3.4 s from Dili to sgp1; `dk staging ps` 1.5 s
+  instead of 5.8 s. `DK_SSH_REUSE=0` turns it off. Compose hosts' calls are unchanged.
+- **Secrets go to a rendered host in one SSH connection, not one each.** `host provision`,
+  `secrets push` and the backup-credential pushes send every secret of the account in one call
+  (and the system's in another, as root): one `<name> <base64 value>` line each on stdin, made
+  into Podman secrets on the host, the values never on a command line. The host confirms each;
+  one it didn't fails the push and says which.
+- **A rendered host keeps a registry login only with `fcos.auto_update`.** Every other env
+  (always prod) logs in for each pull and keeps nothing: dk sends a token over SSH's stdin, the
+  host logs in to an auth file under `/run/user/<uid>`, pulls, and removes it when the pull ends.
+  `host provision` now pulls every image itself (before starting, and before a restore's
+  one-offs), and removes a login an older dk stored. The token comes from `DK_REGISTRY_TOKEN` /
+  `DK_REGISTRY_USER` (CI), `registry_user` / `registry_token` in sops, `gh auth token` with
+  `read:packages` (dk warns when its scopes are wider), or a prompt. So a registry bot is needed
+  only where `podman auto-update` pulls with nobody there; `host login` is for those envs.
+- **A quadlet env needs an `ssh://` `docker_host`: `render` and `host create` refuse one
+  without.** Every dk command after `host create` reaches the host through it, and without it the
+  render took the env's settings as a local env's: Caddy got `http://` site addresses and
+  `localhost`, so the host served plain HTTP.
+- **Monitoring on a rendered host is per env, and off by default.** `ops.zabbix` in
+  `tooling.yaml` used to put the Zabbix agent, `podman-ro-proxy` and the backup status files on
+  every `runtime: quadlet` env of the project. Now an env opts in with `monitoring: zabbix` in its
+  `info.yaml`, as compose hosts are monitored only once someone runs `dk <env> zabbix install`.
+  The render refuses `monitoring: zabbix` without `ops.zabbix`, and warns when the env has no
+  `zbx_tlspsk` / `zbx_tlspskidentity` (the agent would talk to the server unencrypted). A rendered
+  env that should stay monitored adds `monitoring: zabbix` and renders again.
+- **`runtime` decides how a host is set up; contradicting settings stop dk.** `quadlet` is Fedora
+  CoreOS with Ignition, `compose` Ubuntu with cloud-init, on DigitalOcean. A `bootstrap:` or
+  `provider:` key in `info.yaml` is refused rather than ignored, as is an `fcos:` block without
+  `runtime: quadlet` (which would otherwise get an Ubuntu host from `host create`). Quadlet
+  `host create` refuses an image slug: `tooling.yaml`'s `digitalocean.image` is usually Ubuntu's,
+  for compose envs, so the droplet would boot it and ignore the Ignition.
+- **Breaking: `info.yaml` says which envs back up and which restore, not the credentials.**
+  `backups: [db, files]` switches an env's backups on (pgBackRest, restic), `restore_from: <env>`
+  its restores from that env's backups. Without `backups:` an env takes no backups: on compose,
+  `db backup`, `db configure stanza-create`, `install-systemd`, `files init` and `files backup`
+  refuse with a hint instead of offering to create a bucket; on a rendered env there are no
+  backup units. Credentials without their setting stop every `dk <env>` command, so **add
+  `backups: [db, files]` to each env that backs up (prod) and `restore_from: prod` to each env
+  with read credentials (staging, full, dev) when moving to 2.0**. A rendered env's render no
+  longer changes with the credentials, so a new env runs `render` → `host provision` →
+  `db configure stanza-create` in that order. Also fixed: compose `db configure stanza-create`
+  offers to create missing credentials again, as documented.
+
+- **doctl lookups run once per dk command.** `host create` asked DigitalOcean for the same
+  projects, droplets and domain records two or three times, one step after another (about 25
+  doctl calls; now about 14). Read-only `list`/`get` results are kept for the command's life;
+  any create, delete or assign empties them, so the next step sees the change. The poll that waits
+  for a new droplet to show in its project asks afresh each try.
+
+- **restic 0.18.1 (was 0.17.3) on every runtime.** 0.18 restores can leave extended attributes
+  alone (`--exclude-xattr`), which a quadlet `files restore` needs: restoring a snapshot onto an
+  SELinux-labelled volume otherwise fails once per file. Same repository format, so existing
+  repositories and snapshots work as before; compose hosts pull the new image on their next backup.
+
+- **`dk <env> up -d`, `dk <env> config`, `dk <env> down` … no longer reach docker compose on a
+  compose env (tooling 2.0, M3).** They're refused with a hint: `dk <env> compose <verb> …` runs
+  compose itself. A bare `dk <env>` is still `up -d`, and the running app's verbs stay
+  `dk <env> ps|logs|exec|start|stop|restart`, as on a quadlet env. That frees `dk <env> <verb>`
+  for dk's own verbs. The VS Code tasks (`setup-vscode`, generator version 9), the dk-stack
+  skill, the agent rules and the docs use the new forms: `dk dev` to start, `dk dev compose
+  down` to stop.
+- **`dk <env> db backup` defaults to `incr` (tooling 2.0, M3b).** As pgBackRest's own default,
+  it takes a full backup when the repository has none. `full`, `incr` and `diff` are still
+  accepted, on compose and quadlet envs.
+
+- **Rendered-host commands are plain env verbs (tooling 2.0, M2).** `dk <env> fcos render`,
+  `check`, `diff` and `apply` are now `dk <env> render`, `check`, `diff` and `apply`.
+  `fcos ignition` and `fcos provision` are now `dk <env> host ignition` and `host provision`, and
+  `fcos secrets push` is `dk <env> secrets push`. A bare `dk <env> secrets` still edits
+  `credentials.yaml`. The `fcos …` spelling still works and prints the new one. On a compose
+  env the new verbs are refused, since compose hosts aren't rendered yet. `--dry-run` and `-y`
+  now work before or after these verbs (`dk <env> --dry-run diff` used to lose `--dry-run`).
+  Generated files' header now says `dk <env> render`, so each rendered env's next `apply`
+  rewrites every file once.
+
+- **The Spaces write key dk creates is per env: `<bucket>-<env>-write`** (was `<bucket>-write`).
+  Envs that share a bucket each get their own key, where a second env used to be refused because
+  the key name already existed. Existing keys and credentials aren't touched.
 
 - **`tests backend` now passes extra arguments on to pytest (#189).** `uv run tests backend -k
   name -n 4 tests/test_foo.py` used to exit 2 with "unrecognized arguments", so projects ran
@@ -10,14 +363,108 @@
   leading one, for `backend` and `workspace` alike.
   `tests workspace` also accepts a pytest option as its first argument now (`tests workspace -k
   name`); before, that only worked after a path or a `--`.
+- **`dk <env> fcos render` and `dk <env> fcos check` (#182).** These are the first part of
+  deploying to Fedora CoreOS with rootless Podman. `render` turns the env's resolved compose
+  file into quadlets, settings files, the edge's socket unit and its Caddy JSON, and writes them
+  to `docker/envs/<env>/generated/fcos/` for you to commit. `check` fails when the committed files
+  differ from a fresh render. It also fails when plain `docker compose up` would start without a
+  credential, so write each credential as `${KEY:?…}`. An env with `runtime: quadlet` in its
+  `info.yaml` refuses the compose commands. A render also writes the host's Butane config
+  (`host.bu`), the backups (pgBackRest and restic, from the existing `pgbr_s3_write_*`,
+  `restic_write_*` and `ops` keys, with every repository setting as a Podman secret) and
+  monitoring (an unprivileged Zabbix agent and a read-only Podman API). See `docs/FCOS.md`.
+- **`dk <env> fcos ignition`, `provision`, `secrets push`, `diff` and `apply` (#182).** They
+  put a committed render on its host, and refuse to while the render differs from a fresh one.
+  `ignition` compiles `host.bu` for the droplet's user data. `provision` sets up a host that
+  booted from it: it pushes the secrets, logs in to the registry and starts the stack.
+  `secrets push` streams values from `credentials.yaml` into Podman secrets over SSH, without
+  writing or printing them. `diff` compares the host's files, data directories, timers and
+  secret names with the render. `apply` installs what differs and restarts only the units that
+  read a changed file. `info.yaml` `fcos.admin_keys` (logging in as `core`, with sudo) is set
+  apart from `fcos.ssh_authorized_keys` (the account that runs the stack, without sudo). Both
+  are rendered as key files, so `fcos apply` changes a running host's keys and removes any
+  other key file, and refuses to remove the last of your keys from `core`.
+  A Zabbix 7.0 template, `docs/zabbix/catalpa-backup-status-fcos.yaml`, alerts when an FCOS
+  host's backup status files stop being refreshed. The render aliases their modification times
+  to fixed agent keys (`backup.status.<kind>.mtime`).
+- **dk's stack commands on `runtime: quadlet` envs (#182).** `logs`, `ps`, `exec`, `manage`,
+  `restart`, `stop` and `start` now work on an env whose stack runs as Podman quadlets, over
+  SSH as the account in `docker_host`: `journalctl --user`, `podman exec` and
+  `systemctl --user`. They need no SOPS decrypt or compose file. The compose verbs that would
+  start a second stack (`up`, `down`, `run`, …) are still refused, each with what to use
+  instead. `dk fetch db` and `dk fetch media` also work from a quadlet env:
+  `pg_dump` through `podman exec` (no password), and rsync of the media directory on the data
+  volume. The backup commands work too: `db info/check/version/backup/pgdump`,
+  `db configure stanza-create/verify`, and `files backup/snapshots/check/stats/init`, through
+  the units and containers the render installed. `db restore` (pgBackRest, `--delta`) and
+  `files restore` work as well, each after you type the env name. So do `db restore --file/--dumps`,
+  `pull_media` (by rsync), and `dk transfer` with a quadlet env at either end. `db restore` leaves the stack as it found
+  it: on a host provisioned with `--no-start` the app stays stopped until the media is restored and
+  `host provision` starts it.
 
 ### Fixed
+
+- **A rendered host's port 80 is plain HTTP again, and redirects to HTTPS, when the Caddyfile has
+  an `http://` site.** On the passed socket (`fd/3`) Caddy couldn't tell the server was port 80's,
+  so it served TLS there (plain HTTP got "Client sent an HTTP request to an HTTPS server") and
+  kept asking Let's Encrypt for certificates for the `http://` site's names (e.g. a placeholder
+  like `redirect.unused`). That server now gets `automatic_https.disable`, and after its own
+  routes a 308 to HTTPS for the rest. Checked with the edge image's Caddy.
+- **A quadlet env restores the media from a compose host's snapshots.** They keep the media at
+  `ops.restic.backup_path` (e.g. `/mnt/btrfs-data/<project>-media`), where the restore unit mounts
+  it, but the restore and its "is there a snapshot" check looked only under `/backup/`: the check
+  asked restic for an empty path, found nothing, and the new host started with no media.
+- **A quadlet env's pgBackRest restore runs `ops.post_metabase_db_restore` too (#209).** After
+  `db restore`, `restore` and `host create`'s restore, the quadlet backend ran only
+  `ops.post_db_restore`, so a project's Metabase follow-ups and its `restart_services` were left
+  to do by hand. It now runs them after the app's hooks, as compose does (the restore brings back
+  the whole cluster, Metabase's database too); a stopped stack prints both sets to run. A dump
+  restore (`--file` / `--dumps`) still runs only the app's: it replaces only the app database.
+- **`dk <env> render` works for a compose file named from the shell (#208).** A root
+  `name: ${PROJECT_NAME}` that direnv fills stopped the render ("project name must not be
+  empty"), which ignores the operator's shell. The render now gives compose the project name a
+  compose deploy to a remote host gets (`env.compose_project_name`, else
+  `stack.compose_project_default`), so it doesn't depend on who runs it.
+- **`dk worktree create` run in another checkout under `.worktrees/` no longer nests.** Run in
+  a plain git worktree (an agent's, say), it put the new one inside that checkout, where
+  `dk worktree list` and `remove` didn't look ("unknown worktree"). It now goes under the main
+  checkout's `.worktrees/` like any other, still cut from the branch the current checkout is on.
+  `remove` and `info` also find one an older dk nested.
+- **A change to comments only no longer restarts a quadlet env's stack.** `dk <env> apply` and
+  a bare `dk <env>` restarted every unit a changed file touched, even when only a comment
+  changed. That happens to every file at once when a newer dk rewords the render's header. Those
+  files are still installed (and systemd reloaded) but nothing restarts. They're listed as
+  `(comments only)`, and the "Podman keeps the existing volume" notes and the core-keys lockout
+  check skip them. In a dry run of a bare `dk <env>`, "nothing changed" now comes last, and the
+  plan no longer prints after the messages about it when output is piped.
+
+- **An interrupted media push into a quadlet env still hands the files to the media's owner.**
+  The `podman unshare chown -R` after rsync ran only when rsync succeeded. A Ctrl-C or a failure
+  left the files it had written owned by the account's namespace root, so Django couldn't write
+  beside them. The chown now runs in any case.
+
+- **A quadlet env's Postgres no longer crash-loops when archiving fails.** pgBackRest's async
+  `archive-push` leaves a process behind, which postgres (PID 1 in the container) inherited.
+  When that process exited non-zero, for example with the repository unreachable, postgres
+  treated it as a crashed backend and restarted in recovery mode about every ten seconds. A
+  `migrate` that ran then failed, so `django` never started. The render now gives `db`
+  `RunInit=true` whenever pgBackRest is configured. **Compose deploys have the same exposure:**
+  prod's Postgres is PID 1 with no init. Add `init: true` to the db service.
+- **A bare `dk <env>` on a quadlet env starts stack units that are down,** as `up -d` does.
+  Their `PartOf=` one-shots get `reset-failed` first, so a failed `migrate` runs again. It used
+  to report the unit inactive and stop there.
+
+- **`dk <env> files backup` on a quadlet env shows restic's output again.** The restic quadlet
+  logged with `LogDriver=passthrough`, so its output went to the journal as the container's
+  ID-range uid (609823 on catalpa-site), which `deploy`, and so dk, can't read. Now
+  `LogDriver=none`: the output comes through podman's attached stdout, once, as the unit's.
 
 - **Spaces provisioning no longer prints a key's secret.** Creating a bucket ran
   `s3cmd info`/`mb` with `--access_key=… --secret_key=…`, and dk echoes every command it runs,
   so the temporary full-access bootstrap key's secret appeared in the terminal (and in `ps`).
   dk deleted that key seconds later, which limited the exposure. The key now goes to s3cmd in a
   0600 config file in a private temporary directory, removed afterwards.
+
 - **`dk` now echoes the commands it runs (`$ …`) to stderr, not stdout (#196).** Redirecting a
   `dk` command's output to a file put the echo line at the top of the file. For binary output
   that broke the file, e.g. `dk <env> docker exec db pg_dump -Fc > x.dump` gave a dump that

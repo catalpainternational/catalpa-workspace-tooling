@@ -139,7 +139,7 @@ Notes:
 - Do **not** use `compdef -p` to check registration — in zsh, `-p` means pattern mode, not print.
 - `_python_argcomplete` may already exist from gcloud; check `_comps[dk]` instead.
 - `watch_file` in `.envrc` only helps when paired with `uv sync` on reload; PATH_add alone does not need it.
-- For docker compose operations, use `dk <env> compose up -d` for tab completion; implicit `dk <env> up -d` still works but completes only special verbs.
+- A bare `dk <env>` runs `up -d`. Any other compose verb is `dk <env> compose …` (`dk <env> up -d`, `config`, `down` … are refused with that hint); `ps`, `logs`, `exec`, `start`, `stop` and `restart` stay `dk <env> <verb>`, as on every runtime.
 
 Completion is built at runtime from the repo you are in: deploy environment names (`docker/envs/*/info.yaml` plus `paths.deploy.env_aliases`), `native`/`scripts` extensions, and subcommands are discovered automatically.
 
@@ -206,9 +206,12 @@ Create a [personal access token](https://docs.digitalocean.com/reference/api/cre
 | `dk digoc projects list`, project resolution                              | `project:read`                                                                                                                                                                                                            |
 | `dk digoc droplets list`, `dk <env> host` (droplet verify)                | `project:read`, `droplet:read` — project-scoped droplet lookup also calls `projects resources list`                                                                                                                       |
 | `dk digoc droplets create`, `dk <env> host create`                        | above, plus `droplet:create`, **`project:update`** (assign droplet to project after create; doctl `--project-id` uses a second API call), **`ssh_key:read`** (lists keys via `GET /v2/account/keys` — not `account:read`) |
-| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`)                                                                   |
+| `dk <env> host create` with `storage.volumes.*.digitalocean` in info.yaml (compose) | above, plus `block_storage:read`, `block_storage:create` (create volume), **`block_storage_action:create`** (attach/detach; not `block_storage:update`)                                                                   |
+| `dk <env> host create` for a rendered host (`runtime: quadlet`; its `storage.data_volume`) | above, plus `block_storage:read` (find a kept volume), `block_storage:create` (a new one), `project:update` (assign the new volume to the project too). The volume is attached by `droplet create` itself, not a separate attach action: a 403 there names the scope it wants |
 | `dk <env> host` (DNS verify for `site_origin` / `redirect_origins`)       | above, plus `domain:read`                                                                                                                                                                                                 |
 | `dk <env> host create` (DNS sync after droplet create)                    | above, plus `domain:write` (or granular domain record create/update)                                                                                                                                                      |
+| `dk <env> host create` (the droplet's cloud firewall `dk-<droplet>`)  | above, plus `firewall:read`, `firewall:create`, `firewall:update` (add a droplet to an existing one); none with `digitalocean.firewall: false` |
+| `dk <env> host destroy`                                                   | above, plus `droplet:delete`, `droplet:update` (the shutdown action before the delete), `block_storage:delete`, `block_storage_action:create` (detach), domain record delete (`domain:write`, or the granular delete scope), and `firewall:read` + `firewall:delete` for the droplet's `dk-<droplet>` firewall (without them it's left, with a note) |
 | `dk <env> bkp_db` / `bkp_files` auto-provision (missing WRITE creds)      | `spaces_key:read`, `spaces_key:create_credentials`; bootstrap may call `spaces keys delete` → `spaces_key:delete`                                                                                                         |
 
 `droplet:read`, `droplet:create`, and domain/spaces scopes require companion read scopes (`regions:read`, `sizes:read`, `actions:read`, `image:read`, etc.); the [custom scopes picker](https://cloud.digitalocean.com/account/api/tokens) adds these when you select those scopes. See [Scopes for API tokens](https://docs.digitalocean.com/reference/api/scopes/) for the full list.
@@ -354,7 +357,7 @@ storage:
         size_gib: 200
 ```
 
-Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, `dk <env> up`, and `ops.post_db_restore` hooks after DB restore (ensure volumes before starting the web service).
+Commands: `dk <env> storage ensure`, `dk <env> ensure_volumes`, `dk <env>`, and `ops.post_db_restore` hooks after DB restore (ensure volumes before starting the web service).
 
 When tooling pre-creates named volumes for non-`external` compose definitions, it applies Docker Compose metadata labels (`com.docker.compose.project`, `com.docker.compose.volume`) so Compose does not warn that the volume “was not created by Docker Compose”. Volumes created before this behavior (or by plain `docker volume create`) may still warn until removed and recreated (e.g. via `dk <env> wipe`).
 

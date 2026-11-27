@@ -1,0 +1,1217 @@
+"""dk's everyday stack commands for an env with ``runtime: quadlet``.
+
+Compose doesn't run these stacks, but each container still has its compose service's name
+(``ContainerName=django``) and its own systemd unit (``django.service``) in the account's
+systemd. So the commands map straight onto the host, over SSH as the account in
+``docker_host``:
+
+=========================  ===============================================================
+``dk <env> logs [svc…]``   ``journalctl --user -u <svc>.service`` (container output and the
+                           unit's own start/stop/failure messages, in one stream)
+``dk <env> ps``            the stack units' state, then ``podman ps -a``
+``dk <env> exec svc cmd``  ``podman exec``
+``dk <env> manage …``      ``podman exec <web> ./manage.py …`` as ``stack.manage_user``
+``dk <env> restart/stop/   ``systemctl --user`` on the services' units (all of the stack
+start [svc…]``             when none is named, the edge's socket included)
+=========================  ===============================================================
+
+They read only ``docker_host`` and the committed ``generated/fcos/manifest.json``: no compose
+file, no SOPS. Commands that would build or start a stack beside the quadlets (``up``,
+``down``, ``run``, ``pull`` …) stay refused; ``dk <env> apply`` is how a change reaches
+the host.
+"""
+
+from __future__ import annotations
+
+import argparse
+import shlex
+from pathlib import Path
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.fcos.host import Committed, Host, HostError, load_committed, run, stack_units
+from catalpa_tooling.fcos.render import generated_dir
+
+UNIT_VERBS = ("restart", "stop", "start")
+SUPPORTED = ("logs", "ps", "exec", "manage", *UNIT_VERBS, "db", "files", "restore", "pull_media")
+DB_COMMANDS = ("info", "check", "version", "backup", "pgdump", "configure", "restore")
+FILES_COMMANDS = ("backup", "snapshots", "check", "stats", "init", "restore")
+#: What the render owns on a quadlet env, and what to use instead.
+BACKUP_REFUSED = {
+    "init": "the render installs pgBackRest's config and units: `dk {env} db configure stanza-create` creates the stanza",
+    "install-systemd": "the render installs the backup units and timers (`dk {env} apply`)",
+    "push": "copy media into the media directory on the host, or restore it with restic",
+}
+
+
+class Usage(Exception):
+    pass
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str):  # argparse would exit
+        raise Usage(f"{self.prog}: {message}")
+
+
+@dataclass
+class Backend:
+    config: ProjectConfig
+    env_name: str
+    committed: Committed
+    host: Host
+    login: str
+    info: dict = field(default_factory=dict)
+    #: Streams a local file to a remote command's stdin (``dbdump.upload``; tests replace it).
+    uploader: Callable[[list[str], Path], int] | None = None
+
+    runtime = "quadlet"  # stack_backend.StackBackend
+    dump_restore_stops_app = True
+
+    @property
+    def ssh_target(self) -> str:
+        return f"{self.login}@{self.host.address}"
+
+    def describe(self) -> str:
+        return f"{self.env_name} (quadlets on {self.ssh_target})"
+
+    def ensure_db_running(self) -> int:
+        """Start db's unit (a no-op when it's active). The unit has ``Notify=healthy``, so the
+        start returns once Postgres answers ``pg_isready``."""
+        db = f"{self.config.stack.services.db}.service"
+        return self._ssh(f"systemctl --user start {shlex.quote(db)}", tty=False)
+
+    def db_active(self) -> int:
+        """``systemctl --user is-active`` for db's unit: 0 when active (``Notify=healthy``:
+        Postgres answers), 255 when SSH itself failed, another code when it isn't running.
+        Starts nothing."""
+        db = f"{self.config.stack.services.db}.service"
+        return self._ssh(f"systemctl --user is-active --quiet {shlex.quote(db)}", tty=False)
+
+    def _upload(self, argv: list[str], path: Path) -> int:
+        from catalpa_tooling.fcos.dbdump import upload
+
+        return (self.uploader or upload)(argv, path)
+
+    def copy_into_db(self, archive: Path, container_path: str) -> int:
+        """Stream ``archive`` over SSH into ``db`` (``podman exec -i`` stdin), then check its
+        SHA-256 there and hand it to ``postgres``."""
+        from catalpa_tooling.fcos.dbdump import _sha256
+
+        q = shlex.quote
+        db = self.config.stack.services.db
+        argv = self.host._argv(
+            self.login,
+            f"podman exec -i -u root {q(db)} sh -c {q(f'umask 077; cat > {q(container_path)}')}",
+        )
+        rc = self._upload(argv, archive)
+        if rc != 0:
+            return rc or 1
+        check = (
+            f"chown postgres:postgres {q(container_path)} && chmod 600 {q(container_path)} && "
+            f"sha256sum {q(container_path)} | cut -d' ' -f1 | grep -qx {q(_sha256(archive))}"
+        )
+        rc = self.db_sh(check, root=True)
+        if rc != 0:
+            print("db restore: the archive in the container doesn't match (SHA-256)", file=sys.stderr)
+            return rc or 1
+        return 0
+
+    def db_sh(self, script: str, *, root: bool = False) -> int:
+        db = shlex.quote(self.config.stack.services.db)
+        return self._ssh(f"podman exec {'-u root ' if root else ''}-i {db} sh -c {shlex.quote(script)}", tty=False)
+
+    def run_post_restore_hooks(self, target: str = "app") -> int:
+        from catalpa_tooling.fcos.dbdump import post_metabase_restore_hooks, post_restore_hooks
+
+        hooks = post_metabase_restore_hooks if target == "metabase" else post_restore_hooks
+        return hooks(self, uploader=self._upload)
+
+    def dump_db(self, dest: Path, pg_dump_args=(), *, database: str | None = None, min_bytes: int = 0) -> int:
+        """``podman exec … pg_dump -Fc`` streamed to ``dest`` (``fcos.fetch.fetch_db``)."""
+        from catalpa_tooling.fcos.fetch import fetch_db
+
+        try:
+            fetch_db(
+                self.config, self, dest=dest, pg_dump_args=list(pg_dump_args), database=database, min_bytes=min_bytes
+            )
+        except SystemExit as exc:  # it has printed why
+            return int(exc.code or 1)
+        return 0
+
+    @property
+    def services(self) -> list[str]:
+        """The compose services the render made containers for."""
+        return sorted(self.committed.manifest.get("images") or {})
+
+    def _check_services(self, names: list[str]) -> list[str]:
+        unknown = [n for n in names if n not in self.services]
+        if unknown:
+            raise Usage(
+                f"not a service of {self.env_name}: {', '.join(unknown)} "
+                f"(services: {', '.join(self.services)})"
+            )
+        return names
+
+    def _ssh(self, command: str, *, tty: bool) -> int:
+        rc = self.host.stream(self.login, command, tty=tty)
+        if rc == 255:
+            print(
+                f"ssh {self.login}@{self.host.address} failed. If the droplet was rebuilt, its host "
+                f"key changed: check it's yours, then `ssh-keygen -R {self.host.address}`.",
+                file=sys.stderr,
+            )
+        return rc
+
+    def _proxy_socket(self) -> list[str]:
+        proxy = self.committed.manifest.get("proxy")
+        return [f"{proxy}.socket"] if proxy else []
+
+    # --- verbs ------------------------------------------------------------------------------
+
+    def logs(self, argv: list[str], *, tty: bool) -> int:
+        p = _Parser(prog=f"dk {self.env_name} logs", add_help=False)
+        p.add_argument("-f", "--follow", action="store_true")
+        p.add_argument("-n", "--tail", default=None)
+        p.add_argument("--since", default=None)
+        p.add_argument("--until", default=None)
+        p.add_argument("-t", "--timestamps", action="store_true")  # journalctl always has them
+        p.add_argument("--no-color", action="store_true")
+        p.add_argument("--no-log-prefix", action="store_true")
+        p.add_argument("services", nargs="*")
+        ns = p.parse_args(argv)
+        services = self._check_services(ns.services) or self.services
+        cmd = ["journalctl", "--user", "--no-pager"]
+        for s in services:
+            cmd += ["-u", f"{s}.service"]
+        if ns.tail not in (None, "all"):
+            cmd += ["-n", str(ns.tail)]
+        if ns.since:
+            cmd += ["--since", ns.since]
+        if ns.until:
+            cmd += ["--until", ns.until]
+        if ns.follow:
+            cmd.append("-f")
+        # A tty keeps Ctrl-C going to the remote journalctl when following.
+        return self._ssh(shlex.join(cmd), tty=tty and ns.follow)
+
+    def ps(self, argv: list[str], *, tty: bool) -> int:
+        if argv and argv != ["-a"] and argv != ["--all"]:
+            raise Usage(f"dk {self.env_name} ps takes no arguments on a quadlet env")
+        units = [f"{s}.service" for s in self.services] + self._proxy_socket()
+        cmd = (
+            "systemctl --user --no-pager --legend=false list-units --all "
+            + " ".join(shlex.quote(u) for u in units)
+            + "; echo; podman ps -a --format "
+            + shlex.quote("table {{.Names}}\t{{.Status}}\t{{.Image}}")
+        )
+        return self._ssh(cmd, tty=False)
+
+    def exec(self, argv: list[str], *, tty: bool) -> int:
+        p = _Parser(prog=f"dk {self.env_name} exec", add_help=False)
+        p.add_argument("-T", "--no-TTY", dest="no_tty", action="store_true")
+        p.add_argument("-d", "--detach", action="store_true")
+        p.add_argument("-u", "--user", default=None)
+        p.add_argument("-e", "--env", action="append", default=[])
+        p.add_argument("-w", "--workdir", default=None)
+        p.add_argument("--privileged", action="store_true")
+        p.add_argument("service")
+        p.add_argument("command", nargs=argparse.REMAINDER)
+        ns = p.parse_args(argv)
+        if ns.privileged:
+            raise Usage("--privileged: not on a quadlet env (the containers run unprivileged)")
+        self._check_services([ns.service])
+        if not ns.command:
+            raise Usage(f"usage: dk {self.env_name} exec [options] SERVICE COMMAND [ARGS…]")
+        use_tty = tty and not ns.no_tty and not ns.detach
+        return self._exec(
+            ns.service, ns.command, user=ns.user, env=ns.env, workdir=ns.workdir,
+            tty=use_tty, detach=ns.detach,
+        )  # fmt: skip
+
+    def _exec(
+        self,
+        service: str,
+        command: list[str],
+        *,
+        user: str | None = None,
+        env: list[str] = (),
+        workdir: str | None = None,
+        tty: bool,
+        detach: bool = False,
+    ) -> int:
+        cmd = ["podman", "exec"]
+        cmd.append("-d" if detach else "-i")
+        if tty:
+            cmd.append("-t")
+        if user:
+            cmd += ["-u", user]
+        for e in env:
+            cmd += ["-e", e]
+        if workdir:
+            cmd += ["-w", workdir]
+        cmd += [service, *command]
+        return self._ssh(shlex.join(cmd), tty=tty)
+
+    def manage(self, manage_args: list[str], *, user: str | None, tty: bool) -> int:
+        if not manage_args:
+            raise Usage(f"usage: dk {self.env_name} manage <manage.py arguments>")
+        web = self.config.stack_service("web")
+        self._check_services([web])
+        return self._exec(
+            web,
+            ["./manage.py", *manage_args],
+            user=user or self.config.stack.manage_user,
+            tty=tty,
+        )
+
+    def _require_task_unit(self) -> str:
+        """The ``<web>-task`` unit's name; ``Usage`` when the committed render has none."""
+        from catalpa_tooling.fcos.quadlets import task_unit_name
+
+        unit = task_unit_name(self.config.stack_service("web"))
+        if f"quadlets/{unit}.container" not in self.committed.files:
+            raise Usage(
+                f"{self.env_name}'s render has no {unit}.container; `dk {self.env_name} render` "
+                "and deploy it first"
+            )
+        return unit
+
+    def check_hooks_runnable(self, *, metabase: bool = False) -> None:
+        """Before a restore replaces anything: ``Usage`` if a post-restore hook that will run
+        runs ``manage.py`` and the render has no task unit to run it in (it would only fail
+        after the data was already replaced). The ``post_db_restore`` hooks always run after a
+        restore; ``post_metabase_db_restore`` only when it brings back the whole cluster
+        (pgBackRest), so only those paths pass ``metabase=True``."""
+        from catalpa_tooling.fcos.dbdump import metabase_hooks_apply
+        from catalpa_tooling.post_db_restore import post_db_restore_applies
+
+        c = self.config
+        needs = (post_db_restore_applies(c, self.env_name) and c.ops.post_db_restore.manage_commands) or (
+            metabase
+            and metabase_hooks_apply(c, self.env_name)
+            and c.ops.post_metabase_db_restore.manage_commands
+        )
+        if needs:
+            self._require_task_unit()
+
+    def _hooks_problem(self, *, metabase: bool, dry_run: bool) -> str | None:
+        """``check_hooks_runnable``: raises in a real run; in a dry run returns the message so
+        the plan still prints (``_dry_run_end`` reports it)."""
+        try:
+            self.check_hooks_runnable(metabase=metabase)
+        except Usage as exc:
+            if not dry_run:
+                raise
+            return str(exc)
+        return None
+
+    @staticmethod
+    def _dry_run_end(problem: str | None) -> int:
+        if problem:
+            print(f"dry-run: a real run would be refused: {problem}", file=sys.stderr)
+            return 1
+        return 0
+
+    def run_manage_once(self, manage_args: list[str], *, user: str | None = None) -> int:
+        """``./manage.py …`` in a throwaway container of the web service: the rendered
+        ``<web>-task`` one-shot unit, started with a per-run drop-in that sets its command.
+
+        It needs db running, not web. The drop-in lives in the account's runtime directory (the
+        unit itself is root's), is removed afterwards, and a lock keeps two runs apart. Output
+        is the unit's journal, as for the backup units. Exit status is 0 or 1: systemd keeps
+        the command's own."""
+        from catalpa_tooling.fcos.quadlets import _exec_escape, _exec_words, task_unit_name
+
+        unit = self._require_task_unit()
+        if any(a == "" or "\n" in a for a in manage_args):
+            # systemd drops an empty word and everything after it; a line break ends the line.
+            raise Usage("a one-shot manage command can't take an empty or multi-line argument")
+        lines = ["[Container]", f"Exec={_exec_words(['./manage.py', *manage_args])}"]
+        run_user = user or self.config.stack.manage_user
+        if run_user:
+            lines.append(f"User={_exec_escape(run_user)}")
+        q = shlex.quote
+        base = f'/run/user/$(id -u)/containers/systemd/{unit}.container.d'
+        script = "; ".join(
+            [
+                "set -u",
+                f"d={base}",
+                f"systemctl --user cat {q(unit + '.service')} >/dev/null 2>&1 || "
+                f"{{ echo {q(unit + ' is not installed on this host: deploy the render first')} >&2; exit 127; }}",
+                'mkdir -p "$d"',
+                'exec 9>"$d.lock"; flock 9',
+                f'printf %s {q(chr(10).join(lines) + chr(10))} > "$d/10-run.conf"',
+                "trap 'rm -rf \"$d\"; systemctl --user daemon-reload' EXIT",
+                "systemctl --user daemon-reload",
+                "t=$(date +%s)",
+                f"systemctl --user start {q(unit + '.service')}; rc=$?",
+                f'journalctl --user -u {q(unit + ".service")} --since "@$t" --no-pager -o cat '
+                # Podman's own event records land in the unit's log (see _start_and_show).
+                "| grep -vE ' m=\\+[0-9.]+ (container|image|pod|volume|network) '",
+                "exit $rc",
+            ]
+        )
+        return self._ssh(script, tty=False)
+
+    # --- backups ------------------------------------------------------------------------------
+
+    def _installed(self, prefix: str, suffix: str) -> str | None:
+        """Unit name of the one rendered file ``prefix…suffix`` (e.g. ``systemd/…@.service``)."""
+        for e in self.committed.manifest["install"]:
+            f = e["file"]
+            if f.startswith(prefix) and f.endswith(suffix):
+                return f.rsplit("/", 1)[-1]
+        return None
+
+    def _start_and_show(self, unit: str) -> int:
+        """Start a one-shot unit, wait for it, then show what it logged (failures included)."""
+        q = shlex.quote(unit)
+        print(f"{self.host.address}: systemctl --user start {unit}", file=sys.stderr)
+        return self._ssh(
+            f't=$(date +%s); systemctl --user start {q}; rc=$?; '
+            f'journalctl --user -u {q} --since "@$t" --no-pager -o cat '
+            # Podman's own event records ("… m=+0.09 container exec …") land in the unit's log.
+            f"| grep -vE ' m=\\+[0-9.]+ (container|image|pod|volume|network) ' ; exit $rc",
+            tty=False,
+        )
+
+    # --- read mode (restore_from, #204) ----------------------------------------------------------
+
+    @property
+    def restore(self) -> dict:
+        """The manifest's ``restore``: one-off containers with the read credentials."""
+        return self.committed.manifest.get("restore") or {}
+
+    def _read_only(self, what: str) -> Usage:
+        src = self.restore.get("from") or "another env"
+        return Usage(
+            f"dk {self.env_name} {what}: {self.env_name} restores {src}'s backups with a read key "
+            "and has no repository of its own to write to"
+        )
+
+    def _db_read_args(self) -> list[str]:
+        """``podman run`` options for a one-off like db, with the read credentials instead of
+        db's own pgBackRest settings."""
+        db = self.config.stack.services.db
+        text = self._db_quadlet()
+        kept = "\n".join(
+            ln for ln in text.splitlines()
+            if not (ln.startswith(("Secret=", "Environment=")) and "PGBACKREST_" in ln)
+        )  # fmt: skip
+        if not self.restore.get("pgbackrest"):
+            raise Usage(f"{self.env_name}'s render has no pgBackRest read credentials ({db})")
+        return podman_run_args(
+            kept + "\n[Container]\n" + "\n".join(self.restore["pgbackrest"]),
+            volumes=volume_names(self.committed),
+        )
+
+    def _db_quadlet(self) -> str:
+        db = self.config.stack.services.db
+        quadlets = {f.rsplit("/", 1)[-1]: t for f, t in self.committed.files.items() if f.startswith("quadlets/")}
+        text = quadlets.get(f"{db}.container")
+        if not text:
+            raise Usage(f"{self.env_name}'s render has no {db}.container")
+        return text
+
+    def db(self, sub: str, ns: argparse.Namespace) -> int:
+        db = self.config.stack.services.db
+        if self.restore.get("pgbackrest"):
+            if sub not in ("info", "version", "pgdump"):
+                raise self._read_only(f"db {sub}")
+            if sub != "pgdump":
+                cmd = ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "pgbackrest",
+                       *self._db_read_args(), "--log-level-console=info", sub]  # fmt: skip
+                return self._ssh(shlex.join(cmd), tty=False)
+        self._check_services([db])
+        pgbr = ["podman", "exec", "-u", "postgres", db, "pgbackrest"]
+        if sub == "version":
+            return self._ssh(shlex.join([*pgbr, "version"]), tty=False)
+        if sub in ("info", "check"):
+            return self._ssh(shlex.join([*pgbr, "--log-level-console=info", sub]), tty=False)
+        if sub == "configure":
+            mode = getattr(ns, "configure_mode", None)
+            if mode == "stanza-create":
+                return self._ssh(shlex.join([*pgbr, "--log-level-console=info", "stanza-create"]), tty=False)
+            if mode == "verify":
+                return self._ssh(shlex.join([*pgbr, "--log-level-console=info", "check"]), tty=False)
+            raise Usage(
+                f"dk {self.env_name} db configure: the render writes pgBackRest's config; "
+                "use `configure stanza-create` or `configure verify`"
+            )
+        if sub == "backup":
+            template = self._installed("systemd/", "pgbackrest-backup@.service")
+            if not template:
+                raise Usage(f"{self.env_name}'s render has no pgBackRest backup unit")
+            return self._start_and_show(template.replace("@.", f"@{ns.backup_type}."))
+        if sub == "pgdump":
+            from catalpa_tooling.fcos.fetch import pg_dump_command
+
+            args = [a for a in (getattr(ns, "pg_dump_args", None) or []) if a != "--"]
+            return self._ssh(pg_dump_command(db, args), tty=False)
+        raise Usage(f"dk {self.env_name} db {sub}: not on a quadlet env")
+
+    def _restic_quadlet(self) -> tuple[str, str]:
+        """(unit stem, quadlet text) of the rendered restic container; in read mode, ("", the
+        restore container's lines)."""
+        if self.restore.get("restic"):
+            return "", "[Container]\n" + "\n".join(self.restore["restic"])
+        for e in self.committed.manifest["install"]:
+            f = e["file"]
+            text = self.committed.files.get(f, "")
+            if f.startswith("quadlets/") and f.endswith(".container") and "\nImage=" in text and "restic" in text.split("\nImage=", 1)[1].split("\n", 1)[0]:
+                return f.rsplit("/", 1)[-1][: -len(".container")], text
+        raise Usage(f"{self.env_name}'s render has no restic backup (restic_write_* credentials)")
+
+    def _restic_mounts(self, text: str) -> dict[str, str]:
+        """The restic unit's backed-up directories: mount target (the path in the snapshots) →
+        host source. ``/backup/<volume>``, or ``ops.restic.backup_path`` for the first volume,
+        which is where a compose host's snapshots keep it (e.g. /mnt/btrfs-data/<x>-media)."""
+        backup_path = self.config.ops.restic.backup_path if self.config.has_ops else None
+        out: dict[str, str] = {}
+        for line in text.splitlines():
+            if not line.strip().startswith("Volume="):
+                continue
+            parts = line.strip()[len("Volume="):].split(":", 2)
+            if len(parts) > 1 and (parts[1].startswith("/backup/") or (backup_path and parts[1] == backup_path)):
+                out[parts[1]] = parts[0]
+        return out
+
+    def _restic_lock_flag(self) -> list[str]:
+        """A read key can't write restic's lock object: read mode runs without one, as compose's
+        READ mode does. Nothing else writes the source's repository from here."""
+        return ["--no-lock"] if self.restore.get("restic") else []
+
+    def files(self, sub: str) -> int:
+        stem, text = self._restic_quadlet()
+        if not stem and sub in ("backup", "init"):
+            raise self._read_only(f"files {sub}")
+        if sub == "backup":
+            return self._start_and_show(f"{stem}.service")
+        args = {"snapshots": ["snapshots"], "check": ["check"], "stats": ["stats"], "init": ["init"]}[sub]
+        args = self._restic_lock_flag() + args
+        cmd = ["podman", "run", "--rm", "-i", *podman_run_args(text, volumes=volume_names(self.committed)), *args]
+        return self._ssh(shlex.join(cmd), tty=False)
+
+    def _confirm(self, what: str, *, yes: bool) -> bool:
+        if yes:
+            return True
+        from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
+
+        print(f"WARNING: {what}\n  Environment: {self.env_name} ({self.host.address})", file=sys.stderr)
+        if confirm_by_typing_env_name(self.env_name):
+            return True
+        print("Cancelled.", file=sys.stderr)
+        return False
+
+    def _db_restore_line(self, extra: list[str]) -> str:
+        """The one-off that restores the database: pgBackRest restore --delta in a container
+        like db (in read mode, with the read key, then the source's WAL replayed in it)."""
+        extra = list(extra)
+        while extra and extra[0] == "--":  # a later `--` is pgBackRest's to see
+            extra.pop(0)
+        source = self.restore.get("from")
+        if self.restore.get("pgbackrest"):
+            run_args = self._db_read_args()
+            if any(a.startswith("--type=") for a in extra) and not any(a.startswith("--target-action") for a in extra):
+                extra.append("--target-action=promote")  # pgBackRest's default pauses: we wait for the end
+        else:
+            text = self._db_quadlet()
+            if "PGBACKREST_" not in text:
+                raise Usage(f"{self.env_name}'s db has no pgBackRest repository (backups: [db] in info.yaml)")
+            run_args = podman_run_args(text, volumes=volume_names(self.committed))
+        inner = (
+            'mkdir -p -m 700 "$PGBACKREST_PG1_PATH" && '
+            "pgbackrest --log-level-console=info restore --delta"
+            + "".join(" " + shlex.quote(a) for a in extra)
+        )
+        if self.restore.get("pgbackrest"):
+            inner += " && " + _replay_wal_here(source or "the source")
+        return shlex.join(
+            ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "sh", *run_args, "-c", inner]
+        )
+
+    def _stop_then_start_as_found(self, body: list[str], *, stopped_hint: str) -> str:
+        """``body`` between stopping the app and db and starting them again as they were found:
+        a host provisioned with --no-start stays stopped."""
+        db = self.config.stack.services.db
+        web = self.config.stack_service("web")
+        w, d = f"{shlex.quote(web)}.service", f"{shlex.quote(db)}.service"
+        return "\n".join(
+            [
+                "set -e",
+                f"web_was=0; systemctl --user is-active --quiet {w} && web_was=1",
+                f"db_was=0; systemctl --user is-active --quiet {d} && db_was=1",
+                f"systemctl --user stop {w} {d}",
+                *body,
+                'if [ "$web_was" = 1 ]; then',
+                f"  echo 'Restored. Starting {db} (it replays WAL; healthy once recovery ends), then {web}…' >&2",
+                f"  systemctl --user start {w}",
+                'elif [ "$db_was" = 1 ]; then',
+                f"  echo 'Restored. Starting {db} (it replays WAL; healthy once recovery ends); {web} was stopped and stays so.' >&2",
+                f"  systemctl --user start {d}",
+                "else",
+                f"  echo {shlex.quote(f'Restored. {db} and {web} were stopped and stay so: {stopped_hint}')} >&2",
+                "  exit 0",
+                "fi",
+                f"systemctl --user --no-pager status {d} {w} --lines=0 || true",
+            ]
+        )
+
+    def db_restore(self, extra: list[str], *, yes: bool, dry_run: bool) -> int:
+        """pgBackRest restore --delta into the data directory, as compose envs do: stop the app
+        and db, restore in a one-off container like db, start again (db's unit waits for
+        recovery: it is healthy only once Postgres accepts connections)."""
+        db = self.config.stack.services.db
+        web = self.config.stack_service("web")
+        source = self.restore.get("from")
+        problem = self._hooks_problem(metabase=True, dry_run=dry_run)
+        script = self._stop_then_start_as_found(
+            [self._db_restore_line(extra)],
+            stopped_hint=f"restore the media (dk {self.env_name} files restore), then start them (dk {self.env_name} host provision).",
+        )
+        if dry_run:
+            print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
+            return self._dry_run_end(problem)
+        what = f"{source}'s backup" if source else "the backup"
+        if not self._confirm(
+            f"pgBackRest restore --delta of {what} into {self.env_name}'s database. {web} and "
+            f"{db} stop while it runs; what {what} doesn't have is lost."
+            + (_PROD_DATA_NOTE.format(source=source) if source else ""),
+            yes=yes,
+        ):
+            return 1
+        rc = self._ssh(script, tty=False)
+        if rc != 0:
+            return rc
+        return self._after_db_restore()
+
+    def restore_all(
+        self, extra: list[str], snapshot: str, *, yes: bool, dry_run: bool, kinds: tuple[str, ...] | None = None,
+        then_start: bool = False,
+    ) -> int:
+        """``dk <env> restore``: the database and the media together, with the app stopped
+        throughout and one confirmation, then the post_db_restore hooks. ``kinds``: which of
+        ("db", "files") (default: each this env can restore)."""
+        kinds = kinds if kinds is not None else self.restore_kinds()
+        if not kinds:
+            raise Usage(f"{self.env_name} has nothing to restore from (backups: or restore_from: in info.yaml)")
+        problem = self._hooks_problem(metabase=True, dry_run=dry_run) if "db" in kinds else None
+        body: list[str] = []
+        paths: list[str] = []
+        if "db" in kinds:
+            body.append(self._db_restore_line(extra))
+        if "files" in kinds:
+            steps, paths = self._files_restore_steps(snapshot)
+            body += steps
+        script = self._stop_then_start_as_found(
+            body,
+            stopped_hint=(
+                "starting them next." if then_start else f"start them with `dk {self.env_name} host provision`."
+            ),
+        )
+        if dry_run:
+            print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
+            return self._dry_run_end(problem)
+        source = self.restore.get("from")
+        what = " and ".join(
+            x for x in (
+                "the database" if "db" in kinds else "",
+                (", ".join(p.removeprefix("/backup/") for p in paths) + f" (snapshot {snapshot!r})") if paths else "",
+            ) if x
+        )  # fmt: skip
+        owner = f"{source}'s" if source else f"{self.env_name}'s own"
+        if not self._confirm(
+            f"replace {what} with {owner} backups. The app stops while it runs; what the "
+            "backups don't have is lost."
+            + (_PROD_DATA_NOTE.format(source=source) if source else ""),
+            yes=yes,
+        ):
+            return 1
+        rc = self._ssh(script, tty=False)
+        if rc != 0:
+            return rc
+        # The caller starts the stack and runs the hooks then (host create).
+        return self._after_db_restore() if "db" in kinds and not then_start else 0
+
+    def restore_kinds(self) -> tuple[str, ...]:
+        """Which of db and files this env restores: from restore_from's source in read mode,
+        else from its own backups."""
+        out = []
+        if self.restore.get("pgbackrest") or "PGBACKREST_" in self._db_quadlet():
+            out.append("db")
+        try:
+            self._restic_quadlet()
+            out.append("files")
+        except Usage:
+            pass
+        return tuple(out)
+
+    def restorable(self) -> dict[str, bool]:
+        """Whether the repositories hold anything to restore yet: {"db": a pgBackRest backup
+        exists, "files": a restic snapshot with the first backed-up path exists}. A new env's
+        own repositories are empty until its first backup."""
+        import json
+
+        out: dict[str, bool] = {}
+        for kind in self.restore_kinds():
+            if kind == "db":
+                args = self._db_read_args() if self.restore.get("pgbackrest") else podman_run_args(
+                    self._db_quadlet(), volumes=volume_names(self.committed)
+                )
+                cmd = ["podman", "run", "--rm", "--user", "postgres", "--entrypoint", "pgbackrest", *args,
+                       "--output=json", "info"]  # fmt: skip
+            else:
+                _stem, text = self._restic_quadlet()
+                args = podman_run_args(text, volumes=volume_names(self.committed))
+                path = next(iter(self._restic_mounts(text)), "")
+                if not path:
+                    raise Usage("the restic unit mounts no backed-up directory")
+                cmd = ["podman", "run", "--rm", *args, *self._restic_lock_flag(), "snapshots", "--json", "--path", path]
+            r = self.host.ssh(self.login, shlex.join(cmd), check=False)
+            try:
+                data = json.loads((r.stdout or b"").decode() or "null") if r.returncode == 0 else None
+            except json.JSONDecodeError:
+                data = None
+            if kind == "db":
+                out[kind] = bool(data) and any(st.get("backup") for st in data if isinstance(st, dict))
+            else:
+                out[kind] = bool(data)
+        return out
+
+    def _after_db_restore(self) -> int:
+        """After a pgBackRest restore (the whole cluster, Metabase's database too):
+        ``ops.post_db_restore`` then ``ops.post_metabase_db_restore``, as compose runs them, once
+        the app is up again. A stack left stopped can't run them: say what to run after starting it."""
+        from catalpa_tooling.fcos.dbdump import (
+            metabase_hooks_apply,
+            post_metabase_restore_hooks,
+            post_restore_hooks,
+        )
+        from catalpa_tooling.post_db_restore import _expand_commands, post_db_restore_applies
+
+        sets = [
+            (label, hooks)
+            for label, hooks, applies in (
+                ("post_db_restore", self.config.ops.post_db_restore,
+                 post_db_restore_applies(self.config, self.env_name)),
+                ("post_metabase_db_restore", self.config.ops.post_metabase_db_restore,
+                 metabase_hooks_apply(self.config, self.env_name)),
+            )
+            if applies
+        ]  # fmt: skip
+        if not sets:
+            return 0
+        # The hooks run in one-shot containers, so they need db, not web.
+        db = self.config.stack.services.db
+        r = self.host.ssh(self.login, f"systemctl --user is-active --quiet {shlex.quote(db)}.service", check=False)
+        if r.returncode == 0:
+            rc = post_restore_hooks(self)
+            return rc if rc != 0 else post_metabase_restore_hooks(self)
+        for label, hooks in sets:
+            commands = _expand_commands(
+                self.config, hooks.manage_commands, env_name=self.env_name, env_add={}, hook_label=label,
+            ) or []  # fmt: skip
+            todo = [f"`dk {self.env_name} manage {shlex.join(c)}`" for c in commands]
+            if hooks.db_psql:
+                todo.append("the db_psql hooks")
+            todo += [f"`dk {self.env_name} restart {s}`" for s in getattr(hooks, "restart_services", ())]
+            if todo:
+                print(
+                    f"{label} hooks not run: the database is stopped. Once it's up, run "
+                    + "; ".join(todo) + ".",
+                    file=sys.stderr,
+                )
+        return 0
+
+    # --- stack_backend.StackBackend: dk <env> db / files / restore (stack_commands) -------
+
+    def refused_subcommand(self, verb: str, sub: str) -> str | None:
+        allowed = DB_COMMANDS if verb == "db" else FILES_COMMANDS
+        if sub in allowed:
+            return None
+        return BACKUP_REFUSED.get(sub, "not on a quadlet env").format(env=self.env_name)
+
+    def ensure_backup_credentials(self, target, *, yes: bool, dry_run: bool, label: str) -> int:
+        from catalpa_tooling.fcos.backup_credentials import ensure_backup_credentials
+
+        return ensure_backup_credentials(self, target, yes=yes, dry_run=dry_run, label=label)
+
+    def pgbackrest(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        return self.db(sub, ns)  # a dry run's runner only prints
+
+    def restic(self, sub: str, ns: argparse.Namespace, *, dry_run: bool) -> int:
+        return self.files(sub)
+
+    def pgbackrest_restore_available(self) -> bool:
+        if self.restore.get("pgbackrest"):
+            return True
+        try:
+            return "PGBACKREST_" in self._db_quadlet()
+        except Usage:
+            return False
+
+    def pgbackrest_restore(self, extra: list[str], *, yes: bool, dry_run: bool) -> int:
+        return self.db_restore(extra, yes=yes, dry_run=dry_run)
+
+    def restore_hooks_problem(self, *, metabase: bool) -> str | None:
+        try:
+            self.check_hooks_runnable(metabase=metabase)
+        except Usage as exc:
+            return str(exc)
+        return None
+
+    def _files_restore_steps(self, snapshot: str) -> tuple[list[str], list[str]]:
+        """(shell steps, the paths restored): restic restore of each backed-up directory, exactly
+        as in the snapshot (``--delete``), then read access for the edge where it mounts one."""
+        _stem, text = self._restic_quadlet()
+        run_args = podman_run_args(text, volumes=volume_names(self.committed), read_write=True)
+        source_of = self._restic_mounts(text)
+        paths = list(source_of)
+        if not paths:
+            raise Usage("the restic unit mounts no backed-up directory")
+        host_filter = []
+        if snapshot == "latest" and self.restore.get("restic"):
+            pass  # The source's repository: compose snapshots carry random hostnames; by path.
+        elif snapshot == "latest" and self.committed.manifest.get("hostname"):
+            host_filter = ["--host", str(self.committed.manifest["hostname"])]
+        steps = []
+        for i, path in enumerate(paths):
+            path_filter = ["--path", path] if snapshot == "latest" and not host_filter else []
+            cmd = shlex.join(
+                ["podman", "run", "--rm", *run_args, *self._restic_lock_flag(), "restore", f"{snapshot}:{path}",
+                 "--target", path, "--delete", *host_filter, *path_filter,
+                 # The :z mount labels the files; a snapshot's labels (or an Ubuntu host's lack
+                 # of them) mustn't be written back, which SELinux refuses inside the container.
+                 "--exclude-xattr", "security.selinux"]
+            )  # fmt: skip
+            # A path added after the snapshot was taken isn't in it: keep that one as it is.
+            steps.append(cmd if i == 0 else f"{cmd} || echo 'Snapshot has no {path}: left as it is.' >&2")
+        # The edge serves some of these read-only from its own ID range, so to it they are
+        # "other": a snapshot from a host whose app wrote 2750/640 (prod on compose, where Caddy
+        # is root) would be unreadable. Give them the read access this host's app gives its own.
+        edge = self._edge_sources()
+        for path in paths:
+            if source_of[path] in edge:
+                chmod = [*run_args[:-1], "--entrypoint", "chmod", run_args[-1], "-R", "o+rX", path]
+                steps.append(
+                    f"echo 'Making {path.removeprefix('/backup/')} readable to {self.committed.manifest.get('proxy') or 'the edge'} (o+rX)…' >&2"
+                )
+                steps.append(shlex.join(["podman", "run", "--rm", *chmod]))
+        return steps, paths
+
+    def files_restore(self, snapshot: str, *, yes: bool, dry_run: bool) -> int:
+        """Replace the media with a restic snapshot: each backed-up directory ends up exactly as
+        in the snapshot (``--delete``), owned as the backup unit's ID range wrote it."""
+        steps, paths = self._files_restore_steps(snapshot)
+        script = "set -e\n" + "\n".join(steps)
+        if dry_run:
+            print(f"dry-run: on {self.host.address} as {self.login}:\n{script}", file=sys.stderr)
+            return 0
+        if not self._confirm(
+            f"replace {', '.join(p.removeprefix('/backup/') for p in paths)} with restic snapshot "
+            f"{snapshot!r}: files not in the snapshot are deleted.",
+            yes=yes,
+        ):
+            return 1
+        return self._ssh(script, tty=False)
+
+    def _edge_sources(self) -> set[str]:
+        """The host paths and ``X.volume`` units the edge (proxy) container mounts."""
+        proxy = self.committed.manifest.get("proxy")
+        text = self.committed.files.get(f"quadlets/{proxy}.container", "") if proxy else ""
+        return {
+            ln.strip()[len("Volume="):].split(":", 1)[0]
+            for ln in text.splitlines()
+            if ln.strip().startswith("Volume=")
+        }
+
+    # --- media ------------------------------------------------------------------------------
+
+    def media_dir(self) -> str:
+        from catalpa_tooling.fcos.fetch import media_path
+
+        try:
+            return media_path(self.config, self)
+        except ValueError as exc:
+            raise Usage(str(exc)) from None
+
+    def media_owner_ns_uid(self) -> int:
+        """The media's owner as ``podman unshare`` sees it: the range start (ns uid N is host
+        uid subuid_start + N - 1, and the range's root is host uid subuid_start + start - 1)."""
+        from catalpa_tooling.restic_files import restic_data_volume_key
+
+        vol = (self.committed.manifest.get("bind_volumes") or {})[restic_data_volume_key(self.config)]
+        return int(self.committed.manifest["id_ranges"][vol["id_range"]]["start"])
+
+    def describe_media(self) -> str:
+        return f"{self.ssh_target}:{self.media_dir()}"
+
+    def preflight_transfer(self, *, role: str, db: bool, media: bool, dry_run: bool = False) -> list[str]:
+        """The render has db, and db is running (started if not); the media volume is on the
+        data volume; a destination taking the database can run its post-restore hooks (else
+        they'd fail after the database is replaced)."""
+        where = f"{role} (`{self.env_name}`)"
+        errs = []
+        if db and self.config.stack.services.db not in self.services:
+            errs.append(f"{where}: the render has no {self.config.stack.services.db!r} service")
+        elif db and dry_run:
+            # A dry run changes nothing: say what a real one would do. An unreachable host is an
+            # error, as it is when a real run's start fails.
+            rc = self.db_active()
+            if rc == 255:
+                errs.append(f"{where}: couldn't reach {self.ssh_target} (ssh exit 255)")
+            elif rc != 0:
+                print(f"transfer: {where}: db not running; a real transfer would start it.", file=sys.stderr)
+        elif db and self.ensure_db_running() != 0:
+            # As compose's preflight does: a stopped db would only fail once the destination's
+            # writers were already down.
+            errs.append(f"{where}: couldn't start {self.config.stack.services.db}.service")
+        if media:
+            try:
+                self.media_dir()
+            except Usage as exc:
+                errs.append(f"{where}: {exc}")
+        if db and role == "destination":
+            try:
+                self.check_hooks_runnable()
+            except Usage as exc:
+                errs.append(f"{where}: {exc}")
+        return errs
+
+    def media_rsync_source(self) -> str:
+        """The media directory on the data volume: it's 0755, so the account reads it."""
+        return f"{self.ssh_target}:{self.media_dir()}"
+
+    def pull_media(self, target: Path, *, dry_run: bool = False) -> int:
+        """Rsync the media directory into ``target`` (``dk fetch media``)."""
+        from catalpa_tooling.media_rsync import rsync_between_endpoints
+
+        if not dry_run:
+            target.mkdir(parents=True, exist_ok=True)
+        return rsync_between_endpoints(self.media_rsync_source(), str(target), delete=False, dry_run=dry_run)
+
+    def push_media(self, source: Path, *, dry_run: bool = False) -> int:
+        """Rsync ``source/`` over the media directory (``--delete``), then hand it to the media's
+        owner (the range's root).
+
+        rsync runs under ``podman unshare``, so the account can write files the range owns.
+        It doesn't keep owners (no ``-o``/``-g``: local uids mean nothing there), and the chown
+        is a second step on the host, not ``--chown``: macOS's rsync (openrsync) has no
+        ``--chown``.
+        """
+        from catalpa_tooling.media_rsync import format_shell_command
+        from catalpa_tooling.run_cmd import run as run_cmd
+
+        uid = self.media_owner_ns_uid()
+        media = self.media_dir()
+        cmd = [
+            "rsync", "-rptDzv", "--progress", "--delete",
+            "--rsync-path=podman unshare rsync",
+            *(["--dry-run", "--itemize-changes"] if dry_run else []),
+            f"{source.resolve()}/", f"{self.ssh_target}:{media}/",
+        ]  # fmt: skip
+        print(f"$ {format_shell_command(cmd)}", file=sys.stderr)
+        if dry_run:
+            return run_cmd(cmd, check=False, print_cmd=False).returncode
+        # The chown runs even when rsync fails or is interrupted (Ctrl-C): files it already
+        # wrote belong to the account's namespace root, and django couldn't write beside them.
+        rc = 1
+        try:
+            rc = run_cmd(cmd, check=False, print_cmd=False).returncode
+        finally:
+            chown = f"podman unshare chown -R {uid}:{uid} {shlex.quote(media)}"
+            print(f"{self.env_name}: {chown}", file=sys.stderr)
+            chown_rc = self._ssh(chown, tty=False)
+        return rc or chown_rc
+
+    def stop_writers(self) -> list[str]:
+        """Stop everything but db (the edge's socket first); returns what to start again."""
+        db = f"{self.config.stack.services.db}.service"
+        user_units, _system = stack_units(self.committed)
+        units = self._proxy_socket() + [u for u in user_units if u != db]
+        # Remembered before stopping: if the stop is interrupted, start_writers(None) still
+        # brings back whatever may be down.
+        self._stopping = units
+        if units:
+            print(f"{self.env_name}: systemctl --user stop {' '.join(units)}", file=sys.stderr)
+            self._ssh("systemctl --user stop " + " ".join(shlex.quote(u) for u in units), tty=False)
+        return units
+
+    def start_writers(self, token: object) -> int:
+        """``start_units`` for ``stop_writers``' list (stack_backend.StackBackend). With no
+        token (the stop was interrupted before it returned), the units it set out to stop."""
+        units = token if token is not None else getattr(self, "_stopping", None)
+        return self.start_units(list(units or []))
+
+    def start_units(self, units: list[str]) -> int:
+        if not units:
+            return 0
+        ordered = [u for u in units if not u.endswith(".socket")] + [u for u in units if u.endswith(".socket")]
+        print(f"{self.env_name}: systemctl --user start {' '.join(ordered)}", file=sys.stderr)
+        return self._ssh("systemctl --user start " + " ".join(shlex.quote(u) for u in ordered), tty=False)
+
+    def units(self, verb: str, argv: list[str]) -> int:
+        names = [a for a in argv if not a.startswith("-")]
+        flags = [a for a in argv if a.startswith("-")]
+        if flags:
+            raise Usage(f"dk {self.env_name} {verb}: options aren't supported on a quadlet env ({' '.join(flags)})")
+        self._check_services(names)
+        if names:
+            units = [f"{n}.service" for n in names]
+        else:
+            # The whole stack. The edge is socket-activated: stopping only its service would
+            # let the next request start it again.
+            # Restart leaves the socket alone: it hands the same listeners to the new process.
+            user_units, _system = stack_units(self.committed)
+            units = {
+                "stop": self._proxy_socket() + user_units,
+                "start": user_units + self._proxy_socket(),
+                "restart": user_units,
+            }[verb]
+        cmd = f"systemctl --user {verb} " + " ".join(shlex.quote(u) for u in units)
+        print(f"{self.host.address}: systemctl --user {verb} {' '.join(units)}", file=sys.stderr)
+        return self._ssh(cmd, tty=False)
+
+
+def volume_names(committed: Committed) -> dict[str, str]:
+    """``X.volume`` (as a quadlet's ``Volume=`` names it) → the Podman volume it makes."""
+    out = {}
+    for f, text in committed.files.items():
+        if f.startswith("quadlets/") and f.endswith(".volume"):
+            unit = f.rsplit("/", 1)[-1]
+            name = next(
+                (ln.split("=", 1)[1].strip() for ln in text.splitlines() if ln.startswith("VolumeName=")),
+                f"systemd-{unit[: -len('.volume')]}",
+            )
+            out[unit] = name
+    return out
+
+
+_PROD_DATA_NOTE = (
+    "\n  This env gets {source}'s data, personal data included, and the app may send email from "
+    "it: ops.post_db_restore is where a project deals with that."
+)
+
+
+def _replay_wal_here(source: str) -> str:
+    """Shell, in the one-off restore container: replay the source's WAL to its end with the read
+    key, promote, stop cleanly. db's own pgBackRest can't reach the source's repository, so
+    db's unit must start on a cluster that is already out of recovery."""
+    data = '"$PGBACKREST_PG1_PATH"'
+    src = source.replace("'", "")
+    return (
+        f"echo 'Database: starting a temporary Postgres to replay {src}'\\''s WAL up to its latest "
+        "transaction (read key; no connections, no archiving)…' >&2 && "
+        f"pg_ctl -s -D {data} -o \"-c listen_addresses='' -c archive_mode=off\" -w -t 3600 start && "
+        "{ n=0; until [ \"$(psql -X -At -U postgres -d postgres -c 'select pg_is_in_recovery()' 2>/dev/null)\" = f ]; do "
+        "n=$((n+1)); if [ $n -gt 720 ]; then echo 'Still in recovery after an hour: stopping.' >&2; "
+        f"pg_ctl -D {data} -m fast -w stop; exit 1; fi; sleep 5; done; }} && "
+        f"pg_ctl -s -D {data} -m fast -w stop && "
+        f"echo 'Database: restored to {src}'\\''s latest transaction and opened for writes; the temporary Postgres is stopped.' >&2"
+    )
+
+
+def podman_run_args(
+    quadlet: str, *, volumes: dict[str, str] | None = None, read_write: bool = False
+) -> list[str]:
+    """``podman run`` options for a one-off container like a rendered ``.container``: its image,
+    ID range, settings, secrets and mounts (not its name, network or command). ``volumes``
+    resolves ``X.volume`` references; ``read_write`` drops ``ro`` from the mounts."""
+    image = None
+    out: list[str] = []
+    in_container = False
+    for line in quadlet.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            in_container = line == "[Container]"
+            continue
+        if not in_container or not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "Image":
+            image = value
+        elif key == "UIDMap":
+            out += ["--uidmap", value]
+        elif key == "GIDMap":
+            out += ["--gidmap", value]
+        elif key == "Secret":
+            out += ["--secret", value]
+        elif key == "Environment":
+            out += ["-e", value]
+        elif key == "EnvironmentFile":
+            out += ["--env-file", value]
+        elif key == "Volume":
+            source, _, rest = value.partition(":")
+            if source.endswith(".volume"):
+                if not volumes or source not in volumes:
+                    raise Usage(f"volume {source} isn't in the render")
+                source = volumes[source]
+            if read_write and rest.count(":"):
+                target, opts = rest.split(":", 1)
+                opts = ",".join(o for o in opts.split(",") if o != "ro")
+                rest = f"{target}:{opts}" if opts else target
+            out += ["-v", f"{source}:{rest}"]
+        elif key == "User":
+            out += ["--user", value]
+    if image is None:
+        raise Usage("the quadlet has no Image=")
+    return [*out, image]
+
+
+REFUSED_HINT = {
+    "up": "a bare `dk {env}` brings the host up to date: it applies the committed render, pulls the images and restarts what changed",
+    "down": "`dk {env} stop` stops the stack's units",
+    "pull": "a bare `dk {env}` pulls the images and restarts the units whose image changed",
+    "build": "the host pulls images; build and push them, then `dk {env} render`, commit, and a bare `dk {env}`",
+    "run": "`dk {env} exec SERVICE …` runs a command in a running container",
+    "rm": "the units remove their containers when they stop",
+    "wipe": "deleting a quadlet env's data is a host-level operation, not a dk command",
+}
+
+
+class EnvError(Exception):
+    pass
+
+
+def open_backend(
+    config: ProjectConfig, env_name: str, info: dict, *, runner=run, register_key: bool = True
+) -> Backend:
+    """The backend for a ``runtime: quadlet`` env: its host (from ``docker_host``) and its
+    committed render. ``register_key``: record the host's SSH key on first contact, as dk does
+    for every deploy host (never replaces one)."""
+    from catalpa_tooling.fcos.host import host_from_docker_host
+    from catalpa_tooling.systemd_remote_install import parse_docker_host_to_ssh_target
+
+    docker_host = str(info.get("docker_host") or "")
+    try:
+        committed = load_committed(generated_dir(config, env_name))
+        host = host_from_docker_host(docker_host, None)
+        login = parse_docker_host_to_ssh_target(docker_host).split("@", 1)[0]
+    except (HostError, ValueError) as exc:
+        raise EnvError(str(exc)) from None
+    if login != committed.user:
+        raise EnvError(
+            f"docker_host logs in as {login!r}, but the stack runs as {committed.user!r} (fcos.user)"
+        )
+    if register_key:
+        from catalpa_tooling.ssh_known_hosts import ensure_known_host
+
+        if ensure_known_host(host.address, port=host.port, recovery_env_name=env_name) != 0:
+            raise EnvError(f"no SSH host key for {host.address}")
+    host = Host(address=host.address, port=host.port, runner=runner)
+    return Backend(config=config, env_name=env_name, committed=committed, host=host, login=login, info=info)
+
+
+def quadlet_backend(config: ProjectConfig, env_name: str, *, runner=run) -> Backend | None:
+    """``open_backend`` for ``env_name`` when its info.yaml has ``runtime: quadlet``, else None."""
+    import yaml
+
+    from catalpa_tooling.fcos.settings import FcosConfigError, runtime_of
+
+    path = config.deploy_envs_dir / env_name / "info.yaml"
+    if not path.is_file():
+        return None
+    info = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        if runtime_of(info) != "quadlet":
+            return None
+    except FcosConfigError:
+        return None
+    return open_backend(config, env_name, info, runner=runner, register_key=runner is run)
+
+
+def handle(
+    ns: argparse.Namespace,
+    config: ProjectConfig,
+    env_name: str,
+    info: dict,
+    *,
+    runner=run,
+    tty: bool | None = None,
+) -> int:
+    """Run a stack command for a quadlet env, or refuse it (2)."""
+    command = getattr(ns, "env_command", None)
+    if command == "manage":
+        verb, argv = "manage", []
+    elif command == "pull_media":
+        verb, argv = "pull_media", []
+    elif command in ("db", "bkp_db", "files", "bkp_files"):
+        verb = command.removeprefix("bkp_")
+        argv = []
+    elif command in (None, "compose"):
+        argv = list(getattr(ns, "implicit_compose_argv", None) or getattr(ns, "compose_argv", None) or [])
+        if not argv and command is None:
+            # A bare `dk <env>`: bring the host up to date (compose's `up -d`).
+            from catalpa_tooling.fcos.deploy import deploy
+
+            return deploy(
+                config, env_name, info,
+                yes=bool(getattr(ns, "yes", False)), dry_run=bool(getattr(ns, "dry_run", False)),
+                tag=getattr(ns, "tag", None),
+            )  # fmt: skip
+        if not argv:
+            argv = ["up", "-d"]
+        verb, argv = argv[0], argv[1:]
+    else:
+        verb, argv = command, []
+
+    if verb not in SUPPORTED:
+        shown = " ".join([verb, *argv]) if command in (None, "compose") else command
+        hint = REFUSED_HINT.get(verb, "").format(env=env_name)
+        print(
+            f"{env_name} runs as Podman quadlets (info.yaml `runtime: quadlet`), not compose, so "
+            f"`dk {env_name} {shown}` isn't available. {hint + '. ' if hint else ''}"
+            f"Available: {', '.join(SUPPORTED)}, `render|check|diff|apply`, `host provision`, `secrets push`, and `docker …` against the host's "
+            "Podman socket.",
+            file=sys.stderr,
+        )
+        return 2
+
+    dry_run = bool(getattr(ns, "dry_run", False))
+    try:
+        b = open_backend(config, env_name, info, runner=_dry_runner if dry_run else runner,
+                         register_key=runner is run and not dry_run)  # fmt: skip
+    except EnvError as exc:
+        print(f"dk {env_name} {verb}: {exc}", file=sys.stderr)
+        return 1
+    if tty is None:
+        tty = sys.stdin.isatty() and sys.stdout.isatty()
+    try:
+        if verb == "logs":
+            return b.logs(argv, tty=tty)
+        if verb == "ps":
+            return b.ps(argv, tty=tty)
+        if verb == "exec":
+            return b.exec(argv, tty=tty)
+        if verb == "manage":
+            args = [a for a in getattr(ns, "manage_args", []) if a]
+            return b.manage(args, user=getattr(ns, "user", None), tty=tty)
+        if verb == "restore":
+            from catalpa_tooling import stack_commands
+
+            return stack_commands.run(b, "restore", ns, dry_run=dry_run)
+        if verb == "pull_media":
+            from catalpa_tooling.fetch_media import pull_media_target
+
+            target = pull_media_target(config, env_name, getattr(ns, "target", None))
+            return b.pull_media(target, dry_run=dry_run)
+        if verb in ("db", "files"):
+            from catalpa_tooling import stack_commands
+
+            return stack_commands.run(b, command, ns, dry_run=dry_run)
+        return b.units(verb, argv)
+    except Usage as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _dry_runner(argv, *, input=None, tty=False):
+    import subprocess
+
+    print("dry-run: " + shlex.join(argv), file=sys.stderr)
+    return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+
+__all__ = ["Backend", "SUPPORTED", "handle", "run"]

@@ -782,6 +782,22 @@ def _drop_create_app_database_psql_block(*, postgis: bool) -> str:
     return "\n".join(lines)
 
 
+def drop_create_app_database_script(*, postgis: bool, target: DbRestoreTarget = "app") -> str:
+    """Shell script, run in the ``db`` container, that replaces the app database with an empty
+    one (``run_drop_create_app_database``; quadlet envs run it through ``podman exec``)."""
+    psql_body = _drop_create_app_database_psql_block(postgis=postgis)
+    shell_vars = _db_shell_vars(target)
+    return f"""set -eu
+{shell_vars}
+export PGPASSWORD="$POSTGRES_PASSWORD"
+dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
+createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
+psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
+{psql_body}
+EOF
+"""
+
+
 def run_drop_create_app_database(
     compose_file: str,
     env: dict[str, str],
@@ -797,17 +813,7 @@ def run_drop_create_app_database(
     ``pg_restore``. Used by ``dk transfer`` and ``db restore``.
     """
     merged = _merged_process_env(env)
-    psql_body = _drop_create_app_database_psql_block(postgis=postgis)
-    shell_vars = _db_shell_vars(target)
-    script = f"""set -eu
-{shell_vars}
-export PGPASSWORD="$POSTGRES_PASSWORD"
-dropdb -h 127.0.0.1 -p 5432 -U postgres --if-exists --force "$APP_DB"
-createdb -h 127.0.0.1 -p 5432 -U postgres -O "$APP_USER" "$APP_DB"
-psql -h 127.0.0.1 -p 5432 -U postgres -d "$APP_DB" -v ON_ERROR_STOP=1 <<EOF
-{psql_body}
-EOF
-"""
+    script = drop_create_app_database_script(postgis=postgis, target=target)
     r = run_cmd(
         [
             "docker",
@@ -840,6 +846,49 @@ def run_drop_create_metabase_database(
         postgis=False,
         target="metabase",
     )
+
+
+def run_db_sh(compose_file: str, env: dict[str, str], script: str, *, root: bool = False) -> int:
+    """``sh -c script`` in the ``db`` service (``docker compose exec -T``), as root when asked."""
+    argv = ["docker", "compose", "-f", compose_file, "exec", "-T"]
+    if root:
+        argv += ["-u", "root"]
+    argv += ["db", "sh", "-c", script]
+    return run_cmd(
+        argv, env=_merged_process_env(env), stdin=subprocess.DEVNULL, check=False, print_cmd=False
+    ).returncode
+
+
+def copy_archive_into_db(
+    compose_file: str, env: dict[str, str], host_archive: Path, container_path: str
+) -> int:
+    """Copy a local archive to ``container_path`` in the ``db`` service and make it readable by
+    ``postgres``. ``docker compose cp`` rather than streaming through ``exec -i``, which can
+    corrupt binary data. 0 on success; on failure nothing is left at ``container_path``."""
+    merged = _merged_process_env(env)
+    cp = run_cmd(
+        ["docker", "compose", "-f", compose_file, "cp", str(host_archive.resolve()), f"db:{container_path}"],
+        env=merged,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        print_cmd=False,
+    )
+    if cp.returncode != 0:
+        print(
+            "`docker compose cp` failed (could not copy the archive into the `db` service).",
+            file=sys.stderr,
+        )
+        return 1
+    # ``docker compose cp`` typically leaves root-owned files mode 600; ``postgres`` cannot read them.
+    q = shlex.quote(container_path)
+    if run_db_sh(compose_file, env, f"chmod 644 {q} && chown postgres:postgres {q}", root=True) != 0:
+        print(
+            "could not chmod/chown the archive in the `db` container (expected root + postgres user).",
+            file=sys.stderr,
+        )
+        run_db_sh(compose_file, env, f"rm -f {q}", root=True)
+        return 1
+    return 0
 
 
 def run_pg_restore(
@@ -904,76 +953,7 @@ def run_pg_restore(
         )
         container_path = f"/tmp/{prefix}{os.urandom(8).hex()}.dump"
 
-        cp = run_cmd(
-            [
-                "docker",
-                "compose",
-                "-f",
-                compose_file,
-                "cp",
-                str(host_archive.resolve()),
-                f"db:{container_path}",
-            ],
-            env=merged,
-            stdin=subprocess.DEVNULL,
-            check=False,
-            print_cmd=False,
-        )
-        if cp.returncode != 0:
-            print(
-                "pg_restore: `docker compose cp` failed (could not copy the archive into the "
-                "`db` service).",
-                file=sys.stderr,
-            )
-            return 1
-
-        # ``docker compose cp`` typically leaves root-owned files mode 600; ``postgres`` cannot read them.
-        fix = run_cmd(
-            [
-                "docker",
-                "compose",
-                "-f",
-                compose_file,
-                "exec",
-                "-T",
-                "-u",
-                "root",
-                "db",
-                "sh",
-                "-c",
-                f"chmod 644 {shlex.quote(container_path)} && chown postgres:postgres {shlex.quote(container_path)}",
-            ],
-            env=merged,
-            stdin=subprocess.DEVNULL,
-            check=False,
-            print_cmd=False,
-        )
-        if fix.returncode != 0:
-            print(
-                "pg_restore: could not chmod/chown the archive in the `db` container "
-                "(expected root + postgres user).",
-                file=sys.stderr,
-            )
-            run_cmd(
-                [
-                    "docker",
-                    "compose",
-                    "-f",
-                    compose_file,
-                    "exec",
-                    "-T",
-                    "-u",
-                    "root",
-                    "db",
-                    "rm",
-                    "-f",
-                    container_path,
-                ],
-                env=merged,
-                stdin=subprocess.DEVNULL,
-                check=False,
-                print_cmd=False,
-            )
+        if copy_archive_into_db(compose_file, env, host_archive, container_path) != 0:
             return 1
 
         postgis = config.native.reset_db.postgis if config else False

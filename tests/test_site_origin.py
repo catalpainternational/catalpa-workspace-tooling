@@ -349,7 +349,7 @@ def test_remote_env_dry_run_with_empty_site_origin_refuses(
         env_command=None,
         dry_run=True,
         tag=None,
-        implicit_compose_argv=["up", "-d"],
+        implicit_compose_argv=[],  # a bare `dk staging`: up -d
     )
     assert handle_env_command(ns, minimal_project) == 1
     err = capsys.readouterr().err

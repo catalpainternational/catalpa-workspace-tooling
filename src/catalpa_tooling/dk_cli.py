@@ -96,7 +96,13 @@ def _parse_env_argv(parser: argparse.ArgumentParser, env_argv: list[str]) -> arg
     if unknown:
         dest = _passthrough_dest(parser, ns)
         if dest is None:
-            parser.error("unrecognized arguments: " + " ".join(unknown))
+            message = "unrecognized arguments: " + " ".join(unknown)
+            if "--dry-run" in unknown and env_argv and not env_argv[0].startswith("-"):
+                rest = [a for a in env_argv[1:] if a != "--dry-run"]
+                message += (
+                    f"\n--dry-run goes after the env name: dk {env_argv[0]} --dry-run {' '.join(rest)}".rstrip()
+                )
+            parser.error(message)
         setattr(ns, dest, unknown + list(getattr(ns, dest) or []))
     return ns
 
@@ -173,12 +179,13 @@ def _main_impl() -> None:
             "next-branch",
             "worktree",
             "context",
+            "secrets",
         ) and first not in envs:
             print(
                 f"dk: unknown command or environment {first!r}. "
                 f"Use `dk build`, `dk push`, `dk clean-images`, `dk transfer`, `dk fetch`, "
                 f"`dk digoc`, `dk proxy`, `dk cut-release`, `dk next-branch`, `dk worktree`, "
-                f"`dk context`, or a name with {envs_dir}/<name>/info.yaml.",
+                f"`dk context`, `dk secrets`, or a name with {envs_dir}/<name>/info.yaml.",
                 file=sys.stderr,
             )
             if envs:
@@ -262,6 +269,10 @@ def _main_impl() -> None:
         sys.exit(cmd_worktree(ns, config))
     if cmd == "context":
         sys.exit(cmd_context(ns, config))
+    if cmd == "secrets":
+        from catalpa_tooling.project_credentials import cmd_project_secrets
+
+        sys.exit(cmd_project_secrets(config, dry_run=ns.dry_run))
 
     if getattr(ns, "env_name", None):
         sys.exit(handle_env_command(ns, config))

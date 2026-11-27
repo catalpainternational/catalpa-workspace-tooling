@@ -618,3 +618,45 @@ def sync_host_dns(
     )
     return 0
 
+
+
+def host_dns_records_at(
+    info: dict[str, Any], *, droplet_ip: str, context: str | None
+) -> tuple[list[tuple[HostDnsTarget, dict[str, Any]]], list[str]]:
+    """The env's A records (``site_origin``/``redirect_origins``) that point at ``droplet_ip``,
+    and notes for those that point elsewhere: what ``remove_host_dns`` would delete."""
+    hostnames = dns_hostnames_from_info(info)
+    if not hostnames or not droplet_ip.strip():
+        return [], []
+    targets, _skipped = targets_from_site_origins(hostnames, list_registered_domains(context=context))
+    found, notes = [], []
+    for target in targets:
+        record = find_a_record_exact(target.zone, target.record_name, context=context)
+        if record is None:
+            continue
+        data = str(record.get("data") or "").strip()
+        if data == droplet_ip.strip():
+            found.append((target, record))
+        else:
+            notes.append(f"A record {target.hostname!r} points at {data}, leaving it alone.")
+    return found, notes
+
+
+def remove_host_dns(
+    info: dict[str, Any], *, droplet_ip: str, context: str | None, dry_run: bool = False
+) -> int:
+    """Delete the env's A records that point at ``droplet_ip`` (``sync_host_dns`` in reverse)."""
+    from catalpa_tooling.doctl_binary import DoctlCommandError
+
+    try:
+        found, notes = host_dns_records_at(info, droplet_ip=droplet_ip, context=context)
+        for note in notes:
+            print(f"Note: {note}", file=sys.stderr)
+        for target, record in found:
+            _delete_domain_record(target.zone, record.get("id"), context=context, dry_run=dry_run)
+            if not dry_run:
+                print(f"Removed A record {target.hostname!r} -> {droplet_ip}", file=sys.stderr)
+    except DoctlCommandError as e:
+        print(str(e), file=sys.stderr)
+        return e.returncode
+    return 0

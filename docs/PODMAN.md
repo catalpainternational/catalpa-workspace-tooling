@@ -3,8 +3,8 @@
 `dk` calls `docker` and `docker compose` by name. On Linux you can point those at rootless
 Podman and run a project's local stacks without Docker installed. This was checked with
 catalpa-site `main` (295ec575, tooling v1.6.0) on Fedora 45, using Podman 6.1.4, the static
-docker CLI 29.9.2 and Docker Compose v5.5.1. Both `dk dev up -d` (runserver + webpack, hot
-reload) and `dk full up -d` (gunicorn + built static) served all three sites, empty and
+docker CLI 29.9.2 and Docker Compose v5.5.1. Both `dk dev` (runserver + webpack, hot
+reload) and `dk full` (gunicorn + built static) served all three sites, empty and
 then with prod data restored (all 349 live pages answered 200 in both).
 
 macOS is not covered: under `podman machine` the VM mount does not pass on file-change
@@ -65,7 +65,7 @@ use `:z`, because that would permanently relabel paths such as the Caddyfile ins
 `DK_SELINUX_LABEL_DISABLE=1` to force the flag if detection misses, or `=0` to turn it off.
 
 A `catalpa-local-proxy` that an older dk created without the flag is recreated on the next
-`dk <env> up` or `dk proxy up`; its CA is kept. If the proxy still exits straight after
+`dk <env>` or `dk proxy up`; its CA is kept. If the proxy still exits straight after
 starting, dk now stops and prints the exit code and `docker logs`, instead of carrying on.
 
 **Project compose files.** Bind mounts in a project's own compose files are not dk's to
@@ -93,7 +93,7 @@ New files created inside those folders inherit the label. `restorecon -R <path>`
 ## 3. When something else already holds port 443
 
 dk's proxy always publishes `80:80` and `443:443` on every address. If another reverse proxy
-on the machine already holds 443, even on loopback only, `dk <env> up` stops with:
+on the machine already holds 443, even on loopback only, `dk <env>` stops with:
 
 ```
 docker: Error response from daemon: rootlessport listen tcp :443: bind: address already in use
@@ -142,7 +142,7 @@ the Host header, dk's proxy matches none of its routes, and every page comes bac
 empty `200`. The certificate in the browser is then the front proxy's, so trust that CA
 instead of running `dk proxy trust`.
 
-`dk proxy down` removes this container, and the next `dk <env> up` recreates it with the
+`dk proxy down` removes this container, and the next `dk <env>` recreates it with the
 host ports, so it fails again. Re-run the commands above after `dk proxy down`. The
 container has no restart policy (dk's own has none either), so after a reboot start it with
 `docker start catalpa-local-proxy`.
@@ -173,7 +173,7 @@ Files that rsync adds under an SELinux-labelled `media/` take that label too, so
 ## 5. Check it works
 
 ```bash
-dk dev up -d
+dk dev
 curl -s -o /dev/null -w '%{http_code} %{size_download}\n' https://catalpa-site-dev.localdev.temp.build/
 dk dev ps
 dk dev manage showmigrations wagtailcore | tail -1
@@ -198,7 +198,7 @@ three proxies (edge, dk's proxy, the stack's Caddy):
 
 Nothing here is slow because of Podman. Files on bind mounts send real change events, so
 webpack rebuilds on save and sits at 0.05% CPU while idle. The host is amd64, so builds
-need no emulation, and a cold `dk full up -d` takes about 3 minutes.
+need no emulation, and a cold `dk full` takes about 3 minutes.
 
 The one idle cost belongs to the project. Without a file-watching library installed,
 Django's runserver checks every watched file once a second. For catalpa-site that is 3,099

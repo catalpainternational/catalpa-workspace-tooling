@@ -167,7 +167,7 @@ def report_host_logging(label: str, status: HostLogStatus, *, env_name: str) -> 
             f"(created before the daemon default changed): {names}. "
             "Recreate them once, e.g. "
             + (
-                f"dk {env_name} up -d --force-recreate"
+                f"dk {env_name} compose up -d --force-recreate"
                 if label == "app"
                 else "docker compose up -d --force-recreate in each stack on that host"
             ),

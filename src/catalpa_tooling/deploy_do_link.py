@@ -23,6 +23,8 @@ digitalocean:
   region: sgp1                # optional; for `dk <env> host create`
   image: ubuntu-24-04-x64     # optional; for `dk <env> host create`
   dns_ttl: 3600               # optional; DO A record TTL in seconds (default 300)
+  allow_destroy: false        # true: `dk <env> host destroy` may delete this host (disposable envs)
+  firewall: false             # optional; default: cloud firewall dk-<droplet> (SSH/web/ping in, deploy traffic out)
 """
 
 
@@ -317,12 +319,36 @@ def _docker_host_ssh_target(docker_host: str) -> str:
     return f"{DEFAULT_SSH_USER}@{raw}" if raw else ""
 
 
-def _compare_docker_host(configured: str, resolved: str, *, writing: bool = False) -> None:
+def _hostname_resolves_to(host: str, ip: str) -> bool:
+    """Does ``host`` (a name or an address) resolve to ``ip``? A failed lookup is a no."""
+    import socket
+
+    try:
+        return ip in {info[4][0] for info in socket.getaddrinfo(host, None, family=socket.AF_INET)}
+    except OSError:
+        return False
+
+
+def _compare_docker_host(
+    configured: str, resolved: str, *, writing: bool = False, rendered: bool = False
+) -> None:
+    """Note a ``docker_host`` that points somewhere other than the droplet.
+
+    Same user and a name that resolves to the droplet's address is the same place, not a
+    difference. A rendered host's ``docker_host`` is the account's podman socket by design, so
+    nothing is compared there (the DNS checks cover that the name reaches the droplet).
+    """
+    if rendered:
+        return
     configured_target = _docker_host_ssh_target(configured)
     resolved_target = _docker_host_ssh_target(resolved)
     if not configured_target or not resolved_target:
         return
     if configured_target != resolved_target:
+        user, _, host = configured_target.partition("@")
+        resolved_user, _, resolved_ip = resolved_target.partition("@")
+        if user == resolved_user and _hostname_resolves_to(host, resolved_ip):
+            return
         if writing:
             print(
                 f"Note: info.yaml docker_host ({configured!r}) differs from droplet "
@@ -421,6 +447,7 @@ def _finish_host_provisioning(
     *,
     context: str | None,
     dry_run: bool = False,
+    new_droplet: bool = True,
 ) -> int:
     """Patch docker_host, register SSH known_hosts, sync DO DNS, verify DNS."""
     failures: list[tuple[str, int]] = []
@@ -469,6 +496,25 @@ def _finish_host_provisioning(
             file=sys.stderr,
         )
         return 1
+
+    from catalpa_tooling.doctl_firewall import ensure_droplet_firewall, env_firewall_settings
+
+    fw_settings = env_firewall_settings(info)
+    if fw_settings is None:
+        print("No cloud firewall (digitalocean.firewall: false).", file=sys.stderr)
+    elif not new_droplet:
+        # An outbound allowlist on a server that is already running could cut off
+        # something it relies on, so only a droplet this run made gets one.
+        print(
+            f"Droplet {link.droplet_name!r} already existed: its cloud firewall is left as it is.",
+            file=sys.stderr,
+        )
+    else:
+        fw_rc = ensure_droplet_firewall(
+            link.droplet_name, droplet["id"], fw_settings, context=context, dry_run=dry_run
+        )
+        if fw_rc != 0:
+            failures.append(("firewall", fw_rc))
 
     from catalpa_tooling.host_storage import ensure_do_block_volumes_for_specs
     from catalpa_tooling.storage_config import parse_storage_volumes_from_info
@@ -846,6 +892,16 @@ def cmd_env_host(
     link = resolve_env_do_link(config, env_name, info)
     configured_host = str(info.get("docker_host") or "").strip()
     do_disabled = is_digitalocean_host_disabled(info)
+    from catalpa_tooling.fcos.settings import runtime_of
+
+    rendered = runtime_of(info) == "quadlet"
+    if rendered and write:
+        print(
+            f"dk {env_name} host --write: not for a rendered host. Its docker_host is the "
+            "account's podman socket (set by `host create`), not root@<droplet address>.",
+            file=sys.stderr,
+        )
+        return 0
 
     if do_disabled:
         return _cmd_env_host_manual(
@@ -962,7 +1018,7 @@ def cmd_env_host(
     print_host_resolution(link=link, droplet=droplet, docker_host=docker_host)
 
     if configured_host:
-        _compare_docker_host(configured_host, docker_host, writing=write)
+        _compare_docker_host(configured_host, docker_host, writing=write, rendered=rendered)
 
     # host --write only refreshes docker_host; DNS checks run on plain `dk <env> host`
     # and after `host create` (which syncs DO A records first).
@@ -1107,17 +1163,10 @@ def cmd_env_host_create(
         )
         return 1
 
-    p = _host_create_parser(env_name)
-    ns, rest = p.parse_known_args(argv)
-    if rest:
-        p.error(f"unrecognized arguments: {' '.join(rest)}")
-
-    dry_run = global_dry_run or ns.dry_run
-
     loaded = load_env_info(config, env_name)
     if loaded is None:
         return 1
-    _, info = loaded
+    info_path, info = loaded
 
     if is_digitalocean_host_disabled(info):
         print(
@@ -1127,19 +1176,54 @@ def cmd_env_host_create(
         )
         return 1
 
+    from catalpa_tooling.fcos.settings import FcosConfigError, runtime_of
+
+    try:
+        quadlet = runtime_of(info) == "quadlet"
+    except FcosConfigError as exc:
+        print(f"{info_path}: {exc}", file=sys.stderr)
+        return 1
+    if quadlet:
+        # A rendered host: its own volume, the render's Ignition, then `host provision`.
+        from catalpa_tooling.fcos.host_create import cmd_quadlet_host_create
+
+        return cmd_quadlet_host_create(config, env_name, info_path, info, argv, global_dry_run=global_dry_run)
+
+    p = _host_create_parser(env_name)
+    # QUICKSTART tells operators to put create-only flags after `--` so the top-level
+    # parser leaves them alone; argparse would then read them as stray positionals.
+    ns, rest = p.parse_known_args([a for a in argv if a != "--"])
+    if rest:
+        p.error(f"unrecognized arguments: {' '.join(rest)}")
+
+    dry_run = global_dry_run or ns.dry_run
+
     link = resolve_env_do_link(config, env_name, info)
     _print_droplet_name_source(config=config, env_name=env_name, link=link)
 
     do_config = config.digitalocean
     context = ns.context or (do_config.context if do_config else None)
 
+    overridden = _with_do_overrides(config, project=ns.project, context=ns.context)
     if dry_run:
         project_id = resolve_project_id_dry_run(ns.project, do_config=do_config)
+        existed = False
     else:
+        from catalpa_tooling.doctl_binary import DoctlCommandError
+
         ensure_doctl_available()
         try:
             project_id = resolve_project_id(ns.project, do_config=do_config, context=context)
+            # Anywhere in the account, not only in the project: `create_droplet` reuses a
+            # droplet of this name from outside the project too, and moves it in.
+            existed = (
+                find_droplet_for_link(overridden, link, context=context) is not None
+                or find_droplet_by_name(link.droplet_name, context=context) is not None
+            )
         except SystemExit:
+            return 1
+        except DoctlCommandError as e:
+            print(f"Could not look up droplet {link.droplet_name!r}: {e}", file=sys.stderr)
             return 1
 
     rc = create_droplet(
@@ -1164,8 +1248,32 @@ def cmd_env_host_create(
     if rc != 0 or dry_run:
         return rc
     return _finish_host_provisioning(
-        config,
+        overridden,
         env_name,
         context=context,
         dry_run=False,
+        new_droplet=not existed,
     )
+
+
+def _with_do_overrides(
+    config: ProjectConfig, *, project: str | None, context: str | None
+) -> ProjectConfig:
+    """``config`` with ``host create --project/--context`` applied, so the steps after the
+    droplet exists (docker_host, DNS) look in the same account and project it was made in."""
+    import dataclasses
+
+    from catalpa_tooling.config import DigitalOceanConfig
+
+    if not project and not context:
+        return config
+    base = config.digitalocean or DigitalOceanConfig(
+        project_name=None, project_id=None, context=None, timezone=None,
+        region=None, size=None, image=None, ssh_keys=None,
+    )  # fmt: skip
+    changes: dict[str, str | None] = {}
+    if project:
+        changes.update(project_name=project, project_id=None)
+    if context:
+        changes["context"] = context
+    return dataclasses.replace(config, digitalocean=dataclasses.replace(base, **changes))

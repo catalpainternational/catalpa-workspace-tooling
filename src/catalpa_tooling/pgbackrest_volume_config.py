@@ -1460,7 +1460,7 @@ def run_pgbackrest_stanza_create(
             "pgBackRest stanza-create: PostgreSQL PGDATA is missing or not initialized "
             f"(no global/pg_control in Docker volume {vol_data!r}). "
             "Run `dk <env> bkp_db init` or `dk <env> bkp_db configure stanza-create` "
-            "(starts `db` automatically), or `dk <env> up -d db` then retry."
+            "(starts `db` automatically), or `dk <env> compose up -d db` then retry."
         )
         return 1
 

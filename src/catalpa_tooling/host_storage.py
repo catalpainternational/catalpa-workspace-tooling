@@ -54,6 +54,24 @@ def _resolve_do_region(
     return None
 
 
+def resolve_do_volume_names(
+    info: dict[str, Any], specs: dict[str, StorageVolumeSpec], *, droplet_name: str
+) -> dict[str, str]:
+    """Compose volume key → DigitalOcean volume name, for the specs with a ``digitalocean``
+    block. What ``host create`` provisions and ``host destroy`` deletes: one resolution, so the
+    two can't disagree about which volumes belong to an env."""
+    compose_project = ""
+    env_map = info.get("env")
+    if isinstance(env_map, dict):
+        compose_project = str(env_map.get("compose_project_name") or "").strip()
+    return {
+        key: spec.digitalocean.name
+        or default_do_volume_name(key, droplet_name=droplet_name, compose_project_name=compose_project)
+        for key, spec in specs.items()
+        if spec.digitalocean is not None
+    }
+
+
 def ensure_do_block_volumes_for_specs(
     config: ProjectConfig,
     env_name: str,
@@ -107,22 +125,9 @@ def ensure_do_block_volumes_for_specs(
         )
         return 1
 
-    compose_project = ""
-    env_map = info.get("env")
-    if isinstance(env_map, dict):
-        compose_project = str(env_map.get("compose_project_name") or "").strip()
-
+    vol_names = resolve_do_volume_names(info, do_specs, droplet_name=link.droplet_name)
     if dry_run:
-        names = [
-            spec.digitalocean.name
-            if spec.digitalocean and spec.digitalocean.name
-            else default_do_volume_name(
-                key,
-                droplet_name=link.droplet_name,
-                compose_project_name=compose_project,
-            )
-            for key, spec in do_specs.items()
-        ]
+        names = list(vol_names.values())
         print(
             f"storage (dry-run): would ensure DO volumes {names!r} in {region}, "
             f"attach to droplet {droplet_id}, mount via SSH.",
@@ -138,11 +143,7 @@ def ensure_do_block_volumes_for_specs(
         do_spec = spec.digitalocean
         if do_spec is None:
             continue
-        vol_name = do_spec.name or default_do_volume_name(
-            key,
-            droplet_name=link.droplet_name,
-            compose_project_name=compose_project,
-        )
+        vol_name = vol_names[key]
         volume = ensure_do_volume(vol_name, do_spec.size_gib, region, context=context)
         rc = ensure_volume_attached(volume, droplet_id, context=context)
         if rc != 0:

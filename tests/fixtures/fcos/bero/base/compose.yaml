@@ -1,0 +1,106 @@
+x-django: &django
+  image: ${STACK_IMAGE_REGISTRY:-ghcr.io/example}/${PROJECT_NAME}-django:${STACK_IMAGE_TAG:-latest}
+  volumes:
+    - django_media:/django_media
+    - django_static:/static
+  environment:
+    DJANGO_DB: ${DJANGO_DB}
+    DJANGO_DB_PASSWORD: ${DJANGO_DB_PASSWORD:-}
+    REDIS_URL: redis://redis:6379/0
+    DOMAIN: ${DOMAIN:-localhost}
+
+services:
+  db:
+    image: ${STACK_IMAGE_REGISTRY:-ghcr.io/example}/${PROJECT_NAME}-db:${STACK_IMAGE_TAG:-latest}
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    restart: unless-stopped
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      retries: 5
+
+  django:
+    <<: *django
+    restart: unless-stopped
+    command: ["gunicorn", "app.wsgi", "--bind", "0.0.0.0:8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      collectstatic:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+
+  migrate:
+    <<: *django
+    command: python manage.py migrate --noinput
+    depends_on:
+      db:
+        condition: service_healthy
+
+  collectstatic:
+    <<: *django
+    command: python manage.py collectstatic --noinput
+
+  redis:
+    image: redis:8.0-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  rq_worker:
+    <<: *django
+    restart: unless-stopped
+    command: python manage.py rqworker default
+    stop_grace_period: 1m30s
+    depends_on:
+      - redis
+      - db
+
+  metabase:
+    image: metabase/metabase:v0.62.x
+    restart: unless-stopped
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: db
+      MB_DB_DBNAME: ${METABASE_DB}
+      MB_DB_PASS: ${METABASE_DB_PASSWORD:?METABASE_DB_PASSWORD must be set}
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: ${STACK_IMAGE_REGISTRY:-ghcr.io/example}/${PROJECT_NAME}-caddy:${STACK_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - django_static:/django_static
+      - django_media:/django_media
+    depends_on:
+      - django
+      - metabase
+
+volumes:
+  postgres_data:
+    name: ${COMPOSE_PROJECT_NAME:-bero_shape}_postgres_data
+  redis_data:
+  django_media:
+    name: ${COMPOSE_PROJECT_NAME:-bero_shape}_django_media
+  django_static:
+  caddy_data:
+  caddy_config:

@@ -11,7 +11,7 @@ import yaml
 from catalpa_tooling.local_proxy import local_proxy_enabled
 from catalpa_tooling.site_origin import primary_site_origin_from_info
 
-SETUP_VSCODE_GENERATOR_VERSION = "8"
+SETUP_VSCODE_GENERATOR_VERSION = "9"
 MANAGED_MARKER_KEY = "_catalpa_setup_vscode"
 
 PATH_ENV = (
@@ -247,10 +247,10 @@ def _dev_tasks(
     tasks: list[dict[str, Any]] = [
         _shell_task(
             "Dev: Start stack",
-            f"uv run dk dev up -d && uv run python -c \"{dev_hint}\"",
+            f"uv run dk dev && uv run python -c \"{dev_hint}\"",
             focus=True,
         ),
-        _shell_task("Dev: Stop stack", "uv run dk dev down"),
+        _shell_task("Dev: Stop stack", "uv run dk dev compose down"),
         _shell_task("Dev: Show status", "uv run dk dev ps"),
         _shell_task(
             "Dev: View logs",
@@ -315,10 +315,10 @@ def _dev_tasks(
             [
                 _shell_task(
                     "Full: Start stack",
-                    f"uv run dk full up -d && uv run python -c \"{full_hint}\"",
+                    f"uv run dk full && uv run python -c \"{full_hint}\"",
                     focus=True,
                 ),
-                _shell_task("Full: Stop stack", "uv run dk full down"),
+                _shell_task("Full: Stop stack", "uv run dk full compose down"),
                 _shell_task("Full: Show status", "uv run dk full ps"),
                 _shell_task(
                     "Full: View logs",

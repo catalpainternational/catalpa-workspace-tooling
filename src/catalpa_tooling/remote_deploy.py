@@ -205,6 +205,7 @@ def _dry_run_exits_before_compose_env(peek: list[str]) -> bool:
         "storage",
         "trust-caddy-cert",
         "pull_media",
+        "restore",
         "zabbix",
     ):
         return False

@@ -1,0 +1,21 @@
+name: staging
+compose_file: compose.yaml
+site_origin:
+  - staging.bero.example
+docker_host: ssh://deploy@staging.bero.example/run/user/1001/podman/podman.sock
+image_registry: ghcr.io/example
+image_tag: v7.4.1
+env:
+  compose_project_name: bero_shape
+runtime: quadlet
+zbx_hostname: bero-staging.example
+monitoring: zabbix
+fcos:
+  admin_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
+  ssh_authorized_keys:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnlyNotARealKey000000000000000000000 admin-a
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQTestKeyOnlyNotARealKey ci-deploy
+  auto_update: true
+# Backs itself up: pgBackRest (db) and restic (files).
+backups: [db, files]

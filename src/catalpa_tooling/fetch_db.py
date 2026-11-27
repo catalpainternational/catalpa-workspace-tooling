@@ -12,14 +12,8 @@ from pathlib import Path
 
 from catalpa_tooling.config import FetchDatabaseEntry, ProjectConfig
 from catalpa_tooling.deprecation import warn_deprecated
-from catalpa_tooling.managed_deploy_env import load_managed_deploy_context
 from catalpa_tooling.media_rsync import ssh_target_from_host
-from catalpa_tooling.pgbackrest_db import (
-    _PG_DUMP_CUSTOM_MAGIC,
-    db_service_responds,
-    ensure_db_service_running,
-    run_pg_dump_to_file,
-)
+from catalpa_tooling.pgbackrest_db import _PG_DUMP_CUSTOM_MAGIC
 from catalpa_tooling.ssh_known_hosts import ensure_ssh_known_host_for_ssh_target
 
 _MIN_CUSTOM_DUMP_BYTES = 100_000
@@ -31,17 +25,14 @@ def _ensure_ssh(ssh_host: str) -> None:
         raise SystemExit(1)
 
 
-def _atomic_write_from_stream(dest: Path, stream) -> None:
+def _atomic_write_from_stream(dest: Path, stream, *, min_bytes: int = _MIN_CUSTOM_DUMP_BYTES) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     try:
         with open(tmp, "wb") as out_f:
             shutil.copyfileobj(stream, out_f)
-        if tmp.stat().st_size < _MIN_CUSTOM_DUMP_BYTES:
-            raise ValueError(
-                f"dump at {dest} is only {tmp.stat().st_size} bytes "
-                f"(expected at least {_MIN_CUSTOM_DUMP_BYTES})"
-            )
+        if tmp.stat().st_size < min_bytes:
+            raise ValueError(f"dump at {dest} is only {tmp.stat().st_size} bytes (expected at least {min_bytes})")
         with open(tmp, "rb") as f:
             if f.read(5) != _PG_DUMP_CUSTOM_MAGIC:
                 raise ValueError(f"{dest} does not look like a pg_dump -Fc archive")
@@ -116,42 +107,29 @@ def _fetch_via_dk(
     dest: Path,
     pg_dump_args: Sequence[str] | None,
 ) -> None:
-    """Dump ``db_name`` from the ``dk_env`` stack's ``db`` service to ``dest``.
+    """Dump the ``dk_env`` stack's database to ``dest``, whichever runtime runs it.
 
-    The ``app`` entry dumps the app DB as the container resolves it (``$APP_DB``: ``DJANGO_APP_DB``,
-    falling back to ``DJANGO_DB``), as before. A ``via: dk`` entry always comes from an explicit
-    ``native.fetch.databases`` block, where ``db_name`` is required, so ``app`` has one; it is
-    ignored here, for compatibility with what ``via: dk`` has always dumped (catalpa-site, the
-    one ``via: dk`` consumer, sets ``catalpa_db``). Every other entry (e.g. ``metabase``) dumps
-    its ``db_name``.
+    The ``app`` entry dumps the app DB as the db container resolves it (``$APP_DB``:
+    ``DJANGO_APP_DB``, falling back to ``DJANGO_DB``), as before. A ``via: dk`` entry always
+    comes from an explicit ``native.fetch.databases`` block, where ``db_name`` is required, so
+    ``app`` has one; it is ignored here, for compatibility with what ``via: dk`` has always
+    dumped (catalpa-site, the one ``via: dk`` consumer, sets ``catalpa_db``). Every other entry
+    (e.g. ``metabase``) dumps its ``db_name``.
     """
-    ctx = load_managed_deploy_context(config, dk_env)
-    if ctx is None:
-        raise SystemExit(1)
-    compose_file = ctx.compose_file
-    env_add = ctx.env_add
-    if not db_service_responds(compose_file, env_add):
-        rc = ensure_db_service_running(
-            compose_file,
-            env_add,
-            config=config,
-            dk_env_name=dk_env,
-        )
-        if rc != 0:
-            raise SystemExit(rc)
-    database = None if key == "app" else db_name
-    label = "the app database" if database is None else database
-    print(f"Fetching {label} via dk {dk_env} db pgdump → {dest}", file=sys.stderr)
-    rc = run_pg_dump_to_file(compose_file, env_add, dest, pg_dump_args, database=database)
+    from catalpa_tooling import stack_backend
+
+    try:
+        b = stack_backend.backend_for(config, dk_env)
+    except (stack_backend.BackendError, ValueError) as exc:
+        print(f"fetch db: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    rc = b.ensure_db_running()
+    if rc == 0:
+        database = None if key == "app" else db_name
+        print(f"Fetching {database or 'the app database'} from {b.describe()} → {dest}", file=sys.stderr)
+        rc = b.dump_db(dest, pg_dump_args or (), database=database, min_bytes=_MIN_CUSTOM_DUMP_BYTES)
     if rc != 0:
         raise SystemExit(rc)
-    if dest.stat().st_size < _MIN_CUSTOM_DUMP_BYTES:
-        print(
-            f"fetch db: dump at {dest} is only {dest.stat().st_size} bytes "
-            f"(expected at least {_MIN_CUSTOM_DUMP_BYTES}).",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
 
 
 def _fetch_via_script(config: ProjectConfig, *, dest: Path, dk_env: str) -> None:
@@ -210,12 +188,7 @@ def run_fetch_database(
         )
     elif entry.via == "dk":
         _fetch_via_dk(
-            config,
-            dk_env=dk_env,
-            key=key,
-            db_name=entry.db_name,
-            dest=dest,
-            pg_dump_args=pg_dump_args,
+            config, dk_env=dk_env, key=key, db_name=entry.db_name, dest=dest, pg_dump_args=pg_dump_args
         )
     elif entry.via == "script":
         _fetch_via_script(config, dest=dest, dk_env=dk_env)

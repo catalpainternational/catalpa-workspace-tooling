@@ -41,8 +41,11 @@ elif [[ -n "${2:-}" ]]; then
   exit 1
 fi
 
-if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?$ ]]; then
-  echo "Invalid version: $1" >&2
+# PEP 440: 2.0.0, or a pre-release 2.0.0a1 / 2.0.0b1 / 2.0.0rc1. hatch-vcs normalises a tag like
+# v2.0.0-rc.1 to 2.0.0rc1, and the release workflow then refuses it (the wheel's version must
+# equal the tag's), so that spelling is refused here.
+if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?$ ]]; then
+  echo "Invalid version: $1 (use PEP 440: 2.0.0, or 2.0.0b1 / 2.0.0rc1 for a pre-release)" >&2
   exit 1
 fi
 

@@ -130,6 +130,7 @@ def _build_create_argv(
     user_data_path: Path,
     wait: bool,
     enable_monitoring: bool,
+    volume_ids: tuple[str, ...] = (),
 ) -> list[str]:
     args = [
         "compute",
@@ -149,6 +150,8 @@ def _build_create_argv(
     ]
     for key in ssh_keys:
         args.extend(["--ssh-keys", key])
+    if volume_ids:
+        args.extend(["--volumes", ",".join(volume_ids)])
     if enable_monitoring:
         args.append("--enable-monitoring")
     if wait:
@@ -336,8 +339,13 @@ def create_droplet(
     for_env: str | None = None,
     enable_monitoring: bool | None = None,
     reuse_existing: bool = False,
+    user_data: str | None = None,
+    user_data_label: str = "",
+    volume_ids: tuple[str, ...] = (),
 ) -> int:
-    """Create a droplet with the standard bootstrap cloud-config user-data."""
+    """Create a droplet with the standard bootstrap cloud-config user-data, or ``user_data``
+    (a rendered host's Ignition) with ``volume_ids`` attached at creation. ``user_data_label``
+    names it in a dry run instead of printing it."""
     from catalpa_tooling.deploy_do_link import normalize_droplet_hostname
     from catalpa_tooling.doctl_binary import (
         DoctlCommandError,
@@ -385,7 +393,9 @@ def create_droplet(
         if enable_monitoring is not None
         else (do_config.monitoring if do_config else True)
     )
-    user_data = render_droplet_bootstrap(timezone=resolved_timezone)
+    if user_data is None:
+        user_data = render_droplet_bootstrap(timezone=resolved_timezone)
+        user_data_label = ""
 
     tmp_path: Path | None = None
     try:
@@ -409,10 +419,14 @@ def create_droplet(
             user_data_path=tmp_path,
             wait=wait,
             enable_monitoring=resolved_monitoring,
+            volume_ids=volume_ids,
         )
 
         if dry_run:
-            print(user_data, end="" if user_data.endswith("\n") else "\n")
+            if user_data_label:
+                print(f"user data: {user_data_label} ({len(user_data.encode())} bytes)", file=sys.stderr)
+            else:
+                print(user_data, end="" if user_data.endswith("\n") else "\n")
             print("---", file=sys.stderr)
             print(f"host doctl command: doctl {' '.join(argv)}", file=sys.stderr)
             from catalpa_tooling.doctl_projects import ensure_droplet_in_project
@@ -470,3 +484,32 @@ def create_droplet(
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+
+
+def _droplet_action(args: list[str], what: str, *, context: str | None, dry_run: bool) -> int:
+    from catalpa_tooling.doctl_binary import format_doctl_failure, run_doctl
+
+    if dry_run:
+        print(f"dry-run: would run doctl {' '.join(args)}", file=sys.stderr)
+        return 0
+    result = run_doctl(args, context=context, check=False)
+    if result.returncode != 0:
+        print(f"doctl {what} failed: {format_doctl_failure(result)}", file=sys.stderr)
+    return result.returncode
+
+
+def shutdown_droplet(droplet_id: str, *, context: str | None = None, dry_run: bool = False) -> int:
+    """``doctl compute droplet-action shutdown <id> --wait``: a clean OS shutdown, so file writes
+    in the page cache reach the disk before a delete (which is a hard power cut)."""
+    return _droplet_action(
+        ["compute", "droplet-action", "shutdown", str(droplet_id), "--wait"],
+        "droplet shutdown", context=context, dry_run=dry_run,
+    )  # fmt: skip
+
+
+def delete_droplet(droplet_id: str, *, context: str | None = None, dry_run: bool = False) -> int:
+    """``doctl compute droplet delete <id> --force``; returns the exit code."""
+    return _droplet_action(
+        ["compute", "droplet", "delete", str(droplet_id), "--force"],
+        "droplet delete", context=context, dry_run=dry_run,
+    )  # fmt: skip

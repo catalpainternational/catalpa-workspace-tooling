@@ -71,7 +71,9 @@ def _validate_abs_path(path: str, *, field: str) -> str:
     return s.rstrip("/") or "/"
 
 
-def _parse_do_block(raw: Any, *, field_prefix: str) -> DigitalOceanVolumeSpec | None:
+def _parse_do_block(
+    raw: Any, *, field_prefix: str, default_filesystem: str = DEFAULT_DO_VOLUME_FILESYSTEM
+) -> DigitalOceanVolumeSpec | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -98,12 +100,58 @@ def _parse_do_block(raw: Any, *, field_prefix: str) -> DigitalOceanVolumeSpec | 
             f"{field_prefix}.digitalocean.size_gib must be positive (got {size_gib})"
         )
     fs_raw = raw.get("filesystem")
-    filesystem = (
-        str(fs_raw).strip() if fs_raw is not None and fs_raw is not False else DEFAULT_DO_VOLUME_FILESYSTEM
-    )
+    filesystem = str(fs_raw).strip() if fs_raw is not None and fs_raw is not False else default_filesystem
     if not filesystem:
-        filesystem = DEFAULT_DO_VOLUME_FILESYSTEM
+        filesystem = default_filesystem
     return DigitalOceanVolumeSpec(name=name, size_gib=size_gib, filesystem=filesystem)
+
+
+#: Where a quadlet env's data volume is mounted when ``storage.data_volume`` doesn't say.
+DEFAULT_DATA_VOLUME_PATH = "/var/mnt/data"
+DEFAULT_DATA_VOLUME_SIZE_GIB = 10
+DEFAULT_DATA_VOLUME_FILESYSTEM = "xfs"
+
+
+@dataclass(frozen=True)
+class DataVolumeSpec:
+    """``storage.data_volume``: one directory for all of an env's kept data, each kept volume a
+    subdirectory of it, optionally on one DigitalOcean volume (its ``name`` None: the runtime's
+    default, ``<hostname>-data`` on a quadlet env)."""
+
+    path: str
+    digitalocean: DigitalOceanVolumeSpec | None
+
+
+def parse_data_volume(info: dict | None, *, field_prefix: str = "info.yaml storage") -> DataVolumeSpec | None:
+    """``storage.data_volume``, or None when it's absent."""
+    storage = info.get("storage") if isinstance(info, dict) else None
+    if storage is None:
+        return None
+    if not isinstance(storage, dict):
+        raise StorageConfigError(f"{field_prefix} must be a mapping")
+    raw = storage.get("data_volume")
+    if raw is None:
+        return None
+    field = f"{field_prefix}.data_volume"
+    if not isinstance(raw, dict):
+        raise StorageConfigError(f"{field} must be a mapping (path, and optionally digitalocean)")
+    unknown = sorted(set(raw) - {"path", "digitalocean"})
+    if unknown:
+        raise StorageConfigError(f"{field}: unknown keys {', '.join(unknown)} (path, digitalocean)")
+    path_raw = raw.get("path")
+    path = (
+        _validate_abs_path(str(path_raw), field=f"{field}.path")
+        if path_raw is not None
+        else DEFAULT_DATA_VOLUME_PATH
+    )
+    do_block = _parse_do_block(
+        raw.get("digitalocean"), field_prefix=field, default_filesystem=DEFAULT_DATA_VOLUME_FILESYSTEM
+    )
+    return DataVolumeSpec(path=path, digitalocean=do_block)
+
+
+def _is_quadlet(info: dict) -> bool:
+    return str(info.get("runtime") or "compose").strip() == "quadlet"
 
 
 def parse_storage_volumes_from_info(
@@ -112,7 +160,8 @@ def parse_storage_volumes_from_info(
     *,
     field_prefix: str = "info.yaml storage",
 ) -> dict[str, StorageVolumeSpec]:
-    """Return compose volume key → spec; empty when ``storage`` is absent or has no volumes."""
+    """Return compose volume key → spec; empty when ``storage`` is absent or has no volumes, and
+    on a quadlet env (its data is on ``storage.data_volume``, :func:`parse_data_volume`)."""
     if not isinstance(info, dict):
         return {}
     storage = info.get("storage")
@@ -120,6 +169,13 @@ def parse_storage_volumes_from_info(
         return {}
     if not isinstance(storage, dict):
         raise StorageConfigError(f"{field_prefix} must be a mapping")
+    if _is_quadlet(info):
+        return {}
+    if storage.get("data_volume") is not None:
+        raise StorageConfigError(
+            f"{field_prefix}.data_volume is for runtime: quadlet envs so far; a compose env "
+            f"names each volume under {field_prefix}.volumes (tooling 2.0 M7 brings it to compose)"
+        )
     volumes_raw = storage.get("volumes")
     if volumes_raw is None:
         return {}

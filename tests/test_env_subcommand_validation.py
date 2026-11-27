@@ -68,6 +68,19 @@ class TestUnknownEnvSubcommand(unittest.TestCase):
         self.assertIn("manage", msg)
         self.assertIn("up -d", msg)
 
+    def test_removed_subcommands_say_what_replaced_them(self) -> None:
+        self.assertIn("dk dev db restore --dumps", unknown_env_subcommand_message("dev", "pgrestore"))
+        msg = unknown_env_subcommand_message("dev", "install-systemd")
+        self.assertIn("db install-systemd", msg)
+        self.assertIn("dk dev apply", msg)
+        self.assertNotIn("has moved", unknown_env_subcommand_message("dev", "context"))
+
+    def test_status_points_at_the_layer_commands(self) -> None:
+        msg = unknown_env_subcommand_message("dev", "status")
+        for name in ("dk dev ps", "dk dev host", "dk dev diff", "dk dev info"):
+            self.assertIn(name, msg)
+        self.assertNotIn("has moved", msg)
+
     def test_special_and_compose_names_do_not_overlap(self) -> None:
         """An overlap would make the two lists contradict each other."""
         self.assertEqual(SPECIAL_ENV_COMMANDS & COMPOSE_VERBS, frozenset())

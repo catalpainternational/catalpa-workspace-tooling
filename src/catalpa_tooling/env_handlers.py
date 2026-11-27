@@ -13,17 +13,8 @@ from pathlib import Path
 import yaml
 
 from catalpa_tooling.compose import _compose, manage_exec_args, run_docker_passthrough
-from catalpa_tooling.deprecation import warn_deprecated
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.deploy_do_link import cmd_env_host, cmd_env_host_create
-from catalpa_tooling.db_restore import run_unified_db_restore
-from catalpa_tooling.doctl_spaces_provision import (
-    ensure_spaces_backup_credentials,
-    needs_pgbr_write,
-    needs_restic_write,
-    pgbr_write_configured,
-    restic_write_configured,
-)
 from catalpa_tooling.managed_deploy_env import (
     apply_worktree_overlay_for_env,
     load_managed_deploy_context,
@@ -31,25 +22,11 @@ from catalpa_tooling.managed_deploy_env import (
     remote_env_site_origin_error,
     resolve_compose_file_from_info,
 )
-from catalpa_tooling.media_pull import run_pull_media
-from catalpa_tooling.media_rsync import resolve_push_media_source, run_push_media_rsync
-from catalpa_tooling.pgbackrest_db import (
-    db_service_responds,
-    run_backup as run_pgbackrest_backup_online,
-    run_bkp_db_init,
-    run_bkp_db_stanza_create_flow,
-    run_check_online,
-    run_configure_verify_online_check,
-    run_info,
-    run_pg_dump,
-    run_version,
-)
 from catalpa_tooling.pgbackrest_volume_config import (
     ensure_external_stack_volumes,
     materialize_configs,
     postgres_image_from_env,
     remove_wipe_data_volumes,
-    run_pgbackrest_verify,
     set_db_image_from_compose,
     should_materialize_for_compose,
 )
@@ -62,7 +39,6 @@ from catalpa_tooling.remote_deploy import (
     _insert_up_prepulled_pull_flags,
     _is_compose_down_with_volumes,
     _strip_dk_up_provision_flag,
-    _top_level_zbx_env_from_info,
     _zabbix_env_defaults,
     resolve_deploy_env_name,
 )
@@ -74,19 +50,10 @@ from catalpa_tooling.stale_stack import (
     write_label_override,
 )
 from catalpa_tooling.restic_files import (
-    merge_restic_verbose_from_cli,
     resolve_env_with_compose_project,
-    run_backup,
-    run_check,
-    run_init,
-    run_restore,
-    run_snapshots,
-    run_stats,
-    split_restic_cli_verbose,
 )
-from catalpa_tooling.cli_confirm import confirm_by_typing_env_name
+from catalpa_tooling.cli.dk_argv import RUNNING_APP_VERBS, implicit_compose_refused_message
 from catalpa_tooling.systemd_remote_install import (
-    cmd_install_systemd_backups,
     parse_docker_host_to_ssh_target,
 )
 from catalpa_tooling.host_storage import ensure_host_storage
@@ -103,6 +70,13 @@ from catalpa_tooling.trust_caddy_cert import trust_caddy_local_ca
 from catalpa_tooling.zabbix_systemd import run_zabbix_deploy
 
 
+#: What ``dk <env>`` may do for an env with ``runtime: quadlet``: everything else drives
+#: docker compose, which has no stack there.
+QUADLET_ENV_COMMANDS = frozenset(
+    {"info", "secrets", "host", "docker", "fcos", "render", "check", "diff", "apply"}
+)
+
+
 def _cmd_env_info(info_path: Path, *, edit: bool, dry_run: bool) -> int:
     if edit:
         if dry_run:
@@ -117,6 +91,27 @@ def _cmd_env_info(info_path: Path, *, edit: bool, dry_run: bool) -> int:
     with open(info_path, encoding="utf-8") as f:
         sys.stdout.write(f.read())
     return 0
+
+
+def _backup_roles(config: ProjectConfig, env_name: str, info: dict, env_add: dict[str, str]):
+    """The env's ``backups`` / ``restore_from``, checked against its credentials: credentials
+    without their setting stop every command, so an env upgraded without ``backups:`` can't
+    quietly stop backing up. None (after printing why) when they don't match."""
+    from catalpa_tooling.backup_settings import (
+        BackupSettingsError,
+        backup_settings,
+        credential_problems,
+    )
+
+    try:
+        roles = backup_settings(config, env_name, info)
+    except BackupSettingsError as exc:
+        print(str(exc), file=sys.stderr)
+        return None
+    problems = credential_problems(roles, env_add)
+    for p in problems:
+        print(p, file=sys.stderr)
+    return None if problems else roles
 
 
 def _cmd_env_secrets(creds_path: Path, repo_root: Path, *, dry_run: bool) -> int:
@@ -259,7 +254,7 @@ def _run_compose_path(
             return rc
 
     if _is_compose_down_with_volumes(compose_args):
-        if not ns.yes:
+        if not ns.yes and not dry_run:
             if not sys.stdin.isatty():
                 print(
                     "Refusing to wipe a managed deploy without a TTY. "
@@ -273,6 +268,20 @@ def _run_compose_path(
 
     compose_args = _strip_dk_up_provision_flag(compose_args)
     compose_args = _insert_down_remove_orphans(compose_args)
+
+    if dry_run and compose_args and compose_args[0] == "down":
+        # `down` (and `wipe`, which is `down -v`) removes containers and volumes for real, so a
+        # dry run says what it would do and stops (#233: it used to run them).
+        print(f"dry-run: would run: docker compose -f {compose_file} {' '.join(compose_args)}", file=sys.stderr)
+        if _is_compose_down_with_volumes(compose_args):
+            print("dry-run: would then remove this env's wipe data volumes", file=sys.stderr)
+        try:
+            return sync_local_proxy_for_compose_action(
+                info, config, env_name, compose_args, env_add, dry_run=True
+            )
+        except LocalProxyConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
 
     try:
         if compose_args and compose_args[0] == "up":
@@ -387,8 +396,29 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     dry_run = bool(getattr(ns, "dry_run", False))
     tag_override = getattr(ns, "tag", None)
 
+    from catalpa_tooling.fcos.settings import FcosConfigError, runtime_of
+
+    try:
+        runtime = runtime_of(info)
+    except FcosConfigError as exc:
+        print(f"{info_path}: {exc}", file=sys.stderr)
+        return 1
+    from catalpa_tooling.fcos.cli import route as route_rendered_host
+
+    rc = route_rendered_host(ns, config, env_name, runtime)
+    if rc is not None:
+        return rc
+    if runtime == "quadlet" and env_command not in QUADLET_ENV_COMMANDS:
+        # Not compose: logs/ps/exec/manage/restart… go to the units over SSH; the rest is refused.
+        from catalpa_tooling.fcos.backend import handle as handle_quadlet
+
+        return handle_quadlet(ns, config, env_name, info)
+
     if env_command is None:
         compose_args = list(getattr(ns, "implicit_compose_argv", None) or [])
+        if compose_args and compose_args[0] not in RUNNING_APP_VERBS:
+            print(implicit_compose_refused_message(env_name, compose_args), file=sys.stderr)
+            return 2
         if not compose_args:
             compose_args = ["up", "-d"]
     elif env_command == "compose":
@@ -401,6 +431,10 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     if env_command == "info":
         return _cmd_env_info(info_path, edit=bool(getattr(ns, "edit", False)), dry_run=dry_run)
 
+    if env_command == "secrets" and getattr(ns, "secrets_command", None) == "read-key":
+        from catalpa_tooling.restore_from import cmd_read_key
+
+        return cmd_read_key(config, env_name, dry_run=dry_run, yes=bool(getattr(ns, "yes", False)))
     if env_command == "secrets":
         return _cmd_env_secrets(creds_path, repo_root, dry_run=dry_run)
 
@@ -418,6 +452,16 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
                 tail,
                 global_dry_run=dry_run,
             )
+        if getattr(ns, "host_command", None) == "destroy":
+            from catalpa_tooling.host_destroy import cmd_env_host_destroy
+
+            return cmd_env_host_destroy(
+                config,
+                env_name,
+                list(getattr(ns, "host_destroy_args", None) or []),
+                global_dry_run=dry_run,
+                global_yes=bool(getattr(ns, "yes", False)),
+            )
         if getattr(ns, "host_command", None) == "logging":
             from catalpa_tooling.docker_logging import cmd_host_logging
 
@@ -432,7 +476,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         if ns.write and ns.sync_dns:
             print("cannot use --write and --sync-dns together", file=sys.stderr)
             return 2
-        return cmd_env_host(
+        rc = cmd_env_host(
             config,
             env_name,
             write=bool(ns.write),
@@ -440,6 +484,15 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dry_run=dry_run,
             check_remote=bool(getattr(ns, "check_remote", False)),
         )
+        if ns.write or ns.sync_dns or dry_run or getattr(ns, "cloud_only", False):
+            return rc
+        # The machine itself, whatever the cloud checks said: a DNS mismatch doesn't hide it.
+        from catalpa_tooling.deploy_do_link import load_env_info
+        from catalpa_tooling.host_state import show_machine_state
+
+        loaded = load_env_info(config, env_name)
+        machine_rc = show_machine_state(config, env_name, loaded[1]) if loaded else 0
+        return rc or machine_rc
 
     compose_file = resolve_compose_file_from_info(info, config)
     if compose_file is None and env_command not in (None, "compose"):
@@ -485,6 +538,9 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
     # Use post-overlay info for proxy hostnames, LAN URLs, and compose helpers.
     info = ctx.info
     env_add = ctx.env_add
+    roles = _backup_roles(config, env_name, info, env_add)
+    if roles is None:
+        return 1
     docker_host = ctx.docker_host
     site_origin = ctx.site_origin
     use_prepulled_registry = ctx.use_prepulled_registry
@@ -628,38 +684,17 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         ).returncode
 
     if env_command == "pull_media":
-        raw_target = Path(ns.target or f"{config.paths.backend}/media").expanduser()
-        target = raw_target.resolve() if raw_target.is_absolute() else (repo_root / raw_target).resolve()
-        return run_pull_media(
-            env_add,
-            target=target,
-            dry_run=dry_run,
-            alpine_image=str(ns.image),
-            config=config,
-            compose_file=compose_file,
-        )
+        from catalpa_tooling.fetch_media import pull_media_target
+        from catalpa_tooling.stack_backend import ComposeBackend
 
-    if env_command in ("files", "bkp_files"):
-        if env_command == "bkp_files":
-            warn_deprecated("bkp_files", "files", context=f"dk {env_name}")
-        return _handle_bkp_files(
-            ns, config, env_name, env_add, creds_path, docker_host, dry_run, info, ctx.storage_volumes
-        )
+        target = pull_media_target(config, env_name, getattr(ns, "target", None))
+        return ComposeBackend(ctx).pull_media(target, dry_run=dry_run, alpine_image=str(ns.image))
 
-    if env_command in ("db", "bkp_db"):
-        if env_command == "bkp_db":
-            warn_deprecated("bkp_db", "db", context=f"dk {env_name}")
-        return _handle_bkp_db(
-            ns,
-            config,
-            env_name,
-            env_add,
-            creds_path,
-            compose_file,
-            docker_host,
-            dry_run,
-            use_prepulled_registry=use_prepulled_registry,
-        )
+    if env_command in ("restore", "db", "bkp_db", "files", "bkp_files"):
+        from catalpa_tooling import stack_commands
+        from catalpa_tooling.stack_backend import ComposeBackend
+
+        return stack_commands.run(ComposeBackend.with_env(ctx, env_add), env_command, ns, dry_run=dry_run)
 
     if env_command == "wipe":
         compose_args = ["down", "-v"]
@@ -678,260 +713,3 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         storage_volumes=ctx.storage_volumes,
         stack_images_already_built=stack_images_already_built,
     )
-
-
-def _handle_bkp_files(
-    ns: argparse.Namespace,
-    config: ProjectConfig,
-    env_name: str,
-    env_add: dict[str, str],
-    creds_path: Path,
-    docker_host: str,
-    dry_run: bool,
-    info: dict,
-    storage_volumes: dict,
-) -> int:
-    repo_root = config.repo_root
-    sub = getattr(ns, "files_command", None) or getattr(ns, "bkp_files_command", None)
-
-    if sub == "push":
-        source = resolve_push_media_source(config, repo_root, ns.source)
-        if source is None:
-            return 1
-        rc = _ensure_stack_volumes(
-            config,
-            env_name,
-            info,
-            env_add,
-            storage_volumes,
-            dry_run=dry_run,
-        )
-        if rc != 0:
-            return rc
-        if not ns.yes and not dry_run:
-            if not sys.stdin.isatty():
-                print(
-                    "Refusing bkp_files push without a TTY. Pass --yes for non-interactive use.",
-                    file=sys.stderr,
-                )
-                return 1
-            print(
-                "WARNING: This mirrors host media into the deployment volume "
-                "(rsync --delete removes files on the volume that are not on the host).",
-                file=sys.stderr,
-            )
-            if not confirm_by_typing_env_name(env_name):
-                print("bkp_files push cancelled.", file=sys.stderr)
-                return 1
-        return run_push_media_rsync(
-            env_add,
-            source=source,
-            dry_run=dry_run,
-            method=ns.method,
-            alpine_image=str(ns.image),
-            config=config,
-        )
-
-    if sub and needs_restic_write(sub) and not restic_write_configured(env_add):
-        rc = ensure_spaces_backup_credentials(
-            config,
-            env_name,
-            env_add,
-            creds_path,
-            target="restic",
-            command_label=f"dk {env_name} files",
-            dry_run=dry_run,
-            yes=bool(ns.yes),
-        )
-        if rc != 0:
-            return rc
-
-    if sub == "install-systemd":
-        tail: list[str] = []
-        if getattr(ns, "dry_run", False):
-            tail.append("--dry-run")
-        if getattr(ns, "enable", False):
-            tail.append("--enable")
-        return cmd_install_systemd_backups(
-            config,
-            env_add,
-            str(docker_host),
-            env_name,
-            tail,
-            global_dry_run=dry_run,
-            yes=bool(ns.yes),
-            fixed_only="restic",
-        )
-
-    env_r = dict(env_add)
-    if sub == "init":
-        return run_init(env_r)
-    if sub == "backup":
-        return run_backup(env_r, config=config)
-    if sub == "snapshots":
-        return run_snapshots(env_r)
-    if sub == "check":
-        return run_check(env_r)
-    if sub == "stats":
-        return run_stats(env_r)
-    if sub == "restore":
-        snap = (getattr(ns, "snapshot", None) or "latest").strip() or "latest"
-        if not ns.yes and not sys.stdin.isatty():
-            print(
-                "Refusing restore without a TTY. Pass --yes if you intend to run non-interactive.",
-                file=sys.stderr,
-            )
-            return 1
-        return run_restore(
-            env_r,
-            snap,
-            env_name=env_name,
-            skip_confirm=bool(ns.yes),
-            config=config,
-        )
-    print(f"Unknown files subcommand: {sub!r}", file=sys.stderr)
-    return 1
-
-
-def _handle_bkp_db(
-    ns: argparse.Namespace,
-    config: ProjectConfig,
-    env_name: str,
-    env_add: dict[str, str],
-    creds_path: Path,
-    compose_file: str,
-    docker_host: str,
-    dry_run: bool,
-    *,
-    use_prepulled_registry: bool,
-) -> int:
-    sub = getattr(ns, "db_command", None) or getattr(ns, "bkp_db_command", None)
-    bkp_tail: list[str] = []
-
-    if sub and needs_pgbr_write(sub, bkp_tail) and not pgbr_write_configured(env_add):
-        rc = ensure_spaces_backup_credentials(
-            config,
-            env_name,
-            env_add,
-            creds_path,
-            target="pgbackrest",
-            command_label=f"dk {env_name} db {sub}",
-            dry_run=dry_run,
-            yes=bool(ns.yes),
-        )
-        if rc != 0:
-            return rc
-
-    if sub == "init":
-        img = postgres_image_from_env(env_add, config=config)
-        print(f"Postgres image (volume ops / pgBackRest): {img}", file=sys.stderr)
-        rc = run_bkp_db_init(
-            compose_file, env_add, image=img, config=config, dk_env_name=env_name
-        )
-        if rc != 0:
-            return rc
-        if not getattr(ns, "install_systemd", False):
-            return 0
-        tail: list[str] = []
-        if getattr(ns, "dry_run", False):
-            tail.append("--dry-run")
-        if getattr(ns, "enable", False):
-            tail.append("--enable")
-        return cmd_install_systemd_backups(
-            config,
-            env_add,
-            str(docker_host),
-            env_name,
-            tail,
-            global_dry_run=dry_run,
-            yes=bool(ns.yes),
-            fixed_only="pgbackrest",
-        )
-
-    if sub == "configure":
-        img = postgres_image_from_env(env_add, config=config)
-        print(f"Postgres image (volume ops / pgBackRest): {img}", file=sys.stderr)
-        rc = materialize_configs(env_add, dry_run=False, postgres_image=img, config=config)
-        if rc != 0:
-            return rc
-        mode = getattr(ns, "configure_mode", None)
-        if mode is None:
-            return 0
-        if mode == "verify":
-            rc = run_pgbackrest_verify(env_add, image=img)
-            if rc != 0:
-                return rc
-            return run_configure_verify_online_check(compose_file, env_add)
-        if mode == "stanza-create":
-            return run_bkp_db_stanza_create_flow(
-                compose_file, env_add, image=img, config=config, dk_env_name=env_name
-            )
-        print(f"Unknown bkp_db configure mode: {mode!r}", file=sys.stderr)
-        return 1
-
-    if sub == "install-systemd":
-        tail = []
-        if getattr(ns, "dry_run", False):
-            tail.append("--dry-run")
-        if getattr(ns, "enable", False):
-            tail.append("--enable")
-        return cmd_install_systemd_backups(
-            config,
-            env_add,
-            str(docker_host),
-            env_name,
-            tail,
-            global_dry_run=dry_run,
-            yes=bool(ns.yes),
-            fixed_only="pgbackrest",
-        )
-
-    if sub == "restore":
-        archive_file = getattr(ns, "archive_file", None)
-        return run_unified_db_restore(
-            config,
-            compose_file=compose_file,
-            env_add=env_add,
-            env_name=env_name,
-            force_dumps=bool(getattr(ns, "restore_from_dumps", False)),
-            archive_path=Path(archive_file).expanduser() if archive_file else None,
-            dry_run=dry_run or bool(getattr(ns, "restore_dry_run", False)),
-            skip_confirm=bool(ns.yes),
-            extra_pgbackrest_args=list(getattr(ns, "pgbackrest_restore_args", None) or []),
-        )
-
-    if sub == "backup":
-        bt = ns.backup_type
-        if not db_service_responds(compose_file, env_add):
-            print(
-                "The `db` service is not running on the deployment host. "
-                "Start the stack before online backup.",
-                file=sys.stderr,
-            )
-            return 1
-        return run_pgbackrest_backup_online(compose_file, env_add, bt)
-
-    if sub in ("info", "check", "version"):
-        if not db_service_responds(compose_file, env_add):
-            print(
-                "The `db` service is not running on the deployment host.",
-                file=sys.stderr,
-            )
-            return 1
-        if sub == "info":
-            return run_info(compose_file, env_add)
-        if sub == "check":
-            return run_check_online(compose_file, env_add)
-        return run_version(compose_file, env_add)
-
-    if sub == "pgdump":
-        if not db_service_responds(compose_file, env_add):
-            print(
-                "The `db` service is not running on the deployment host.",
-                file=sys.stderr,
-            )
-            return 1
-        return run_pg_dump(compose_file, env_add, list(getattr(ns, "pg_dump_args", None) or []))
-
-    print(f"Unknown db subcommand: {sub!r}", file=sys.stderr)
-    return 1

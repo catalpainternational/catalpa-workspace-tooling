@@ -17,6 +17,7 @@ from tests.helpers import (
 _DOCTL_RESOLUTION_TEST_FILES = frozenset(
     {
         "test_doctl_binary.py",
+        "test_doctl_cache.py",
         "test_doctl_missing.py",
     }
 )
@@ -30,6 +31,14 @@ _MINIMAL_ROOT = Path(__file__).resolve().parent / "fixtures" / "minimal_project"
 def _test_file_name(request: pytest.FixtureRequest) -> str | None:
     node_path = getattr(request.node, "path", None) or getattr(request.node, "fspath", None)
     return Path(node_path).name if node_path is not None else None
+
+
+@pytest.fixture(autouse=True)
+def _fresh_doctl_cache() -> None:
+    """dk caches doctl lookups for the life of the process; each test starts with none."""
+    from catalpa_tooling.doctl_binary import clear_doctl_cache
+
+    clear_doctl_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -98,3 +107,21 @@ def minimal_project(tmp_path: Path, isolated_tooling: None) -> ProjectConfig:
     """Copy minimal_project fixture tree into ``tmp_path`` and load ``ProjectConfig``."""
     write_minimal_tooling_tree(tmp_path)
     return load_project_config(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_registry_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dk asks gh, the environment or a terminal for a pull's registry token: tests never reach
+    the real gh or the developer's environment."""
+    from catalpa_tooling.fcos import registry
+
+    monkeypatch.setattr(registry, "_gh", lambda *a: None)
+    monkeypatch.delenv(registry.TOKEN_ENV, raising=False)
+    monkeypatch.delenv(registry.USER_ENV, raising=False)
+    monkeypatch.delenv("GITHUB_ACTOR", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_ssh_connection_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests see dk's plain ssh argv and never make ~/.ssh/dk-control (test_ssh_reuse turns it on)."""
+    monkeypatch.setenv("DK_SSH_REUSE", "0")

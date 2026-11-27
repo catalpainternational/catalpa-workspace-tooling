@@ -92,7 +92,7 @@ def test_manage_user_flag_after_args_goes_to_django(env_parser) -> None:
     assert ns.manage_args == ["migrate", "--user", "x"]
 
 
-def test_post_db_restore_execs_as_manage_user(minimal_project, capsys) -> None:
+def test_post_db_restore_runs_one_shot_as_manage_user(minimal_project, capsys) -> None:
     hooks = PostDbRestoreOpsConfig(envs=None, db_psql=(), manage_commands=(("migrate",),))
     cfg = replace(minimal_project, ops_optional=replace(minimal_project.ops, post_db_restore=hooks))
     cfg = _with_manage_user(cfg, "django")
@@ -110,5 +110,5 @@ def test_post_db_restore_execs_as_manage_user(minimal_project, capsys) -> None:
         assert run_post_db_restore_manage_commands(cfg, **kwargs) == 0
         assert run_post_db_restore_manage_commands(cfg, dry_run=True, **kwargs) == 0
 
-    assert calls[1] == ["exec", "-T", "--user", "django", "web", "./manage.py", "migrate"]
-    assert "exec -T --user django web ./manage.py migrate" in capsys.readouterr().err
+    assert calls == [["run", "--rm", "--no-deps", "-T", "--user", "django", "web", "./manage.py", "migrate"]]
+    assert "run --rm --no-deps -T --user django web ./manage.py migrate" in capsys.readouterr().err

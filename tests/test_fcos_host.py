@@ -1,0 +1,505 @@
+"""``dk <env> fcos diff|apply|secrets push|provision`` (issue #182, PR 3).
+
+Plans are checked against the golden renders in ``tests/fixtures/fcos/*/expected``. The shell
+the host runs (state and apply scripts) is run for real in a Fedora container when Docker is
+available: apply onto an empty filesystem, read it back, expect no differences.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import shutil
+import subprocess
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from catalpa_tooling.fcos import host as h
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "fcos"
+
+
+def committed(name: str) -> h.Committed:
+    return h.load_committed(FIXTURES / name / "expected")
+
+
+def in_sync_state(c: h.Committed) -> h.HostState:
+    """What a host that matches ``c`` reports."""
+    s = h.HostState()
+    for e in c.manifest["install"]:
+        s.files[e["dest"]] = h.HostFile(int(e["mode"], 8), e["owner"], c.files[e["file"]])
+    for v in c.manifest["bind_volumes"].values():
+        s.dirs[v["path"]] = (int(v["mode"], 8), v["owner_uid"])
+    for t in c.manifest["timers"]:
+        s.links[f"{c.user_unit_dir}/timers.target.wants/{t}"] = f"../{t}"
+    for u in c.masked_units:
+        s.links[f"/etc/systemd/system/{u}"] = "/dev/null"
+    s.key_files = {e["dest"] for e in c.manifest["install"] if "/authorized_keys.d/" in e["dest"]}
+    s.secrets = set(c.manifest["secrets"])
+    s.system_secrets = set(c.manifest["system_secrets"])
+    return s
+
+
+def with_file(c: h.Committed, file: str, text: str) -> h.Committed:
+    return replace(c, files={**c.files, file: text})
+
+
+@pytest.mark.parametrize("name", ["site", "bero", "swlt"])
+def test_a_matching_host_has_nothing_to_do(name: str) -> None:
+    c = committed(name)
+    plan = h.make_plan(c, in_sync_state(c))
+    assert plan.files_in_sync and plan.secrets_in_sync, h.describe(plan)
+    assert h.describe(plan) == []
+
+
+def test_state_output_round_trips() -> None:
+    text = "PORT=8000\n"
+    out = "\n".join(
+        [
+            f"F\t/etc/site/django.env\t644\troot\t{base64.b64encode(text.encode()).decode()}",
+            "M\t/etc/site/db.env",
+            "D\t/var/mnt/data/pgdata\t700\t600822",
+            "N\t/var/mnt/data/caddy_data",
+            "L\t/x/timers.target.wants/a.timer\t../a.timer",
+            "X\t/x/timers.target.wants/b.timer",
+            "S\tzbx_tlspsk",
+        ]
+    )
+    s = h.parse_state(out)
+    assert s.files["/etc/site/django.env"] == h.HostFile(0o644, "root", text)
+    assert s.files["/etc/site/db.env"] is None
+    assert s.dirs == {"/var/mnt/data/pgdata": (0o700, 600822), "/var/mnt/data/caddy_data": None}
+    assert s.links["/x/timers.target.wants/b.timer"] is None
+    assert s.system_secrets == {"zbx_tlspsk"}
+
+
+def test_changed_files_restart_only_their_long_running_units() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    state.files["/etc/site/migrate.env"] = h.HostFile(0o644, "root", "OLD=1\n")
+    state.files["/etc/site/db.env"] = h.HostFile(0o600, "root", c.files["envfiles/db.env"])
+    plan = h.make_plan(c, state)
+    assert [(ch.dest, ch.why) for ch in plan.changes] == [
+        ("/etc/site/db.env", "mode 600 → 644"),
+        ("/etc/site/migrate.env", "changed"),
+    ]
+    assert any(line.startswith("    -OLD=1") for line in h.describe(plan))
+    r = h.restarts_for(c, [ch.dest for ch in plan.changes])
+    # migrate is PartOf django: restarting django reruns it.
+    assert r.user == ["db.service", "django.service"]
+    assert r.system == []
+
+
+def test_quadlet_volume_and_socket_changes() -> None:
+    c = committed("site")
+    r = h.restarts_for(
+        c,
+        [
+            f"{c.quadlet_dir}/caddy.container",
+            f"{c.quadlet_dir}/django_static.volume",
+            f"{c.user_unit_dir}/caddy.socket",
+            f"{c.home}/.config/site/caddy.json",
+        ],
+    )
+    assert r.user == ["caddy.service"]
+    assert r.sockets == ["caddy"]
+    assert any("django_static.volume" in n for n in r.notes)
+
+
+def test_a_timer_driven_one_shot_is_never_restarted() -> None:
+    c = committed("swlt")
+    r = h.restarts_for(c, [], secrets=["restic_write_password", "postgres_password"])
+    assert r.user == ["db.service"]
+    assert h.long_running(c, "swlt-restic-files-backup") is None
+    r = h.restarts_for(c, [f"{c.user_unit_dir}/swlt-restic-files-backup.timer"])
+    assert r.user_timers == ["swlt-restic-files-backup.timer"]
+
+
+def test_stack_units() -> None:
+    assert h.stack_units(committed("site")) == (
+        ["caddy.service", "db.service", "django.service"],
+        [],
+    )
+
+
+def test_files_dropped_from_the_render_are_removed() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    before = json.loads(c.files["manifest.json"])
+    before["install"].append(
+        {"file": "quadlets/old.container", "dest": f"{c.quadlet_dir}/old.container"}
+    )
+    state.files[c.manifest_dest] = h.HostFile(0o644, "root", json.dumps(before))
+    plan = h.make_plan(c, state)
+    assert plan.remove == [f"{c.quadlet_dir}/old.container"]
+    # The applied manifest differs too, so it is reinstalled.
+    assert [ch.file for ch in plan.changes] == ["manifest.json"]
+    assert h.user_reload_needed(c, plan)
+    assert not h.system_reload_needed(c, plan)
+
+
+def test_data_directories_are_made_but_never_chowned() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    state.dirs["/var/mnt/data/caddy_data"] = None
+    state.dirs["/var/mnt/data/pgdata"] = (0o700, 1001)
+    plan = h.make_plan(c, state)
+    assert plan.make_dirs == [("/var/mnt/data/caddy_data", 0o700, 619823)]
+    assert len(plan.dir_problems) == 1 and "pgdata" in plan.dir_problems[0]
+    script = h.apply_script(c, plan)
+    assert "install -d -m 700 -o 619823 -g 619823 /var/mnt/data/caddy_data" in script
+    assert "pgdata" not in script
+
+
+def test_missing_timer_links_are_enabled_and_started() -> None:
+    c = committed("swlt")
+    state = in_sync_state(c)
+    link = f"{c.user_unit_dir}/timers.target.wants/swlt-pgbackrest-backup-full.timer"
+    state.links[link] = None
+    plan = h.make_plan(c, state)
+    assert plan.links == [(link, "../swlt-pgbackrest-backup-full.timer")]
+    _root, user = h.restart_commands(c, plan, h.Restarts(), restart=True)
+    assert user.splitlines() == [
+        "systemctl --user daemon-reload",
+        "systemctl --user start swlt-pgbackrest-backup-full.timer",
+    ]
+
+
+def test_secret_names_are_compared_and_extras_left_alone() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    state.secrets = {"postgres_password", "leftover"}
+    plan = h.make_plan(c, state)
+    assert plan.files_in_sync and not plan.secrets_in_sync
+    assert plan.secrets_missing == ["altcha_hmac_secret"]
+    assert plan.secrets_extra == ["leftover"]
+
+
+def test_secret_values() -> None:
+    c = committed("site")
+    values, problems = h.secret_values(
+        c, {"postgres_password": "pw", "altcha_hmac_secret": "", "sops": {}}, None
+    )
+    assert values == [("postgres_password", "pw", False)]
+    assert problems == ["altcha_hmac_secret: altcha_hmac_secret is empty (Podman refuses an empty secret)"]
+    values, problems = h.secret_values(c, {}, ["nope"])
+    assert problems == ["not in the manifest: nope"]
+
+
+class FakeRunner:
+    def __init__(self, replies: dict[str, bytes] | None = None):
+        self.calls: list[tuple[list[str], bytes | None]] = []
+        self.replies = replies or {}
+
+    def __call__(self, argv, *, input=None, tty=False):
+        self.calls.append((argv, input))
+        out = next((v for k, v in self.replies.items() if k in argv[-1]), b"")
+        return subprocess.CompletedProcess(argv, 0, out, b"")
+
+
+def test_secret_values_go_over_stdin_only() -> None:
+    """One SSH connection for the account's secrets and one for the system's, whatever their
+    number; the values only on stdin."""
+    import base64
+
+    c = committed("site")
+
+    class Runner(FakeRunner):
+        def __call__(self, argv, *, input=None, tty=False):
+            self.calls.append((argv, input))
+            names = [line.split()[0] for line in (input or b"").decode().splitlines()]
+            return subprocess.CompletedProcess(argv, 0, "".join(f"pushed {n}\n" for n in names).encode(), b"")
+
+    runner = Runner()
+    host = h.Host("203.0.113.9", runner=runner)
+    h.push_secrets(host, c, [("postgres_password", "s3cr3t", False), ("multi", "a\nb c", False), ("zbx", "psk", True)])
+    (argv1, in1), (argv2, in2) = runner.calls
+    assert argv1[-2] == "deploy@203.0.113.9" and argv1[-1].startswith("sh -c ")
+    assert argv2[-2] == "core@203.0.113.9" and argv2[-1].startswith("sudo sh -c ")
+    b64 = lambda v: base64.b64encode(v.encode()).decode()  # noqa: E731
+    assert in1 == f"postgres_password {b64('s3cr3t')}\nmulti {b64('a' + chr(10) + 'b c')}\n".encode()
+    assert in2 == f"zbx {b64('psk')}\n".encode()
+    assert not any("s3cr3t" in a or "psk" in a for a in argv1 + argv2)
+
+
+def test_a_secret_the_host_didnt_confirm_fails() -> None:
+    c = committed("site")
+    host = h.Host("203.0.113.9", runner=FakeRunner())  # answers nothing
+    with pytest.raises(h.HostError, match="not pushed: postgres_password"):
+        h.push_secrets(host, c, [("postgres_password", "x", False)])
+
+
+def test_the_push_script_makes_each_secret(tmp_path) -> None:
+    """The real script, by sh, against a fake podman that records what each secret got."""
+    import base64
+
+    bin_dir, seen = tmp_path / "bin", tmp_path / "seen"
+    bin_dir.mkdir(), seen.mkdir()
+    podman = bin_dir / "podman"
+    podman.write_text('#!/bin/sh\n[ "$1 $2 $3" = "secret create --replace" ] && cat > "$SEEN/$4"\n')
+    podman.chmod(0o755)
+    values = {"one": "plain", "two": "line1\nline2 with spaces\n", "three": "x'\"$y`z"}
+    stdin = "".join(f"{k} {base64.b64encode(v.encode()).decode()}\n" for k, v in values.items())
+    r = subprocess.run(
+        ["sh", "-c", h.PUSH_SECRETS_SCRIPT], input=stdin, text=True, capture_output=True, check=False,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "SEEN": str(seen)},
+    )  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["pushed", "one", "pushed", "two", "pushed", "three"]
+    assert {f.name: f.read_text() for f in seen.iterdir()} == values
+
+
+def test_host_address_from_docker_host() -> None:
+    host = h.host_from_docker_host("ssh://deploy@example.org/run/user/1001/podman/podman.sock", None)
+    assert (host.address, host.port) == ("example.org", 22)
+    assert h.host_from_docker_host(None, "203.0.113.9").address == "203.0.113.9"
+    with pytest.raises(h.HostError):
+        h.host_from_docker_host(None, None)
+
+
+def test_private_registries() -> None:
+    assert h.private_registries(committed("site")) == ["ghcr.io"]
+
+
+def test_host_commands_refuse_an_uncommitted_render(monkeypatch, tmp_path) -> None:
+    """The fixtures' env has no committed generated/fcos/: nothing may reach SSH."""
+    import argparse
+
+    from catalpa_tooling.config import load_project_config
+    from catalpa_tooling.fcos import cli
+    from catalpa_tooling.fcos.render import Render
+
+    config = load_project_config(FIXTURES / "site")
+    fake = Render(files={"manifest.json": "{}\n"}, compose_file="compose.yml", env={}, secret_keys=frozenset())
+    monkeypatch.setattr(cli, "render_env", lambda *a, **k: fake)
+    monkeypatch.setattr(cli, "required_secret_problems", lambda *a, **k: [])
+    monkeypatch.setattr(h, "run", lambda *a, **k: pytest.fail("ssh was called"))
+    ns = argparse.Namespace(fcos_command="apply", host="203.0.113.9", dry_run=False, yes=True)
+    assert cli.handle_fcos_command(ns, config, "staging") == 1
+
+
+# --- The host's shell, for real ------------------------------------------------------------
+
+FEDORA = "quay.io/fedora/fedora:41"
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="needs docker")
+@pytest.mark.parametrize("name", ["site", "swlt"])
+def test_apply_then_state_in_fedora(name: str) -> None:
+    c = committed(name)
+    empty = h.HostState()
+    empty.key_files = {"/var/home/core/.ssh/authorized_keys.d/ignition", "/var/home/core/.ssh/authorized_keys.d/afterburn"}
+    plan = h.make_plan(c, empty)
+    assert plan.make_dirs and plan.changes and plan.masks
+    marker = "=====STATE====="
+    script = (
+        "set -e\nmkdir -p /var/home /var/mnt/data\n"
+        "useradd -u 1000 -m -d /var/home/core core >/dev/null 2>&1\n"
+        f"useradd -u {c.uid} -m -d {c.home} {c.user} >/dev/null 2>&1\n"
+        # An existing host: Ignition's and afterburn's key files, which apply must remove.
+        "install -d -m 700 -o core -g core /var/home/core/.ssh /var/home/core/.ssh/authorized_keys.d\n"
+        "echo old > /var/home/core/.ssh/authorized_keys.d/ignition\n"
+        "echo do-account > /var/home/core/.ssh/authorized_keys.d/afterburn\n"
+        # No systemd in the container: `systemctl mask` only makes the link.
+        "command -v systemctl >/dev/null || { printf '#!/bin/sh\\n[ \"$1\" = mask ] && "
+        "ln -sf /dev/null /etc/systemd/system/$2\\n' > /usr/local/bin/systemctl; "
+        "chmod +x /usr/local/bin/systemctl; mkdir -p /etc/systemd/system; }\n"
+        + h.apply_script(c, plan)
+        # Run it twice: applying is idempotent.
+        + h.apply_script(c, plan)
+        + f"echo {marker}\n"
+        + h.state_script(c)
+        + f"stat -c '%U %a' {c.user_unit_dir} {c.home}/.config /var/home/core/.ssh\n"
+    )
+    r = subprocess.run(
+        ["docker", "run", "--rm", "-i", FEDORA, "sh", "-s"],
+        input=script.encode(), capture_output=True, timeout=600, check=False,
+    )  # fmt: skip
+    if r.returncode != 0 and b"Cannot connect to the Docker daemon" in r.stderr:
+        pytest.skip("no Docker daemon")
+    assert r.returncode == 0, r.stderr.decode()
+    out = r.stdout.decode().split(marker + "\n", 1)[1]
+    state = h.parse_state(out)
+    state.secrets = set(c.manifest["secrets"])
+    after = h.make_plan(c, state)
+    assert after.files_in_sync, h.describe(after, show_diff=False)
+    assert after.dir_problems == []
+    assert after.stray_keys == [] and after.masks == []
+    # The account's directories are its own (systemd --user must be able to read them), and
+    # sshd wants ~/.ssh private.
+    assert out.strip().splitlines()[-3:] == ["deploy 755", "deploy 755", "core 700"]
+
+
+def test_stray_key_files_are_removed_and_afterburn_masked() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    stray = "/var/home/core/.ssh/authorized_keys.d/afterburn"
+    state.key_files.add(stray)
+    del state.links["/etc/systemd/system/afterburn-sshkeys@core.service"]
+    plan = h.make_plan(c, state)
+    assert plan.stray_keys == [stray]
+    assert plan.masks == ["afterburn-sshkeys@core.service"]
+    assert not plan.files_in_sync
+    script = h.apply_script(c, plan)
+    assert f"rm -f {stray}" in script
+    assert "systemctl mask afterburn-sshkeys@core.service" in script
+
+
+def test_lockout_guard() -> None:
+    c = committed("site")
+    state = in_sync_state(c)
+    state.key_files.add("/var/home/core/.ssh/authorized_keys.d/ignition")
+    plan = h.make_plan(c, state)
+    admin = next(iter(h.key_blobs(c.files["ssh/core.keys"])))
+    deploy_only = next(iter(h.key_blobs(c.files["ssh/deploy.keys"]) - {admin}))
+    assert h.lockout_problem(c, plan, {admin}) is None
+    assert "lose root" in h.lockout_problem(c, plan, {deploy_only})
+    assert "no public key" in h.lockout_problem(c, plan, set())
+    # Nothing touches core's keys: nothing to check.
+    assert h.lockout_problem(c, h.make_plan(c, in_sync_state(c)), set()) is None
+
+
+def test_comments_only() -> None:
+    assert h.comments_only("# a\nX=1\n", "# b\nX=1\n")
+    assert h.comments_only("[Unit]\n; old\n", "[Unit]\n  ; new\n# added\n")
+    assert not h.comments_only("X=1\n", "X=1\n")  # no change at all
+    assert not h.comments_only("X=1  # a\n", "X=1  # b\n")  # inline: the value changed
+    assert not h.comments_only("#!/bin/sh\necho\n", "#!/bin/bash\necho\n")  # a shebang isn't one
+
+
+def reworded_header(c: h.Committed) -> h.HostState:
+    """A host rendered by an older dk whose header comment read differently."""
+    state = in_sync_state(c)
+    for dest, f in state.files.items():
+        lines = f.text.splitlines(keepends=True)
+        if lines and lines[0].startswith("# "):
+            text = "# Generated by an older dk\n" + "".join(lines[1:])
+            state.files[dest] = h.HostFile(f.mode, f.owner, text)
+    return state
+
+
+def test_a_reworded_header_installs_but_restarts_nothing() -> None:
+    c = committed("site")
+    plan = h.make_plan(c, reworded_header(c))
+    assert plan.changes and {ch.why for ch in plan.changes} == {h.COMMENTS_ONLY}
+    assert any(ch.dest.startswith("/var/home/core/") for ch in plan.changes)
+    r = h.restarts_for(c, [ch.dest for ch in plan.changes if ch.restarts])
+    assert r == h.Restarts()  # no units, no "remove the volume by hand" notes
+    assert h.lockout_problem(c, plan, set()) is None  # core's keys are the same keys
+    # Still reloaded, so systemd doesn't warn that unit files changed on disk.
+    _root, user = h.restart_commands(c, plan, r, restart=True)
+    assert user == "systemctl --user daemon-reload"
+
+
+def test_a_real_change_beside_comment_only_ones_restarts_just_its_units() -> None:
+    c = committed("site")
+    state = reworded_header(c)
+    state.files["/etc/site/migrate.env"] = h.HostFile(0o644, "root", "OLD=1\n")
+    plan = h.make_plan(c, state)
+    r = h.restarts_for(c, [ch.dest for ch in plan.changes if ch.restarts])
+    assert r.user == ["django.service"] and r.notes == [] and r.system == []
+
+
+class RecordingHost:
+    address = "203.0.113.7"
+
+    def __init__(self) -> None:
+        self.root: list[str] = []
+        self.user: list[str] = []
+
+    def root_script(self, script: str) -> str:
+        self.root.append(script)
+        return ""
+
+    def ssh(self, login: str, command: str, **_k):
+        self.user.append(command)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_apply_plan_with_comment_only_changes(monkeypatch, capsys, dry_run) -> None:
+    from catalpa_tooling.fcos.cli import apply_plan
+
+    c = committed("site")
+    plan = h.make_plan(c, reworded_header(c))
+    target = RecordingHost()
+    rc, restarted = apply_plan(c, target, plan, h.describe(plan), "staging",
+                               dry_run=dry_run, yes=True, force=False, no_restart=False)  # fmt: skip
+    assert (rc, restarted) == (0, [])
+    out, err = capsys.readouterr()
+    assert "(comments only)" in out
+    assert "Comments only: nothing to restart." in err
+    assert "Restarts:" not in err and "note:" not in err and "refused" not in err
+    if dry_run:
+        assert target.root == [] and target.user == []
+    else:
+        assert "restart" not in target.root[0]
+        assert target.user == ["set -e\nsystemctl --user daemon-reload"]
+
+
+def test_local_public_keys(tmp_path: Path) -> None:
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "id_ed25519.pub").write_text("ssh-ed25519 AAAAfile me@here\n")
+    runner = FakeRunner({"": b"ssh-ed25519 AAAAagent agent-key\n"})
+    assert h.local_public_keys(runner=runner, home=tmp_path) == {"AAAAfile", "AAAAagent"}
+
+
+def test_monitoring_turned_on_for_a_running_host_needs_only_apply() -> None:
+    """A host booted without monitoring: apply installs the agent, the proxy and the tmpfiles.d
+    file, and makes the directories it names now, before the units start (#182)."""
+    c = committed("bero")
+    state = in_sync_state(c)
+    monitoring = [
+        e["dest"]
+        for e in c.manifest["install"]
+        if e["file"].startswith("monitoring/") or "zabbix" in e["file"] or "podman-ro-proxy" in e["file"]
+    ]
+    tmpfiles = "/etc/tmpfiles.d/bero_shape.conf"
+    assert tmpfiles in monitoring
+    for dest in monitoring:
+        del state.files[dest]
+    plan = h.make_plan(c, state)
+    assert {ch.dest for ch in plan.changes} >= set(monitoring)
+    script = h.apply_script(c, plan)
+    create = f"systemd-tmpfiles --create {tmpfiles}"
+    assert create in script
+    assert script.index(f"mv -f \"$t\" {tmpfiles}") < script.index(create)
+    restarts = h.restarts_for(c, [ch.dest for ch in plan.changes])
+    root, user = h.restart_commands(c, plan, restarts, restart=True)
+    assert "systemctl daemon-reload" in root and "zabbix-agent2.service" in root
+    assert "podman-ro-proxy.service" in user
+
+
+def test_an_unchanged_tmpfiles_file_isnt_run_again() -> None:
+    c = committed("bero")
+    state = in_sync_state(c)
+    state.files.pop(next(e["dest"] for e in c.manifest["install"] if e["file"] == "quadlets/zabbix-agent2.container"))
+    assert "systemd-tmpfiles" not in h.apply_script(c, h.make_plan(c, state))
+
+
+def test_registry_login_failure_says_what_to_do() -> None:
+    from catalpa_tooling.fcos.host import Host, HostError
+
+    err = (b"Error: unable to copy from source docker://ghcr.io/o/i:staging: initializing source "
+           b"docker://ghcr.io/o/i:staging: unable to retrieve auth token: invalid username/password: unauthorized")
+
+    def runner(argv, input=None):
+        return subprocess.CompletedProcess(argv, 125, b"", err)
+
+    with pytest.raises(HostError) as e:
+        Host("203.0.113.7", runner=runner).ssh("deploy", "podman pull x")
+    text = str(e.value)
+    assert "isn't logged in to the image registry" in text
+    assert "dk <env> host login" in text and "tag itself is fine" in text
+
+
+def test_other_ssh_failures_get_no_registry_hint() -> None:
+    from catalpa_tooling.fcos.host import Host, HostError
+
+    def runner(argv, input=None):
+        return subprocess.CompletedProcess(argv, 1, b"", b"permission denied")
+
+    with pytest.raises(HostError) as e:
+        Host("203.0.113.7", runner=runner).ssh("deploy", "true")
+    assert "registry" not in str(e.value)

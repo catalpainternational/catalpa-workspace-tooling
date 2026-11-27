@@ -1,0 +1,212 @@
+{
+  "env": "staging",
+  "compose_file": "compose.yml",
+  "user": "deploy",
+  "uid": 1001,
+  "subuid": {
+    "start": 589824,
+    "count": 65536
+  },
+  "auto_update": false,
+  "network": "site_default",
+  "id_ranges": {
+    "caddy": {
+      "start": 30000,
+      "size": 5000,
+      "host_root_uid": 619823,
+      "services": [
+        "caddy"
+      ]
+    },
+    "db": {
+      "start": 10000,
+      "size": 5000,
+      "host_root_uid": 599823,
+      "services": [
+        "db"
+      ]
+    },
+    "django": {
+      "start": 20000,
+      "size": 5000,
+      "host_root_uid": 609823,
+      "services": [
+        "collectstatic",
+        "django",
+        "migrate"
+      ]
+    }
+  },
+  "bind_volumes": {
+    "caddy_data": {
+      "path": "/var/mnt/data/caddy_data",
+      "services": [
+        "caddy"
+      ],
+      "id_range": "caddy",
+      "owner_uid": 619823,
+      "mode": "0700"
+    },
+    "django_media": {
+      "path": "/var/mnt/data/django_media",
+      "services": [
+        "caddy",
+        "django",
+        "django-task",
+        "migrate"
+      ],
+      "id_range": "django",
+      "owner_uid": 609823,
+      "mode": "0755"
+    },
+    "pgdata": {
+      "path": "/var/mnt/data/pgdata",
+      "services": [
+        "db"
+      ],
+      "id_range": "db",
+      "owner_uid": 600822,
+      "mode": "0700"
+    }
+  },
+  "podman_volumes": {
+    "caddy_config": "site_caddy_config",
+    "django_static": "site_django_static"
+  },
+  "images": {
+    "caddy": "ghcr.io/example/site-caddy:v1.2.3",
+    "collectstatic": "ghcr.io/example/site-django:v1.2.3",
+    "db": "ghcr.io/example/site-postgres:v1.2.3",
+    "django": "ghcr.io/example/site-django:v1.2.3",
+    "migrate": "ghcr.io/example/site-django:v1.2.3"
+  },
+  "secrets": {
+    "altcha_hmac_secret": "ALTCHA_HMAC_SECRET",
+    "postgres_password": "POSTGRES_PASSWORD"
+  },
+  "install": [
+    {
+      "file": "caddy/caddy.json",
+      "dest": "/var/home/deploy/.config/site/caddy.json",
+      "owner": "deploy",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/caddy.env",
+      "dest": "/etc/site/caddy.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/collectstatic.env",
+      "dest": "/etc/site/collectstatic.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/db.env",
+      "dest": "/etc/site/db.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/django.env",
+      "dest": "/etc/site/django.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "envfiles/migrate.env",
+      "dest": "/etc/site/migrate.env",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "manifest.json",
+      "dest": "/etc/site/fcos-manifest.json",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy.container",
+      "dest": "/etc/containers/systemd/users/1001/caddy.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/caddy_config.volume",
+      "dest": "/etc/containers/systemd/users/1001/caddy_config.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/collectstatic.container",
+      "dest": "/etc/containers/systemd/users/1001/collectstatic.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/db.container",
+      "dest": "/etc/containers/systemd/users/1001/db.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django-task.container",
+      "dest": "/etc/containers/systemd/users/1001/django-task.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django.container",
+      "dest": "/etc/containers/systemd/users/1001/django.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/django_static.volume",
+      "dest": "/etc/containers/systemd/users/1001/django_static.volume",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/migrate.container",
+      "dest": "/etc/containers/systemd/users/1001/migrate.container",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "quadlets/site_default.network",
+      "dest": "/etc/containers/systemd/users/1001/site_default.network",
+      "owner": "root",
+      "mode": "0644"
+    },
+    {
+      "file": "ssh/core.keys",
+      "dest": "/var/home/core/.ssh/authorized_keys.d/dk",
+      "owner": "core",
+      "mode": "0600"
+    },
+    {
+      "file": "ssh/deploy.keys",
+      "dest": "/var/home/deploy/.ssh/authorized_keys.d/dk",
+      "owner": "deploy",
+      "mode": "0600"
+    },
+    {
+      "file": "systemd/caddy.socket",
+      "dest": "/var/home/deploy/.config/systemd/user/caddy.socket",
+      "owner": "deploy",
+      "mode": "0644"
+    }
+  ],
+  "hostname": "site-staging",
+  "timezone": "UTC",
+  "config_dir": "/etc/site",
+  "masked_units": [
+    "afterburn-sshkeys@core.service"
+  ],
+  "proxy": "caddy",
+  "system_secrets": {},
+  "timers": []
+}

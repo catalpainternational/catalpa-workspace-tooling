@@ -116,7 +116,7 @@ def test_report_host_logging_points_at_fixes(capsys: pytest.CaptureFixture[str])
     assert report_host_logging("app", status, env_name="prod") is False
     err = capsys.readouterr().err
     assert "dk prod host logging --apply" in err
-    assert "dk prod up -d --force-recreate" in err
+    assert "dk prod compose up -d --force-recreate" in err
     assert "db" in err
 
 

@@ -7,6 +7,12 @@ import argparse
 from catalpa_tooling.cli.completion import attach_choices_completer
 from catalpa_tooling.cli.parents import build_env_flags_parent
 from catalpa_tooling.config import ProjectConfig
+from catalpa_tooling.fcos.cli import (
+    add_host_verbs,
+    add_render_verbs,
+    add_secrets_push,
+    attach_fcos_parser,
+)
 from catalpa_tooling.remote_deploy import list_dk_env_names
 from catalpa_tooling.zabbix_systemd import DEFAULT_IMAGE, UNIT_NAME
 
@@ -55,6 +61,7 @@ RESERVED_DK_TOP_COMMANDS = frozenset(
         "next-branch",
         "worktree",
         "context",
+        "secrets",
     }
 )
 
@@ -165,11 +172,16 @@ def _attach_db_commands(cmd_sub: argparse._SubParsersAction, env_name: str) -> N
         for sub_name in ("info", "check", "version"):
             sub.add_parser(sub_name, help=f"pgBackRest {sub_name}.")
 
-        p_backup = sub.add_parser("backup", help="Online pgBackRest backup.")
+        p_backup = sub.add_parser("backup", help="Online pgBackRest backup (default: incr).")
         backup_type = p_backup.add_argument(
             "backup_type",
+            nargs="?",
+            default="incr",
             choices=("full", "incr", "diff"),
-            help="Backup type.",
+            help=(
+                "Backup type (default: incr, as pgBackRest's own default; it takes a full one "
+                "when the repository has none)."
+            ),
         )
         attach_choices_completer(backup_type, ("full", "incr", "diff"))
 
@@ -211,7 +223,16 @@ def _attach_env_command_parsers(
     p_info = cmd_sub.add_parser("info", help="Print or edit docker/envs/<env>/info.yaml.")
     p_info.add_argument("-e", "--edit", action="store_true", help="Edit info.yaml in $EDITOR.")
 
-    cmd_sub.add_parser("secrets", help="Edit credentials.yaml with SOPS.")
+    p_secrets = cmd_sub.add_parser(
+        "secrets", help="Edit credentials.yaml with SOPS (`secrets push`: to a rendered host)."
+    )
+    secrets_sub = p_secrets.add_subparsers(dest="secrets_command", required=False)
+    add_secrets_push(secrets_sub)
+    secrets_sub.add_parser(
+        "read-key",
+        help="For an env with restore_from: create its own Spaces key that can only read the "
+        "source's backups, and write its pgbr_s3_read_* / restic_read_* credentials.",
+    )
 
     p_dc = cmd_sub.add_parser(
         "dc-backup",
@@ -388,6 +409,13 @@ def _attach_env_command_parsers(
     # add_help=False: `host create --help` goes to the command's own parser, which lists the options.
     p_host_create = host_sub.add_parser("create", help="Provision a new droplet.", add_help=False)
     p_host_create.add_argument("host_create_args", nargs=argparse.REMAINDER)
+    p_host_destroy = host_sub.add_parser(
+        "destroy",
+        help="Destroy the env's droplet, its volumes and DNS records (digitalocean.allow_destroy only).",
+        add_help=False,
+    )
+    p_host_destroy.add_argument("host_destroy_args", nargs=argparse.REMAINDER)
+    add_host_verbs(host_sub)
     p_host_logging = host_sub.add_parser(
         "logging",
         help="Check (or --apply) the host-wide Docker log rotation default in daemon.json.",
@@ -410,12 +438,19 @@ def _attach_env_command_parsers(
         help="Create or update DigitalOcean A records for site_origin hostnames.",
     )
     p_host.add_argument(
+        "--cloud-only",
+        action="store_true",
+        help="Skip the SSH section (OS state, failed units); only the DigitalOcean and DNS checks.",
+    )
+    p_host.add_argument(
         "--check-remote",
         action="store_true",
         help="SSH probe docker_host (and dc_backup_docker_host): reachability, timedatectl, Docker log rotation.",
     )
 
     _attach_zabbix_commands(cmd_sub, env_name)
+    add_render_verbs(cmd_sub)
+    attach_fcos_parser(cmd_sub)
 
     cmd_sub.add_parser("ensure_volumes", help="Ensure external stack volumes exist.")
 
@@ -446,9 +481,33 @@ def _attach_env_command_parsers(
     )
     p_manage.add_argument("manage_args", nargs=argparse.REMAINDER)
 
-    p_pull = cmd_sub.add_parser("pull_media", help="Copy django_media volume to local directory.")
-    p_pull.add_argument("--target", "-t", default=None, metavar="DIR")
-    p_pull.add_argument("--image", default="alpine:3.21")
+    p_pull = cmd_sub.add_parser(
+        "pull_media", help="Deprecated: use `dk fetch media --env <env>` (it does the same)."
+    )
+    p_pull.add_argument(
+        "--target", "-t", default=None, metavar="DIR",
+        help="Local directory (default: native.fetch_media.dest, as fetch media).",
+    )  # fmt: skip
+    p_pull.add_argument(
+        "--image", default="alpine:3.21", help="Image for the tar copy, when rsync can't reach the media."
+    )
+
+    p_restore_all = cmd_sub.add_parser(
+        "restore",
+        help="Restore the database and the media together (db restore + files restore), from "
+        "this env's own backups or restore_from's, with one confirmation.",
+    )
+    p_restore_all.add_argument(
+        "--snapshot", default="latest", help="restic snapshot for the media (default: latest)."
+    )
+    p_restore_all.add_argument(
+        "--dry-run", action="store_true", dest="restore_dry_run",
+        help="Print what would be restored without running it.",
+    )  # fmt: skip
+    p_restore_all.add_argument(
+        "pgbackrest_restore_args", nargs=argparse.REMAINDER,
+        help="After --: pgBackRest restore options (e.g. -- --type=time '--target=…').",
+    )  # fmt: skip
 
     cmd_sub.add_parser("wipe", help="Alias: docker compose down -v (with confirmation).")
 

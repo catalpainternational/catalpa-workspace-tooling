@@ -9,6 +9,25 @@ Database backups and WAL archiving via [pgBackRest](https://pgbackrest.org) with
 - [README_DC_BACKUP.md](README_DC_BACKUP.md) — private CA mount, `DOCKER_ADD_HOST`, `dk dc-backup`
 - [README.md](README.md) — main tooling overview
 
+## Which envs back up, and which restore
+
+`info.yaml` decides, not which credentials exist (tooling 2.0):
+
+```yaml
+# docker/envs/prod/info.yaml
+backups: [db, files]   # this env backs itself up: db = pgBackRest, files = restic
+
+# docker/envs/staging/info.yaml (and dev, full …)
+restore_from: prod     # this env restores prod's backups
+```
+
+`backups` needs WRITE credentials for each kind it lists, `restore_from` READ credentials for the
+kinds the source lists. Absent means off: an env without `backups` takes no backups, and the
+commands that would (`db backup`, `db configure stanza-create`, `install-systemd`, `files init`,
+`files backup`) say so instead of offering to create a bucket. Credentials without their setting
+stop every `dk <env>` command with a hint, so an env upgraded without `backups:` can't quietly
+stop backing up. `dk <env> secrets read-key` makes an env's READ credentials from its source.
+
 ## Credentials per environment
 
 Edit `docker/envs/<env>/credentials.yaml` (SOPS-encrypted in production). Use **lowercase** keys; `dk` uppercases them when loading env ([`env_yaml.py`](src/catalpa_tooling/env_yaml.py)).
@@ -72,6 +91,25 @@ sops exec-env docker/envs/prod/credentials.yaml -- dk prod …
 
 Use `pgbr_s3_read_*` → `PGBR_S3_READ_*` with the same suffixes. **Do not set WRITE and READ in the same environment** — `dk` rejects both prefixes.
 
+To have dk make them, name the env whose backups this one restores in `info.yaml`, then run
+`dk <env> secrets read-key`:
+
+```yaml
+# docker/envs/staging/info.yaml
+restore_from: prod
+```
+
+It reads the source's settings (bucket, endpoint, region, repo path, stanza; the restic repository
+and password) from the source's `credentials.yaml`, creates a Spaces key `<bucket>-<env>-read`
+that can only read the source's bucket(s), and writes this env's `pgbr_s3_read_*` /
+`restic_read_*` with `sops set`. Each env gets its own key, so its access can be revoked alone
+(`doctl spaces keys delete`). Nothing is printed. A rendered (`runtime: quadlet`) env needs
+`dk <env> render` and a commit afterwards, then `dk <env> secrets push`; see
+[docs/FCOS.md](docs/FCOS.md#backups).
+
+The restored data is the source's, personal data included, and the app may send email from it:
+`ops.post_db_restore` hooks are where a project deals with that.
+
 `stanza-create` and scheduled systemd backups require WRITE mode only.
 
 ## Auto-provision (DigitalOcean Spaces)
@@ -91,6 +129,26 @@ digitalocean:
     bucket: marktwain
     pgbackrest_repo_path: /marktwain/prod/pgbackrest
 ```
+
+An env can override any of these in its own `info.yaml`, for example a bucket of its own, so its
+key can't reach any other env's backups:
+
+```yaml
+spaces:
+  bucket: catalpa-site-fcos-backups   # also: endpoint, region, pgbackrest_repo_path, restic_path, stanza
+```
+
+The write key is per env, `<bucket>-<env>-write`, with read-write on that bucket only. Envs sharing
+a bucket therefore each get their own key. (Before 2.0 it was `<bucket>-write`, so a second env on
+the same bucket was refused.) restic reuses the pgBackRest key when that is already set.
+
+Provisioning runs only when the credentials are missing. To replace credentials whose bucket or key
+was deleted, remove them first (`sops unset docker/envs/<env>/credentials.yaml '["pgbr_s3_write_key"]'`,
+and so on for each `pgbr_s3_write_*` / `restic_write_*` key), then run the command again.
+
+On a `runtime: quadlet` env, the same commands provision (`db configure stanza-create`, `db backup`,
+`files init`, `files backup`). The containers read these values as Podman secrets, so dk then pushes
+the changed secrets to the host and restarts `db`.
 
 Override binaries with `DOCTL_BIN` / `S3CMD_BIN`. Use global `--yes` to accept provisioning without typing `y`. `bkp_db pgdump` / bare `configure` do not trigger provisioning.
 
@@ -123,7 +181,7 @@ dk prod host create                    # droplet + docker_host (if not already s
 
 dk prod bkp_db init                    # volumes + conf + db init + stanza (idempotent)
 
-dk prod up -d                          # full stack (volumes + conf already done by init or any prior up)
+dk prod                          # full stack (volumes + conf already done by init or any prior up)
 dk prod bkp_db install-systemd --enable
 dk prod bkp_db backup full             # optional sanity check
 ```
@@ -140,15 +198,15 @@ dk prod bkp_db backup full             # optional sanity check
 ```bash
 dk prod host create
 dk prod bkp_db configure stanza-create   # materializes conf if needed, starts db, creates stanza
-dk prod up -d
+dk prod
 dk prod bkp_db install-systemd --enable
 ```
 
-### What `dk <env> up` does automatically
+### What `dk <env>` does automatically
 
-Every **`dk <env> up …`** (including `up -d db`) runs **`ensure_volumes`** and **`materialize_configs`** before calling `docker compose`. You do **not** need separate `ensure_volumes` or `bkp_db configure` before `up` unless you want config on disk without starting containers.
+A bare **`dk <env>`** (`up -d`) and every **`dk <env> compose up …`** (including `compose up -d db`) run **`ensure_volumes`** and **`materialize_configs`** before calling `docker compose`. You do **not** need separate `ensure_volumes` or `bkp_db configure` before `up` unless you want config on disk without starting containers.
 
-The dk-only flag **`--provision`** on `up` is stripped before compose and does not add extra steps — plain `up` already materializes.
+The dk-only flag **`--provision`** on `compose up` is stripped before compose and does not add extra steps — plain `up` already materializes.
 
 ### Advanced (without starting the stack)
 
@@ -186,9 +244,9 @@ All `bkp_db` pgBackRest invocations use `log_level_console` / `log_level_stderr`
 | `info` | `pgbackrest info` in db container |
 | `check` | Online `pgbackrest check` |
 | `version` | `pgbackrest version` in db container |
-| `backup full\|incr\|diff` | Online backup (db running) |
+| `backup [full\|incr\|diff]` | Online backup (db running); default `incr`, which pgBackRest makes a full one when the repository has none |
 | `pgdump [args…]` | `pg_dump` via compose |
-| `restore [--dumps] [--file ARCHIVE] [pgBackRest args…]` | `--file ARCHIVE` restores the app DB from that custom-format dump; `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured) without consulting pgBackRest or auto-fetching. Either way `db` is started if needed, the app DB is dropped and recreated first, and when `native.reset_db.postgis` is true PostGIS is pre-created and its catalog tables granted to the app user (compose restore defaults to `--role postgres` unless `native.reset_db.restore_as_super` is true or `pg_restore_args` sets `--role`; after a default `--role postgres` restore, every restored object except PostGIS's own is handed to the app user, so the app's `ALTER TABLE` migrations work). With neither flag: offline pgBackRest restore of **this stack’s** backups (`--dry-run` prints stanza, repo path, and compose command). Not for Ansible/Debian package clusters — use `restore --dumps` / `restore --file` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)). |
+| `restore [--dumps] [--file ARCHIVE] [pgBackRest args…]` | `--file ARCHIVE` restores the app DB from that custom-format dump; `--dumps` restores the configured dumps (`paths.fetch_db_dump`, plus Metabase when configured) without consulting pgBackRest or auto-fetching. Either way it asks for the env name first (`--yes` skips; without a TTY it refuses), `db` is started if needed, the app DB is dropped and recreated first, and when `native.reset_db.postgis` is true PostGIS is pre-created and its catalog tables granted to the app user (compose restore defaults to `--role postgres` unless `native.reset_db.restore_as_super` is true or `pg_restore_args` sets `--role`; after a default `--role postgres` restore, every restored object except PostGIS's own is handed to the app user, so the app's `ALTER TABLE` migrations work). With neither flag: offline pgBackRest restore of **this stack’s** backups (`--dry-run` prints stanza, repo path, and compose command). Not for Ansible/Debian package clusters — use `restore --dumps` / `restore --file` ([TROUBLESHOOTING.md](TROUBLESHOOTING.md#h-seeding-a-new-docker-host-from-ansible--native-backups)). |
 
 On a new host, if the `pgbackrest_conf` volume has no managed config yet, **`restore` prompts to run `db configure`** (same as materialize) before the destructive restore confirmation. If the volume already has config but it **does not match** current `pgbr_s3_read_*` / `pgbr_s3_write_*` credentials (e.g. after changing `pgbr_s3_read_repo_path`), restore re-materializes before proceeding. Preview with **`dk <env> db restore --dry-run`**. With global **`dk --yes`**, configure runs automatically without the y/n prompt.
 
@@ -276,8 +334,8 @@ Cross-cutting config (where values live, service vs container name, compose proj
 | `PGBR_S3_WRITE_* and PGBR_S3_READ_* are mutually exclusive` | Both prefixes set in one env. |
 | `Skipping pgBackRest systemd files: PGBR_S3_WRITE_STANZA is not set` | WRITE credentials missing. |
 | `Could not discover a unique db container` | Stack not up, multiple Postgres containers, or set `pgbr_db_container`. |
-| Archive still off after deploy | Run `bkp_db configure` or any `dk <env> up`; entrypoint may not overwrite provisioned drop-ins. |
-| `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically); or `dk <env> up -d db` then retry. Check `pg1_path` matches real `PGDATA`. |
+| Archive still off after deploy | Run `bkp_db configure` or any `dk <env>`; entrypoint may not overwrite provisioned drop-ins. |
+| `stanza-create` fails on empty PGDATA | Use `bkp_db init` or `configure stanza-create` (starts `db` automatically); or `dk <env> compose up -d db` then retry. Check `pg1_path` matches real `PGDATA`. |
 | `info` shows `missing stanza path` after `init` skipped stanza-create | Broken or empty S3 repo prefix; clear repo path or fix credentials, then re-run `bkp_db configure stanza-create` (tooling only skips when `info` reports `status: ok`). |
 | `[037]: restore command requires option: pg1-path` | Run `bkp_db configure` on the host, or accept the prompt when `restore` detects an empty `pgbackrest_conf` volume. |
 | `[031]: option 'pg1-path' cannot be set multiple times` | Image `/etc/pgbackrest.conf` (or `/etc/pgbackrest/pgbackrest.conf`) also sets `pg1-path`. Tooling already writes it in `conf.d`. Remove it from the image file; keep only lock/log/spool. See [QUICKSTART.md](QUICKSTART.md#postgres-image-and-pgbackrestconf). |

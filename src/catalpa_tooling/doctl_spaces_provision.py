@@ -12,9 +12,8 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Literal
-
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -29,6 +28,10 @@ from catalpa_tooling.doctl_binary import (
     run_doctl,
     run_doctl_json,
 )
+from catalpa_tooling.doctl_projects import (
+    list_project_resource_urns,
+    resolve_project_id,
+)
 from catalpa_tooling.pgbackrest_volume_config import (
     PREFIX_WRITE,
     _extract_stanza_vars,
@@ -37,8 +40,8 @@ from catalpa_tooling.pgbackrest_volume_config import (
     resolve_mode,
 )
 from catalpa_tooling.restic_files import (
-    restic_credentials_conflict_message,
     restic_credential_mode,
+    restic_credentials_conflict_message,
     validate_restic_env,
 )
 from catalpa_tooling.s3cmd_binary import (
@@ -48,7 +51,6 @@ from catalpa_tooling.s3cmd_binary import (
     print_s3cmd_required,
     run_s3cmd,
 )
-from catalpa_tooling.doctl_projects import list_project_resource_urns, resolve_project_id
 from catalpa_tooling.sops_credentials import (
     SopsCommandError,
     SopsNotFoundError,
@@ -101,10 +103,55 @@ def dc_backup_provision_hint(env_name: str) -> str:
     )
 
 
+#: Keys an env's ``info.yaml`` ``spaces:`` block may set (the same as ``digitalocean.spaces``).
+ENV_SPACES_KEYS = ("endpoint", "region", "bucket", "pgbackrest_repo_path", "restic_path", "stanza")
+
+
+class EnvSpacesError(ValueError):
+    pass
+
+
+def env_spaces_overrides(config: ProjectConfig, env_name: str) -> dict[str, str]:
+    """The env's own ``spaces:`` block in ``info.yaml`` (e.g. a bucket of its own), validated."""
+    info_path = config.deploy_envs_dir / env_name / "info.yaml"
+    if not info_path.is_file():
+        return {}
+    data = yaml.safe_load(info_path.read_text(encoding="utf-8")) or {}
+    raw = data.get("spaces") if isinstance(data, dict) else None
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise EnvSpacesError(f"{info_path}: spaces must be a mapping")
+    unknown = sorted(set(raw) - set(ENV_SPACES_KEYS))
+    if unknown:
+        raise EnvSpacesError(
+            f"{info_path}: spaces: unknown key(s) {', '.join(unknown)} "
+            f"(allowed: {', '.join(ENV_SPACES_KEYS)})"
+        )
+    out = {}
+    for k, v in raw.items():
+        if not isinstance(v, str) or not v.strip():
+            raise EnvSpacesError(f"{info_path}: spaces.{k} must be a non-empty string")
+        out[k] = v.strip()
+    return out
+
+
 def spaces_backup_defaults(config: ProjectConfig, env_name: str) -> SpacesBackupDefaults:
-    """Resolved Spaces targets from ``tooling.yaml`` and deploy env name."""
+    """Resolved Spaces targets for an env.
+
+    In order: the env's ``spaces:`` in ``info.yaml``, then ``digitalocean.spaces`` in
+    ``tooling.yaml``, then defaults from the project and env names. The write key is per env
+    (``<bucket>-<env>-write``), scoped to the bucket, so envs sharing a bucket each get their own.
+    """
     do = config.digitalocean
-    spaces: SpacesConfig | None = do.spaces if do else None
+    project_spaces: SpacesConfig | None = do.spaces if do else None
+    env = env_spaces_overrides(config, env_name)
+    spaces = SpacesConfig(
+        **{
+            k: env.get(k) or (getattr(project_spaces, k) if project_spaces else None)
+            for k in ENV_SPACES_KEYS
+        }
+    )
     region = (
         (spaces.region if spaces and spaces.region else None)
         or (do.region if do and do.region else None)
@@ -130,7 +177,7 @@ def spaces_backup_defaults(config: ProjectConfig, env_name: str) -> SpacesBackup
         pgbackrest_repo_path=pgbackrest_repo_path,
         restic_path=restic_path,
         stanza=stanza,
-        write_key_name=f"{bucket}-write",
+        write_key_name=f"{bucket}-{env_name}-write",
         host_bucket=f"%(bucket)s.{region}.digitaloceanspaces.com",
     )
 
@@ -482,7 +529,11 @@ def ensure_spaces_backup_credentials(
         print(conflict, file=sys.stderr)
         return 1
 
-    defaults = spaces_backup_defaults(config, env_name)
+    try:
+        defaults = spaces_backup_defaults(config, env_name)
+    except EnvSpacesError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     context = _doctl_context(config)
 
     if not creds_path.is_file():

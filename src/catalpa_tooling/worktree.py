@@ -523,6 +523,27 @@ def _resolve_start_ref(main_root: Path, start_ref: str) -> tuple[str | None, str
     return base_ref, base_commit
 
 
+def _checked_out_ref(repo_root: Path) -> str | None:
+    """The branch checked out in ``repo_root`` (its commit when detached), or ``None``."""
+    full = _git_out(repo_root, "rev-parse", "--symbolic-full-name", "HEAD")
+    if full and full.startswith("refs/heads/"):
+        return full.removeprefix("refs/heads/")
+    return _git_out(repo_root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+
+
+def _existing_worktree(config: ProjectConfig, main_root: Path, clean: str) -> Path:
+    """``.worktrees/<clean>`` under the main checkout, else under this checkout.
+
+    Before 2.0, ``create`` run in a checkout under ``.worktrees/`` nested the new one there.
+    """
+    path = worktrees_dir(main_root) / clean
+    if not path.is_dir():
+        nested = worktrees_dir(config.repo_root.resolve()) / clean
+        if nested.is_dir() and load_worktree_overlay(nested) is not None:
+            return nested
+    return path
+
+
 def _ref_exists(repo_root: Path, ref: str) -> bool:
     return (
         _git("rev-parse", "--verify", "--quiet", ref, cwd=repo_root, check=False, capture=True)
@@ -776,8 +797,8 @@ def _run_worktree_env_compose(
 
     ns = argparse.Namespace(
         env_name=overlay.base_env,
-        env_command=None,
-        implicit_compose_argv=list(compose_args),
+        env_command="compose",
+        compose_argv=list(compose_args),
         dry_run=dry_run,
         yes=True,
         tag=None,
@@ -1033,7 +1054,13 @@ def worktree_create(
         print(f"dk worktree create: {exc}", file=sys.stderr)
         return 1
 
-    main_root = config.repo_root.resolve()
+    # Worktrees live under the main checkout, where list/info/remove look, even when this
+    # runs in another checkout under .worktrees/ (a plain git worktree, e.g. an agent's).
+    # The default base stays what *this* checkout has checked out.
+    here = config.repo_root.resolve()
+    main_root = resolve_parent_repo_root(config)
+    if base_branch is None and here != main_root:
+        base_branch = _checked_out_ref(here)
     dest = worktrees_dir(main_root) / clean
     if dest.exists():
         print(f"dk worktree create: path already exists: {dest}", file=sys.stderr)
@@ -1272,7 +1299,7 @@ def worktree_info(config: ProjectConfig, *, slug: str | None = None) -> int:
         except WorktreeOverlayError as exc:
             print(f"dk worktree info: {exc}", file=sys.stderr)
             return 1
-        path = worktrees_dir(main_root) / clean
+        path = _existing_worktree(config, main_root, clean)
         if not path.is_dir():
             print(f"dk worktree info: unknown worktree {clean!r} ({path})", file=sys.stderr)
             return 1
@@ -1566,7 +1593,7 @@ def worktree_remove(
         print(f"dk worktree remove: {exc}", file=sys.stderr)
         return 1
 
-    path = worktrees_dir(main_root) / clean
+    path = _existing_worktree(config, main_root, clean)
     if not path.is_dir():
         print(f"dk worktree remove: unknown worktree {clean!r} ({path})", file=sys.stderr)
         return 1

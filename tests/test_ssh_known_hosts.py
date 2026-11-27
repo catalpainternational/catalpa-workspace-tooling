@@ -204,3 +204,45 @@ def test_known_hosts_path_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     custom = tmp_path / "custom_known_hosts"
     monkeypatch.setenv("SSH_KNOWN_HOSTS", str(custom))
     assert known_hosts_path() == custom
+
+
+OLD_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+NEW_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+
+
+def _entries(kh: Path, host: str) -> list[str]:
+    import subprocess
+
+    r = subprocess.run(["ssh-keygen", "-F", host, "-f", str(kh)], check=False, capture_output=True, text=True)
+    return [" ".join(ln.split()[1:3]) for ln in r.stdout.splitlines() if ln and not ln.startswith("#")]
+
+
+def test_alias_known_host_replaces_an_earlier_hosts_key(tmp_path: Path) -> None:
+    """A new droplet behind a name an older host had: the name gets the new droplet's key."""
+    from catalpa_tooling.ssh_known_hosts import alias_known_host
+
+    kh = tmp_path / "known_hosts"
+    kh.write_text(f"staging.example.com {OLD_KEY}\n203.0.113.7 {NEW_KEY}\nother.example {OLD_KEY}\n")
+    assert alias_known_host("staging.example.com", "203.0.113.7", path=kh) == 0
+    assert _entries(kh, "staging.example.com") == [NEW_KEY]
+    assert _entries(kh, "203.0.113.7") == [NEW_KEY]
+    assert _entries(kh, "other.example") == [OLD_KEY]
+
+
+def test_alias_known_host_adds_a_name_with_no_entry_and_keeps_the_port(tmp_path: Path) -> None:
+    from catalpa_tooling.ssh_known_hosts import alias_known_host
+
+    kh = tmp_path / "known_hosts"
+    kh.write_text(f"[203.0.113.7]:2222 {NEW_KEY}\n")
+    assert alias_known_host("staging.example.com", "203.0.113.7", port=2222, path=kh) == 0
+    assert _entries(kh, "[staging.example.com]:2222") == [NEW_KEY]
+
+
+def test_alias_known_host_without_the_ips_keys_changes_nothing(tmp_path: Path) -> None:
+    from catalpa_tooling.ssh_known_hosts import alias_known_host
+
+    kh = tmp_path / "known_hosts"
+    kh.write_text(f"staging.example.com {OLD_KEY}\n")
+    assert alias_known_host("staging.example.com", "203.0.113.7", path=kh) == 1
+    assert _entries(kh, "staging.example.com") == [OLD_KEY]
+    assert alias_known_host("203.0.113.7", "203.0.113.7", path=kh) == 0  # docker_host is the IP

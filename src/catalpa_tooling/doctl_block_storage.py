@@ -152,3 +152,34 @@ def ensure_volume_attached(
         file=sys.stderr,
     )
     return attach_volume_to_droplet(_volume_id(volume), droplet_id, context=context)
+
+
+def _volume_command(args: list[str], what: str, *, context: str | None, dry_run: bool) -> int:
+    if dry_run:
+        print(f"dry-run: would run doctl {' '.join(args)}", file=sys.stderr)
+        return 0
+    result = run_doctl(args, context=context, check=False)
+    if result.returncode != 0:
+        from catalpa_tooling.doctl_binary import format_doctl_failure
+
+        print(f"doctl {what} failed: {format_doctl_failure(result)}", file=sys.stderr)
+    return result.returncode
+
+
+def detach_volume_from_droplet(
+    volume_id: str, droplet_id: str, *, context: str | None = None, dry_run: bool = False
+) -> int:
+    """``doctl compute volume-action detach <vol> <droplet> --wait``: before ``volume delete``,
+    which fails while the volume is attached."""
+    return _volume_command(
+        ["compute", "volume-action", "detach", str(volume_id), str(droplet_id), "--wait"],
+        "volume detach", context=context, dry_run=dry_run,
+    )  # fmt: skip
+
+
+def delete_volume(volume_id: str, *, context: str | None = None, dry_run: bool = False) -> int:
+    """``doctl compute volume delete <id> --force``. Destroys the volume's data."""
+    return _volume_command(
+        ["compute", "volume", "delete", str(volume_id), "--force"],
+        "volume delete", context=context, dry_run=dry_run,
+    )  # fmt: skip
