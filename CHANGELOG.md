@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0b5
 
 - **`dk <env> host`'s "docker_host differs from droplet" note no longer cries wolf** (found
   hand-testing #207). It stays quiet when the configured name resolves to the droplet's address
