@@ -116,6 +116,12 @@ def load_committed(gen_dir: Path) -> Committed:
 # --- SSH ------------------------------------------------------------------------------------
 
 
+def _registry_auth_failure(err: str) -> bool:
+    """Podman's text for a pull the account has no (valid) registry login for."""
+    low = err.lower()
+    return "unable to retrieve auth token" in low or ("unauthorized" in low and "docker://" in low)
+
+
 @dataclass(frozen=True)
 class Host:
     address: str
@@ -142,6 +148,13 @@ class Host:
                 err += (
                     f"\n(a rebuilt droplet has a new host key: check it's yours, then "
                     f"`ssh-keygen -R {self.address}` and run this again)"
+                )
+            if _registry_auth_failure(err):
+                err += (
+                    f"\n(the {login} account on {self.address} isn't logged in to the image registry, "
+                    "or its token expired or lacks read:packages; the login lives in "
+                    "~/.config/containers/auth.json. For an `fcos.auto_update` env run "
+                    "`dk <env> host login`; see docs/FCOS.md, Registry login. The tag itself is fine.)"
                 )
             raise HostError(f"ssh {login}@{self.address} failed ({r.returncode}): {err}")
         return r

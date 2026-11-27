@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Small fixes from the b4 runs** (#220, #235, #207, #233):
+  - `dk --version` prints the release (and the commit when installed from git). `dk <env> status`
+    is still refused, but the message now names the command for each layer: `ps` the app, `host`
+    the machine, `diff` drift, `info` config.
+  - A `--dry-run` given after the verb to a command with no `--dry-run` of its own now says
+    `--dry-run goes after the env name: dk <env> --dry-run <verb>`.
+  - A host step that fails because the account isn't logged in to the registry (`unable to
+    retrieve auth token`, `unauthorized`) says so, names `~/.config/containers/auth.json` and
+    `dk <env> host login`, and that the tag is fine.
+  - The generated `remote-environments` agent rule lists `dk fetch db` / `dk fetch media`, a
+    remote read when the fetch source is a remote env. Projects get it with `uv run setup-agents`.
 - **Four papercuts from running swlt_ws2 on 2.0.0b4** (#233):
   - A compose `files restore` dry run names the volumes it would replace (all of
     `ops.restic.data_volumes`), not "media".
