@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **`dk <env> host`'s "docker_host differs from droplet" note no longer cries wolf** (found
+  hand-testing #207). It stays quiet when the configured name resolves to the droplet's address
+  (a compose `docker_host` written as a hostname), and for a rendered host, whose `docker_host`
+  is the account's podman socket by design. `dk <env> host --write` on a rendered host now says
+  it isn't for one and changes nothing; it used to offer to replace the socket with
+  `root@<droplet address>`.
+- **`dk <env> host` reads the machine** (#207). After the DigitalOcean and DNS checks it
+  connects over SSH and prints one line per check, `ok`/`warn`/`FAIL`:
+  - a rendered host: the booted OS version and any staged update (`rpm-ostree`), Zincati, the
+    last boots, failed system units, the data volume mounted, the stack account's failed units
+    and linger. System state goes through `core` (an admin key); without it that part says so
+    and the account's units are still read;
+  - a compose host: uptime, a pending reboot, failed system units, disk use on `/`.
+
+  It exits 1 when a unit failed, a mount is missing or the host can't be read; a staged update
+  or a pending reboot is only a warning. `--cloud-only` skips the SSH section;
+  `--write`, `--sync-dns` and a dry run never connect. `docs/DK_COMMAND_TREE.md` now says which
+  command looks at which layer. `context --status` stays (it is in the agent skill and the JSON
+  schema); it is a `docker ps` for local envs, not a second host check.
 - **Small fixes from the b4 runs** (#220, #235, #207, #233):
   - `dk --version` prints the release (and the commit when installed from git). `dk <env> status`
     is still refused, but the message now names the command for each layer: `ps` the app, `host`

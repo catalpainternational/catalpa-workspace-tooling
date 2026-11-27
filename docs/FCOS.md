@@ -373,6 +373,7 @@ manages the system units, with one `sudo sh` per command and the script on stdin
 |---|---|
 | `host ignition -o FILE` | Compile `host.bu` to Ignition, the droplet's user data |
 | `host provision [--no-start]` | After the droplet booted from it: wait for SSH, check the files match, push every secret, pull every image (logging in for the pull only; an `auto_update` env from its stored login; see Registry login below), start the stack |
+| `host` | Read-only: the droplet and DNS, then the OS over SSH. Shows the booted version and whether an update is staged (a reboot applies it), Zincati, the last boots, failed system and account units, the data volume, linger. The way to check that an update window finished: `ok` on every line means it updated, came back and nothing failed. `--cloud-only` skips the SSH part |
 | `host login` | An `auto_update` env: log the account in to the image registry again from sops, and show who it's logged in as, after rotating the bot's token. Other envs keep no login |
 | `secrets push [NAME…] [--restart]` | Stream secrets from `credentials.yaml` into Podman secrets |
 | `diff [--names-only]` | Compare the host with the render: each installed file's content, mode and owner, the data directories, the timers, the secret names |

@@ -1331,3 +1331,50 @@ def test_host_create_reports_a_failed_droplet_lookup_without_a_traceback(tmp_pat
     assert cmd_env_host_create(config, "prod", []) == 1
     assert seen["create"] == [], "nothing is created when the lookup failed"
     assert "Could not look up droplet 'test-prod'" in capsys.readouterr().err
+
+
+# --- the "docker_host differs from droplet" note (found hand-testing #207) ---------------
+
+
+def _note(capsys, configured, resolved="ssh://root@203.0.113.5", **kw) -> str:
+    from catalpa_tooling.deploy_do_link import _compare_docker_host
+
+    _compare_docker_host(configured, resolved, **kw)
+    return capsys.readouterr().err
+
+
+def test_docker_host_note_skipped_when_the_name_resolves_to_the_droplet(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        "catalpa_tooling.deploy_do_link._hostname_resolves_to", lambda host, ip: (host, ip) == ("bero.example", "203.0.113.5")
+    )
+    assert _note(capsys, "ssh://root@bero.example") == ""
+
+
+def test_docker_host_note_kept_for_another_address_or_user(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link._hostname_resolves_to", lambda host, ip: False)
+    assert "differs from droplet" in _note(capsys, "ssh://root@other.example")
+    monkeypatch.setattr("catalpa_tooling.deploy_do_link._hostname_resolves_to", lambda host, ip: True)
+    assert "differs from droplet" in _note(capsys, "ssh://deploy@bero.example")
+
+
+def test_docker_host_note_never_for_a_rendered_host(capsys: pytest.CaptureFixture) -> None:
+    configured = "ssh://deploy@staging.example/run/user/1001/podman/podman.sock"
+    assert _note(capsys, configured, rendered=True) == ""
+
+
+def test_host_write_refuses_on_a_rendered_host(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    from catalpa_tooling.deploy_do_link import cmd_env_host
+
+    config = _load_test_config(tmp_path)
+    env_dir = tmp_path / "docker" / "envs" / "staging"
+    env_dir.mkdir(parents=True)
+    info = env_dir / "info.yaml"
+    text = "runtime: quadlet\ndocker_host: ssh://deploy@staging.example/run/user/1001/podman/podman.sock\n"
+    info.write_text(text, encoding="utf-8")
+    assert cmd_env_host(config, "staging", write=True) == 0
+    assert "not for a rendered host" in capsys.readouterr().err
+    assert info.read_text(encoding="utf-8") == text

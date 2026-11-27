@@ -476,7 +476,7 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
         if ns.write and ns.sync_dns:
             print("cannot use --write and --sync-dns together", file=sys.stderr)
             return 2
-        return cmd_env_host(
+        rc = cmd_env_host(
             config,
             env_name,
             write=bool(ns.write),
@@ -484,6 +484,15 @@ def handle_env_command(ns: argparse.Namespace, config: ProjectConfig) -> int:
             dry_run=dry_run,
             check_remote=bool(getattr(ns, "check_remote", False)),
         )
+        if ns.write or ns.sync_dns or dry_run or getattr(ns, "cloud_only", False):
+            return rc
+        # The machine itself, whatever the cloud checks said: a DNS mismatch doesn't hide it.
+        from catalpa_tooling.deploy_do_link import load_env_info
+        from catalpa_tooling.host_state import show_machine_state
+
+        loaded = load_env_info(config, env_name)
+        machine_rc = show_machine_state(config, env_name, loaded[1]) if loaded else 0
+        return rc or machine_rc
 
     compose_file = resolve_compose_file_from_info(info, config)
     if compose_file is None and env_command not in (None, "compose"):
