@@ -8,6 +8,7 @@ from catalpa_tooling.cli.completion import attach_choices_completer
 from catalpa_tooling.cli.parents import build_env_flags_parent
 from catalpa_tooling.config import ProjectConfig
 from catalpa_tooling.fcos.cli import (
+    add_bluegreen_verbs,
     add_host_verbs,
     add_render_verbs,
     add_secrets_push,
@@ -450,6 +451,7 @@ def _attach_env_command_parsers(
 
     _attach_zabbix_commands(cmd_sub, env_name)
     add_render_verbs(cmd_sub)
+    add_bluegreen_verbs(cmd_sub)
     attach_fcos_parser(cmd_sub)
 
     cmd_sub.add_parser("ensure_volumes", help="Ensure external stack volumes exist.")
