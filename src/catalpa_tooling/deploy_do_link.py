@@ -319,12 +319,36 @@ def _docker_host_ssh_target(docker_host: str) -> str:
     return f"{DEFAULT_SSH_USER}@{raw}" if raw else ""
 
 
-def _compare_docker_host(configured: str, resolved: str, *, writing: bool = False) -> None:
+def _hostname_resolves_to(host: str, ip: str) -> bool:
+    """Does ``host`` (a name or an address) resolve to ``ip``? A failed lookup is a no."""
+    import socket
+
+    try:
+        return ip in {info[4][0] for info in socket.getaddrinfo(host, None, family=socket.AF_INET)}
+    except OSError:
+        return False
+
+
+def _compare_docker_host(
+    configured: str, resolved: str, *, writing: bool = False, rendered: bool = False
+) -> None:
+    """Note a ``docker_host`` that points somewhere other than the droplet.
+
+    Same user and a name that resolves to the droplet's address is the same place, not a
+    difference. A rendered host's ``docker_host`` is the account's podman socket by design, so
+    nothing is compared there (the DNS checks cover that the name reaches the droplet).
+    """
+    if rendered:
+        return
     configured_target = _docker_host_ssh_target(configured)
     resolved_target = _docker_host_ssh_target(resolved)
     if not configured_target or not resolved_target:
         return
     if configured_target != resolved_target:
+        user, _, host = configured_target.partition("@")
+        resolved_user, _, resolved_ip = resolved_target.partition("@")
+        if user == resolved_user and _hostname_resolves_to(host, resolved_ip):
+            return
         if writing:
             print(
                 f"Note: info.yaml docker_host ({configured!r}) differs from droplet "
@@ -868,6 +892,16 @@ def cmd_env_host(
     link = resolve_env_do_link(config, env_name, info)
     configured_host = str(info.get("docker_host") or "").strip()
     do_disabled = is_digitalocean_host_disabled(info)
+    from catalpa_tooling.fcos.settings import runtime_of
+
+    rendered = runtime_of(info) == "quadlet"
+    if rendered and write:
+        print(
+            f"dk {env_name} host --write: not for a rendered host. Its docker_host is the "
+            "account's podman socket (set by `host create`), not root@<droplet address>.",
+            file=sys.stderr,
+        )
+        return 0
 
     if do_disabled:
         return _cmd_env_host_manual(
@@ -984,7 +1018,7 @@ def cmd_env_host(
     print_host_resolution(link=link, droplet=droplet, docker_host=docker_host)
 
     if configured_host:
-        _compare_docker_host(configured_host, docker_host, writing=write)
+        _compare_docker_host(configured_host, docker_host, writing=write, rendered=rendered)
 
     # host --write only refreshes docker_host; DNS checks run on plain `dk <env> host`
     # and after `host create` (which syncs DO A records first).
