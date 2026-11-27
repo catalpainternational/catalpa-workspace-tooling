@@ -96,7 +96,13 @@ def _parse_env_argv(parser: argparse.ArgumentParser, env_argv: list[str]) -> arg
     if unknown:
         dest = _passthrough_dest(parser, ns)
         if dest is None:
-            parser.error("unrecognized arguments: " + " ".join(unknown))
+            message = "unrecognized arguments: " + " ".join(unknown)
+            if "--dry-run" in unknown and env_argv and not env_argv[0].startswith("-"):
+                rest = [a for a in env_argv[1:] if a != "--dry-run"]
+                message += (
+                    f"\n--dry-run goes after the env name: dk {env_argv[0]} --dry-run {' '.join(rest)}".rstrip()
+                )
+            parser.error(message)
         setattr(ns, dest, unknown + list(getattr(ns, dest) or []))
     return ns
 

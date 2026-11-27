@@ -16,6 +16,24 @@ from catalpa_tooling.remote_deploy import list_deploy_env_names
 from catalpa_tooling.worktree_cli import attach_worktree_subcommands
 
 
+
+def tooling_version() -> str:
+    """The installed release, with the commit when it was installed from a git ref."""
+    import json
+    from importlib import metadata
+
+    name = "catalpa-workspace-tooling"
+    try:
+        version = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return "unknown"
+    try:
+        raw = metadata.distribution(name).read_text("direct_url.json")
+        commit = (json.loads(raw).get("vcs_info") or {}).get("commit_id") if raw else None
+    except (OSError, ValueError):
+        commit = None
+    return f"{version} ({commit[:9]})" if commit else version
+
 def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
     # Service names and envs_dir appear only in help text. A project that adopts the
     # engine-agnostic commands (cut-release, next-branch) declares no `stack:` or
@@ -49,6 +67,7 @@ def build_dk_parser(config: ProjectConfig) -> argparse.ArgumentParser:
             f"without cd (no direnv)."
         ),
     )
+    parser.add_argument("--version", action="version", version=f"dk {tooling_version()}")
     parser.add_argument(
         "--worktree",
         "-W",

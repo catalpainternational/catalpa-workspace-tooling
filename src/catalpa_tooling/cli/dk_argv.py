@@ -315,12 +315,24 @@ REMOVED_SUBCOMMAND_HINTS = {
 }
 
 
+# Names people guess that never existed, and which command answers the question.
+NO_SUCH_SUBCOMMAND_HINTS = {
+    "status": (
+        "there is no `status`; each layer has its own command: `{env} ps` the running app, "
+        "`{env} host` the machine, `{env} diff` drift from the render, `{env} info` the config"
+    ),
+}
+
+
 def unknown_env_subcommand_message(env_name: str, token: str) -> str:
     """Error text naming both the dk subcommands and the compose verbs that are valid."""
     dk_names = ", ".join(sorted(SPECIAL_ENV_COMMANDS))
     app_names = ", ".join(sorted(RUNNING_APP_VERBS))
     hint = REMOVED_SUBCOMMAND_HINTS.get(token)
     replaced = f"  {token!r} has moved: {hint.format(env=env_name)}.\n" if hint else ""
+    no_such = NO_SUCH_SUBCOMMAND_HINTS.get(token)
+    if no_such:
+        replaced = f"  {no_such.format(env='dk ' + env_name)}.\n"
     return (
         f"dk {env_name}: unknown subcommand {token!r}.\n"
         f"{replaced}"

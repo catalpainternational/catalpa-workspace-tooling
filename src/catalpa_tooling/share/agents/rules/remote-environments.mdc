@@ -24,6 +24,7 @@ Do **not** run these (or equivalent) until the user clearly confirms the **targe
 - `uv run dk push`, `uv run dk transfer`
 - `uv run dk clean-images --apply` (mutates GHCR; dry-run is read-only but still calls the Packages API)
 - `uv run native fetch db`, `uv run native fetch media` (SSH/rsync to production or staging hosts)
+- `uv run dk fetch db`, `uv run dk fetch media` when the project's fetch source (`native.fetch.dk_env`, or `dk fetch --env`) is a remote env: a bare `dk fetch` is then a read of that host
 - Direct `ssh` to deploy hosts, or `docker …` with `DOCKER_HOST=ssh://…`
 - CI/deploy scripts that push images or change remote infrastructure
 

@@ -476,3 +476,30 @@ def test_an_unchanged_tmpfiles_file_isnt_run_again() -> None:
     state = in_sync_state(c)
     state.files.pop(next(e["dest"] for e in c.manifest["install"] if e["file"] == "quadlets/zabbix-agent2.container"))
     assert "systemd-tmpfiles" not in h.apply_script(c, h.make_plan(c, state))
+
+
+def test_registry_login_failure_says_what_to_do() -> None:
+    from catalpa_tooling.fcos.host import Host, HostError
+
+    err = (b"Error: unable to copy from source docker://ghcr.io/o/i:staging: initializing source "
+           b"docker://ghcr.io/o/i:staging: unable to retrieve auth token: invalid username/password: unauthorized")
+
+    def runner(argv, input=None):
+        return subprocess.CompletedProcess(argv, 125, b"", err)
+
+    with pytest.raises(HostError) as e:
+        Host("203.0.113.7", runner=runner).ssh("deploy", "podman pull x")
+    text = str(e.value)
+    assert "isn't logged in to the image registry" in text
+    assert "dk <env> host login" in text and "tag itself is fine" in text
+
+
+def test_other_ssh_failures_get_no_registry_hint() -> None:
+    from catalpa_tooling.fcos.host import Host, HostError
+
+    def runner(argv, input=None):
+        return subprocess.CompletedProcess(argv, 1, b"", b"permission denied")
+
+    with pytest.raises(HostError) as e:
+        Host("203.0.113.7", runner=runner).ssh("deploy", "true")
+    assert "registry" not in str(e.value)

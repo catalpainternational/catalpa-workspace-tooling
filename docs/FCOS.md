@@ -473,6 +473,10 @@ another depends on (`db`) took the app down while the app's own image downloaded
 fails the run before anything restarts. `apply` installs both; a new time restarts the timer, not
 the stack.
 
+- **A pull that fails with `unable to retrieve auth token` / `unauthorized` is a missing or
+  expired login, not a bad tag.** `dk` says so when an ssh step fails that way. Private images
+  need the account's login (an `auto_update` env keeps one; fix it with `dk <env> host login`,
+  and check the token has `read:packages`).
 - **With `auto_update: true`, the account keeps its own login** (`~/.config/containers/auth.json`,
   where host.bu points systemd's `REGISTRY_AUTH_FILE`): a bot's, kept in the project's
   `credentials.yaml` (`dk secrets`, which edits `docker/credentials.yaml` with sops):
